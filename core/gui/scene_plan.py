@@ -5,6 +5,7 @@ import re
 from core.generation.helper_fns import open_file, write_file, save_prompt_to_file
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+from core.localization import zh_label
 
 
 class ScenePlanning:
@@ -17,17 +18,17 @@ class ScenePlanning:
         self.scene_chapter_planning_frame.pack(expand=True, fill="both")
 
         # Title Label
-        self.title_label = ttk.Label(self.scene_chapter_planning_frame, text="Scene and Chapter Planning", font=("Helvetica", 16))
+        self.title_label = ttk.Label(self.scene_chapter_planning_frame, text="场景与章节规划", font=("Helvetica", 16))
         self.title_label.pack(pady=10)
 
         # Generate Chapter Outline Button
-        self.chapter_outline_button = ttk.Button(self.scene_chapter_planning_frame, text="Generate Chapter Outlines", command=self.generate_chapter_outline)
+        self.chapter_outline_button = ttk.Button(self.scene_chapter_planning_frame, text="生成章节大纲", command=self.generate_chapter_outline)
         self.chapter_outline_button.pack(pady=20)
 
         # Generate scene plan
         self.plan_scenes_button = ttk.Button(
             self.scene_chapter_planning_frame, 
-            text="Plan Scenes", # Generic text, command will adapt
+            text="规划场景",
             command=self._dispatch_scene_planning
         )
         self.plan_scenes_button.pack(pady=20)
@@ -92,7 +93,7 @@ class ScenePlanning:
         """Dispatches to the correct scene planning method based on story length."""
         if not (self.app and hasattr(self.app, 'param_ui')):
             self.app.logger.error("ScenePlanning: Parameters.py not available for dispatching scene planning.")
-            show_error("Error", "Cannot determine story parameters for scene planning.")
+            show_error("错误", "无法确定场景规划所需的故事参数。")
             return
 
         params = self.app.param_ui.get_current_parameters()
@@ -105,7 +106,7 @@ class ScenePlanning:
             self._plan_long_form_scenes() # Changed from self.scene_plan
         else:
             self.app.logger.error(f"ScenePlanning: Unknown story length '{story_length}'.")
-            show_error("Error", f"ScenePlanning: Unsupported story length '{story_length}'.")
+            show_error("错误", f"场景规划不支持故事篇幅“{zh_label(story_length)}”。")
 
 
     # Generate an outline of the chapters given the 6-act story structure
@@ -143,7 +144,7 @@ class ScenePlanning:
         # The TODO comment about moving it is also resolved by this change.
         sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
         if not sections_to_process:
-            show_error("Error", f"Section definitions for '{selected_structure_name}' not found.")
+            show_error("错误", f"找不到故事结构“{zh_label(selected_structure_name)}”的阶段定义。")
             print(f"Error: No sections defined for structure '{selected_structure_name}'.")
             return
 
@@ -162,19 +163,19 @@ class ScenePlanning:
                 try:
                     detailed_section_content = open_file(input_filepath)
                 except FileNotFoundError:
-                    show_warning("Missing File", f"Detailed plan for section '{current_section_name}' (file: {input_filename_base}) not found. Skipping this section.")
+                    show_warning("文件缺失", f"找不到“{zh_label(current_section_name)}”的详细规划（文件：{input_filename_base}），将跳过该部分。")
                     print(f"Warning: File {input_filepath} not found. Skipping section '{current_section_name}'.")
                     continue # Skip to the next section
 
                 prompt = (
-                    f"Please help me to generate an outline of the chapters for my novel, which follows the '{selected_structure_name}' framework."
-                    f"The parts of this structure are: {', '.join(sections_to_process)}.\n"
-                    f"We are currently focusing on the part: **{current_section_name}**. Here is the detailed plan for this part:\n\n{detailed_section_content}\n\n"
-                    f"Based on this detailed plan for '{current_section_name}', please generate a chapter-by-chapter outline. "
-                    f"Each chapter should have a clear purpose and advance the story for this part of the structure. "
-                    f"Suggest scenes within each chapter. List characters, factions, and locations (including planets) within each chapter. "
-                    f"This part ('{current_section_name}') starts with Chapter {chapter_number_offset}. Assign chapter numbers sequentially from there for this part.\n"
-                    f"Please provide the output in markdown format. Do not use backticks or the word 'markdown' in the response."
+                    f"请为采用“{zh_label(selected_structure_name)}”框架的小说生成章节大纲。"
+                    f"该结构包含：{', '.join(zh_label(section) for section in sections_to_process)}。\n"
+                    f"当前重点是 **{zh_label(current_section_name)}**。以下是这一部分的详细规划：\n\n{detailed_section_content}\n\n"
+                    f"请根据“{zh_label(current_section_name)}”的详细规划，逐章生成大纲。"
+                    "每一章都应有明确目的，并推动这一结构部分的故事。"
+                    "为每章建议所含场景，并列出本章涉及的人物、势力和地点（包括行星）。"
+                    f"“{zh_label(current_section_name)}”从第 {chapter_number_offset} 章开始，请依次分配章号。\n"
+                    "请以 Markdown 格式输出，不要使用代码围栏，也不要在响应中写出“Markdown”一词。"
                 )
 
                 current_backend = get_backend()
@@ -186,7 +187,11 @@ class ScenePlanning:
 
                 # Dynamically count chapters in the LLM's response for this section
                 # Adjusted regex to be more flexible with markdown chapter headings (##, ###, **** etc.)
-                chapters_in_response = re.findall(r"^(?:\*{2,}|#{2,})\s*Chapter\s*\\d+", response, re.MULTILINE | re.IGNORECASE)
+                chapters_in_response = re.findall(
+                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*\d+|第\s*\d+\s*章)",
+                    response,
+                    re.MULTILINE | re.IGNORECASE,
+                )
                 chapter_count_for_section = len(chapters_in_response)
                 
                 print(f"LLM generated {chapter_count_for_section} chapters for section '{current_section_name}'. Next section will start after chapter {chapter_number_offset + chapter_count_for_section -1}")
@@ -202,13 +207,13 @@ class ScenePlanning:
             # show_success("Success", f"Chapter outlines for '{selected_structure_name}' generated successfully.")
 
         except FileNotFoundError as fnf_e: # Should be caught per-file above, but as a fallback
-            show_error("Error", f"A required file was not found: {fnf_e}")
+            show_error("错误", f"找不到必需文件：{fnf_e}")
             print(f"Error: File not found - {fnf_e}")
         except Exception as e:
             print(f"Failed to generate chapter outline: {e}")
             import traceback
             traceback.print_exc()
-            show_error("Error", f"Failed to generate chapter outline: {str(e)}")
+            show_error("错误", f"生成章节大纲失败：{str(e)}")
 
 
     # Generate an outline of the scenes within each chapter
@@ -247,7 +252,7 @@ class ScenePlanning:
         sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
 
         if not sections_to_process:
-            show_error("Error", f"Scene Plan: Section definitions for '{selected_structure_name}' not found.")
+            show_error("错误", f"找不到故事结构“{zh_label(selected_structure_name)}”的阶段定义。")
             print(f"Error (Scene Plan): No sections defined for structure '{selected_structure_name}'.")
             return
 
@@ -257,8 +262,8 @@ class ScenePlanning:
             try:
                 lore_content = open_file(lore_content_path).strip()
             except FileNotFoundError:
-                show_warning("Missing File", f"Lore file {lore_content_path} not found. Scene plans may lack context.")
-                lore_content = "Overall lore context is missing."
+                show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
+                lore_content = "缺少整体世界观背景。"
             
             overall_chapter_number = 1 # Global chapter counter across all sections
 
@@ -275,7 +280,7 @@ class ScenePlanning:
                 try:
                     section_chapter_outline_content = open_file(chapter_outline_input_filepath).strip()
                 except FileNotFoundError:
-                    show_warning("Missing File", f"Chapter outline file for section '{current_section_name}' (file: {chapter_outline_input_base}) not found. Skipping scene planning for this section.")
+                    show_warning("文件缺失", f"找不到“{zh_label(current_section_name)}”的章节大纲（文件：{chapter_outline_input_base}），将跳过该部分。")
                     print(f"Warning: File {chapter_outline_input_filepath} not found. Skipping scene planning for '{current_section_name}'.")
                     continue
 
@@ -286,7 +291,11 @@ class ScenePlanning:
                 # Count chapters within this specific section's outline file
                 # Using a more robust regex that looks for "Chapter X" or "Chapter X: Title"
                 # This count is to iterate through the chapters *within this section file*
-                chapters_in_section_file = re.findall(r"^(?:\*{2,}|#{2,})\s*Chapter\s*(\d+)(?:[:\s\S]*?)?$", section_chapter_outline_content, re.MULTILINE | re.IGNORECASE)
+                chapters_in_section_file = re.findall(
+                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                    section_chapter_outline_content,
+                    re.MULTILINE | re.IGNORECASE,
+                )
                 
                 if not chapters_in_section_file:
                     print(f"Warning: No chapters detected in {chapter_outline_input_filepath}. Skipping scene planning for '{current_section_name}'.")
@@ -300,15 +309,15 @@ class ScenePlanning:
                     current_chapter_for_prompt = overall_chapter_number + i
                     
                     prompt = (
-                        f"Sketch out the scenes for Chapter {current_chapter_for_prompt} of my sci-fi novel.\n"
-                        f"This story follows the '{selected_structure_name}' framework. The parts of this structure are: {', '.join(sections_to_process)}.\n"
-                        f"We are currently developing scenes for the part: **{current_section_name}**.\n\n"
-                        f"Here is the chapter-by-chapter outline for the '{current_section_name}' part of the story (where Chapter {current_chapter_for_prompt} is located):\n{section_chapter_outline_content}\n\n"
-                        f"Focus on expanding Chapter {current_chapter_for_prompt} from the outline above into detailed scenes. "
-                        f"For each scene, describe: the setting (planet, specific location), characters present, key actions/events, dialogue snippets (if crucial), and how it advances the plot or character development for this chapter."
-                        f"Please ensure consistency with, and maintain the lists for: character arcs, factions, and locations (including planets) as suggested in the chapter outline for Chapter {current_chapter_for_prompt}.\n"
-                        f"Refer to the overarching lore of the story for context:\n{lore_content}\n\n"
-                        f"Your response should be in well-structured markdown with headings for each scene."
+                        f"请为科幻小说第 {current_chapter_for_prompt} 章规划场景。\n"
+                        f"故事采用“{zh_label(selected_structure_name)}”框架，包含：{', '.join(zh_label(section) for section in sections_to_process)}。\n"
+                        f"当前正在设计 **{zh_label(current_section_name)}** 的场景。\n\n"
+                        f"以下是包含第 {current_chapter_for_prompt} 章的“{zh_label(current_section_name)}”逐章大纲：\n{section_chapter_outline_content}\n\n"
+                        f"请重点把上述大纲中的第 {current_chapter_for_prompt} 章扩展为详细场景。"
+                        "每个场景需说明：环境（行星、具体地点）、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。"
+                        f"请保持人物弧光、势力和地点（包括行星）与第 {current_chapter_for_prompt} 章大纲中的建议一致。\n"
+                        f"整体世界观如下，供参考：\n{lore_content}\n\n"
+                        "请使用结构清晰的 Markdown，每个场景设置标题。"
                     )
 
                     current_backend = get_backend()
@@ -329,13 +338,13 @@ class ScenePlanning:
             # show_success("Success", f"Scene plans for '{selected_structure_name}' generated successfully.")
 
         except FileNotFoundError as fnf_e:
-            show_error("Error", f"Scene Plan: A required file was not found: {fnf_e}")
+            show_error("错误", f"场景规划找不到必需文件：{fnf_e}")
             print(f"Error (Scene Plan): File not found - {fnf_e}")
         except Exception as e:
             print(f"Failed to generate scene plans: {e}")
             import traceback
             traceback.print_exc()
-            show_error("Error", f"Failed to generate scene plans: {str(e)}")
+            show_error("错误", f"生成场景规划失败：{str(e)}")
 
     # Renamed from scene_plan to indicate its use for longer forms
     def _plan_long_form_scenes(self):
@@ -372,7 +381,7 @@ class ScenePlanning:
         sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
         if not sections_to_process:
             self.app.logger.error(f"Scene Plan: Section definitions for '{selected_structure_name}' not found.")
-            show_error("Error", f"Scene Plan: Section definitions for '{selected_structure_name}' not found.")
+            show_error("错误", f"找不到故事结构“{zh_label(selected_structure_name)}”的阶段定义。")
             return
 
         try:
@@ -380,9 +389,9 @@ class ScenePlanning:
             try:
                 lore_content = open_file(lore_content_path).strip()
             except FileNotFoundError:
-                show_warning("Missing File", f"Lore file {lore_content_path} not found. Scene plans may lack context.")
+                show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
                 self.app.logger.warning(f"Lore file {lore_content_path} not found for scene planning.")
-                lore_content = "Overall lore context is missing."
+                lore_content = "缺少整体世界观背景。"
             
             overall_chapter_number = 1 
 
@@ -398,7 +407,7 @@ class ScenePlanning:
                 try:
                     section_chapter_outline_content = open_file(chapter_outline_input_filepath).strip()
                 except FileNotFoundError:
-                    show_warning("Missing File", f"Chapter outline file for section '{current_section_name}' (file: {chapter_outline_input_base}) not found. Skipping scene planning for this section.")
+                    show_warning("文件缺失", f"找不到“{zh_label(current_section_name)}”的章节大纲（文件：{chapter_outline_input_base}），将跳过该部分。")
                     self.app.logger.warning(f"File {chapter_outline_input_filepath} not found. Skipping scene planning for '{current_section_name}'.")
                     continue
 
@@ -406,7 +415,11 @@ class ScenePlanning:
                     self.app.logger.warning(f"Chapter outline file {chapter_outline_input_filepath} is empty. Skipping scene planning for '{current_section_name}'.")
                     continue
 
-                chapters_in_section_file = re.findall(r"^(?:\*{2,}|#{2,})\s*Chapter\s*(\d+)(?:[:\s\S]*?)?$", section_chapter_outline_content, re.MULTILINE | re.IGNORECASE)
+                chapters_in_section_file = re.findall(
+                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                    section_chapter_outline_content,
+                    re.MULTILINE | re.IGNORECASE,
+                )
                 
                 if not chapters_in_section_file:
                     self.app.logger.warning(f"No chapters detected in {chapter_outline_input_filepath}. Skipping scene planning for '{current_section_name}'.")
@@ -418,21 +431,21 @@ class ScenePlanning:
                     current_chapter_for_prompt = overall_chapter_number + i
                     
                     prompt_lines = [
-                        f"Sketch out the scenes for Chapter {current_chapter_for_prompt} of my sci-fi story (length: {story_length}).", # Added story_length context
-                        f"This story follows the '{selected_structure_name}' framework. The parts of this structure are: {', '.join(sections_to_process)}.",
-                        f"We are currently developing scenes for the part: **{current_section_name}**.",
-                        f"\nHere is the chapter-by-chapter outline for the '{current_section_name}' part of the story (where Chapter {current_chapter_for_prompt} is located):\n{section_chapter_outline_content}",
-                        f"\nFocus on expanding Chapter {current_chapter_for_prompt} from the outline above into detailed scenes. "
+                        f"请为故事第 {current_chapter_for_prompt} 章规划场景（篇幅：{zh_label(story_length)}）。",
+                        f"故事采用“{zh_label(selected_structure_name)}”框架，包含：{', '.join(zh_label(section) for section in sections_to_process)}。",
+                        f"当前正在设计 **{zh_label(current_section_name)}** 的场景。",
+                        f"\n以下是包含第 {current_chapter_for_prompt} 章的“{zh_label(current_section_name)}”逐章大纲：\n{section_chapter_outline_content}",
+                        f"\n请重点把上述大纲中的第 {current_chapter_for_prompt} 章扩展为详细场景。"
                     ]
                     
                     if story_length == "Novella":
-                        prompt_lines.append("Given this is a novella, aim for a concise yet impactful set of scenes for this chapter. Focus on essential plot progression and character moments.")
+                        prompt_lines.append("本故事是中篇小说，本章场景应紧凑而有冲击力，聚焦必要的情节推进和人物时刻。")
                     
                     prompt_lines.extend([
-                        "For each scene, describe: the setting (planet, specific location), characters present, key actions/events, dialogue snippets (if crucial), and how it advances the plot or character development for this chapter.",
-                        f"Please ensure consistency with, and maintain the lists for: character arcs, factions, and locations (including planets) as suggested in the chapter outline for Chapter {current_chapter_for_prompt}.",
-                        f"Refer to the overarching lore of the story for context:\n{lore_content}",
-                        "\nYour response should be in well-structured markdown with headings for each scene."
+                        "每个场景需说明：环境（行星、具体地点）、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。",
+                        f"请保持人物弧光、势力和地点（包括行星）与第 {current_chapter_for_prompt} 章大纲中的建议一致。",
+                        f"整体世界观如下，供参考：\n{lore_content}",
+                        "\n请使用结构清晰的 Markdown，每个场景设置标题。"
                     ])
                     prompt = "\n".join(prompt_lines)
 
@@ -466,10 +479,10 @@ class ScenePlanning:
 
         except FileNotFoundError as fnf_e:
             self.app.logger.error(f"Scene Plan: File not found - {fnf_e}", exc_info=True)
-            show_error("Error", f"Scene Plan: A required file was not found: {fnf_e}")
+            show_error("错误", f"场景规划找不到必需文件：{fnf_e}")
         except Exception as e:
             self.app.logger.error(f"Failed to generate scene plans: {e}", exc_info=True)
-            show_error("Error", f"Failed to generate scene plans: {str(e)}")
+            show_error("错误", f"生成场景规划失败：{str(e)}")
 
 
     def _plan_short_story_scenes(self):
@@ -481,16 +494,16 @@ class ScenePlanning:
         # --- Read Parameters ---
         if not (self.app and hasattr(self.app, 'param_ui')):
             self.app.logger.error("ScenePlanning: Parameters.py not available for short story scene planning.")
-            show_error("Error", "Cannot load story parameters.")
+            show_error("错误", "无法加载故事参数。")
             return
         
         parameters = self.app.param_ui.get_current_parameters()
         selected_structure_name = parameters.get("story_structure")
-        novel_title = parameters.get("novel_title", "Untitled Short Story")
+        novel_title = parameters.get("novel_title", "未命名短篇小说")
 
         if not selected_structure_name:
             self.app.logger.error("ScenePlanning: No story structure selected for short story scene planning.")
-            show_error("Error", "No story structure. Please select one in Novel Parameters.")
+            show_error("错误", "尚未选择故事结构，请先在“作品参数”中选择。")
             return
 
         # --- Input File: Detailed Short Story Plot ---
@@ -504,19 +517,19 @@ class ScenePlanning:
             short_story_plot_content = open_file(detailed_plot_filepath)
             if not short_story_plot_content.strip():
                 self.app.logger.error(f"Detailed short story plot file is empty: {detailed_plot_filepath}")
-                show_error("Error", f"The detailed plot file '{detailed_plot_filename}' is empty. Cannot plan scenes.")
+                show_error("错误", f"详细情节文件“{detailed_plot_filename}”为空，无法规划场景。")
                 return
         except FileNotFoundError:
             self.app.logger.error(f"Detailed short story plot file not found: {detailed_plot_filepath}")
-            show_error("Error", f"Detailed plot file '{detailed_plot_filename}' not found. Please generate it first using the Story Structure tab.")
+            show_error("错误", f"找不到详细情节文件“{detailed_plot_filename}”，请先在“故事结构”页生成。")
             return
         except Exception as e:
             self.app.logger.error(f"Error loading detailed short story plot file '{detailed_plot_filepath}': {e}", exc_info=True)
-            show_error("Error", f"Could not read '{detailed_plot_filename}'.")
+            show_error("错误", f"无法读取“{detailed_plot_filename}”。")
             return
 
         # --- Load Lore Context (Optional but good) ---
-        lore_content = "Overall lore context is missing."
+        lore_content = "缺少整体世界观背景。"
         try:
             lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
             if os.path.exists(lore_content_path):
@@ -527,27 +540,27 @@ class ScenePlanning:
 
         # --- Construct the Prompt ---
         prompt_lines = [
-            f"You are an AI assistant helping to plan scenes for a short story titled '{novel_title}'.",
-            f"The story follows the '{selected_structure_name}' framework.",
-            "Below is the detailed overall plot for the entire short story:\n\n",
-            "--- DETAILED SHORT STORY PLOT ---",
+            f"请为短篇小说《{novel_title}》规划场景。",
+            f"故事采用“{zh_label(selected_structure_name)}”框架。",
+            "以下是完整短篇小说的详细总体情节：\n\n",
+            "--- 短篇小说详细情节 ---",
             short_story_plot_content,
-            "\n\n--- END OF DETAILED SHORT STORY PLOT ---",
-            "\nBased on this detailed plot, please break the story down into a sequence of distinct scenes.",
-            "For each scene, describe:\n",
-            "  - A suggested scene number (e.g., Scene 1, Scene 2).\n",
-            "  - The setting (planet, specific location).\n",
-            "  - Characters present.\n",
-            "  - Key actions and events that occur in this scene.\n",
-            "  - Crucial dialogue snippets or summaries.\n",
-            "  - How the scene advances the overall plot or develops characters/themes based on the detailed plot provided.\n",
-            "Ensure the scenes flow logically from one to the next, covering the entire narrative arc outlined in the plot.\n",
-            "\nIMPORTANT INSTRUCTION FOR FORMATTING:",
-            "For each scene, YOU MUST start with a markdown heading like '### Scene <number>: <Scene Title>' or '## Scene <number> - <Scene Title>'.",
-            "Following the heading, then provide the bullet-point details for that scene (setting, characters, key actions, etc.).",
-            "\nRefer to the overarching lore of the story for additional context if needed:",
+            "\n\n--- 短篇小说详细情节结束 ---",
+            "\n请根据详细情节，把故事拆分成一系列清晰、独立的场景。",
+            "每个场景需说明：\n",
+            "  - 建议的场景编号（如场景 1、场景 2）。\n",
+            "  - 环境（行星、具体地点）。\n",
+            "  - 出场人物。\n",
+            "  - 场景中的关键行动和事件。\n",
+            "  - 关键对白片段或对白概要。\n",
+            "  - 该场景如何依据详细情节推动整体故事，或发展人物/主题。\n",
+            "确保场景之间衔接自然，并覆盖详细情节中的完整叙事弧。\n",
+            "\n重要格式要求：",
+            "每个场景必须以 Markdown 标题开始，例如“### 场景 <编号>：<场景标题>”或“## 场景 <编号> - <场景标题>”。",
+            "标题下方再列出该场景的环境、人物、关键行动等要点。",
+            "\n如有需要，可参考以下整体世界观：",
             lore_content,
-            "\nProvide the complete scene-by-scene breakdown for the short story now. The overall output should be a single, well-structured markdown document. Please do NOT include backticks."
+            "\n现在请按场景输出完整的短篇规划，合并为一份结构清晰的 Markdown 文档，不要使用代码围栏。"
         ]
         prompt = "\n".join(prompt_lines)
 
@@ -563,7 +576,7 @@ class ScenePlanning:
 
         if not response:
             self.app.logger.error(f"Failed to generate short story scenes from LLM ({backend_info}). No response.")
-            show_error("Error", "Failed to generate short story scenes from LLM.")
+            show_error("错误", "大模型生成短篇场景失败。")
             return
         
         self.app.logger.info(f"Received short story scenes from LLM. Length: {len(response)} chars.")
@@ -578,4 +591,4 @@ class ScenePlanning:
             # show_success("Success", f"Short story scenes generated and saved to {output_filename_full_path}")
         except Exception as e:
             self.app.logger.error(f"Error saving short story scenes to {output_filename_full_path}: {e}", exc_info=True)
-            show_error("Error", f"Failed to save short story scenes: {e}")
+            show_error("错误", f"保存短篇场景失败：{e}")

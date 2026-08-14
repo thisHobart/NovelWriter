@@ -165,44 +165,44 @@ class ValidateCharacterConsistencyTool(BaseTool):
                                  history: Dict, context: List[str]) -> str:
         """Create prompt for character consistency analysis."""
         
-        context_text = "\n".join(context[-2:]) if context else "No previous context"
+        context_text = "\n".join(context[-2:]) if context else "没有前文背景"
         
         return f"""
-Analyze character consistency for {name} in the new content.
+分析人物 {name} 在新内容中的一致性。
 
-CHARACTER HISTORY:
-{json.dumps(history, indent=2) if history else "No previous history"}
+人物历史：
+{json.dumps(history, indent=2) if history else "没有既往记录"}
 
-PREVIOUS CONTEXT:
+前文背景：
 {context_text}
 
-NEW CONTENT:
+新内容：
 {content}
 
-ANALYSIS CRITERIA:
-1. Personality trait consistency
-2. Behavioral pattern consistency  
-3. Relationship consistency
-4. Character development progression
-5. Physical description consistency
-6. Speech pattern consistency
+分析标准：
+1. 性格特征一致性
+2. 行为模式一致性
+3. 人物关系一致性
+4. 人物成长进程
+5. 外貌描写一致性
+6. 说话方式一致性
 
-Provide analysis in JSON format:
+请使用 JSON 格式提供分析：
 {{
     "consistency_score": 0.0-1.0,
     "violations": [
         {{
             "type": "trait/behavior/relationship/development",
-            "description": "specific inconsistency found",
+            "description": "发现的具体不一致",
             "severity": "minor/moderate/major"
         }}
     ],
     "character_insights": [
-        "new traits or behaviors observed",
-        "character development noted"
+        "观察到的新特征或行为",
+        "人物成长情况"
     ],
     "recommendations": [
-        "suggestions for maintaining consistency"
+        "保持一致性的建议"
     ]
 }}
 """
@@ -310,39 +310,39 @@ class TrackWorldBuildingTool(BaseTool):
         """Analyze world-building elements in content."""
         
         prompt = f"""
-Analyze world-building elements in this {genre} content.
+分析以下 {genre} 内容中的世界构建元素。
 
-ESTABLISHED WORLD ELEMENTS:
-{json.dumps(established, indent=2) if established else "No established elements"}
+既有世界元素：
+{json.dumps(established, indent=2) if established else "没有既有元素"}
 
-NEW CONTENT:
+新内容：
 {content}
 
-ANALYSIS TASKS:
-1. Identify new world-building elements (locations, technology, magic, cultures, etc.)
-2. Check consistency with established world rules
-3. Note any contradictions or violations
-4. Suggest world-building expansions
+分析任务：
+1. 识别新的世界构建元素（地点、技术、魔法、文化等）
+2. 检查是否符合既有世界规则
+3. 指出矛盾或规则冲突
+4. 提出扩展世界构建的建议
 
-Provide analysis in JSON format:
+请使用 JSON 格式提供分析：
 {{
     "new_elements": [
         {{
-            "name": "element name",
+            "name": "元素名称",
             "type": "location/technology/culture/rule/etc",
-            "description": "what was established",
-            "rules": ["associated rules or properties"]
+            "description": "已建立的内容",
+            "rules": ["相关规则或属性"]
         }}
     ],
     "consistency_violations": [
         {{
-            "element": "conflicting element",
-            "violation": "description of inconsistency",
+            "element": "发生冲突的元素",
+            "violation": "不一致说明",
             "severity": "minor/moderate/major"
         }}
     ],
     "world_expansion_opportunities": [
-        "suggestions for expanding world-building"
+        "扩展世界构建的建议"
     ]
 }}
 """
@@ -424,44 +424,44 @@ class TrackPlotThreadsTool(BaseTool):
         """Analyze plot thread progression."""
         
         prompt = f"""
-Analyze plot thread progression in Chapter {chapter_num}.
+分析第 {chapter_num} 章中的情节线进展。
 
-ACTIVE PLOT THREADS:
-{json.dumps(active_threads, indent=2) if active_threads else "No active threads"}
+活跃情节线：
+{json.dumps(active_threads, indent=2) if active_threads else "没有活跃情节线"}
 
-CHAPTER CONTENT:
+章节内容：
 {content}
 
-ANALYSIS TASKS:
-1. Identify which active threads are advanced
-2. Detect new plot threads introduced
-3. Note any threads that are resolved
-4. Check for dropped or forgotten threads
+分析任务：
+1. 识别哪些活跃情节线得到推进
+2. 识别新引入的情节线
+3. 指出已经解决的情节线
+4. 检查被搁置或遗忘的情节线
 
-Provide analysis in JSON format:
+请使用 JSON 格式提供分析：
 {{
     "thread_updates": [
         {{
-            "thread_name": "name of existing thread",
-            "advancement": "how the thread progressed",
+            "thread_name": "既有情节线名称",
+            "advancement": "情节线如何推进",
             "status": "active/resolved/stalled"
         }}
     ],
     "new_threads": [
         {{
-            "name": "new thread name",
-            "description": "what the thread involves",
-            "characters_involved": ["character names"]
+            "name": "新情节线名称",
+            "description": "情节线内容",
+            "characters_involved": ["涉及人物"]
         }}
     ],
     "resolved_threads": [
         {{
-            "name": "resolved thread name",
-            "resolution": "how it was resolved"
+            "name": "已解决情节线名称",
+            "resolution": "解决方式"
         }}
     ],
     "potential_issues": [
-        "threads that may have been forgotten or need attention"
+        "可能被遗忘或需要关注的情节线"
     ]
 }}
 """

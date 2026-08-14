@@ -25,7 +25,7 @@ class HorrorHandler(BaseGenreHandler):
     
     def get_faction_capitals_info(self, factions):
         """Extract stronghold information for horror factions."""
-        faction_section = "\n## Horror Faction Strongholds:\n"
+        faction_section = "\n## 恐怖势力据点：\n"
         for faction in factions:
             faction_name = faction.get("faction_name", "Unknown Faction")
             faction_type = faction.get("faction_type", "Unknown Type")
@@ -34,9 +34,9 @@ class HorrorHandler(BaseGenreHandler):
             if territories:
                 primary_territory = territories[0]  # Use first territory as primary stronghold
                 faction_section += f"- {faction_name}: {primary_territory}\n"
-                faction_section += f"  - Type: {faction_type}\n"
-                faction_section += f"  - Threat Level: {faction.get('threat_level', 'Unknown')}\n"
-                faction_section += f"  - Secrecy Level: {faction.get('secrecy_level', 'Unknown')}\n"
+                faction_section += f"  - 类型：{faction_type}\n"
+                faction_section += f"  - 威胁等级：{faction.get('threat_level', '未知')}\n"
+                faction_section += f"  - 隐秘等级：{faction.get('secrecy_level', '未知')}\n"
         return faction_section
     
     def get_character_attributes(self):
@@ -99,4 +99,4 @@ class HorrorHandler(BaseGenreHandler):
 
     def get_location_type_name(self):
         """Return the location type name for horror."""
-        return "Strongholds" 
+        return "Strongholds"

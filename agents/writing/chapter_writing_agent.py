@@ -22,6 +22,7 @@ from core.generation.helper_fns import open_file, write_file, read_json
 from core.generation.ai_helper import send_prompt, get_backend
 from core.config.directory_config import get_directory_manager
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+from core.localization import zh_label
 
 # Import review system (with fallback if not available)
 try:
@@ -207,7 +208,7 @@ class ChapterWritingAgent(BaseAgent):
                         "story_parameters": story_params,
                         "total_chapters": len(chapter_info_list)
                     },
-                    message=f"Analyzed structure: {len(chapter_info_list)} chapters found"
+                    message=f"结构分析完成：找到 {len(chapter_info_list)} 章"
                 )
                 
             elif task_type == "write_chapters":
@@ -239,7 +240,7 @@ class ChapterWritingAgent(BaseAgent):
                     return AgentResult(
                         success=False,
                         data=None,
-                        message=f"Chapter {chapter_number} not found in structure"
+                        message=f"在故事结构中找不到第 {chapter_number} 章"
                     )
                 
                 return self._write_single_chapter(target_chapter)
@@ -248,7 +249,7 @@ class ChapterWritingAgent(BaseAgent):
                 return AgentResult(
                     success=False,
                     data=None,
-                    message=f"Unknown task type: {task_type}"
+                    message=f"未知任务类型：{task_type}"
                 )
                 
         except Exception as e:
@@ -256,7 +257,7 @@ class ChapterWritingAgent(BaseAgent):
             return AgentResult(
                 success=False,
                 data=None,
-                message=f"Task processing failed: {str(e)}"
+                message=f"任务处理失败：{str(e)}"
             )
         
     def analyze_chapter_structure(self) -> Tuple[List[ChapterInfo], Dict[str, Any]]:
@@ -323,7 +324,7 @@ class ChapterWritingAgent(BaseAgent):
         scene_plan_path = os.path.join(self.output_dir, scene_plan_file)
         
         # Output file uses the story title
-        novel_title = story_params.get("Novel Title", "Untitled Short Story")
+        novel_title = story_params.get("Novel Title", "未命名短篇小说")
         safe_title = novel_title.lower().replace(' ', '_').replace(':', '').replace('/', '')
         output_file = f"prose_short_story_{safe_title}.md"
         output_path = os.path.join(self.output_dir, output_file)
@@ -354,7 +355,11 @@ class ChapterWritingAgent(BaseAgent):
             if os.path.exists(outline_path):
                 content = open_file(outline_path)
                 # Find all chapter headings
-                chapter_matches = re.findall(r"^(?:\*{2,}|#{2,})\s*Chapter\s*(\d+)(?:[:\s\S]*?)?$", content, re.MULTILINE | re.IGNORECASE)
+                chapter_matches = re.findall(
+                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                    content,
+                    re.MULTILINE | re.IGNORECASE,
+                )
                 
                 for i, match in enumerate(chapter_matches):
                     chapter_num = start_chapter + i
@@ -405,7 +410,7 @@ class ChapterWritingAgent(BaseAgent):
             return AgentResult(
                 success=True,
                 data={"completed_chapters": plan.chapters_completed},
-                messages=["All chapters are already written"],
+                messages=["所有章节均已写完"],
                 metrics={}
             )
             
@@ -438,11 +443,11 @@ class ChapterWritingAgent(BaseAgent):
                                 batch_chapter_reviews.append(chapter_review)
                                 all_chapter_reviews.append(chapter_review)
                     else:
-                        error_msg = result.messages[0] if result.messages else "Unknown error"
-                        errors.append(f"Chapter {chapter_num}: {error_msg}")
+                        error_msg = result.messages[0] if result.messages else "未知错误"
+                        errors.append(f"第 {chapter_num} 章：{error_msg}")
                         
                 except Exception as e:
-                    error_msg = f"Chapter {chapter_num}: {str(e)}"
+                    error_msg = f"第 {chapter_num} 章：{str(e)}"
                     errors.append(error_msg)
                     self.logger.error(f"Error writing Chapter {chapter_num}: {e}")
             
@@ -458,14 +463,14 @@ class ChapterWritingAgent(BaseAgent):
                     
         # Prepare result with review metrics
         success = len(chapters_written) > 0
-        message = f"Wrote {len(chapters_written)} chapters"
+        message = f"已写完 {len(chapters_written)} 章"
         if errors:
-            message += f", {len(errors)} errors"
+            message += f"，发生 {len(errors)} 个错误"
         
         # Add review summary to message
         if all_chapter_reviews:
             avg_quality = sum(review.overall_quality for review in all_chapter_reviews) / len(all_chapter_reviews)
-            message += f" (Avg Quality: {avg_quality:.2f})"
+            message += f"（平均质量：{avg_quality:.2f}）"
             
         # Prepare result data with review metrics
         result_data = {
@@ -506,7 +511,7 @@ class ChapterWritingAgent(BaseAgent):
                 return AgentResult(
                     success=False,
                     data={},
-                    messages=[f"Scene plan not found: {chapter_info.scene_plan_file}"],
+                    messages=[f"找不到场景规划：{chapter_info.scene_plan_file}"],
                     metrics={}
                 )
                 
@@ -522,7 +527,7 @@ class ChapterWritingAgent(BaseAgent):
                 return AgentResult(
                     success=False,
                     data={},
-                    messages=[f"Scene plan is empty: {chapter_info.scene_plan_file}"],
+                    messages=[f"场景规划为空：{chapter_info.scene_plan_file}"],
                     metrics={}
                 )
                 
@@ -532,7 +537,7 @@ class ChapterWritingAgent(BaseAgent):
                 return AgentResult(
                     success=False,
                     data={},
-                    messages=[f"No scenes found in plan: {chapter_info.scene_plan_file}"],
+                    messages=[f"规划中没有找到场景：{chapter_info.scene_plan_file}"],
                     metrics={}
                 )
                 
@@ -598,11 +603,11 @@ class ChapterWritingAgent(BaseAgent):
             
             # Return appropriate success message
             if is_short_story:
-                success_msg = "Short story written successfully"
+                success_msg = "短篇小说已成功写完"
             else:
-                success_msg = f"Chapter {chapter_info.chapter_number} written successfully"
+                success_msg = f"第 {chapter_info.chapter_number} 章已成功写完"
                 if chapter_review:
-                    success_msg += f" (Quality: {chapter_review.overall_quality:.2f})"
+                    success_msg += f"（质量：{chapter_review.overall_quality:.2f}）"
             
             return AgentResult(
                 success=True,
@@ -615,7 +620,7 @@ class ChapterWritingAgent(BaseAgent):
             return AgentResult(
                 success=False,
                 data={},
-                messages=[f"Error writing chapter: {str(e)}"],
+                messages=[f"撰写章节时出错：{str(e)}"],
                 metrics={}
             )
             
@@ -656,36 +661,36 @@ class ChapterWritingAgent(BaseAgent):
                     summaries = []
                     for char in characters_data["characters"]:
                         details = [
-                            f"\n\nName: {char.get('name', 'N/A')}",
-                            f"Role: {char.get('role', 'N/A')}",
-                            f"Gender: {char.get('gender', 'N/A')}",
-                            f"Age: {char.get('age', 'N/A')}",
-                            f"Appearance: {char.get('appearance_summary', 'N/A')}"
+                            f"\n\n姓名：{char.get('name', '无')}",
+                            f"角色：{char.get('role', '无')}",
+                            f"性别：{char.get('gender', '无')}",
+                            f"年龄：{char.get('age', '无')}",
+                            f"外貌：{char.get('appearance_summary', '无')}"
                         ]
                         
                         goals = char.get('goals', [])
                         if goals:
-                            details.append(f"Primary Goal: {goals[0]}")
+                            details.append(f"主要目标：{goals[0]}")
                             
                         strengths = char.get('strengths', [])
                         if strengths:
-                            details.append(f"Key Strength: {strengths[0]}")
+                            details.append(f"主要优点：{strengths[0]}")
                             
                         flaws = char.get('flaws', [])
                         if flaws:
-                            details.append(f"Key Flaw: {flaws[0]}")
+                            details.append(f"主要缺点：{flaws[0]}")
                             
                         backstory = char.get('backstory_summary', '')
                         if backstory:
-                            details.append(f"Backstory: {backstory}")
+                            details.append(f"背景故事：{backstory}")
                             
                         summaries.append("\n".join(details))
                         
-                    return "Key Characters:\n" + "\n".join(summaries)
+                    return "主要人物：\n" + "\n".join(summaries)
         except Exception as e:
             self.logger.error(f"Error loading character roster: {e}")
             
-        return "Character roster not available."
+        return "没有可用的人物名单。"
         
     def _load_faction_summary(self) -> str:
         """Load faction summary."""
@@ -697,25 +702,25 @@ class ChapterWritingAgent(BaseAgent):
                     summaries = []
                     for faction in factions_data[:5]:  # Top 5 factions
                         details = [
-                            f"\n\nFaction: {faction.get('faction_name', 'N/A')}",
-                            f"Profile: {faction.get('faction_profile', 'N/A')}"
+                            f"\n\n势力：{faction.get('faction_name', '无')}",
+                            f"简介：{faction.get('faction_profile', '无')}"
                         ]
                         
                         traits = faction.get('primary_traits', [])
                         if traits:
-                            details.append(f"Primary Traits: {', '.join(traits)}")
+                            details.append(f"主要特征：{', '.join(traits)}")
                             
                         summaries.append("\n".join(details))
                         
-                    return "Key Factions:\n" + "\n".join(summaries)
+                    return "主要势力：\n" + "\n".join(summaries)
         except Exception as e:
             self.logger.error(f"Error loading faction summary: {e}")
             
-        return "Faction information not available."
+        return "没有可用的势力信息。"
         
     def _parse_scenes(self, scenes_content: str) -> List[str]:
         """Parse individual scenes from scene plan content."""
-        scene_pattern = r'^## Scene \d+:.*$'
+        scene_pattern = r'^#{2,}\s*(?:Scene|场景)\s*\d+\s*[:：\-].*$'
         scenes = []
         
         matches = []
@@ -744,45 +749,45 @@ class ChapterWritingAgent(BaseAgent):
         # Build prompt using the same format as the existing writing system
         if is_short_story:
             prompt_lines = [
-                f"You are an AI assistant helping to write a science fiction {length.lower()}.",
-                f"This story follows the '{structure}' framework.",
-                f"I will provide you with the detailed plan for a single scene within this short story. Please write the full prose for THIS SCENE ONLY.",
-                "Do not try to write other scenes or summarize the story.",
-                f"\n## Current Scene Description (Scene {scene_num}):",
+                f"请撰写科幻{zh_label(length)}中的一个场景。",
+                f"故事采用“{zh_label(structure)}”框架。",
+                "下面会提供短篇小说中单个场景的详细规划，请只写这个场景的完整正文。",
+                "不要写其他场景，也不要概括整个故事。",
+                f"\n## 当前场景描述（场景 {scene_num}）：",
                 scene_plan,
-                "\n## Overall Story Context (for your reference):",
-                f"Full Universe Lore: {context.get('lore', 'Not available')}",
-                f"\n{context.get('characters', 'Characters not available')}",
-                f"\n{context.get('factions', 'Factions not available')}",
-                "\n## Instructions for Writing This Scene:",
-                "- Write engaging and descriptive prose for this scene.",
-                "- Include character actions, dialogue (if appropriate), thoughts, and emotions.",
-                "- Ensure the setting is clear.",
-                "- The scene should flow logically and advance the plot or character development.",
-                "- Adhere strictly to the provided lore for all world-building details.",
-                "- Provide ONLY the prose for this scene. Do NOT add extra commentary or titles.",
-                "- Do NOT use backticks."
+                "\n## 整体故事背景（供参考）：",
+                f"完整世界观：{context.get('lore', '无可用内容')}",
+                f"\n{context.get('characters', '没有可用的人物信息')}",
+                f"\n{context.get('factions', '没有可用的势力信息')}",
+                "\n## 本场景写作要求：",
+                "- 写出有吸引力、富有描写性的场景正文。",
+                "- 写出人物行动、对白（如适合）、思想和情绪。",
+                "- 清楚交代场景环境。",
+                "- 场景应衔接合理，并推动情节或人物发展。",
+                "- 所有世界构建细节必须严格遵守所提供的世界观。",
+                "- 只提供本场景正文，不要附加评论或标题。",
+                "- 不要使用代码围栏。"
             ]
         else:
             prompt_lines = [
-                f"You are an AI assistant helping to write Chapter {chapter_num} of a science fiction {length.lower()}.",
-                f"This story follows the '{structure}' framework.",
-                f"I will provide you with the detailed plan for a single scene within Chapter {chapter_num}. Please write the full prose for THIS SCENE ONLY.",
-                "Do not try to write other scenes or summarize the chapter.",
-                f"\n## Current Scene Description (Scene {scene_num} of Chapter {chapter_num}):",
+                f"请撰写科幻{zh_label(length)}第 {chapter_num} 章中的一个场景。",
+                f"故事采用“{zh_label(structure)}”框架。",
+                f"下面会提供第 {chapter_num} 章中单个场景的详细规划，请只写这个场景的完整正文。",
+                "不要写其他场景，也不要概括本章。",
+                f"\n## 当前场景描述（第 {chapter_num} 章，场景 {scene_num}）：",
                 scene_plan,
-                "\n## Overall Story Context (for your reference):",
-                f"Full Universe Lore: {context.get('lore', 'Not available')}",
-                f"\n{context.get('characters', 'Characters not available')}",
-                f"\n{context.get('factions', 'Factions not available')}",
-                "\n## Instructions for Writing This Scene:",
-                "- Write engaging and descriptive prose for this scene.",
-                "- Include character actions, dialogue (if appropriate), thoughts, and emotions.",
-                "- Ensure the setting is clear.",
-                "- The scene should flow logically and advance the plot or character development.",
-                "- Adhere strictly to the provided lore for all world-building details.",
-                "- Provide ONLY the prose for this scene. Do NOT add extra commentary or titles.",
-                "- Do NOT use backticks."
+                "\n## 整体故事背景（供参考）：",
+                f"完整世界观：{context.get('lore', '无可用内容')}",
+                f"\n{context.get('characters', '没有可用的人物信息')}",
+                f"\n{context.get('factions', '没有可用的势力信息')}",
+                "\n## 本场景写作要求：",
+                "- 写出有吸引力、富有描写性的场景正文。",
+                "- 写出人物行动、对白（如适合）、思想和情绪。",
+                "- 清楚交代场景环境。",
+                "- 场景应衔接合理，并推动情节或人物发展。",
+                "- 所有世界构建细节必须严格遵守所提供的世界观。",
+                "- 只提供本场景正文，不要附加评论或标题。",
+                "- 不要使用代码围栏。"
             ]
         
         prompt = "\n".join(prompt_lines)
@@ -825,10 +830,10 @@ class ChapterWritingAgent(BaseAgent):
             if not response or not response.strip():
                 if is_short_story:
                     self.logger.warning(f"LLM returned empty response for Scene {scene_num} of short story")
-                    return f"[[[LLM CAME BACK BLANK FOR SCENE {scene_num}]]]"
+                    return f"[[[大模型未返回第 {scene_num} 个场景的正文]]]"
                 else:
                     self.logger.warning(f"LLM returned empty response for Chapter {chapter_num}, Scene {scene_num}")
-                    return f"[[[LLM CAME BACK BLANK FOR CHAPTER {chapter_num}, SCENE {scene_num}]]]"
+                    return f"[[[大模型未返回第 {chapter_num} 章第 {scene_num} 个场景的正文]]]"
             
             if is_short_story:
                 self.logger.info(f"Generated prose for Scene {scene_num} of short story. Length: {len(response)} chars")
