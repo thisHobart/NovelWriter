@@ -204,7 +204,8 @@ class ChapterWriting:
                 if first_heading_start_index > 0:
                     pre_content = scene_plan_content[0:first_heading_start_index].strip()
                     if pre_content:
-                        self.app.logger.debug(f"Found pre-heading content: {pre_content[:100].replace('\\n',' ')}...")
+                        pre_content_preview = pre_content[:100].replace("\n", " ")
+                        self.app.logger.debug(f"Found pre-heading content: {pre_content_preview}...")
                         parsed_scenes.append(pre_content) # Add content before the first heading
 
                 # Iterate through matches to construct scenes
@@ -223,9 +224,11 @@ class ChapterWriting:
                     
                     if scene_text_with_heading: # Ensure we're not adding empty strings
                         parsed_scenes.append(scene_text_with_heading)
-                        self.app.logger.debug(f"Parsed scene {len(parsed_scenes)} (heading: '{heading_text[:100].replace('\\n',' ')}...'). Length: {len(scene_text_with_heading)}.")
+                        heading_preview = heading_text[:100].replace("\n", " ")
+                        self.app.logger.debug(f"Parsed scene {len(parsed_scenes)} (heading: '{heading_preview}...'). Length: {len(scene_text_with_heading)}.")
                     else:
-                        self.app.logger.debug(f"Skipping empty scene block for heading: '{heading_text[:100].replace('\\n',' ')}...'")
+                        heading_preview = heading_text[:100].replace("\n", " ")
+                        self.app.logger.debug(f"Skipping empty scene block for heading: '{heading_preview}...'")
             # --- End of new parsing logic ---
             
             if not parsed_scenes:
@@ -235,7 +238,10 @@ class ChapterWriting:
 
             self.app.logger.info(f"Successfully parsed {len(parsed_scenes)} scenes from '{scene_plan_filename}'.")
             for idx, scene_text in enumerate(parsed_scenes):
-                self.app.logger.debug(f"Parsed Scene {idx+1} Content (first 100 chars): {scene_text[:100].replace('\n', ' ')}...")
+                scene_preview = scene_text[:100].replace("\n", " ")
+                self.app.logger.debug(
+                    f"Parsed Scene {idx + 1} Content (first 100 chars): {scene_preview}..."
+                )
             
             # --- Load Contextual Information (Lore, Characters, Factions) ---
             lore_content = "Lore context is missing or not loaded."
