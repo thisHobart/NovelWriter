@@ -1549,7 +1549,12 @@ class StoryGenerationOrchestrator(BaseAgent):
             else:
                 # For longer forms, use chapter agent
                 # Initialize chapter writing agent with directory structure preference
-                chapter_agent = ChapterWritingAgent(self.output_dir, app_instance=None, use_new_structure=self.use_new_structure)
+                chapter_agent = ChapterWritingAgent(
+                    self.output_dir,
+                    app_instance=getattr(self, "app_instance", None),
+                    use_new_structure=self.use_new_structure,
+                    model=self.model,
+                )
                 
                 # Analyze story structure to find chapters
                 self.logger.info("📊 Analyzing chapter structure...")
@@ -1622,10 +1627,12 @@ class StoryGenerationOrchestrator(BaseAgent):
                     "step": "chapters"
                 }
             else:
+                chapter_errors = result.data.get("errors", []) if result.data else []
+                error_messages = chapter_errors or result.messages
                 return {
                     "success": False,
                     "content": None,
-                    "error": result.message,
+                    "error": "; ".join(error_messages) if error_messages else "章节生成失败，未提供详细错误",
                     "step": "chapters"
                 }
                 

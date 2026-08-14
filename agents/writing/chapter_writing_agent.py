@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 
 from agents.base.agent import BaseAgent, AgentResult
-from core.generation.helper_fns import open_file, write_file, read_json
+from core.generation.helper_fns import open_file, write_file, read_json, parse_scene_sections
 from core.generation.ai_helper import send_prompt, get_backend
 from core.config.directory_config import get_directory_manager
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
@@ -147,9 +147,10 @@ class ChapterWritingAgent(BaseAgent):
     - Provide progress tracking and validation
     """
     
-    def __init__(self, output_dir: str, app_instance=None, use_new_structure: bool = False, 
-                 quality_thresholds: Optional[QualityThresholds] = None):
-        super().__init__(name="ChapterWritingAgent")
+    def __init__(self, output_dir: str, app_instance=None, use_new_structure: bool = False,
+                 quality_thresholds: Optional[QualityThresholds] = None,
+                 model: Optional[str] = None):
+        super().__init__(name="ChapterWritingAgent", model=model)
         self.output_dir = output_dir
         self.app = app_instance
         self.use_new_structure = use_new_structure
@@ -208,7 +209,8 @@ class ChapterWritingAgent(BaseAgent):
                         "story_parameters": story_params,
                         "total_chapters": len(chapter_info_list)
                     },
-                    message=f"结构分析完成：找到 {len(chapter_info_list)} 章"
+                    messages=[f"结构分析完成：找到 {len(chapter_info_list)} 章"],
+                    metrics={}
                 )
                 
             elif task_type == "write_chapters":
@@ -239,8 +241,9 @@ class ChapterWritingAgent(BaseAgent):
                 if not target_chapter:
                     return AgentResult(
                         success=False,
-                        data=None,
-                        message=f"在故事结构中找不到第 {chapter_number} 章"
+                        data={},
+                        messages=[f"在故事结构中找不到第 {chapter_number} 章"],
+                        metrics={}
                     )
                 
                 return self._write_single_chapter(target_chapter)
@@ -248,16 +251,18 @@ class ChapterWritingAgent(BaseAgent):
             else:
                 return AgentResult(
                     success=False,
-                    data=None,
-                    message=f"未知任务类型：{task_type}"
+                    data={},
+                    messages=[f"未知任务类型：{task_type}"],
+                    metrics={}
                 )
                 
         except Exception as e:
             self.logger.error(f"Error processing task: {e}")
             return AgentResult(
                 success=False,
-                data=None,
-                message=f"任务处理失败：{str(e)}"
+                data={},
+                messages=[f"任务处理失败：{str(e)}"],
+                metrics={}
             )
         
     def analyze_chapter_structure(self) -> Tuple[List[ChapterInfo], Dict[str, Any]]:
@@ -320,6 +325,28 @@ class ChapterWritingAgent(BaseAgent):
             self.logger.error(f"Error loading parameters: {e}")
             
         return params
+
+    @staticmethod
+    def _is_valid_generated_output(output_path: str) -> bool:
+        """Return whether an existing prose file contains usable generated text."""
+        if not os.path.isfile(output_path):
+            return False
+
+        try:
+            with open(output_path, "r", encoding="utf-8") as output_file:
+                content = output_file.read()
+        except (OSError, UnicodeError):
+            return False
+
+        if not content.strip():
+            return False
+
+        error_markers = (
+            "[[[ERROR GENERATING",
+            "[[[大模型未返回",
+            "[Error: Could not import NovelWriter AI functions",
+        )
+        return not any(marker in content for marker in error_markers)
         
     def _analyze_short_story_structure(self, structure_name: str, story_params: Dict[str, str]) -> Tuple[List[ChapterInfo], Dict[str, Any]]:
         """Analyze short story structure - returns single 'chapter' representing the whole story."""
@@ -357,7 +384,7 @@ class ChapterWritingAgent(BaseAgent):
             section_name="Complete Short Story",
             scene_plan_file=scene_plan_file,
             output_file=output_file,
-            exists=os.path.exists(output_path)
+            exists=self._is_valid_generated_output(output_path)
         )
         
         self.logger.info(f"Short story analysis: Scene plan = {scene_plan_file}, Output = {output_file}, Exists = {story_info.exists}")
@@ -408,7 +435,7 @@ class ChapterWritingAgent(BaseAgent):
                         section_name=section_name,
                         scene_plan_file=scene_plan_file,
                         output_file=output_file,
-                        exists=os.path.exists(output_path)
+                        exists=self._is_valid_generated_output(output_path)
                     )
                     chapters.append(chapter_info)
                     
@@ -611,7 +638,12 @@ class ChapterWritingAgent(BaseAgent):
             # Perform chapter-level review if enabled
             chapter_review = None
             if self.review_agent and not is_short_story:  # Skip chapter review for short stories
-                chapter_review = self._review_chapter(final_content, chapter_info, scene_reviews)
+                chapter_review = self._review_chapter(
+                    chapter_content=final_content,
+                    scene_reviews=scene_reviews,
+                    chapter_number=chapter_info.chapter_number,
+                    section_name=chapter_info.section_name,
+                )
             
             # Prepare result data
             result_data = {
@@ -762,24 +794,7 @@ class ChapterWritingAgent(BaseAgent):
         
     def _parse_scenes(self, scenes_content: str) -> List[str]:
         """Parse individual scenes from scene plan content."""
-        scene_pattern = r'^#{2,}\s*(?:Scene|场景)\s*\d+\s*[:：\-].*$'
-        scenes = []
-        
-        matches = []
-        for match in re.finditer(scene_pattern, scenes_content, flags=re.MULTILINE):
-            matches.append((match.start(), match.end(), match.group(0).strip()))
-            
-        for i in range(len(matches)):
-            start_pos = matches[i][0]
-            end_pos = len(scenes_content)
-            if i + 1 < len(matches):
-                end_pos = matches[i + 1][0]
-                
-            scene_text = scenes_content[start_pos:end_pos].strip()
-            if scene_text:
-                scenes.append(scene_text)
-                
-        return scenes
+        return parse_scene_sections(scenes_content)
         
     def _generate_scene_prose(self, chapter_num: int, scene_num: int, scene_plan: str, context: Dict[str, Any], is_short_story: bool = False) -> str:
         """Generate prose for a single scene using genuine NovelWriter AI functions."""
@@ -839,13 +854,14 @@ class ChapterWritingAgent(BaseAgent):
             from core.generation.ai_helper import DEFAULT_API_MODEL, send_prompt
             from core.generation.helper_fns import save_prompt_to_file
 
-            # Get model from app instance or use the registry default
-            # (a hardcoded literal here would drift from the llm-backends
-            # registry; "gpt-4" already had, and raised ValueError).
+            # Prefer the live GUI selection. Agentic/non-GUI callers pass the
+            # orchestrator's model into this agent, so they retain the selected
+            # provider and its matching credentials (for hosted-llm, the
+            # HOSTED_LLM_* variables loaded by ai_helper).
             if self.app and hasattr(self.app, 'get_selected_model'):
                 model = self.app.get_selected_model()
             else:
-                model = DEFAULT_API_MODEL
+                model = self.model or DEFAULT_API_MODEL
                 
             # Save prompt to file (following existing pattern)
             if is_short_story:
@@ -871,11 +887,9 @@ class ChapterWritingAgent(BaseAgent):
             
             if not response or not response.strip():
                 if is_short_story:
-                    self.logger.warning(f"LLM returned empty response for Scene {scene_num} of short story")
-                    return f"[[[大模型未返回第 {scene_num} 个场景的正文]]]"
+                    raise RuntimeError(f"LLM returned empty response for Scene {scene_num} of short story")
                 else:
-                    self.logger.warning(f"LLM returned empty response for Chapter {chapter_num}, Scene {scene_num}")
-                    return f"[[[大模型未返回第 {chapter_num} 章第 {scene_num} 个场景的正文]]]"
+                    raise RuntimeError(f"LLM returned empty response for Chapter {chapter_num}, Scene {scene_num}")
             
             if is_short_story:
                 self.logger.info(f"Generated prose for Scene {scene_num} of short story. Length: {len(response)} chars")
@@ -887,14 +901,11 @@ class ChapterWritingAgent(BaseAgent):
         except ImportError as e:
             error_msg = f"Could not import NovelWriter AI functions: {e}"
             self.logger.error(error_msg)
-            return f"[Error: {error_msg}]"
+            raise RuntimeError(error_msg) from e
         except Exception as e:
             error_msg = f"Error calling LLM for scene generation: {e}"
             self.logger.error(error_msg)
-            if is_short_story:
-                return f"[[[ERROR GENERATING SCENE {scene_num}: {e}]]]"
-            else:
-                return f"[[[ERROR GENERATING CHAPTER {chapter_num}, SCENE {scene_num}: {e}]]]"
+            raise RuntimeError(error_msg) from e
             
     def get_progress_report(self, chapter_info_list: List[ChapterInfo]) -> Dict[str, Any]:
         """Get a progress report on chapter writing status."""

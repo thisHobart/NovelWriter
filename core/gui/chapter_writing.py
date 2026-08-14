@@ -2,7 +2,13 @@ from tkinter import ttk, messagebox
 from core.gui.notifications import show_success, show_error
 from core.generation.ai_helper import send_prompt, get_backend
 import re
-from core.generation.helper_fns import open_file, write_file, save_prompt_to_file, read_json
+from core.generation.helper_fns import (
+    open_file,
+    write_file,
+    save_prompt_to_file,
+    read_json,
+    parse_scene_sections,
+)
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP # Import for section mapping
 from core.localization import zh_label
@@ -173,64 +179,14 @@ class ChapterWriting:
                 show_error("错误", f"无法读取场景规划文件：{e}")
                 return
 
-            # 2. Parse Individual Scenes from the scene_plan_content
-            # Assuming scenes are separated by "### Scene X:" or similar.
-            # We'll split by the scene heading, keeping the heading with its content.
-            # Regex to find scene headings like "### Scene 1: Title" or "### Scene 1"
-            # The split will result in: [content_before_first_scene_heading, heading1, content_after_heading1, heading2, content_after_heading2, ...]
-            # We need to combine heading with its content.
-            
-            # --- New parsing logic using re.finditer --- 
-            parsed_scenes = []
-            # Pattern to match both colon and dash formats with optional space:
-            heading_pattern = r'^#{2,}\s*(?:Scene|场景)\s*\d+\s*[:：\-].*$'
-            self.app.logger.debug(f"Using ULTRA-SPECIFIC heading_pattern: {heading_pattern}")
+            # 2. Parse individual scenes using the shared LLM-tolerant parser.
+            parsed_scenes = parse_scene_sections(scene_plan_content)
+            self.app.logger.debug(f"Found {len(parsed_scenes)} scene headings.")
 
-            # Log the beginning of the content that finditer will process
-            self.app.logger.debug(f"Scene Plan Content (first 500 chars) for finditer:\n---\n{scene_plan_content[:500]}\n---\n")
-
-            matches = []
-            for match in re.finditer(heading_pattern, scene_plan_content, flags=re.MULTILINE):
-                matches.append((match.start(), match.end(), match.group(0).strip())) # Store start, end, and stripped heading text
-            
-            self.app.logger.debug(f"Found {len(matches)} scene headings using finditer.")
-
-            if not matches:
+            if not parsed_scenes:
                 self.app.logger.warning(f"Could not find any scene headings in '{scene_plan_filename}'. Treating entire content as one scene.")
                 if scene_plan_content.strip():
                     parsed_scenes.append(scene_plan_content.strip())
-            else:
-                # Check for content before the first heading
-                first_heading_start_index = matches[0][0]
-                if first_heading_start_index > 0:
-                    pre_content = scene_plan_content[0:first_heading_start_index].strip()
-                    if pre_content:
-                        pre_content_preview = pre_content[:100].replace("\n", " ")
-                        self.app.logger.debug(f"Found pre-heading content: {pre_content_preview}...")
-                        parsed_scenes.append(pre_content) # Add content before the first heading
-
-                # Iterate through matches to construct scenes
-                for i in range(len(matches)):
-                    heading_start, heading_end, heading_text = matches[i]
-                    
-                    # Content for this scene starts AT the heading_start (to include the heading itself)
-                    # and ends just before the next heading, or at the end of the file.
-                    content_block_start_index = heading_start # Include the heading in the scene block
-                    content_block_end_index = len(scene_plan_content) # Default to end of file
-                    
-                    if i + 1 < len(matches): # If there's a next heading
-                        content_block_end_index = matches[i+1][0] # End before the next heading starts
-                    
-                    scene_text_with_heading = scene_plan_content[content_block_start_index:content_block_end_index].strip()
-                    
-                    if scene_text_with_heading: # Ensure we're not adding empty strings
-                        parsed_scenes.append(scene_text_with_heading)
-                        heading_preview = heading_text[:100].replace("\n", " ")
-                        self.app.logger.debug(f"Parsed scene {len(parsed_scenes)} (heading: '{heading_preview}...'). Length: {len(scene_text_with_heading)}.")
-                    else:
-                        heading_preview = heading_text[:100].replace("\n", " ")
-                        self.app.logger.debug(f"Skipping empty scene block for heading: '{heading_preview}...'")
-            # --- End of new parsing logic ---
             
             if not parsed_scenes:
                 self.app.logger.error(f"Could not parse any scenes from '{scene_plan_filename}'. Check scene heading format (e.g., '### Scene 1: Title').")
@@ -524,33 +480,13 @@ class ChapterWriting:
             # Normalize markdown formatting (if necessary, current scene plans should be ## Scene...)
             # scenes_content_for_chapter = self.normalize_markdown(scenes_content_for_chapter) # Current parser uses ## Scene, so normalize might not be needed if input is consistent
 
-            # Detect the number of scenes using regex from the content of the specific chapter file
-            # Use the same robust pattern as _write_short_story_prose
-            scene_heading_pattern_for_chapter = r'^#{2,}\s*(?:Scene|场景)\s*\d+\s*[:：\-].*$'
-            scene_details_list = [] # Will store (heading, body) tuples or just full scene content strings
-            
-            # Using re.finditer to parse scenes within this chapter's plan
-            scene_matches_in_chapter = []
-            for match in re.finditer(scene_heading_pattern_for_chapter, scenes_content_for_chapter, flags=re.MULTILINE):
-                scene_matches_in_chapter.append((match.start(), match.end(), match.group(0).strip()))
-            
-            self.app.logger.debug(f"Found {len(scene_matches_in_chapter)} scene headings in Chapter {target_chapter_number_global}'s plan file ('{scene_plan_filename_base}').")
+            scene_details_list = parse_scene_sections(scenes_content_for_chapter)
+            self.app.logger.debug(f"Found {len(scene_details_list)} scene headings in Chapter {target_chapter_number_global}'s plan file ('{scene_plan_filename_base}').")
 
-            if not scene_matches_in_chapter:
+            if not scene_details_list:
                 self.app.logger.error(f"No scene headings found within {scene_plan_filepath}. Cannot process chapter.")
                 show_error("错误", f"第 {target_chapter_number_global} 章的规划中没有找到独立场景。")
                 return
-            
-            # Construct scene_details_list from finditer matches (heading + body for each scene)
-            for i in range(len(scene_matches_in_chapter)):
-                heading_start, heading_end, heading_text = scene_matches_in_chapter[i]
-                content_block_start_index = heading_start
-                content_block_end_index = len(scenes_content_for_chapter)
-                if i + 1 < len(scene_matches_in_chapter):
-                    content_block_end_index = scene_matches_in_chapter[i+1][0]
-                scene_text_with_heading = scenes_content_for_chapter[content_block_start_index:content_block_end_index].strip()
-                if scene_text_with_heading:
-                    scene_details_list.append(scene_text_with_heading)
             
             self.app.logger.info(f"Successfully parsed {len(scene_details_list)} scenes for Chapter {target_chapter_number_global} from its plan file.")
 
@@ -862,7 +798,8 @@ class ChapterWriting:
                     show_success("已完成", "所有章节都已经写完！")
                     
             else:
-                show_error("写作错误", f"撰写章节失败：{result.message}")
+                error_message = "; ".join(result.messages) if result.messages else "未知错误"
+                show_error("写作错误", f"撰写章节失败：{error_message}")
                 
         except Exception as e:
             error_msg = f"撰写下一章时出错：{str(e)}"
@@ -905,7 +842,8 @@ class ChapterWriting:
                 
                 # show_success("Batch Writing Complete", message)
             else:
-                show_error("写作错误", f"撰写章节失败：{result.message}")
+                error_message = "; ".join(result.messages) if result.messages else "未知错误"
+                show_error("写作错误", f"撰写章节失败：{error_message}")
                 
         except Exception as e:
             error_msg = f"撰写全部章节时出错：{str(e)}"

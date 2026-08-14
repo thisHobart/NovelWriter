@@ -10,6 +10,7 @@ __pycache__/
 venv/
 .venv/
 
+/quality/trends/
 # Editor directories and files
 .vscode/
 .idea/
