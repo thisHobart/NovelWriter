@@ -6,6 +6,7 @@ from core.generation.helper_fns import open_file, write_file, save_prompt_to_fil
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
 from core.localization import zh_label
+from core.config.directory_config import get_directory_manager
 
 
 class ScenePlanning:
@@ -37,6 +38,12 @@ class ScenePlanning:
         if self.app and hasattr(self.app, 'param_ui') and hasattr(self.app.param_ui, 'add_callback'):
             self.app.param_ui.add_callback(self._update_ui_based_on_parameters)
         self._update_ui_based_on_parameters() # Call once for initial setup
+
+    def _get_directory_manager(self, output_dir=None):
+        """Return the directory manager for the current structured workspace."""
+        if output_dir is None:
+            output_dir = self.app.get_output_dir()
+        return get_directory_manager(output_dir, use_new_structure=True)
 
 
     def _update_ui_based_on_parameters(self):
@@ -114,10 +121,12 @@ class ScenePlanning:
         selected_model = self.app.get_selected_model() # Use app-wide selected model
         output_dir = self.app.get_output_dir() # Get user-defined output directory
         os.makedirs(output_dir, exist_ok=True)
+        dir_manager = self._get_directory_manager(output_dir)
+        chapter_outlines_dir = dir_manager.get_chapter_outlines_path()
         print(f"Generating chapter outlines with model: {selected_model}, output dir: {output_dir}")
 
         # --- Read Parameters to get selected structure --- 
-        parameters_file_path = os.path.join(output_dir, "system", "parameters.txt")
+        parameters_file_path = dir_manager.get_parameters_path()
         selected_structure_name = "6-Act Structure" # Default
         try:
             params = {}
@@ -188,7 +197,7 @@ class ScenePlanning:
                 # Dynamically count chapters in the LLM's response for this section
                 # Adjusted regex to be more flexible with markdown chapter headings (##, ###, **** etc.)
                 chapters_in_response = re.findall(
-                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*\d+|第\s*\d+\s*章)",
+                    r"^\s*(?:#{2,6}\s*|\*{2,}\s*)?(?:Chapter\s*\d+|第\s*\d+\s*章)(?:\s*[:：.\-]?\s*.*?)?\s*(?:\*{2,})?\s*$",
                     response,
                     re.MULTILINE | re.IGNORECASE,
                 )
@@ -199,8 +208,8 @@ class ScenePlanning:
 
                 # Save the chapter outline to a markdown file
                 output_filename_base = f"chapter_outlines_{safe_selected_structure_name}_{safe_section_name}.md"
-                os.makedirs(os.path.join(output_dir, "story", "planning"), exist_ok=True)
-                output_filepath = os.path.join(output_dir, "story", "planning", output_filename_base)
+                os.makedirs(chapter_outlines_dir, exist_ok=True)
+                output_filepath = os.path.join(chapter_outlines_dir, output_filename_base)
                 write_file(output_filepath, response)
                 print(f"Chapter outline for {current_section_name} saved to {output_filepath}")
 
@@ -223,10 +232,13 @@ class ScenePlanning:
         selected_model = self.app.get_selected_model() # Standardize model getting
         output_dir = self.app.get_output_dir()
         os.makedirs(output_dir, exist_ok=True)
+        dir_manager = self._get_directory_manager(output_dir)
+        chapter_outlines_dir = dir_manager.get_chapter_outlines_path()
+        scene_plans_dir = dir_manager.get_full_path("scene_plans_dir")
         print(f"Generating scene plans with model: {selected_model}, output dir: {output_dir}")
 
         # --- Read Parameters to get selected structure --- 
-        parameters_file_path = os.path.join(output_dir, "system", "parameters.txt")
+        parameters_file_path = dir_manager.get_parameters_path()
         selected_structure_name = "6-Act Structure" # Default
         try:
             params = {}
@@ -273,7 +285,7 @@ class ScenePlanning:
                 
                 # Input filename from generate_chapter_outline
                 chapter_outline_input_base = f"chapter_outlines_{safe_selected_structure_name}_{safe_section_name}.md"
-                chapter_outline_input_filepath = os.path.join(output_dir, "story", "planning", chapter_outline_input_base)
+                chapter_outline_input_filepath = os.path.join(chapter_outlines_dir, chapter_outline_input_base)
 
                 print(f"Scene Planning for section: {current_section_name} using file: {chapter_outline_input_filepath}")
 
@@ -292,7 +304,7 @@ class ScenePlanning:
                 # Using a more robust regex that looks for "Chapter X" or "Chapter X: Title"
                 # This count is to iterate through the chapters *within this section file*
                 chapters_in_section_file = re.findall(
-                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                    r"^\s*(?:#{2,6}\s*|\*{2,}\s*)?(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:\s*[:：.\-]?\s*.*?)?\s*(?:\*{2,})?\s*$",
                     section_chapter_outline_content,
                     re.MULTILINE | re.IGNORECASE,
                 )
@@ -328,8 +340,8 @@ class ScenePlanning:
                     response = send_prompt(prompt, model=selected_model)
 
                     output_scene_plan_base = f"scenes_{safe_selected_structure_name}_{safe_section_name}_ch{current_chapter_for_prompt}.md"
-                    os.makedirs(os.path.join(output_dir, "story", "planning"), exist_ok=True)
-                    output_scene_plan_filepath = os.path.join(output_dir, "story", "planning", output_scene_plan_base)
+                    os.makedirs(scene_plans_dir, exist_ok=True)
+                    output_scene_plan_filepath = os.path.join(scene_plans_dir, output_scene_plan_base)
                     write_file(output_scene_plan_filepath, response)
                     print(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 
@@ -351,10 +363,13 @@ class ScenePlanning:
         selected_model = self.app.get_selected_model() 
         output_dir = self.app.get_output_dir()
         os.makedirs(output_dir, exist_ok=True)
+        dir_manager = self._get_directory_manager(output_dir)
+        chapter_outlines_dir = dir_manager.get_chapter_outlines_path()
+        scene_plans_dir = dir_manager.get_full_path("scene_plans_dir")
         self.app.logger.info(f"Planning Long-Form Scenes (Novella/Novel/Epic). Model: {selected_model}, Output Dir: {output_dir}")
 
         # --- Read Parameters to get selected structure and length ---
-        parameters_file_path = os.path.join(output_dir, "system", "parameters.txt")
+        parameters_file_path = dir_manager.get_parameters_path()
         selected_structure_name = "6-Act Structure" # Default
         story_length = "Novel (Standard)" # Default for prompt context
         try:
@@ -400,7 +415,7 @@ class ScenePlanning:
                 safe_section_name = current_section_name.lower().replace(' ', '_').replace(':','').replace('/','_')
                 
                 chapter_outline_input_base = f"chapter_outlines_{safe_selected_structure_name}_{safe_section_name}.md"
-                chapter_outline_input_filepath = os.path.join(output_dir, "story", "planning", chapter_outline_input_base)
+                chapter_outline_input_filepath = os.path.join(chapter_outlines_dir, chapter_outline_input_base)
 
                 self.app.logger.info(f"Scene Planning for section: {current_section_name} using chapter outline: {chapter_outline_input_filepath}")
 
@@ -416,7 +431,7 @@ class ScenePlanning:
                     continue
 
                 chapters_in_section_file = re.findall(
-                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                    r"^\s*(?:#{2,6}\s*|\*{2,}\s*)?(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:\s*[:：.\-]?\s*.*?)?\s*(?:\*{2,})?\s*$",
                     section_chapter_outline_content,
                     re.MULTILINE | re.IGNORECASE,
                 )
@@ -462,14 +477,9 @@ class ScenePlanning:
                     response = send_prompt(prompt, model=selected_model)
 
                     # --- Create subdirectory for these scene plans ---
-                    scene_plans_subdir_name = "detailed_scene_plans"
-                    full_scene_plans_subdir_path = os.path.join(output_dir, "story", "planning", scene_plans_subdir_name)
-                    os.makedirs(full_scene_plans_subdir_path, exist_ok=True)
-                    # --- End subdirectory creation ---
-
                     output_scene_plan_base = f"scenes_{safe_selected_structure_name}_{safe_section_name}_ch{current_chapter_for_prompt}.md"
-                    # Save into the subdirectory
-                    output_scene_plan_filepath = os.path.join(full_scene_plans_subdir_path, output_scene_plan_base) 
+                    os.makedirs(scene_plans_dir, exist_ok=True)
+                    output_scene_plan_filepath = os.path.join(scene_plans_dir, output_scene_plan_base)
                     write_file(output_scene_plan_filepath, response)
                     self.app.logger.info(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 

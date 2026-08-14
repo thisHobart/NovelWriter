@@ -447,7 +447,9 @@ class ChapterWriting:
                 
                 # This is the file that tells us how many chapters are in THIS section
                 chapter_outline_input_base = f"chapter_outlines_{safe_struct_name}_{safe_sect_name_iter}.md"
-                chapter_outline_input_filepath = os.path.join(output_dir, "story", "planning", chapter_outline_input_base)
+                chapter_outline_input_filepath = os.path.join(
+                    output_dir, "story", "planning", "chapter_outlines", chapter_outline_input_base
+                )
                 self.app.logger.debug(f"Checking chapter outline: {chapter_outline_input_filepath}")
 
                 try:

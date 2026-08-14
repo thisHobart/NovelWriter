@@ -485,7 +485,7 @@ class Lore:
 
         try:
             # Define and create the prompts subdirectory
-            prompts_subdir = os.path.join(output_dir, "prompts")
+            prompts_subdir = os.path.join(output_dir, "system", "prompts")
             os.makedirs(prompts_subdir, exist_ok=True)
             self.app.logger.info(f"Ensured prompts subdirectory exists at: {prompts_subdir}")
 

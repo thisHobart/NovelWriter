@@ -74,8 +74,8 @@ class CheckpointStateManager:
             "scenes": [
                 "story/planning/detailed_scene_plans/scenes_*.md",  # Detailed scene plans (long-form)
                 "story/planning/scenes_*.md",  # Scene plans (including short story)
-                "story/planning/chapter_outlines_*.md",  # Chapter outlines
-                "story/planning/reconciled_locations_arcs.md"  # Also count this for scenes
+                "story/planning/chapter_outlines/chapter_outlines_*.md",  # Chapter outlines
+                "story/planning/chapter_outlines_*.md"  # Legacy chapter outlines
             ],
             "chapters": [
                 "story/content/chapters/chapter_*.md",  # Individual chapters
@@ -117,8 +117,19 @@ class CheckpointStateManager:
                 step_data['status'] = CheckpointStatus(step_data['status'])
                 steps[step_name] = CheckpointStep(**step_data)
             
+            raw_workflow_id = data.get('workflow_id', '')
+            # Older versions accidentally serialized the parameter snapshot
+            # into workflow_id.  Migrate that shape instead of carrying an
+            # object through every subsequent checkpoint save.
+            if isinstance(raw_workflow_id, dict):
+                workflow_id = f"migrated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                if not data.get('parameters_snapshot'):
+                    data['parameters_snapshot'] = raw_workflow_id
+            else:
+                workflow_id = str(raw_workflow_id)
+
             state = WorkflowState(
-                workflow_id=data['workflow_id'],
+                workflow_id=workflow_id,
                 current_step=data.get('current_step'),
                 steps=steps,
                 created_at=data.get('created_at', ''),

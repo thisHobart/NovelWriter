@@ -18,6 +18,7 @@ class DirectoryPaths:
     story_root: str = "story"
     quality_root: str = "quality" 
     system_root: str = "system"
+    parameters_file: str = "system/parameters.txt"
     archive_root: str = "archive"
     
     # Story subdirectories
@@ -95,7 +96,7 @@ class DirectoryManager:
     def get_full_path(self, path_type: str) -> str:
         """Get full absolute path."""
         relative_path = self.get_path(path_type)
-        return os.path.join(self.output_dir, relative_path)
+        return os.path.normpath(os.path.join(self.output_dir, relative_path))
     
     def ensure_directories_exist(self) -> None:
         """Create all necessary directories."""
@@ -158,8 +159,8 @@ class DirectoryManager:
         # Define migration mappings
         file_migrations = {
             # Story parameters
-            "parameters.txt": "story/parameters.txt",
-            "story_parameters.txt": "story/parameters.txt",
+            "parameters.txt": "system/parameters.txt",
+            "story_parameters.txt": "system/parameters.txt",
             
             # Lore files
             "generated_lore.md": "story/lore/generated_lore.md",
@@ -255,6 +256,22 @@ class DirectoryManager:
             return self.paths.scene_plans_dir
         else:
             return "detailed_scene_plans"
+
+    def get_parameters_path(self) -> str:
+        """Return the canonical story-parameters file path."""
+        if self.use_new_structure:
+            return os.path.normpath(os.path.join(self.output_dir, self.paths.parameters_file))
+        return os.path.normpath(os.path.join(self.output_dir, "parameters.txt"))
+
+    def get_chapter_outlines_dir(self) -> str:
+        """Get the directory containing generated chapter outlines."""
+        if self.use_new_structure:
+            return self.paths.chapter_outlines_dir
+        return "."
+
+    def get_chapter_outlines_path(self) -> str:
+        """Return the full path to the generated chapter-outline directory."""
+        return os.path.normpath(os.path.join(self.output_dir, self.get_chapter_outlines_dir()))
     
     def get_chapters_dir(self) -> str:
         """Get chapters directory path (backward compatibility method)."""

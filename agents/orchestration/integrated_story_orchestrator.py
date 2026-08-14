@@ -309,8 +309,9 @@ class IntegratedStoryOrchestrator(BaseAgent):
                     self.parameters_component.save_parameters()
                     self.logger.info("Parameters saved using existing save_parameters method")
             
-            # Also create parameters.txt file directly
-            params_file = os.path.join(self.output_dir, "parameters.txt")
+            # Also persist the canonical structured parameters file directly.
+            params_file = os.path.join(self.output_dir, "system", "parameters.txt")
+            os.makedirs(os.path.dirname(params_file), exist_ok=True)
             with open(params_file, 'w', encoding='utf-8') as f:
                 for key, value in story_params.items():
                     f.write(f"{key}: {value}\\n")

@@ -343,7 +343,7 @@ class StoryStructure:
         self.app.logger.info(f"Faction Arc Generation & Reconciliation started. Model: {selected_model}, Output Dir: {output_dir}")
 
         # Define file paths consistently using output_dir
-        parameters_file_path = os.path.join(output_dir, "system", "parameters.txt")
+        parameters_file_path = self.dir_manager.get_parameters_path()
         character_arcs_file_path = os.path.join(output_dir, "story", "structure", "character_arcs.md")
         factions_json_file_path = os.path.join(output_dir, "story", "lore", "factions.json")
         lore_file_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
@@ -793,7 +793,7 @@ class StoryStructure:
         self.app.logger.info(f"Improving structure. Model: {selected_model}, Output Dir: {output_dir}")
 
         # --- Read Parameters to get selected structure --- 
-        parameters_file_path = os.path.join(output_dir, "parameters.txt")
+        parameters_file_path = self.dir_manager.get_parameters_path()
         selected_structure_name = "6-Act Structure" # Default
         story_length = "Novel (Standard)" # Default story length for prompt modification
         try:

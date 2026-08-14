@@ -3,8 +3,13 @@ import re
 
 def get_novel_title_from_parameters(base_dir="current_work"):
     """Attempts to read the novel title from parameters.txt."""
-    params_filepath = os.path.join(base_dir, "parameters.txt")
-    if os.path.exists(params_filepath):
+    params_file_candidates = [
+        os.path.join(base_dir, "system", "parameters.txt"),
+        os.path.join(base_dir, "parameters.txt"),
+    ]
+    for params_filepath in params_file_candidates:
+        if not os.path.exists(params_filepath):
+            continue
         try:
             with open(params_filepath, "r", encoding="utf-8") as f:
                 for line in f:
@@ -76,8 +81,7 @@ def combine_markdown_files(input_directory, output_file):
 if __name__ == "__main__":
     # Default directory containing the markdown files
     base_output_dir = "current_work"
-    chapters_subdir = "chapters"
-    input_directory = os.path.join(base_output_dir, chapters_subdir)
+    input_directory = os.path.join(base_output_dir, "story", "content", "chapters")
 
     novel_title = get_novel_title_from_parameters(base_output_dir)
     

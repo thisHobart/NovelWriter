@@ -271,11 +271,17 @@ class ChapterWritingAgent(BaseAgent):
         self.logger.info("Analyzing story structure...")
         
         # 1. Load story parameters
-        parameters_file = os.path.join(self.output_dir, "parameters.txt")
+        parameters_file = self.dir_manager.get_parameters_path()
         story_params = self._load_story_parameters(parameters_file)
         
         structure_name = story_params.get("Story Structure", "6-Act Structure")
         story_length = story_params.get("Story Length", "Novel (Standard)")
+        self.logger.info(
+            "Chapter analysis parameters: file=%s, structure=%s, length=%s",
+            parameters_file,
+            structure_name,
+            story_length,
+        )
         
         # 2. Handle short stories differently
         if story_length == "Short Story":
@@ -320,14 +326,30 @@ class ChapterWritingAgent(BaseAgent):
         safe_struct = structure_name.lower().replace(' ', '_').replace(':', '').replace('/', '_').replace('(', '').replace(')', '').replace('!', '').replace(',', '')
         
         # For short stories, there's one scene plan file and one output file
-        scene_plan_file = f"scenes_short_story_{safe_struct}.md"
-        scene_plan_path = os.path.join(self.output_dir, scene_plan_file)
+        scene_plan_filename = f"scenes_short_story_{safe_struct}.md"
+        if self.use_new_structure:
+            scene_plan_path = os.path.join(
+                self.dir_manager.get_full_path("planning_dir"),
+                scene_plan_filename,
+            )
+            scene_plan_file = os.path.relpath(scene_plan_path, self.output_dir)
+        else:
+            scene_plan_file = scene_plan_filename
+            scene_plan_path = os.path.join(self.output_dir, scene_plan_file)
         
         # Output file uses the story title
         novel_title = story_params.get("Novel Title", "未命名短篇小说")
         safe_title = novel_title.lower().replace(' ', '_').replace(':', '').replace('/', '')
-        output_file = f"prose_short_story_{safe_title}.md"
-        output_path = os.path.join(self.output_dir, output_file)
+        output_filename = f"prose_short_story_{safe_title}.md"
+        if self.use_new_structure:
+            output_path = os.path.join(
+                self.dir_manager.get_full_path("content_dir"),
+                output_filename,
+            )
+            output_file = os.path.relpath(output_path, self.output_dir)
+        else:
+            output_file = output_filename
+            output_path = os.path.join(self.output_dir, output_file)
         
         # Create a single "chapter" info representing the whole short story
         story_info = ChapterInfo(
@@ -348,7 +370,14 @@ class ChapterWritingAgent(BaseAgent):
         
         # Find the chapter outline file for this section
         outline_file = f"chapter_outlines_{safe_struct}_{safe_section}.md"
-        outline_path = os.path.join(self.output_dir, outline_file)
+        outline_path = os.path.join(
+            self.dir_manager.get_chapter_outlines_path(), outline_file
+        )
+        # Read legacy flat outlines when resuming an older project.
+        if not os.path.exists(outline_path):
+            legacy_outline_path = os.path.join(self.output_dir, outline_file)
+            if os.path.exists(legacy_outline_path):
+                outline_path = legacy_outline_path
         
         chapters = []
         try:
@@ -356,7 +385,7 @@ class ChapterWritingAgent(BaseAgent):
                 content = open_file(outline_path)
                 # Find all chapter headings
                 chapter_matches = re.findall(
-                    r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                    r"^\s*(?:#{2,6}\s*|\*{2,}\s*)?(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:\s*[:：.\-]?\s*.*?)?\s*(?:\*{2,})?\s*$",
                     content,
                     re.MULTILINE | re.IGNORECASE,
                 )
@@ -573,8 +602,9 @@ class ChapterWritingAgent(BaseAgent):
             output_path = os.path.join(self.output_dir, chapter_info.output_file)
             
             # For chapters, create subdirectory; for short stories, save directly
-            if not is_short_story:
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            output_directory = os.path.dirname(output_path)
+            if output_directory:
+                os.makedirs(output_directory, exist_ok=True)
             
             write_file(output_path, final_content)
             
@@ -630,11 +660,15 @@ class ChapterWritingAgent(BaseAgent):
         
         try:
             # Load story parameters
-            params_file = os.path.join(self.output_dir, "parameters.txt")
+            params_file = self.dir_manager.get_parameters_path()
             context["parameters"] = self._load_story_parameters(params_file)
             
             # Load lore
-            lore_file = os.path.join(self.output_dir, "generated_lore.md")
+            lore_file = os.path.join(
+                self.output_dir, "story", "lore", "generated_lore.md"
+            )
+            if not os.path.exists(lore_file):
+                lore_file = os.path.join(self.output_dir, "generated_lore.md")
             if os.path.exists(lore_file):
                 context["lore"] = open_file(lore_file)
             else:
@@ -654,7 +688,11 @@ class ChapterWritingAgent(BaseAgent):
     def _load_character_roster(self) -> str:
         """Load character roster summary."""
         try:
-            characters_file = os.path.join(self.output_dir, "characters.json")
+            characters_file = os.path.join(
+                self.output_dir, "story", "lore", "characters.json"
+            )
+            if not os.path.exists(characters_file):
+                characters_file = os.path.join(self.output_dir, "characters.json")
             if os.path.exists(characters_file):
                 characters_data = read_json(characters_file)
                 if characters_data and "characters" in characters_data:
@@ -695,7 +733,11 @@ class ChapterWritingAgent(BaseAgent):
     def _load_faction_summary(self) -> str:
         """Load faction summary."""
         try:
-            factions_file = os.path.join(self.output_dir, "factions.json")
+            factions_file = os.path.join(
+                self.output_dir, "story", "lore", "factions.json"
+            )
+            if not os.path.exists(factions_file):
+                factions_file = os.path.join(self.output_dir, "factions.json")
             if os.path.exists(factions_file):
                 factions_data = read_json(factions_file)
                 if factions_data:

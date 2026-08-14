@@ -122,7 +122,7 @@ def validate_json(response_text, schema):
         except json.JSONDecodeError:
             raise ValueError("Invalid JSON: Could not parse response.")
 
-def save_prompt_to_file(output_dir, base_name, content, subfolder="prompts", ext=".md"):
+def save_prompt_to_file(output_dir, base_name, content, subfolder="system/prompts", ext=".md"):
     """
     Saves the given content (prompt) to a timestamped file in a specified subfolder 
     of the output directory.
@@ -132,7 +132,7 @@ def save_prompt_to_file(output_dir, base_name, content, subfolder="prompts", ext
         base_name (str): A base name for the prompt file (e.g., 'character_arc_prompt').
         content (str): The string content of the prompt.
         subfolder (str, optional): The name of the subfolder to create within output_dir. 
-                                 Defaults to "prompts".
+                                 Defaults to "system/prompts".
         ext (str, optional): The file extension for the prompt file. Defaults to ".md".
 
     Returns:

@@ -285,8 +285,40 @@ class StoryGenerationOrchestrator(BaseAgent):
             workflow_id = f"workflow_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.workflow_state = self.state_manager.initialize_workflow(workflow_id, story_parameters)
             self.logger.info(f"🎆 Created new workflow: {workflow_id}")
+
+        self._synchronize_state_with_outputs()
         
         return self.workflow_state
+
+    def _synchronize_state_with_outputs(self) -> None:
+        """Clear stale completed statuses when their real outputs are missing."""
+        if not self.workflow_state:
+            return
+
+        changed = False
+        for step_name, step_state in self.workflow_state.steps.items():
+            if (
+                step_state.status == CheckpointStatus.COMPLETED
+                and not self._check_step_files_exist(step_name)
+            ):
+                self.logger.info(
+                    "Resetting stale checkpoint status for %s: required outputs are missing",
+                    step_name,
+                )
+                step_state.status = CheckpointStatus.NOT_STARTED
+                step_state.completed_at = None
+                step_state.quality_score = None
+                step_state.error_message = None
+                step_state.user_approved = False
+                changed = True
+
+        if changed:
+            for step_name in self.workflow_steps:
+                step_state = self.workflow_state.steps.get(step_name)
+                if step_state and step_state.status != CheckpointStatus.COMPLETED:
+                    self.workflow_state.current_step = step_name
+                    break
+            self.state_manager.save_state(self.workflow_state)
     
     def get_workflow_state(self) -> Optional[WorkflowState]:
         """Get the current workflow state."""
@@ -497,28 +529,114 @@ class StoryGenerationOrchestrator(BaseAgent):
     def _check_step_files_exist(self, step_name: str) -> bool:
         """Check if the expected output files exist for a step."""
         expected_patterns = self.state_manager.get_expected_file_patterns().get(step_name, [])
-        
-        # For the structure step, we want to be more specific. 
-        # suggested_titles.md now belongs to lore, but structure needs its primary files.
+
+        # Completion must be based on outputs for the currently selected
+        # story configuration.  Older runs may leave files from another
+        # structure in the same output directory; those files must not make
+        # a step appear completed.
         if step_name == "structure":
-            # Primary files for structure
-            primary_patterns = [
-                "story/structure/character_arcs.md",
-                "story/structure/faction_arcs.md",
-                "story/structure/story_structure.json"
-            ]
-            for pattern in primary_patterns:
-                files = self.dir_manager.glob_files(pattern)
-                if files:
-                    return True
-            return False
-            
+            return self._has_current_structure_outputs()
+
+        if step_name == "scenes":
+            return self._has_current_scene_outputs()
+
         for pattern in expected_patterns:
             files = self.dir_manager.glob_files(pattern)
             if files:
                 return True  # At least one file exists for this step
         
         return False
+
+    def _read_current_story_parameters(self) -> Dict[str, str]:
+        """Read the canonical parameter file, with a legacy fallback."""
+        parameter_paths = [
+            self.dir_manager.get_parameters_path(),
+            os.path.join(self.output_dir, "parameters.txt"),
+        ]
+        params: Dict[str, str] = {}
+
+        for parameter_path in parameter_paths:
+            if not parameter_path or not os.path.exists(parameter_path):
+                continue
+            try:
+                with open(parameter_path, "r", encoding="utf-8") as parameter_file:
+                    for line in parameter_file:
+                        if ":" in line:
+                            key, value = line.split(":", 1)
+                            params[key.strip()] = value.strip()
+                if params:
+                    break
+            except OSError as exc:
+                self.logger.warning(f"Could not read story parameters from {parameter_path}: {exc}")
+
+        return params
+
+    @staticmethod
+    def _safe_structure_token(value: str) -> str:
+        """Match the filename normalization used by the GUI generators."""
+        return (
+            value.lower()
+            .replace(" ", "_")
+            .replace(":", "")
+            .replace("/", "_")
+        )
+
+    @staticmethod
+    def _safe_section_token(value: str) -> str:
+        """Match section filename normalization used by the GUI generators."""
+        return (
+            value.lower()
+            .replace(" ", "_")
+            .replace(":", "")
+            .replace("/", "_")
+        )
+
+    def _has_current_structure_outputs(self) -> bool:
+        """Return whether the selected structure has all detailed sections."""
+        params = self._read_current_story_parameters()
+        structure_name = params.get("Story Structure", "").strip()
+        story_length = params.get("Story Length", "").strip()
+
+        # Short-story structure uses a single plot file rather than the
+        # long-form per-section files.
+        if story_length == "Short Story":
+            return bool(self.dir_manager.glob_files("story/structure/plot_short_story_*.md"))
+
+        try:
+            from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+            sections = STRUCTURE_SECTIONS_MAP.get(structure_name, ())
+        except Exception as exc:
+            self.logger.warning(f"Could not load structure section definitions: {exc}")
+            sections = ()
+
+        if not structure_name or not sections:
+            return False
+
+        structure_token = self._safe_structure_token(structure_name)
+        expected_files = [
+            f"story/structure/{structure_token}_{self._safe_section_token(section)}.md"
+            for section in sections
+        ]
+        return all(self.dir_manager.glob_files(pattern) for pattern in expected_files)
+
+    def _has_current_scene_outputs(self) -> bool:
+        """Return whether real scene plans exist for the current story."""
+        params = self._read_current_story_parameters()
+        story_length = params.get("Story Length", "").strip()
+
+        if story_length == "Short Story":
+            return bool(self.dir_manager.glob_files("story/planning/scenes_short_story_*.md"))
+
+        chapter_outlines = (
+            self.dir_manager.glob_files(
+                "story/planning/chapter_outlines/chapter_outlines_*.md"
+            )
+            or self.dir_manager.glob_files("story/planning/chapter_outlines_*.md")
+        )
+        detailed_scene_plans = self.dir_manager.glob_files(
+            "story/planning/detailed_scene_plans/scenes_*.md"
+        )
+        return bool(chapter_outlines and detailed_scene_plans)
     
     def _is_step_completed(self, step_name: str) -> bool:
         """Check if a step is already completed to prevent regeneration."""
@@ -526,7 +644,9 @@ class StoryGenerationOrchestrator(BaseAgent):
         if self.workflow_state:
             step_status = self.workflow_state.steps.get(step_name)
             if step_status and step_status.status == CheckpointStatus.COMPLETED:
-                return True
+                # A stale checkpoint must not suppress regeneration when the
+                # required outputs are missing or belong to another setup.
+                return self._check_step_files_exist(step_name)
         
         # Also check if files exist (more reliable than state)
         return self._check_step_files_exist(step_name)
@@ -904,24 +1024,29 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             # Execute step with retry logic for checkpoints
             step_success = False
-            max_retries = 3
+            max_attempts = 3
             retry_count = 0
+            last_step_error = "未知错误"
             
-            while not step_success and retry_count <= max_retries:
+            while not step_success and retry_count < max_attempts:
                 # Generate content for this step
                 step_result = self._generate_workflow_step(step, plan.parameters, generated_content)
                 
                 if not step_result["success"]:
                     self.logger.error(f"Step {step} generation failed (attempt {retry_count + 1})")
+                    last_step_error = step_result.get("error", last_step_error)
                     retry_count += 1
-                    if retry_count > max_retries:
+                    if retry_count >= max_attempts:
                         return StoryGenerationResult(
                             success=False,
                             generated_content=generated_content,
                             workflow_completed=workflow_completed,
                             quality_scores=quality_scores,
                             consistency_reports=consistency_reports,
-                            recommendations=[f"{_step_name_zh(step)}步骤在重试 {max_retries} 次后仍生成失败"],
+                            recommendations=[
+                                f"{_step_name_zh(step)}步骤在尝试 {max_attempts} 次后仍生成失败。"
+                                f"原因：{last_step_error}"
+                            ],
                             execution_summary=f"工作流在生成{_step_name_zh(step)}内容时失败",
                             awaiting_user_approval=False
                         )
@@ -1106,10 +1231,14 @@ class StoryGenerationOrchestrator(BaseAgent):
             # Collect all the generated files from the output directory
             output_dir = app.get_output_dir()
             generated_files = []
-            for file in os.listdir(output_dir):
-                if file.endswith(('.json', '.md', '.txt')) and any(keyword in file.lower() for keyword in 
-                    ['faction', 'character', 'lore', 'background', 'title']):
-                    generated_files.append(file)
+            for root, _, files in os.walk(output_dir):
+                for file in files:
+                    if file.endswith(('.json', '.md', '.txt')) and any(
+                        keyword in file.lower()
+                        for keyword in ['faction', 'character', 'lore', 'background', 'title']
+                    ):
+                        generated_files.append(os.path.relpath(os.path.join(root, file), output_dir))
+            generated_files.sort()
             
             lore_results = {
                 "parameters_file": "system/parameters.txt",
@@ -1331,7 +1460,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                 self.logger.info("✅ Scene Planning completed")
                 
                 # Phase 1: Intelligent review of generated content
-                self._review_step_output("scene_plans", output_dir, scene_results)
+                self._review_step_output("scenes", output_dir, scene_results)
                 
             except Exception as e:
                 self.logger.warning(f"⚠️ Scene Planning failed: {e}")
@@ -1346,34 +1475,54 @@ class StoryGenerationOrchestrator(BaseAgent):
             potential_files = self._get_expected_scene_planning_files(story_params, output_dir)
             
             # Add detailed scene plans directory files
-            detailed_scene_plans_dir = os.path.join(output_dir, "detailed_scene_plans")
+            detailed_scene_plans_dir = os.path.join(
+                output_dir, "story", "planning", "detailed_scene_plans"
+            )
             if os.path.exists(detailed_scene_plans_dir):
                 try:
                     for filename in os.listdir(detailed_scene_plans_dir):
                         if filename.endswith('.md'):
-                            potential_files.append(f"detailed_scene_plans/{filename}")
+                            potential_files.append(
+                                f"story/planning/detailed_scene_plans/{filename}"
+                            )
                 except Exception as e:
                     self.logger.warning(f"Could not list detailed scene plans directory: {e}")
             
             for filename in potential_files:
-                if filename.startswith("detailed_scene_plans/"):
-                    filepath = os.path.join(output_dir, filename)
-                else:
-                    filepath = os.path.join(output_dir, filename)
+                filepath = os.path.join(output_dir, filename)
                     
                 if os.path.exists(filepath):
                     generated_files.append(filename)
             
             scene_results["files_generated"] = generated_files
+            scene_files = [
+                filename for filename in generated_files
+                if filename.startswith("story/planning/scenes_")
+                or filename.startswith("story/planning/detailed_scene_plans/scenes_")
+            ]
+            scene_results["scene_files_generated"] = scene_files
             scene_results["total_functions_executed"] = len(scene_results["functions_executed"])
             
             self.logger.info(f"🎉 Scene Planning generation completed! Generated {len(generated_files)} files")
             self.logger.info(f"📁 Files: {', '.join(generated_files)}")
+
+            if not scene_files:
+                error_message = (
+                    "场景规划未生成任何场景文件。请确认章节大纲已生成，"
+                    "并检查 story/planning/detailed_scene_plans 目录。"
+                )
+                self.logger.error(error_message)
+                return {
+                    "success": False,
+                    "content": scene_results,
+                    "error": error_message,
+                    "step": "scenes"
+                }
             
             return {
                 "success": True,
                 "content": scene_results,
-                "step": "scene_plans"
+                "step": "scenes"
             }
             
         except Exception as e:
@@ -1382,7 +1531,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                 "success": False,
                 "content": None,
                 "error": str(e),
-                "step": "scene_plans"
+                "step": "scenes"
             }
     
     def _generate_chapters(self, story_params: Dict, existing_content: Dict) -> Dict[str, Any]:
@@ -1414,7 +1563,10 @@ class StoryGenerationOrchestrator(BaseAgent):
                     return {
                         "success": False,
                         "content": None,
-                        "error": "No chapters found in story structure",
+                        "error": (
+                            "未找到任何章节。章节大纲目录为空或路径不一致："
+                            f"{chapter_agent.dir_manager.get_chapter_outlines_path()}"
+                        ),
                         "step": "chapters"
                     }
             
@@ -1530,30 +1682,37 @@ class StoryGenerationOrchestrator(BaseAgent):
                     for section in sections:
                         safe_section_name = section.lower().replace(' ', '_').replace(':', '').replace('/', '_').replace('(', '').replace(')', '')
                         filename = f"chapter_outlines_{safe_structure_name}_{safe_section_name}.md"
-                        filepath = os.path.join(output_dir, "story", "planning", filename)
+                        filepath = os.path.join(
+                            output_dir, "story", "planning", "chapter_outlines", filename
+                        )
                         if os.path.exists(filepath):
-                            return f"story/planning/{filename}"
+                            return f"story/planning/chapter_outlines/{filename}"
                 # Fallback to first section pattern
                 if sections:
                     safe_section_name = sections[0].lower().replace(' ', '_').replace(':', '').replace('/', '_').replace('(', '').replace(')', '')
-                    return f"story/planning/chapter_outlines_{safe_structure_name}_{safe_section_name}.md"
+                    return (
+                        "story/planning/chapter_outlines/"
+                        f"chapter_outlines_{safe_structure_name}_{safe_section_name}.md"
+                    )
                     
-            elif step_name == "scene_plans":
+            elif step_name == "scenes":
                 if story_length == "Short Story":
                     # Look for short story scene files
                     filename = f"scenes_short_story_{safe_structure_name}.md"
-                    filepath = os.path.join(output_dir, filename)
+                    filepath = os.path.join(output_dir, "story", "planning", filename)
                     if os.path.exists(filepath):
-                        return filename
+                        return f"story/planning/{filename}"
                 else:
                     # Look for detailed scene plans in subdirectory
-                    detailed_scene_plans_dir = os.path.join(output_dir, "detailed_scene_plans")
+                    detailed_scene_plans_dir = os.path.join(
+                        output_dir, "story", "planning", "detailed_scene_plans"
+                    )
                     if os.path.exists(detailed_scene_plans_dir):
                         try:
                             scene_files = [f for f in os.listdir(detailed_scene_plans_dir) if f.endswith('.md')]
                             if scene_files:
                                 # Return the first scene file found for review
-                                return f"detailed_scene_plans/{scene_files[0]}"
+                                return f"story/planning/detailed_scene_plans/{scene_files[0]}"
                         except Exception as e:
                             self.logger.warning(f"Could not list detailed scene plans: {e}")
             
@@ -1585,7 +1744,10 @@ class StoryGenerationOrchestrator(BaseAgent):
                 sections = STRUCTURE_SECTIONS_MAP.get(story_structure, [])
                 for section in sections:
                     safe_section_name = section.lower().replace(' ', '_').replace(':', '').replace('/', '_').replace('(', '').replace(')', '')
-                    potential_files.append(f"story/planning/chapter_outlines_{safe_structure_name}_{safe_section_name}.md")
+                    potential_files.append(
+                        "story/planning/chapter_outlines/"
+                        f"chapter_outlines_{safe_structure_name}_{safe_section_name}.md"
+                    )
             
             return potential_files
             
@@ -1594,7 +1756,8 @@ class StoryGenerationOrchestrator(BaseAgent):
             # Fallback to common patterns (with correct directory structure)
             return [
                 "story/planning/scenes_short_story_3-act_structure.md",
-                "story/planning/chapter_outlines_6-act_structure_beginning.md"
+                "story/planning/chapter_outlines/"
+                "chapter_outlines_6-act_structure_beginning.md"
             ]
     
     def _review_step_output(self, step_name: str, output_dir: str, results_dict: Dict):
