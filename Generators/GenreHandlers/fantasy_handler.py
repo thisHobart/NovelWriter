@@ -30,7 +30,7 @@ class FantasyHandler(BaseGenreHandler):
     
     def get_faction_capitals_info(self, factions):
         """Extract capital region and city information for fantasy factions."""
-        faction_section = "\n## Faction Capitals:\n"
+        faction_section = "\n## 势力首都：\n"
         for faction in factions:
             faction_name = faction.get("faction_name", "Unknown Faction")
             # Find the capital region and city
@@ -39,12 +39,12 @@ class FantasyHandler(BaseGenreHandler):
                 capital_city = next((city for city in capital_region.get("cities", []) 
                                   if city.get("is_capital", False)), None)
                 if capital_city:
-                    faction_section += f"- {faction_name}: {capital_city.get('name', 'N/A')} in {capital_region.get('name', 'N/A')}\n"
+                    faction_section += f"- {faction_name}：{capital_region.get('name', 'N/A')} 地区的 {capital_city.get('name', 'N/A')}\n"
                     stats = capital_city.get("stats", {})
-                    faction_section += f"  - Population: {stats.get('population', 'Unknown')}\n"
-                    faction_section += f"  - Climate: {stats.get('climate', 'Unknown')}\n"
-                    faction_section += f"  - Infrastructure: {stats.get('infrastructure', {}).get('description', 'Unknown')}\n"
-                    faction_section += f"  - Terrain: {capital_region.get('terrain_type', 'Unknown')}\n"
+                    faction_section += f"  - 人口：{stats.get('population', '未知')}\n"
+                    faction_section += f"  - 气候：{stats.get('climate', '未知')}\n"
+                    faction_section += f"  - 基础设施：{stats.get('infrastructure', {}).get('description', '未知')}\n"
+                    faction_section += f"  - 地形：{capital_region.get('terrain_type', '未知')}\n"
         return faction_section
     
     def get_character_attributes(self):
@@ -109,4 +109,4 @@ class FantasyHandler(BaseGenreHandler):
     def _get_world_type_for_subgenre(self, subgenre):
         """Helper method to get world type for a given subgenre."""
         mapping = self.get_world_type_mapping()
-        return mapping.get(subgenre, "balanced")  # Default to balanced 
+        return mapping.get(subgenre, "balanced")  # Default to balanced

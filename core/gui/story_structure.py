@@ -7,6 +7,7 @@ import os
 import traceback
 import json
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP # Import the centralized map
+from core.localization import zh_label
 import logging
 
 class StoryStructure:
@@ -26,17 +27,17 @@ class StoryStructure:
         self.story_structure_frame.pack(expand=True, fill="both")
 
         # Title Label
-        self.title_label = ttk.Label(self.story_structure_frame, text="High-Level Story Structure", font=("Helvetica", 16))
+        self.title_label = ttk.Label(self.story_structure_frame, text="故事结构设计", font=("Helvetica", 16))
         self.title_label.pack(pady=10)
 
         # Arcs
-        self.c_arc_button = ttk.Button(self.story_structure_frame, text="Generate Character Arcs", command=self.generate_arcs)
+        self.c_arc_button = ttk.Button(self.story_structure_frame, text="生成人物弧光", command=self.generate_arcs)
         self.c_arc_button.pack(pady=20)
 
-        self.f_arc_button = ttk.Button(self.story_structure_frame, text="Generate Faction Arcs", command=self.generate_faction_arcs)
+        self.f_arc_button = ttk.Button(self.story_structure_frame, text="生成势力弧光", command=self.generate_faction_arcs)
         self.f_arc_button.pack(pady=20)
 
-        self.cfp_arc_button = ttk.Button(self.story_structure_frame, text="Add Locations to Arcs", command=self.add_planets_to_arcs)
+        self.cfp_arc_button = ttk.Button(self.story_structure_frame, text="将地点融入故事弧", command=self.add_planets_to_arcs)
         self.cfp_arc_button.pack(pady=20)
 
         # Generate Structure Buttons
@@ -48,7 +49,7 @@ class StoryStructure:
 
         self.detailed_plot_button = ttk.Button(
             self.story_structure_frame,
-            text="Create Detailed Plot", # Set a basic default text immediately
+            text="创建详细情节",
             command=self._dispatch_detailed_plot_creation 
         )
         self.detailed_plot_button.pack(pady=20)
@@ -101,20 +102,20 @@ class StoryStructure:
         button_text_to_set = current_button_text # Initialize with current
 
         if story_length == "Short Story":
-            button_text_to_set = "Outline Short Story Plot"
+            button_text_to_set = "规划短篇情节"
         elif story_length == "Novella":
-            button_text_to_set = "Outline Novella Plot Sections"
+            button_text_to_set = "规划中篇各部分情节"
         elif story_length in ["Novel (Standard)", "Novel (Epic)"]:
-            button_text_to_set = "Create Detailed Act/Section Plots"
+            button_text_to_set = "创建各幕/各部分详细情节"
         elif story_length is None: 
              # If story_length is None (e.g. params not fully loaded), 
              # keep a generic default if current text is also generic, or revert to a base default.
              # This handles the very initial call before params are loaded via callback.
-             if current_button_text == "Create Detailed Plot" or not current_button_text.startswith(("Outline", "Create Detailed Act")):
-                 button_text_to_set = "Create Detailed Plot"
+             if current_button_text == "创建详细情节" or not current_button_text.startswith(("规划", "创建")):
+                 button_text_to_set = "创建详细情节"
              # else, it means params were loaded, then story_length became None, so keep specific text.
         else: # Unknown story_length, keep current or a generic default
-            button_text_to_set = "Create Detailed Plot"
+            button_text_to_set = "创建详细情节"
         
         if self.detailed_plot_button.cget("text") != button_text_to_set: # Only configure if text changes
             self.detailed_plot_button.config(text=button_text_to_set)
@@ -125,7 +126,7 @@ class StoryStructure:
         """Dispatches to the correct plot creation method based on story length."""
         if not (self.app and hasattr(self.app, 'param_ui')):
             self.app.logger.error("ParametersUI not available to dispatch plot creation.")
-            show_error("Error", "Cannot determine story parameters.")
+            show_error("错误", "无法确定故事参数。")
             return
 
         params = self.app.param_ui.get_current_parameters()
@@ -140,7 +141,7 @@ class StoryStructure:
             self.improve_structure()
         else:
             self.app.logger.error(f"Unknown story length '{story_length}' for detailed plot creation.")
-            show_error("Error", f"Unsupported story length '{story_length}' for this operation.")
+            show_error("错误", f"当前操作不支持故事篇幅“{zh_label(story_length)}”。")
 
     # Generate character story arcs using individual backstories
     def generate_arcs(self):
@@ -168,7 +169,7 @@ class StoryStructure:
             all_characters_data = full_character_data_json.get("characters", [])
             if not all_characters_data:
                 self.app.logger.error(f"No characters found in {characters_json_path}. Cannot determine main character names or build roster.")
-                show_error("Error", f"No characters loaded from {characters_json_path}. Required for identifying main character backstories.")
+                show_error("错误", f"未从 {characters_json_path} 加载到人物，无法识别主要人物背景。")
                 return
             
             self.app.logger.info(f"Loaded {len(all_characters_data)} characters from {characters_json_path}.")
@@ -176,9 +177,9 @@ class StoryStructure:
             for char_info in all_characters_data:
                 name = char_info.get("name", "Unknown")
                 role_raw = char_info.get("role", "").lower()
-                gender = char_info.get("gender", "N/A")
-                faction = char_info.get("faction", "Unaffiliated")
-                age = char_info.get("age", "N/A") 
+                gender = char_info.get("gender", "无")
+                faction = char_info.get("faction", "无所属势力")
+                age = char_info.get("age", "无")
                 title = char_info.get("title", "") 
                 
                 # Store names of main characters for backstory file lookup
@@ -188,35 +189,35 @@ class StoryStructure:
                     self.app.logger.info(f"Identified {role_raw}: {name} (sanitized for filename: {safe_name_for_file})")
 
                 # Build summary for character roster (including flaws and strengths)
-                summary_parts = [f"  - {name} ({char_info.get('role', 'N/A')})"] # Use original role string for display
+                summary_parts = [f"  - {name}（{char_info.get('role', '无')}）"]
                 if title:
-                    summary_parts.append(f"Title: {title}")
-                summary_parts.append(f"Age: {age}")
-                summary_parts.append(f"Gender: {gender}")
-                summary_parts.append(f"Faction: {faction}")
+                    summary_parts.append(f"头衔：{title}")
+                summary_parts.append(f"年龄：{age}")
+                summary_parts.append(f"性别：{gender}")
+                summary_parts.append(f"所属势力：{faction}")
                 
                 goals = char_info.get("goals", [])
                 if goals and isinstance(goals, list) and len(goals) > 0:
-                    summary_parts.append(f"Primary Goal: {goals[0]}")
+                    summary_parts.append(f"主要目标：{goals[0]}")
                 
                 strengths = char_info.get("strengths", [])
                 if strengths and isinstance(strengths, list) and len(strengths) > 0:
-                    summary_parts.append(f"Strength: {strengths[0]}")
+                    summary_parts.append(f"优点：{strengths[0]}")
 
                 flaws = char_info.get("flaws", [])
                 if flaws and isinstance(flaws, list) and len(flaws) > 0:
-                    summary_parts.append(f"Flaw: {flaws[0]}")
+                    summary_parts.append(f"缺点：{flaws[0]}")
 
                 summary = ", ".join(summary_parts)
                 character_roster_summaries.append(summary)
 
         except FileNotFoundError:
             self.app.logger.error(f"Characters.json not found at {characters_json_path}. Cannot proceed.", exc_info=True)
-            show_error("Error", f"Characters file not found: {characters_json_path}")
+            show_error("错误", f"找不到人物文件：{characters_json_path}")
             return
         except (json.JSONDecodeError, ValueError) as e:
             self.app.logger.error(f"Error loading or parsing {characters_json_path}: {e}", exc_info=True)
-            show_error("Error", f"Error parsing characters file: {characters_json_path}")
+            show_error("错误", f"解析人物文件失败：{characters_json_path}")
             return
         
         # Construct dynamic background file paths (use structured directory layout)
@@ -239,7 +240,7 @@ class StoryStructure:
                 self.app.logger.info(f"Loaded lore from {lore_file_path}")
             except FileNotFoundError:
                 self.app.logger.warning(f"Lore file not found: {lore_file_path}. Arcs might lack context.")
-                show_warning("Missing File", f"Lore file not found: {lore_file_path}. Arcs might lack context.")
+                show_warning("文件缺失", f"找不到世界观文件：{lore_file_path}，故事弧可能缺少背景。")
                 lore_content = "Lore context is missing."
 
             # Load Individual Character Backstories
@@ -256,41 +257,44 @@ class StoryStructure:
                         self.app.logger.info(f"Loaded backstory for {role} from {filepath}.")
                     except Exception as e_open:
                         self.app.logger.warning(f"Could not open backstory file for {role} at {filepath}: {e_open}. Skipping {role} backstory.")
-                        backstory_content[role] = f"Backstory for {role} is missing or unreadable."
+                        backstory_content[role] = f"{zh_label(role.capitalize())}的背景故事缺失或无法读取。"
                 elif filepath: # Filepath was determined but doesn't exist
                     self.app.logger.warning(f"Background file for {role} not found at {filepath}. Skipping {role} backstory.")
-                    backstory_content[role] = f"Backstory for {role} is missing (File not found: {os.path.basename(filepath)})."
+                    backstory_content[role] = f"{zh_label(role.capitalize())}的背景故事缺失（找不到文件：{os.path.basename(filepath)}）。"
                 else: # Filepath could not be determined (name for role not found)
                     # Already logged earlier, but good to have a placeholder for prompt
-                    backstory_content[role] = f"Backstory for {role} is missing (Character for role not identified)."
+                    backstory_content[role] = f"{zh_label(role.capitalize())}的背景故事缺失（未识别到对应人物）。"
 
             if not main_chars_with_backstories:
                 self.app.logger.error("No main character background files could be loaded (protagonist, deuteragonist, antagonist). Cannot generate arcs.")
-                show_error("Error", "No main character background files could be loaded. Check logs for details. Cannot generate arcs.")
+                show_error("错误", "无法加载任何主要人物背景文件，不能生成人物弧光；详情请查看日志。")
                 return
 
             # Construct the Prompt
             prompt_lines = [
-                "I am writing a science fiction novel and need help planning the character arcs for the main characters.",
-                f"Please generate compelling character arcs for the following roles: {', '.join([r.capitalize() for r in main_chars_with_backstories])}.",
-                "Base these arcs on the overall universe lore, their detailed backstories, and the full character roster provided below.",
-                "The arcs should show significant development or change for each of these main characters.",
-                "When developing these arcs, you may reference or involve characters from the 'Full Character Roster'. Avoid introducing new significant named characters unless essential.",
-                "\n## Overall Universe Lore:",
+                "我正在创作一部小说，需要规划主要人物的人物弧光。",
+                f"请为以下角色设计有吸引力的人物弧光：{', '.join([zh_label(r.capitalize()) for r in main_chars_with_backstories])}。",
+                "请以世界观设定、人物详细背景和下方完整人物名单为基础。",
+                "每位主要人物都应经历显著而合理的发展或改变。",
+                "可以引用或安排“完整人物名单”中的人物参与，但除非情节必需，不要新增重要的具名人物。",
+                "\n## 世界观设定：",
                 lore_content
             ]
 
             if character_roster_summaries:
-                prompt_lines.append("\n ## Character Roster for Reference:")
+                prompt_lines.append("\n## 人物名单（供参考）：")
                 prompt_lines.extend(character_roster_summaries)
             else:
-                prompt_lines.append("\n ## Character Roster for Reference: (No additional characters loaded from characters.json)")
+                prompt_lines.append("\n## 人物名单（供参考）：未从 characters.json 加载到其他人物")
 
-            prompt_lines.append("\n## Main Character Backstories:")
+            prompt_lines.append("\n## 主要人物背景：")
             for role, story in backstory_content.items():
-                prompt_lines.append(f"\n### Backstory for the {role.capitalize()}:\n{story}")
+                prompt_lines.append(f"\n### {zh_label(role.capitalize())}的背景故事：\n{story}")
 
-            prompt_lines.append(f"\n Please generate the character arcs for {', '.join([r.capitalize() for r in main_chars_with_backstories])} now, focusing on meaningful progression and connection to the provided backstories, lore, and character roster.")
+            prompt_lines.append(
+                f"\n现在请为 {', '.join([zh_label(r.capitalize()) for r in main_chars_with_backstories])} 生成人物弧光，"
+                "重点体现有意义的成长，并与上述背景故事、世界观和人物名单建立联系。"
+            )
             prompt = "\n".join(prompt_lines)
             
             # Save prompt to a file and log its path
@@ -316,7 +320,7 @@ class StoryStructure:
             
             if not response:
                  self.app.logger.error("Failed to generate character arcs from LLM. No response received.")
-                 show_error("Error", "Failed to generate character arcs from LLM.")
+                 show_error("错误", "大模型生成人物弧光失败。")
                  return
             
             self.app.logger.info(f"Received character arcs from LLM. Length: {len(response)} chars.")
@@ -328,7 +332,7 @@ class StoryStructure:
         except Exception as e:
             self.app.logger.error(f"Failed to generate character arcs: {e}", exc_info=True)
             # traceback.print_exc() # Handled by logger
-            show_error("Error", f"An unexpected error occurred during character arc generation: {str(e)}")
+            show_error("错误", f"生成人物弧光时发生意外错误：{str(e)}")
 
 
     # Generate faction story arcs, THEN reconcile faction and character arcs
@@ -376,13 +380,13 @@ class StoryStructure:
                 char_arcs_content = open_file(character_arcs_file_path)
             except FileNotFoundError:
                 self.app.logger.error(f"Character arcs file not found: {character_arcs_file_path}. Cannot proceed.")
-                show_error("Error", f"Character arcs file not found: {character_arcs_file_path}. Cannot proceed.")
+                show_error("错误", f"找不到人物弧光文件：{character_arcs_file_path}，无法继续。")
                 return
             
             try:
                 lore_content = open_file(lore_file_path)
             except FileNotFoundError:
-                show_warning("Missing File", f"Lore file not found: {lore_file_path}. Faction arcs might lack context.")
+                show_warning("文件缺失", f"找不到世界观文件：{lore_file_path}，势力故事弧可能缺少背景。")
                 self.app.logger.warning(f"Lore file not found: {lore_file_path}. Faction arcs might lack context.")
                 lore_content = "Lore context is missing."
                 
@@ -409,40 +413,40 @@ class StoryStructure:
                 
                 if not major_factions:
                     self.app.logger.error(f"No faction data found or extracted from {factions_json_file_path}. Cannot generate faction arcs.")
-                    show_error("Error", f"No faction data found or extracted from {factions_json_file_path}.")
+                    show_error("错误", f"未从 {factions_json_file_path} 找到或提取到势力数据。")
                     return
                     
                 # Create a summary for the prompt
                 faction_summaries = []
                 for f in major_factions:
-                    name = f.get("faction_name", "Unknown")
-                    profile = f.get("faction_profile", "No profile")
+                    name = f.get("faction_name", "未知势力")
+                    profile = f.get("faction_profile", "无简介")
                     traits = ", ".join(f.get("primary_traits", []))
-                    summary = f"- {name}: {profile} (Traits: {traits})"
+                    summary = f"- {name}：{profile}（特征：{traits}）"
                     faction_summaries.append(summary)
                 faction_overview = "\n".join(faction_summaries)
                 
             except FileNotFoundError:
                 self.app.logger.error(f"Factions JSON file not found: {factions_json_file_path}. Cannot proceed.")
-                show_error("Error", f"Factions JSON file not found: {factions_json_file_path}. Cannot proceed.")
+                show_error("错误", f"找不到势力 JSON 文件：{factions_json_file_path}，无法继续。")
                 return
             except json.JSONDecodeError:
                  self.app.logger.error(f"Error decoding JSON from {factions_json_file_path}.")
-                 show_error("Error", f"Error decoding JSON from {factions_json_file_path}.")
+                 show_error("错误", f"解析势力 JSON 文件失败：{factions_json_file_path}")
                  return
 
             # Build the first prompt for generating faction arcs (USING SELECTED STRUCTURE)
             prompt1_lines = [
-                "I am writing a science fiction novel and need help planning the story arcs for the major factions.",
-                f"Please generate compelling story arcs using the '{selected_structure}' framework for the following major factions, considering their profiles and traits:", # Use selected structure
-                "\n## Major Factions Overview:",
+                "我正在创作一部小说，需要规划主要势力的故事弧。",
+                f"请使用“{zh_label(selected_structure)}”框架，根据以下主要势力的简介和特征设计有吸引力的故事弧：",
+                "\n## 主要势力概览：",
                 faction_overview,
-                "\nBase these faction arcs on the overall universe lore and the established character arcs provided below. Ensure the faction arcs interact logically with the character arcs.",
-                "\n## Overall Universe Lore:",
+                "\n势力弧必须以下方世界观和既有的人物弧光为基础，并与人物弧光形成合乎逻辑的互动。",
+                "\n## 世界观设定：",
                 lore_content,
-                "\n## Character Arcs:",
+                "\n## 人物弧光：",
                 char_arcs_content,
-                f"\nPlease generate ONLY the '{selected_structure}' story arcs for these major factions:" # Use selected structure
+                f"\n现在只输出这些主要势力基于“{zh_label(selected_structure)}”结构的故事弧。",
             ]
             prompt1 = "\n".join(prompt1_lines)
 
@@ -466,7 +470,7 @@ class StoryStructure:
             
             if not faction_arcs_response:
                 self.app.logger.error(f"Failed to generate faction arcs from LLM ({backend_info}). No response.")
-                show_error("Error", "Failed to generate faction arcs from LLM.")
+                show_error("错误", "大模型生成势力故事弧失败。")
                 return
             
             self.app.logger.info(f"Received faction arcs from LLM. Length: {len(faction_arcs_response)}.")
@@ -479,15 +483,15 @@ class StoryStructure:
 
             # Build the second prompt for reconciling arcs (USING SELECTED STRUCTURE)
             prompt2_lines = [
-                 "I am writing a science fiction novel and need help reconciling the previously generated story arcs for the main characters and the major factions.",
-                 "The two sets of arcs should weave together consistently and logically to form a unified narrative progression.",
-                 "\nHere are the character arcs:",
+                 "请整合此前生成的主要人物弧光和主要势力故事弧。",
+                 "两组故事弧应一致、合理地交织，形成统一的叙事进程。",
+                 "\n## 人物弧光：",
                  char_arcs_content,
-                 "\nHere are the faction arcs:",
+                 "\n## 势力故事弧：",
                  faction_arcs_response, # Use the response from the first prompt
-                 f"\nPlease write out a single, combined story arc using the '{selected_structure}' framework, integrating the key developments from both the character and faction arcs.", # Use selected structure
-                 "Focus on showing how character actions influence faction events and vice-versa throughout the structure.",
-                 f"Provide the unified '{selected_structure}' now:" # Use selected structure
+                 f"\n请使用“{zh_label(selected_structure)}”框架，写出一条统一的综合故事弧，融合人物与势力两方面的关键发展。",
+                 "重点表现人物行动如何影响势力事件，以及势力事件如何反过来影响人物。",
+                 f"现在输出统一的“{zh_label(selected_structure)}”故事弧。",
             ]
             prompt2 = "\n".join(prompt2_lines)
             
@@ -511,7 +515,7 @@ class StoryStructure:
             
             if not reconciled_response:
                 self.app.logger.error(f"Failed to reconcile arcs using LLM ({backend_info}). No response.")
-                show_error("Error", "Failed to reconcile arcs using LLM.")
+                show_error("错误", "大模型整合故事弧失败。")
                 return
             
             self.app.logger.info(f"Received reconciled arcs from LLM. Length: {len(reconciled_response)}.")
@@ -522,14 +526,14 @@ class StoryStructure:
 
         except FileNotFoundError as fnf_e:
             self.app.logger.error(f"File not found during faction arc generation/reconciliation: {fnf_e}", exc_info=True)
-            show_error("Error", f"File not found: {str(fnf_e)}")
+            show_error("错误", f"找不到文件：{str(fnf_e)}")
         except json.JSONDecodeError as json_e:
             self.app.logger.error(f"JSON decode error during faction arc generation/reconciliation: {json_e}", exc_info=True)
-            show_error("Error", f"Error decoding JSON data: {str(json_e)}")
+            show_error("错误", f"解析 JSON 数据失败：{str(json_e)}")
         except Exception as e:
             self.app.logger.error(f"Failed during faction arc generation/reconciliation: {e}", exc_info=True)
             # traceback.print_exc() # Handled by logger
-            show_error("Error", f"An unexpected error occurred: {str(e)}")
+            show_error("错误", f"发生意外错误：{str(e)}")
 
     # Add in the locations to the reconciled story arc (generic for all genres)
     def add_planets_to_arcs(self):
@@ -561,7 +565,7 @@ class StoryStructure:
             try:
                 reconciled_arcs_content = open_file(reconciled_arcs_file_path)
             except FileNotFoundError:
-                show_error("Error", f"Reconciled arcs file not found: {reconciled_arcs_file_path}. Cannot proceed.")
+                show_error("错误", f"找不到整合后的故事弧文件：{reconciled_arcs_file_path}，无法继续。")
                 return
 
             # Load factions and extract relevant location data using genre handler
@@ -580,52 +584,52 @@ class StoryStructure:
                 else:
                     # Fallback for unknown genres - try to extract basic info
                     for faction in factions_data:
-                        faction_name = faction.get("faction_name", faction.get("name", "Unknown Faction"))
+                        faction_name = faction.get("faction_name", faction.get("name", "未知势力"))
                         # Try different possible location fields
                         location_name = None
                         if "systems" in faction:  # Sci-fi style
                             for system in faction.get("systems", []):
                                 planets = system.get("habitable_planets", [])
                                 if planets:
-                                    location_name = f"{planets[0].get('name', 'Unknown')} in {system.get('name', 'Unknown System')}"
+                                    location_name = f"{planets[0].get('name', '未知地点')}，位于{system.get('name', '未知星系')}"
                                     break
                         elif "regions" in faction:  # Fantasy style
                             for region in faction.get("regions", []):
                                 cities = region.get("cities", [])
                                 if cities:
-                                    location_name = f"{cities[0].get('name', 'Unknown')} in {region.get('name', 'Unknown Region')}"
+                                    location_name = f"{cities[0].get('name', '未知地点')}，位于{region.get('name', '未知区域')}"
                                     break
                         elif "territory" in faction:  # Western/other styles
-                            location_name = faction.get("territory", "Unknown Territory")
+                            location_name = faction.get("territory", "未知领地")
                         
                         if location_name:
-                            location_faction_info.append(f"- {location_name} (Controlled by {faction_name})")
+                            location_faction_info.append(f"- {location_name}（由 {faction_name} 控制）")
                             
             except FileNotFoundError:
-                 show_error("Error", f"Factions file not found: {factions_json_file_path}. Cannot extract location info.")
+                 show_error("错误", f"找不到势力文件：{factions_json_file_path}，无法提取地点信息。")
                  return
             except json.JSONDecodeError:
-                 show_error("Error", f"Error decoding JSON from {factions_json_file_path}.")
+                 show_error("错误", f"解析势力 JSON 文件失败：{factions_json_file_path}")
                  return
                  
             if not location_faction_info:
-                show_warning("Warning", f"Could not extract relevant {location_type_name.lower()}/faction information from factions.json.")
-                location_list_str = f"No specific {location_type_name.lower()} data available."
+                show_warning("警告", "无法从 factions.json 提取相关地点/势力信息。")
+                location_list_str = "没有可用的具体地点数据。"
             else:
                 location_list_str = "\n".join(location_faction_info)
 
             # Build the prompt (genre-agnostic)
             prompt_lines = [
-                f"I am writing a {current_genre.lower()} novel and need help adding specific {location_type_name.lower()} to the story arc.",
-                f"Below is the reconciled story arc for characters and factions, followed by a list of key {location_type_name.lower()} and the factions that control them.",
-                f"Please rewrite the story arc, weaving in appropriate {location_type_name.lower()} from the provided list where actions occur.",
-                f"Ensure the chosen {location_type_name.lower()} align logically with the factions involved in each part of the arc.",
-                f"Do not add {location_type_name.lower()} not on the list. Preserve the original arc structure and details as much as possible, only adding the location context.",
-                "\n## Reconciled Story Arc:",
+                f"我正在创作一部{zh_label(current_genre)}小说，需要把具体地点融入故事弧。",
+                "下方先给出已经整合的人物与势力故事弧，随后列出关键地点及其控制势力。",
+                "请重写故事弧，在事件发生处合理融入列表中的地点。",
+                "所选地点必须与各部分涉及的势力在逻辑上相符。",
+                "不要添加列表以外的地点；尽量保留原有结构和细节，只补充地点语境。",
+                "\n## 已整合的故事弧：",
                 reconciled_arcs_content,
-                f"\n## Key {location_type_name} and Controlling Factions:",
+                "\n## 关键地点及其控制势力：",
                 location_list_str,
-                f"\nPlease provide the revised story arc with integrated {location_type_name.lower()}:"
+                "\n请输出融入地点后的修订版故事弧。",
             ]
             prompt = "\n".join(prompt_lines)
 
@@ -649,7 +653,7 @@ class StoryStructure:
             
             if not response:
                 self.app.logger.error(f"Failed to get response from LLM ({backend_info}) when adding {location_type_name.lower()}.")
-                show_error("Error", f"Failed to get response from LLM when adding {location_type_name.lower()}.")
+                show_error("错误", "添加地点信息时大模型未返回内容。")
                 return
 
             self.app.logger.info(f"Received response from LLM for adding {location_type_name.lower()}. Length: {len(response)}.")
@@ -660,14 +664,14 @@ class StoryStructure:
 
         except FileNotFoundError as fnf_e:
             self.app.logger.error(f"File not found during add_locations_to_arcs: {fnf_e}", exc_info=True)
-            show_error("Error", f"File not found: {str(fnf_e)}")
+            show_error("错误", f"找不到文件：{str(fnf_e)}")
         except json.JSONDecodeError as json_e:
             self.app.logger.error(f"JSON decode error during add_locations_to_arcs: {json_e}", exc_info=True)
-            show_error("Error", f"Error decoding JSON data: {str(json_e)}")
+            show_error("错误", f"解析 JSON 数据失败：{str(json_e)}")
         except Exception as e:
             self.app.logger.error(f"Failed to add {location_type_name.lower()} to arcs: {e}", exc_info=True)
             # traceback.print_exc() # Handled by logger
-            show_error("Error", f"An unexpected error occurred: {str(e)}")
+            show_error("错误", f"发生意外错误：{str(e)}")
 
 
     # Generate high-level structure (we use the user-selected structure)
@@ -821,7 +825,7 @@ class StoryStructure:
         sections_to_iterate = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
 
         if not sections_to_iterate:
-            show_error("Error", f"No defined sections for structure '{selected_structure_name}'. Cannot improve structure.")
+            show_error("错误", f"结构“{zh_label(selected_structure_name)}”没有定义组成部分，无法继续细化。")
             # print(f"Error: Section definitions not found for structure '{selected_structure_name}'.") # Replaced
             self.app.logger.error(f"Section definitions not found for structure '{selected_structure_name}'. Cannot improve structure.")
             return
@@ -846,30 +850,30 @@ class StoryStructure:
             for i, section_name in enumerate(sections_to_iterate):
                 current_section_name_for_prompt = section_name # User-friendly name like "Act I: Setup"
                 prompt_lines = [
-                    f"I am writing a science fiction novel using the '{selected_structure_name}' framework and need help fleshing out its parts.",
-                    f"The overall framework consists of these parts: {', '.join(sections_to_iterate)}.",
-                    f"Please write out a lot more detail specifically for the part: **{current_section_name_for_prompt}**. We are NOT writing individual scenes yet, but rather a more detailed summary for this part of the story.",
-                    f"\n## Overall Story Structure Context (from {os.path.basename(story_structure_path)}):\n{story_structure_content}"
+                    f"我正在使用“{zh_label(selected_structure_name)}”框架创作小说，需要细化各部分情节。",
+                    f"完整框架包含：{', '.join(zh_label(section) for section in sections_to_iterate)}。",
+                    f"请重点详细扩写 **{zh_label(current_section_name_for_prompt)}**。此处还不是写具体场景，而是为这一部分撰写更详细的情节概述。",
+                    f"\n## 整体故事结构（来自 {os.path.basename(story_structure_path)}）：\n{story_structure_content}"
                 ]
 
                 # Add context from the immediately preceding detailed section (if not the first section)
                 if previous_section_content: # i > 0 would also work
-                    prompt_lines.append(f"\n\n## Context from the Immediately Preceding Detailed Section ('{previous_section_name_for_prompt}'):\n{previous_section_content}")
-                    prompt_lines.append(f"\nPlease ensure your detailing of the current section ('{current_section_name_for_prompt}') flows logically from THIS PRECEDING DETAILED CONTEXT as well as the overall story structure provided earlier.")
+                    prompt_lines.append(f"\n\n## 紧邻的上一部分“{zh_label(previous_section_name_for_prompt)}”详细内容：\n{previous_section_content}")
+                    prompt_lines.append(f"\n请确保当前部分“{zh_label(current_section_name_for_prompt)}”既承接上述前文，也符合整体故事结构。")
 
                 # Add novella-specific instruction if applicable
                 if story_length == "Novella":
-                    prompt_lines.append(f"\nGiven this section is part of a novella, please ensure the detailing is focused and appropriately scaled for a shorter overall work, while still being comprehensive for this specific section.")
+                    prompt_lines.append("\n本故事是中篇小说，请控制本部分规模，保持紧凑和聚焦，同时保证本部分的信息完整。")
 
                 prompt_lines.extend([
-                    f"\n\nFor the **{current_section_name_for_prompt}** part, please describe:\n",
-                    f"- Key events and plot developments.\n",
-                    f"- How characters (especially main ones) act, react, and develop.\n",
-                    f"- How faction goals and conflicts manifest or progress.\n",
-                    f"- The primary **location(s)** of the main action within this part. Note if the focus shifts.\n",
-                    f"- The overall tone and pacing for this part.\n",
-                    f"IMPORTANT: Do NOT include a title for the story or this section in your response. The title will be handled separately.\n",
-                    f"Please be as detailed as possible. Provide the output in markdown format. Please do NOT use backticks in the output."
+                    f"\n\n请为 **{zh_label(current_section_name_for_prompt)}** 详细说明：\n",
+                    "- 关键事件和情节发展。\n",
+                    "- 人物（尤其主要人物）的行动、反应与成长。\n",
+                    "- 势力目标和冲突如何显现或推进。\n",
+                    "- 主要行动发生的地点；若焦点转移，请明确说明。\n",
+                    "- 本部分的整体基调和节奏。\n",
+                    "重要：不要为故事或本部分另起标题，标题将单独处理。\n",
+                    "请尽可能详细，以 Markdown 输出，不要使用代码围栏。"
                 ])
                 prompt = "\n".join(prompt_lines)
 
@@ -909,14 +913,14 @@ class StoryStructure:
             # show_success("Success", f"Detailed sections for '{selected_structure_name}' generated.")
 
         except FileNotFoundError as fnf_e:
-            show_error("Error", f"File not found during structure improvement: {fnf_e}")
+            show_error("错误", f"细化故事结构时找不到文件：{fnf_e}")
             # print(f"File not found: {fnf_e}") # Replaced
             self.app.logger.error(f"File not found during structure improvement: {fnf_e}", exc_info=True)
         except Exception as e:
             # print(f"Failed to improve story structure: {e}") # Replaced
             # traceback.print_exc() # Handled by logger
             self.app.logger.error(f"Failed to improve story structure: {e}", exc_info=True)
-            show_error("Error", f"Failed to improve story structure: {str(e)}")
+            show_error("错误", f"细化故事结构失败：{str(e)}")
 
     def _outline_short_story_plot(self):
         selected_model = self.app.get_selected_model()
@@ -927,31 +931,31 @@ class StoryStructure:
         # --- Read Parameters ---
         if not (self.app and hasattr(self.app, 'param_ui')):
             self.app.logger.error("ParametersUI not available for short story plot outlining.")
-            show_error("Error", "Cannot load story parameters.")
+            show_error("错误", "无法加载故事参数。")
             return
         
         parameters = self.app.param_ui.get_current_parameters()
         selected_structure_name = parameters.get("story_structure")
-        novel_title = parameters.get("novel_title", "Untitled Short Story")
+        novel_title = parameters.get("novel_title", "未命名短篇小说")
 
         if not selected_structure_name:
             self.app.logger.error("No story structure selected in parameters. Cannot outline short story.")
-            show_error("Error", "No story structure selected. Please select one in Novel Parameters.")
+            show_error("错误", "尚未选择故事结构，请先在“作品参数”中选择。")
             return
 
         # --- Get Structure Sections/Stages ---
         structure_stages = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
         if not structure_stages:
             self.app.logger.error(f"Definition for structure '{selected_structure_name}' not found in STRUCTURE_SECTIONS_MAP.")
-            show_error("Error", f"Cannot find definition for structure '{selected_structure_name}'.")
+            show_error("错误", f"找不到故事结构“{zh_label(selected_structure_name)}”的定义。")
             return
         stages_list_str = ", ".join(structure_stages)
 
         # --- Load Context Files (Optional, but good for consistency) ---
-        lore_content = "No lore content available."
-        reconciled_arcs_content = "No character/faction arc context available."
-        characters_summary = "No character roster available."
-        factions_summary = "No faction overview available."
+        lore_content = "没有可用的世界观内容。"
+        reconciled_arcs_content = "没有可用的人物/势力故事弧背景。"
+        characters_summary = "没有可用的人物名单。"
+        factions_summary = "没有可用的势力概览。"
 
         try:
             lore_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
@@ -981,8 +985,8 @@ class StoryStructure:
             if os.path.exists(char_json_path):
                 char_data = read_json(char_json_path)
                 if char_data and "characters" in char_data:
-                    chars = [c.get('name', 'N/A') for c in char_data["characters"]]
-                    characters_summary = f"Key Characters: {', '.join(chars[:5])}{'...' if len(chars) > 5 else ''} (see characters.json for full list)."
+                    chars = [c.get('name', '无') for c in char_data["characters"]]
+                    characters_summary = f"主要人物：{', '.join(chars[:5])}{'……' if len(chars) > 5 else ''}（完整名单见 characters.json）。"
                 self.app.logger.info(f"Loaded character data for summary from {char_json_path}")
         except Exception as e:
             self.app.logger.warning(f"Could not load characters.json for summary: {e}")
@@ -992,8 +996,8 @@ class StoryStructure:
             if os.path.exists(faction_json_path):
                 faction_data = read_json(faction_json_path) # Assuming read_json returns list of dicts
                 if faction_data: # Check if faction_data is not None or empty
-                    factions_list = [f.get('faction_name', 'N/A') for f in faction_data]
-                    factions_summary = f"Key Factions: {', '.join(factions_list[:3])}{'...' if len(factions_list) > 3 else ''} (see factions.json for full list)."
+                    factions_list = [f.get('faction_name', '无') for f in faction_data]
+                    factions_summary = f"主要势力：{', '.join(factions_list[:3])}{'……' if len(factions_list) > 3 else ''}（完整名单见 factions.json）。"
                 self.app.logger.info(f"Loaded faction data for summary from {faction_json_path}")
         except Exception as e:
             self.app.logger.warning(f"Could not load factions.json for summary: {e}")
@@ -1001,26 +1005,26 @@ class StoryStructure:
 
         # --- Construct the Prompt ---
         prompt_lines = [
-            f"You are an AI assistant helping to outline the detailed plot for a short story titled '{novel_title}'.",
-            f"The story will follow the '{selected_structure_name}' framework. The stages of this structure are: {stages_list_str}.",
-            "Please generate a single, continuous, detailed plot that covers all these stages from beginning to end.\n",
-            "For each stage of the structure, describe in detail:\n",
-            "  - Key events and plot developments.\n",
-            "  - How characters (especially main ones) act, react, and develop.\n",
-            "  - How any relevant faction goals or conflicts manifest or progress.\n",
-            "  - The primary location(s) of the main action within this stage.\n",
-            "  - The overall tone and pacing for this stage.\n\n",
-            "Ensure the plot flows logically and cohesively from one stage to the next, building towards the story's climax and resolution.",
-            "\n## Overall Universe Lore Context:",
+            f"请为短篇小说《{novel_title}》规划详细情节。",
+            f"故事采用“{zh_label(selected_structure_name)}”框架，各阶段为：{', '.join(zh_label(stage) for stage in structure_stages)}。",
+            "请生成一份从开端到结局、覆盖所有阶段的连贯详细情节。\n",
+            "每个阶段都要详细说明：\n",
+            "  - 关键事件和情节发展。\n",
+            "  - 人物（尤其主要人物）的行动、反应与成长。\n",
+            "  - 相关势力目标或冲突如何显现和推进。\n",
+            "  - 本阶段主要行动发生的地点。\n",
+            "  - 本阶段的整体基调和节奏。\n\n",
+            "各阶段之间必须自然、连贯地推进，并逐步走向高潮和结局。",
+            "\n## 世界观设定：",
             lore_content,
-            f"\n## Character Arcs & Faction Context (from {os.path.basename(arcs_path) if 'arcs_path' in locals() else 'reconciled arcs file'}, if available):",
+            f"\n## 人物弧光与势力背景（来自 {os.path.basename(arcs_path) if 'arcs_path' in locals() else '整合后的故事弧文件'}，如有）：",
             reconciled_arcs_content,
-            "\n## Key Characters Summary:",
+            "\n## 主要人物摘要：",
             characters_summary,
-            "\n## Key Factions Summary:",
+            "\n## 主要势力摘要：",
             factions_summary,
-            f"IMPORTANT: Do NOT include a title for the story in your response. The title will be handled separately.\\n",
-            f"\\nPlease provide the complete, detailed plot for the short story '{novel_title}' using the '{selected_structure_name}' ({stages_list_str}) now. The output should be a single markdown document."
+            "重要：不要在响应中另行生成故事标题，标题将单独处理。\n",
+            f"现在请输出《{novel_title}》基于“{zh_label(selected_structure_name)}”的完整详细情节，合并为一份 Markdown 文档。",
         ]
         prompt = "\n".join(prompt_lines)
 
@@ -1046,7 +1050,7 @@ class StoryStructure:
 
         if not response:
             self.app.logger.error(f"Failed to generate short story plot from LLM ({backend_info}). No response.")
-            show_error("Error", "Failed to generate short story plot from LLM.")
+            show_error("错误", "大模型生成短篇情节失败。")
             return
         
         self.app.logger.info(f"Received short story plot from LLM. Length: {len(response)} chars.")
@@ -1060,4 +1064,4 @@ class StoryStructure:
             # show_success("Success", f"Short story plot generated and saved to {output_filename_full_path}")
         except Exception as e:
             self.app.logger.error(f"Error saving short story plot to {output_filename_full_path}: {e}", exc_info=True)
-            show_error("Error", f"Failed to save short story plot: {e}")
+            show_error("错误", f"保存短篇情节失败：{e}")

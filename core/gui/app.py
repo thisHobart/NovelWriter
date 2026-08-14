@@ -12,6 +12,8 @@ from core.gui.chapter_writing import ChapterWriting
 from core.generation.ai_helper import get_supported_models, set_backend, get_backend, check_cli_availability, get_available_backends, DEFAULT_API_MODEL
 from core.gui.notifications import init_notifications, show_success, show_info, show_warning, show_error
 
+STEP_NAMES_ZH = {"lore": "设定", "structure": "结构", "scenes": "场景", "chapters": "章节"}
+
 # Import agentic orchestrators
 try:
     from agents.orchestration.story_generation_orchestrator import StoryGenerationOrchestrator
@@ -32,14 +34,14 @@ except ImportError as e:
 class NovelWriterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Novel Writer")
+        self.root.title("小说创作助手")
 
         # --- Add Backend and Model Selection ---
         self.model_frame = ttk.Frame(root)
         self.model_frame.pack(pady=5, padx=10, fill='x')
 
         # Backend selection
-        ttk.Label(self.model_frame, text="Backend:").pack(side="left", padx=(5, 2))
+        ttk.Label(self.model_frame, text="运行后端：").pack(side="left", padx=(5, 2))
         
         self.available_backends = self._get_available_backends_list()
         self.selected_backend_var = tk.StringVar(value="api")
@@ -55,7 +57,7 @@ class NovelWriterApp:
         self.backend_combobox.bind("<<ComboboxSelected>>", self._on_backend_changed)
 
         # Model selection (for API backend)
-        self.model_label = ttk.Label(self.model_frame, text="Model:")
+        self.model_label = ttk.Label(self.model_frame, text="模型：")
         self.model_label.pack(side="left", padx=(5, 2))
 
         # Get available models dynamically (llm-backends registry primaries)
@@ -101,7 +103,7 @@ class NovelWriterApp:
 
         # Parameters UI
         self.param_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.param_frame, text="Novel Parameters")
+        self.notebook.add(self.param_frame, text="作品参数")
         self.param_ui = Parameters(self.param_frame, app=self)
         
         # --- Initialize Logger HERE, after param_ui is available for get_output_dir() ---
@@ -118,11 +120,11 @@ class NovelWriterApp:
         
         # Workflow Tab (Agentic Automation)
         self.workflow_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.workflow_frame, text="🤖 Workflow")
+        self.notebook.add(self.workflow_frame, text="🤖 自动工作流")
         
         # Lore Generation UI
         self.lore_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.lore_frame, text="Generate Lore")
+        self.notebook.add(self.lore_frame, text="生成设定")
         # self.lore_frame.parameters_ui = self.param_ui # Lore gets app, which has param_ui
         self.lore_ui = Lore(self.lore_frame, app=self) # Pass the app instance
         
@@ -131,17 +133,17 @@ class NovelWriterApp:
 
         # High-Level Story Structure UI
         self.structure_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.structure_frame, text="Story Structure")
+        self.notebook.add(self.structure_frame, text="故事结构")
         self.structure_ui = StoryStructure(self.structure_frame, app=self)
 
         # Scene Planning UI
         self.outlining_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.outlining_frame, text="Scene Planning")
+        self.notebook.add(self.outlining_frame, text="场景规划")
         self.outlining_ui = ScenePlanning(self.outlining_frame, app=self)
 
         # Chapter Writing UI
         self.chapter_writing_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.chapter_writing_frame, text="Write Chapters")
+        self.notebook.add(self.chapter_writing_frame, text="撰写章节")
         self.chapter_writing_ui = ChapterWriting(self.chapter_writing_frame, app=self)
 
         # Initialize workflow progress panel (always available)
@@ -224,11 +226,11 @@ class NovelWriterApp:
             set_backend(backend, model)
             if hasattr(self, 'logger') and self.logger:
                 self.logger.info(f"Backend changed to: {backend}" + (f" (model: {model})" if backend == "api" else ""))
-            show_success("Backend Changed", f"{backend}" + (f" ({model})" if backend == "api" else ""))
+            show_success("后端已切换", f"{backend}" + (f"（{model}）" if backend == "api" else ""))
         except RuntimeError as e:
             if hasattr(self, 'logger') and self.logger:
                 self.logger.error(f"Failed to set backend {backend}: {e}")
-            show_error("Backend Error", f"Backend unavailable: {e}")
+            show_error("后端错误", f"后端不可用：{e}")
             # Revert to API
             self.selected_backend_var.set("api")
             self._on_backend_changed()
@@ -261,7 +263,7 @@ class NovelWriterApp:
                 )
             else:
                 self.cli_status_label.config(
-                    text="No CLI tools detected",
+                    text="未检测到 CLI 工具",
                     foreground="gray"
                 )
         except Exception:
@@ -335,13 +337,13 @@ class NovelWriterApp:
         workflow_container.pack(fill="both", expand=True, padx=5, pady=5)
         
         # Create agentic frame
-        agentic_frame = tk.LabelFrame(workflow_container, text="🤖 Workflow Controls", padx=10, pady=10)
+        agentic_frame = tk.LabelFrame(workflow_container, text="🤖 工作流控制", padx=10, pady=10)
         agentic_frame.pack(fill="x", pady=(0, 5))
         
         # Enable/disable agentic mode
         agentic_check = tk.Checkbutton(
             agentic_frame,
-            text="Enable Agentic Workflow Orchestration",
+            text="启用智能工作流编排",
             variable=self.agentic_enabled,
             command=self.toggle_agentic_mode,
             font=("Arial", 11, "bold")
@@ -352,7 +354,7 @@ class NovelWriterApp:
         progress_frame = tk.Frame(agentic_frame)
         progress_frame.pack(fill="x", pady=5)
         
-        tk.Label(progress_frame, text="Workflow Progress:", font=("Arial", 10, "bold")).pack(anchor="w")
+        tk.Label(progress_frame, text="工作流进度：", font=("Arial", 10, "bold")).pack(anchor="w")
         
         self.workflow_progress = ttk.Progressbar(
             progress_frame, 
@@ -363,7 +365,7 @@ class NovelWriterApp:
         
         self.workflow_status = tk.Label(
             progress_frame,
-            text="Ready to begin workflow",
+            text="已就绪，可以开始工作流",
             font=("Arial", 9),
             fg="blue"
         )
@@ -375,7 +377,7 @@ class NovelWriterApp:
         
         self.start_workflow_btn = tk.Button(
             controls_frame,
-            text="🚀 Start Complete Workflow",
+            text="🚀 启动完整工作流",
             command=self.start_complete_workflow,
             bg="#4CAF50",
             fg="white",
@@ -385,7 +387,7 @@ class NovelWriterApp:
         
         self.resume_workflow_btn = tk.Button(
             controls_frame,
-            text="▶️ Resume Workflow",
+            text="▶️ 继续工作流",
             command=self.resume_workflow,
             bg="#FF9800",
             fg="white",
@@ -395,7 +397,7 @@ class NovelWriterApp:
         
         self.analyze_content_btn = tk.Button(
             controls_frame,
-            text="🔍 Analyze Content",
+            text="🔍 分析内容",
             command=self.analyze_current_content,
             bg="#2196F3",
             fg="white",
@@ -404,12 +406,12 @@ class NovelWriterApp:
         self.analyze_content_btn.pack(side="left", padx=5)
         
         # Individual Step Controls
-        step_controls_frame = tk.LabelFrame(workflow_container, text="🎯 Individual Step Controls", padx=5, pady=5)
+        step_controls_frame = tk.LabelFrame(workflow_container, text="🎯 单步控制", padx=5, pady=5)
         step_controls_frame.pack(fill="x", pady=5)
         
         step_info = tk.Label(
             step_controls_frame,
-            text="Execute specific workflow steps independently:",
+            text="单独执行指定的工作流步骤：",
             font=("Arial", 9),
             fg="darkblue"
         )
@@ -421,7 +423,7 @@ class NovelWriterApp:
         
         self.lore_step_btn = tk.Button(
             step_row1,
-            text="📚 Generate Lore",
+            text="📚 生成设定",
             command=lambda: self.execute_single_step("lore"),
             bg="#9C27B0",
             fg="white",
@@ -432,7 +434,7 @@ class NovelWriterApp:
         
         self.structure_step_btn = tk.Button(
             step_row1,
-            text="🏗️ Generate Structure",
+            text="🏗️ 生成结构",
             command=lambda: self.execute_single_step("structure"),
             bg="#673AB7",
             fg="white",
@@ -447,7 +449,7 @@ class NovelWriterApp:
         
         self.scenes_step_btn = tk.Button(
             step_row2,
-            text="🎬 Plan Scenes",
+            text="🎬 规划场景",
             command=lambda: self.execute_single_step("scenes"),
             bg="#3F51B5",
             fg="white",
@@ -458,7 +460,7 @@ class NovelWriterApp:
         
         self.chapters_step_btn = tk.Button(
             step_row2,
-            text="📖 Write Chapters",
+            text="📖 撰写章节",
             command=lambda: self.execute_single_step("chapters"),
             bg="#2196F3",
             fg="white",
@@ -532,14 +534,14 @@ class NovelWriterApp:
         self.checkpoint_mode = tk.BooleanVar(value=False)
         
         # Quality standards
-        quality_frame = tk.LabelFrame(workflow_container, text="Quality Standards", padx=5, pady=5)
+        quality_frame = tk.LabelFrame(workflow_container, text="质量标准", padx=5, pady=5)
         quality_frame.pack(fill="x", pady=5)
         
         # Quality threshold
         threshold_frame = tk.Frame(quality_frame)
         threshold_frame.pack(fill="x")
         
-        tk.Label(threshold_frame, text="Quality Threshold:").pack(side="left")
+        tk.Label(threshold_frame, text="质量阈值：").pack(side="left")
         self.quality_threshold = tk.DoubleVar(value=0.7)
         threshold_scale = tk.Scale(
             threshold_frame,
@@ -555,7 +557,7 @@ class NovelWriterApp:
         self.auto_retry = tk.BooleanVar(value=True)
         retry_check = tk.Checkbutton(
             quality_frame,
-            text="Auto-retry on quality issues",
+            text="出现质量问题时自动重试",
             variable=self.auto_retry
         )
         retry_check.pack(anchor="w")
@@ -564,7 +566,7 @@ class NovelWriterApp:
         """Create persistent workflow progress panel in right panel."""
             
         # Progress Display Panel (persistent across all tabs)
-        progress_display_frame = tk.LabelFrame(self.right_panel, text="📈 Workflow Progress", padx=5, pady=5)
+        progress_display_frame = tk.LabelFrame(self.right_panel, text="📈 工作流进度", padx=5, pady=5)
         progress_display_frame.pack(fill="both", expand=True, pady=5)
         
         # Progress steps display with improved layout
@@ -578,10 +580,10 @@ class NovelWriterApp:
         self.step_buttons = {}  # For clickable step details
         
         steps = [
-            ("lore", "📚 Lore Generation", "World-building & Background"),
-            ("structure", "🏗️ Story Structure", "Plot & Story Arcs"), 
-            ("scenes", "🎬 Scene Planning", "Detailed Scene Outlines"),
-            ("chapters", "📖 Chapter Writing", "Final Story Content")
+            ("lore", "📚 设定生成", "世界构建与背景"),
+            ("structure", "🏗️ 故事结构", "情节与故事弧"),
+            ("scenes", "🎬 场景规划", "详细场景大纲"),
+            ("chapters", "📖 章节写作", "最终故事正文")
         ]
         
         for i, (step_name, step_label, step_description) in enumerate(steps):
@@ -599,7 +601,7 @@ class NovelWriterApp:
             self.step_indicators[step_name] = indicator
             
             # Status text
-            status_text = tk.Label(status_frame, text="Not Started", 
+            status_text = tk.Label(status_frame, text="未开始",
                                  font=("Arial", 9), fg="gray")
             status_text.pack(side="left", padx=(8, 0))
             self.step_labels[step_name] = status_text
@@ -610,13 +612,13 @@ class NovelWriterApp:
             desc_label.pack(fill="x", pady=(2, 0))
             
             # File count with better formatting
-            file_count = tk.Label(step_frame, text="📁 0 files", 
+            file_count = tk.Label(step_frame, text="📁 0 个文件",
                                 font=("Arial", 8), fg="gray")
             file_count.pack(fill="x")
             self.file_counts[step_name] = file_count
             
             # Clickable button for file details
-            details_btn = tk.Button(step_frame, text="📋 View Files", 
+            details_btn = tk.Button(step_frame, text="📋 查看文件",
                                   command=lambda s=step_name: self.show_step_files(s),
                                   font=("Arial", 8), state="disabled")
             details_btn.pack(fill="x", pady=(2, 0))
@@ -625,7 +627,7 @@ class NovelWriterApp:
         # Progress summary
         self.progress_summary = tk.Label(
             progress_display_frame,
-            text="No workflow loaded",
+            text="尚未加载工作流",
             font=("Arial", 10),
             fg="gray"
         )
@@ -637,7 +639,7 @@ class NovelWriterApp:
         
         self.refresh_progress_btn = tk.Button(
             nav_frame,
-            text="🔄 Refresh",
+            text="🔄 刷新",
             command=self.refresh_progress_display,
             font=("Arial", 9),
             bg="#4CAF50",
@@ -647,7 +649,7 @@ class NovelWriterApp:
         
         self.reset_workflow_btn = tk.Button(
             nav_frame,
-            text="🚫 Reset Workflow",
+            text="🚫 重置工作流",
             command=self.reset_workflow_state,
             font=("Arial", 9),
             bg="#f44336",
@@ -657,7 +659,7 @@ class NovelWriterApp:
         
         self.scan_existing_btn = tk.Button(
             nav_frame,
-            text="🔍 Scan Existing Work",
+            text="🔍 扫描已有成果",
             command=self.create_from_existing_work,
             font=("Arial", 9),
             bg="#03A9F4",
@@ -695,7 +697,7 @@ class NovelWriterApp:
         except Exception as e:
             self.logger.warning(f"Could not load initial workflow state: {e}")
             # Set default state
-            self.progress_summary.config(text="No workflow data available")
+            self.progress_summary.config(text="没有可用的工作流数据")
     
     def scan_existing_files_basic(self):
         """Basic file scanning when agentic features are not available."""
@@ -726,17 +728,17 @@ class NovelWriterApp:
                 
                 # Update display
                 if step_name in self.file_counts:
-                    self.file_counts[step_name].config(text=f"📁 {file_count} files")
+                    self.file_counts[step_name].config(text=f"📁 {file_count} 个文件")
                     
                 if step_name in self.step_indicators and file_count > 0:
                     self.step_indicators[step_name].config(text="✅", fg="green")
-                    self.step_labels[step_name].config(text="Files Found", fg="green")
+                    self.step_labels[step_name].config(text="已找到文件", fg="green")
                     if step_name in self.step_buttons:
                         self.step_buttons[step_name].config(state="normal")
             
             # Update summary
             total_files = sum(int(label.cget("text").split()[1]) for label in self.file_counts.values() if label.cget("text").split()[1].isdigit())
-            self.progress_summary.config(text=f"Found {total_files} existing files across workflow steps")
+            self.progress_summary.config(text=f"各工作流步骤共找到 {total_files} 个已有文件")
             
         except Exception as e:
             self.logger.warning(f"Error in basic file scanning: {e}")
@@ -749,21 +751,21 @@ class NovelWriterApp:
                     # Update status indicator
                     if step_data.status.value == "completed":
                         self.step_indicators[step_name].config(text="✅", fg="green")
-                        self.step_labels[step_name].config(text="Completed", fg="green")
+                        self.step_labels[step_name].config(text="已完成", fg="green")
                     elif step_data.status.value == "in_progress":
                         self.step_indicators[step_name].config(text="🔄", fg="orange")
-                        self.step_labels[step_name].config(text="In Progress", fg="orange")
+                        self.step_labels[step_name].config(text="进行中", fg="orange")
                     elif step_data.status.value == "failed":
                         self.step_indicators[step_name].config(text="❌", fg="red")
-                        self.step_labels[step_name].config(text="Failed", fg="red")
+                        self.step_labels[step_name].config(text="失败", fg="red")
                     else:
                         self.step_indicators[step_name].config(text="○", fg="gray")
-                        self.step_labels[step_name].config(text="Not Started", fg="gray")
+                        self.step_labels[step_name].config(text="未开始", fg="gray")
                     
                     # Update file count
                     file_count = len(step_data.output_files)
                     if step_name in self.file_counts:
-                        self.file_counts[step_name].config(text=f"📁 {file_count} files")
+                        self.file_counts[step_name].config(text=f"📁 {file_count} 个文件")
                     
                     # Enable/disable details button
                     if step_name in self.step_buttons:
@@ -778,10 +780,10 @@ class NovelWriterApp:
             
             if completed_steps:
                 self.progress_summary.config(
-                    text=f"Workflow: {len(completed_steps)}/4 steps completed, {total_files} files generated"
+                    text=f"工作流：已完成 {len(completed_steps)}/4 步，已生成 {total_files} 个文件"
                 )
             else:
-                self.progress_summary.config(text=f"Workflow ready to start - {total_files} existing files found")
+                self.progress_summary.config(text=f"工作流已就绪——找到 {total_files} 个已有文件")
                 
         except Exception as e:
             self.logger.warning(f"Error updating progress display from state: {e}")
@@ -789,7 +791,7 @@ class NovelWriterApp:
     def toggle_agentic_mode(self):
         """Toggle agentic workflow mode."""
         if not AGENTIC_AVAILABLE:
-            show_error("Error", "Agentic features are not available")
+            show_error("错误", "智能编排功能不可用")
             self.agentic_enabled.set(False)
             return
             
@@ -798,19 +800,19 @@ class NovelWriterApp:
         if enabled:
             try:
                 self.init_agentic_orchestrators()
-                self.workflow_status.config(text="Agentic mode enabled - Ready for workflow", fg="green")
+                self.workflow_status.config(text="智能编排已启用——工作流已就绪", fg="green")
                 # Progress display is already loaded on startup, just refresh if needed
                 if hasattr(self, 'story_orchestrator') and self.story_orchestrator:
                     self.refresh_progress_display()
                 self.logger.info("Agentic workflow mode enabled")
             except Exception as e:
                 self.logger.error(f"Failed to enable agentic mode: {e}")
-                show_error("Error", f"Failed to enable agentic mode: {e}")
+                show_error("错误", f"启用智能编排失败：{e}")
                 self.agentic_enabled.set(False)
         else:
             self.story_orchestrator = None
             self.analysis_orchestrator = None
-            self.workflow_status.config(text="Agentic mode disabled", fg="gray")
+            self.workflow_status.config(text="智能编排已关闭", fg="gray")
             self.logger.info("Agentic workflow mode disabled")
     
     def init_agentic_orchestrators(self):
@@ -841,15 +843,15 @@ class NovelWriterApp:
     def start_complete_workflow(self):
         """Start the complete agentic story generation workflow."""
         if not AGENTIC_AVAILABLE:
-            show_warning("Warning", "Agentic features are not available")
+            show_warning("警告", "智能编排功能不可用")
             return
             
         if not self.agentic_enabled.get():
-            show_warning("Warning", "Please enable agentic mode first")
+            show_warning("警告", "请先启用智能编排模式")
             return
             
         if not self.story_orchestrator:
-            show_error("Error", "Agentic orchestrators not initialized")
+            show_error("错误", "智能编排器尚未初始化")
             return
         
         try:
@@ -857,11 +859,11 @@ class NovelWriterApp:
             story_params = self.gather_story_parameters()
             
             if not story_params:
-                show_warning("Warning", "Please fill in story parameters first")
+                show_warning("警告", "请先填写故事参数")
                 return
             
             # Update workflow status
-            self.workflow_status.config(text="Starting complete workflow...", fg="orange")
+            self.workflow_status.config(text="正在启动完整工作流…", fg="orange")
             self.workflow_progress['value'] = 0
             self.root.update()
             
@@ -888,7 +890,7 @@ class NovelWriterApp:
     def resume_workflow(self):
         """Resume an interrupted workflow."""
         if not AGENTIC_AVAILABLE or not self.agentic_enabled.get() or not self.story_orchestrator:
-            show_warning("Warning", "Please enable agentic mode first")
+            show_warning("警告", "请先启用智能编排模式")
             return
         
         try:
@@ -896,11 +898,11 @@ class NovelWriterApp:
             current_content = self.get_current_content()
             
             if not current_content:
-                show_info("Info", "No existing content found to resume from")
+                show_info("提示", "没有找到可继续处理的已有内容")
                 return
             
             # Update status
-            self.workflow_status.config(text="Resuming workflow...", fg="orange")
+            self.workflow_status.config(text="正在继续工作流…", fg="orange")
             self.root.update()
             
             # Resume the workflow using process_task method
@@ -926,11 +928,11 @@ class NovelWriterApp:
     def analyze_current_content(self):
         """Analyze current content with agentic agents."""
         if not AGENTIC_AVAILABLE or not self.agentic_enabled.get():
-            show_warning("Warning", "Agentic mode is not enabled")
+            show_warning("警告", "智能编排模式尚未启用")
             return
         
         if not self.analysis_orchestrator:
-            show_warning("Warning", "Multi-agent orchestrator not initialized")
+            show_warning("警告", "多代理编排器尚未初始化")
             return
         
         try:
@@ -938,7 +940,7 @@ class NovelWriterApp:
             current_content = self.get_current_content()
             
             if not current_content:
-                show_info("Info", "No content found to analyze")
+                show_info("提示", "没有找到可分析的内容")
                 return
             
             # Analyze with multi-agent orchestrator
@@ -946,22 +948,22 @@ class NovelWriterApp:
             
             if analysis_result.success:
                 self.show_analysis_results(analysis_result)
-                show_success("Success", "Content analysis completed successfully")
+                show_success("成功", "内容分析已完成")
             else:
-                show_error("Error", f"Content analysis failed: {analysis_result.error_message}")
+                show_error("错误", f"内容分析失败：{analysis_result.error_message}")
                 
         except Exception as e:
             self.logger.error(f"Content analysis error: {e}")
-            show_error("Error", f"Content analysis failed: {str(e)}")
+            show_error("错误", f"内容分析失败：{str(e)}")
     
     def execute_single_step(self, step_name: str):
         """Execute a single workflow step and halt."""
         if not AGENTIC_AVAILABLE or not self.agentic_enabled.get():
-            show_warning("Warning", "Agentic mode is not enabled")
+            show_warning("警告", "智能编排模式尚未启用")
             return
         
         if not self.story_orchestrator:
-            show_warning("Warning", "Story orchestrator not initialized")
+            show_warning("警告", "故事编排器尚未初始化")
             return
         
         try:
@@ -971,7 +973,8 @@ class NovelWriterApp:
             self._disable_step_buttons()
             
             # Update UI to show step in progress
-            self.workflow_status.config(text=f"Executing {step_name} step...", fg="orange")
+            step_display = STEP_NAMES_ZH.get(step_name, step_name)
+            self.workflow_status.config(text=f"正在执行{step_display}步骤…", fg="orange")
             
             # Gather current parameters
             story_parameters = self.gather_story_parameters()
@@ -990,30 +993,30 @@ class NovelWriterApp:
                 step_emoji = {"lore": "📚", "structure": "🏗️", "scenes": "🎬", "chapters": "📖"}
                 emoji = step_emoji.get(step_name, "✅")
                 
-                success_msg = f"{emoji} {step_name.title()} step completed successfully!"
+                success_msg = f"{emoji} {step_display}步骤执行成功！"
                 if step_result.quality_scores and step_name in step_result.quality_scores:
                     quality_score = step_result.quality_scores[step_name]
                     if quality_score is not None:
-                        success_msg += f"\nQuality Score: {quality_score:.2f}"
+                        success_msg += f"\n质量评分：{quality_score:.2f}"
                 
-                show_success("Step Completed", success_msg)
+                show_success("步骤已完成", success_msg)
                 
-                self.workflow_status.config(text=f"{step_name.title()} step completed", fg="green")
+                self.workflow_status.config(text=f"{step_display}步骤已完成", fg="green")
                 self.logger.info(f"✅ Single step execution completed: {step_name}")
                 
             else:
-                error_msg = f"Failed to execute {step_name} step"
+                error_msg = f"执行{step_display}步骤失败"
                 if hasattr(step_result, 'error_message') and step_result.error_message:
                     error_msg += f": {step_result.error_message}"
                 
-                show_error("Step Failed", error_msg)
-                self.workflow_status.config(text=f"{step_name.title()} step failed", fg="red")
+                show_error("步骤失败", error_msg)
+                self.workflow_status.config(text=f"{step_display}步骤失败", fg="red")
                 self.logger.error(f"❌ Single step execution failed: {step_name}")
                 
         except Exception as e:
             self.logger.error(f"Single step execution error for {step_name}: {e}")
-            show_error("Error", f"Failed to execute {step_name} step: {str(e)}")
-            self.workflow_status.config(text=f"{step_name.title()} step error", fg="red")
+            show_error("错误", f"执行{STEP_NAMES_ZH.get(step_name, step_name)}步骤失败：{str(e)}")
+            self.workflow_status.config(text=f"{STEP_NAMES_ZH.get(step_name, step_name)}步骤出错", fg="red")
         
         finally:
             # Re-enable step buttons
@@ -1059,8 +1062,8 @@ class NovelWriterApp:
         """Handle successful workflow completion."""
         # Update progress
         self.workflow_progress['value'] = self.workflow_progress['maximum']
-        action = "resumed" if resumed else "completed"
-        self.workflow_status.config(text=f"Workflow {action} successfully!", fg="green")
+        action = "继续并完成" if resumed else "完成"
+        self.workflow_status.config(text=f"工作流已成功{action}！", fg="green")
         
         # Show results
         self.show_workflow_results(generation_result, resumed)
@@ -1074,16 +1077,16 @@ class NovelWriterApp:
         """Handle workflow errors."""
         error_text = "\n".join(error_messages) if isinstance(error_messages, list) else str(error_messages)
         
-        self.workflow_status.config(text="Workflow failed", fg="red")
+        self.workflow_status.config(text="工作流失败", fg="red")
         
-        show_error("Workflow Error", f"Workflow execution failed:\n\n{error_text}")
+        show_error("工作流错误", f"工作流执行失败：\n\n{error_text}")
         
         self.logger.error(f"Workflow failed: {error_text}")
     
     def show_workflow_results(self, generation_result, resumed=False):
         """Show workflow results in a dialog."""
         results_window = tk.Toplevel(self.root)
-        results_window.title("🎉 Workflow Results")
+        results_window.title("🎉 工作流结果")
         results_window.geometry("800x600")
         results_window.transient(self.root)
         
@@ -1099,37 +1102,37 @@ class NovelWriterApp:
         scrollbar.pack(side="right", fill="y")
         
         # Format results
-        action = "Resumed" if resumed else "Completed"
-        results_text = f"🎭 Workflow {action} Successfully!\n\n"
+        action = "继续并完成" if resumed else "完成"
+        results_text = f"🎭 工作流已成功{action}！\n\n"
         
         # Add basic result information - handle both dict and object formats
         if isinstance(generation_result, dict):
             content = generation_result.get('content', {})
             if content:
-                results_text += f"📊 Generated Content: {len(content)} sections\n"
+                results_text += f"📊 已生成内容：{len(content)} 个部分\n"
             
             recommendations = generation_result.get('recommendations', [])
             if recommendations:
-                results_text += f"📋 Recommendations: {len(recommendations)}\n"
+                results_text += f"📋 建议：{len(recommendations)} 条\n"
                 for msg in recommendations[:5]:  # Show first 5 recommendations
                     results_text += f"   • {msg}\n"
             
             quality_scores = generation_result.get('quality_scores', {})
             if quality_scores:
-                results_text += f"⭐ Quality Scores:\n"
+                results_text += "⭐ 质量评分：\n"
                 for step, score in quality_scores.items():
-                    results_text += f"   • {step}: {score:.2f}\n"
+                    results_text += f"   • {STEP_NAMES_ZH.get(step, step)}：{score:.2f}\n"
         else:
             # Legacy object format
             if hasattr(generation_result, 'data') and generation_result.data:
-                results_text += f"📊 Generated Content: {len(generation_result.data)} sections\n"
+                results_text += f"📊 已生成内容：{len(generation_result.data)} 个部分\n"
             
             if hasattr(generation_result, 'messages') and generation_result.messages:
-                results_text += f"📋 Messages: {len(generation_result.messages)}\n"
+                results_text += f"📋 消息：{len(generation_result.messages)} 条\n"
                 for msg in generation_result.messages[:5]:  # Show first 5 messages
                     results_text += f"   • {msg}\n"
         
-        results_text += "\n🎉 Your story generation workflow has completed successfully!"
+        results_text += "\n🎉 故事生成工作流已成功完成！"
         
         text_widget.insert(tk.END, results_text)
         text_widget.config(state="disabled")
@@ -1137,7 +1140,7 @@ class NovelWriterApp:
         # Close button
         close_btn = tk.Button(
             results_window,
-            text="Close",
+            text="关闭",
             command=results_window.destroy,
             bg="#4CAF50",
             fg="white",
@@ -1149,22 +1152,22 @@ class NovelWriterApp:
         """Show content analysis results."""
         if hasattr(analysis_result, 'data') and analysis_result.data:
             show_success(
-                "Analysis Complete",
-                f"Content Analysis Complete!\n\n"
-                f"Analysis completed successfully.\n"
-                f"Check the logs for detailed analysis."
+                "分析完成",
+                "内容分析已完成！\n\n"
+                "分析执行成功。\n"
+                "详细结果请查看日志。"
             )
         else:
-            show_success("Analysis Complete", "Content analysis completed.")
+            show_success("分析完成", "内容分析已完成。")
         
-        self.workflow_status.config(text="Analysis complete", fg="green")
+        self.workflow_status.config(text="分析完成", fg="green")
     
     # ==================== CHECKPOINT CONTROL METHODS ====================
     
     def toggle_checkpoint_mode(self):
         """Toggle checkpoint mode on/off."""
         if not AGENTIC_AVAILABLE or not self.agentic_enabled.get():
-            show_warning("Warning", "Please enable agentic mode first")
+            show_warning("警告", "请先启用智能编排模式")
             self.checkpoint_mode.set(False)
             return
         
@@ -1174,16 +1177,16 @@ class NovelWriterApp:
             # Enable checkpoint mode
             if self.story_orchestrator:
                 self.story_orchestrator.enable_checkpoint_mode(self.on_checkpoint_reached)
-                self.checkpoint_status.config(text="Checkpoint mode enabled - Will pause at each step", fg="green")
+                self.checkpoint_status.config(text="检查点模式已启用——每一步完成后暂停", fg="green")
                 self.logger.info("🚦 Checkpoint mode enabled")
             else:
-                show_error("Error", "Orchestrator not initialized")
+                show_error("错误", "编排器尚未初始化")
                 self.checkpoint_mode.set(False)
         else:
             # Disable checkpoint mode
             if self.story_orchestrator:
                 self.story_orchestrator.disable_checkpoint_mode()
-            self.checkpoint_status.config(text="Checkpoint mode disabled", fg="gray")
+            self.checkpoint_status.config(text="检查点模式已关闭", fg="gray")
             self._disable_checkpoint_buttons()
             self.logger.info("🚦 Checkpoint mode disabled")
     
@@ -1198,13 +1201,13 @@ class NovelWriterApp:
         """Update the UI when a checkpoint is reached (main thread)."""
         # Update status
         self.checkpoint_status.config(
-            text=f"Waiting for approval: {checkpoint.step_name.title()} step completed",
+            text=f"等待确认：{STEP_NAMES_ZH.get(checkpoint.step_name, checkpoint.step_name)}步骤已完成",
             fg="orange"
         )
         
         # Update workflow status
         self.workflow_status.config(
-            text=f"⏸️ Paused at {checkpoint.step_name} - Awaiting approval",
+            text=f"⏸️ 已在{STEP_NAMES_ZH.get(checkpoint.step_name, checkpoint.step_name)}步骤暂停，等待确认",
             fg="orange"
         )
         
@@ -1213,7 +1216,7 @@ class NovelWriterApp:
         
         # Show checkpoint notification
         show_info(
-            f"Checkpoint: {checkpoint.step_name.title()}",
+            f"检查点：{STEP_NAMES_ZH.get(checkpoint.step_name, checkpoint.step_name)}",
             checkpoint.checkpoint_message
         )
         
@@ -1225,38 +1228,38 @@ class NovelWriterApp:
     def approve_checkpoint(self):
         """Approve the current checkpoint and continue workflow."""
         if not self.story_orchestrator:
-            show_error("Error", "Orchestrator not available")
+            show_error("错误", "编排器不可用")
             return
         
         if self.story_orchestrator.approve_current_checkpoint():
-            self.checkpoint_status.config(text="Step approved - Continuing workflow...", fg="green")
+            self.checkpoint_status.config(text="步骤已确认——正在继续工作流…", fg="green")
             self._disable_checkpoint_buttons()
             self.logger.info("✅ Checkpoint approved by user")
         else:
-            show_warning("Warning", "No checkpoint to approve")
+            show_warning("警告", "没有可确认的检查点")
     
     def retry_checkpoint(self):
         """Retry the current checkpoint step."""
         if not self.story_orchestrator:
-            show_error("Error", "Orchestrator not available")
+            show_error("错误", "编排器不可用")
             return
         
         if self.story_orchestrator.retry_current_checkpoint():
-            self.checkpoint_status.config(text="Retrying step...", fg="orange")
+            self.checkpoint_status.config(text="正在重试步骤…", fg="orange")
             self._disable_checkpoint_buttons()
             self.logger.info("🔄 Checkpoint retry requested by user")
         else:
-            show_warning("Warning", "No checkpoint to retry")
+            show_warning("警告", "没有可重试的检查点")
     
     def review_checkpoint(self):
         """Show detailed review of the current checkpoint."""
         if not self.story_orchestrator:
-            show_error("Error", "Orchestrator not available")
+            show_error("错误", "编排器不可用")
             return
         
         checkpoint = self.story_orchestrator.get_current_checkpoint()
         if not checkpoint:
-            show_warning("Warning", "No checkpoint to review")
+            show_warning("警告", "没有可查看的检查点")
             return
         
         self._show_checkpoint_review(checkpoint)
@@ -1264,7 +1267,7 @@ class NovelWriterApp:
     def _show_checkpoint_review(self, checkpoint):
         """Show detailed checkpoint review in a popup window."""
         review_window = tk.Toplevel(self.root)
-        review_window.title(f"📋 Checkpoint Review: {checkpoint.step_name.title()}")
+        review_window.title(f"📋 检查点详情：{STEP_NAMES_ZH.get(checkpoint.step_name, checkpoint.step_name)}")
         review_window.geometry("700x500")
         review_window.transient(self.root)
         
@@ -1280,23 +1283,23 @@ class NovelWriterApp:
         scrollbar.pack(side="right", fill="y")
         
         # Add checkpoint information
-        review_text = f"""CHECKPOINT REVIEW: {checkpoint.step_name.upper()}
+        review_text = f"""检查点详情：{STEP_NAMES_ZH.get(checkpoint.step_name, checkpoint.step_name)}
 {'=' * 50}
 
-Step: {checkpoint.step_name.title()}
-Completed: {'Yes' if checkpoint.step_completed else 'No'}
-Timestamp: {checkpoint.timestamp}
-Retry Count: {checkpoint.retry_count}
+步骤：{STEP_NAMES_ZH.get(checkpoint.step_name, checkpoint.step_name)}
+已完成：{'是' if checkpoint.step_completed else '否'}
+时间：{checkpoint.timestamp}
+重试次数：{checkpoint.retry_count}
 
-Quality Score: {checkpoint.quality_score if checkpoint.quality_score else 'Not available'}
+质量评分：{checkpoint.quality_score if checkpoint.quality_score else '无'}
 
-Next Steps: {', '.join(checkpoint.next_steps) if checkpoint.next_steps else 'None'}
+后续步骤：{', '.join(STEP_NAMES_ZH.get(step, step) for step in checkpoint.next_steps) if checkpoint.next_steps else '无'}
 
-Message:
+消息：
 {checkpoint.checkpoint_message}
 
 {'=' * 50}
-CONTENT GENERATED:
+已生成内容：
 {'=' * 50}
 
 """
@@ -1317,7 +1320,7 @@ CONTENT GENERATED:
         # Close button
         close_btn = tk.Button(
             review_window,
-            text="Close",
+            text="关闭",
             command=review_window.destroy,
             bg="#4CAF50",
             fg="white",
@@ -1356,7 +1359,7 @@ CONTENT GENERATED:
             # Get workflow state from orchestrator
             workflow_state = self.story_orchestrator.get_workflow_state()
             if not workflow_state:
-                self.progress_summary.config(text="No workflow state available", fg="gray")
+                self.progress_summary.config(text="没有可用的工作流状态", fg="gray")
                 return
             
             # Update step indicators
@@ -1373,23 +1376,23 @@ CONTENT GENERATED:
                 # Update indicator and status text based on status
                 if step.status.value == "completed":
                     indicator.config(text="✓", fg="green")  # Checkmark
-                    status_label.config(text="Completed", fg="green")
+                    status_label.config(text="已完成", fg="green")
                     details_btn.config(state="normal")  # Enable file viewing
                 elif step.status.value == "in_progress":
                     indicator.config(text="●", fg="orange")  # Filled circle
-                    status_label.config(text="In Progress", fg="orange")
+                    status_label.config(text="进行中", fg="orange")
                     details_btn.config(state="normal" if step.output_files else "disabled")
                 elif step.status.value == "failed":
                     indicator.config(text="✗", fg="red")  # X mark
-                    status_label.config(text="Failed", fg="red")
+                    status_label.config(text="失败", fg="red")
                     details_btn.config(state="normal" if step.output_files else "disabled")
                 else:
                     indicator.config(text="○", fg="gray")  # Empty circle
-                    status_label.config(text="Not Started", fg="gray")
+                    status_label.config(text="未开始", fg="gray")
                     details_btn.config(state="disabled")
                 
                 # Update file count with better formatting
-                file_count_text = f"📁 {len(step.output_files)} files"
+                file_count_text = f"📁 {len(step.output_files)} 个文件"
                 if len(step.output_files) > 0:
                     file_count.config(text=file_count_text, fg="blue")
                 else:
@@ -1397,11 +1400,13 @@ CONTENT GENERATED:
             
             # Update progress summary
             progress_summary = self.story_orchestrator.get_progress_summary()
-            workflow_id = str(progress_summary.get('workflow_id', 'Unknown'))
-            summary_text = f"Workflow: {workflow_id[:12]}... | "
-            summary_text += f"Progress: {progress_summary.get('completion_percentage', 0):.0f}% | "
-            summary_text += f"Current: {progress_summary.get('current_step') or 'Complete'} | "
-            summary_text += f"Files: {progress_summary.get('total_output_files', 0)}"
+            workflow_id = str(progress_summary.get('workflow_id', '未知'))
+            current_step = progress_summary.get('current_step')
+            current_step_text = STEP_NAMES_ZH.get(current_step, current_step) if current_step else "已完成"
+            summary_text = f"工作流：{workflow_id[:12]}… | "
+            summary_text += f"进度：{progress_summary.get('completion_percentage', 0):.0f}% | "
+            summary_text += f"当前：{current_step_text} | "
+            summary_text += f"文件：{progress_summary.get('total_output_files', 0)}"
             
             self.progress_summary.config(text=summary_text, fg="blue")
             
@@ -1409,26 +1414,26 @@ CONTENT GENERATED:
             
         except Exception as e:
             self.logger.error(f"Failed to refresh progress display: {e}")
-            self.progress_summary.config(text="Error loading progress", fg="red")
+            self.progress_summary.config(text="加载进度时出错", fg="red")
     
     def show_step_files(self, step_name):
         """Show detailed file information for a specific step."""
         if not AGENTIC_AVAILABLE or not self.story_orchestrator:
-            show_warning("Warning", "Agentic mode not available")
+            show_warning("警告", "智能编排模式不可用")
             return
         
         try:
             # Get current workflow state
             state = self.story_orchestrator.state_manager.load_state()
             if not state or step_name not in state.steps:
-                show_warning("Warning", f"No data available for {step_name} step")
+                show_warning("警告", f"没有{STEP_NAMES_ZH.get(step_name, step_name)}步骤的数据")
                 return
             
             step = state.steps[step_name]
             
             # Create popup window
             popup = tk.Toplevel(self.root)
-            popup.title(f"📁 {step_name.title()} Step Files")
+            popup.title(f"📁 {STEP_NAMES_ZH.get(step_name, step_name)}步骤文件")
             popup.geometry("600x400")
             popup.transient(self.root)
             popup.grab_set()
@@ -1443,25 +1448,28 @@ CONTENT GENERATED:
             
             # Step status and info
             status_color = "green" if step.status.value == "completed" else "orange" if step.status.value == "in_progress" else "red" if step.status.value == "failed" else "gray"
-            status_text = step.status.value.replace("_", " ").title()
+            status_text = {
+                "completed": "已完成", "in_progress": "进行中",
+                "failed": "失败", "not_started": "未开始",
+            }.get(step.status.value, step.status.value)
             
-            tk.Label(header_frame, text=f"📊 Status: {status_text}", 
+            tk.Label(header_frame, text=f"📊 状态：{status_text}",
                     font=("Arial", 12, "bold"), fg=status_color).pack(anchor="w")
             
             if step.quality_score:
-                tk.Label(header_frame, text=f"⭐ Quality Score: {step.quality_score:.2f}", 
+                tk.Label(header_frame, text=f"⭐ 质量评分：{step.quality_score:.2f}",
                         font=("Arial", 10)).pack(anchor="w")
             
             if step.started_at:
-                tk.Label(header_frame, text=f"🕐 Started: {step.started_at[:19].replace('T', ' ')}", 
+                tk.Label(header_frame, text=f"🕐 开始时间：{step.started_at[:19].replace('T', ' ')}",
                         font=("Arial", 9), fg="gray").pack(anchor="w")
             
             if step.completed_at:
-                tk.Label(header_frame, text=f"✅ Completed: {step.completed_at[:19].replace('T', ' ')}", 
+                tk.Label(header_frame, text=f"✅ 完成时间：{step.completed_at[:19].replace('T', ' ')}",
                         font=("Arial", 9), fg="gray").pack(anchor="w")
             
             # Files section
-            files_frame = tk.LabelFrame(main_frame, text="📁 Output Files", 
+            files_frame = tk.LabelFrame(main_frame, text="📁 输出文件",
                                       font=("Arial", 11, "bold"), padx=5, pady=5)
             files_frame.pack(fill="both", expand=True, pady=(10, 0))
             
@@ -1485,31 +1493,31 @@ CONTENT GENERATED:
                     full_path = os.path.join(self.get_output_dir(), file_path)
                     if os.path.exists(full_path):
                         size = os.path.getsize(full_path)
-                        size_str = f"{size:,} bytes" if size < 1024 else f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
+                        size_str = f"{size:,} 字节" if size < 1024 else f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
                         files_listbox.insert(tk.END, f"📄 {file_path} ({size_str})")
                     else:
-                        files_listbox.insert(tk.END, f"❌ {file_path} (missing)")
+                        files_listbox.insert(tk.END, f"❌ {file_path}（缺失）")
             else:
-                files_listbox.insert(tk.END, "No files generated yet")
+                files_listbox.insert(tk.END, "尚未生成文件")
             
             # Buttons frame
             buttons_frame = tk.Frame(main_frame)
             buttons_frame.pack(fill="x", pady=(10, 0))
             
             # Refresh files button
-            refresh_btn = tk.Button(buttons_frame, text="🔄 Refresh Files", 
+            refresh_btn = tk.Button(buttons_frame, text="🔄 刷新文件",
                                   command=lambda: self.refresh_step_files_popup(step_name, files_listbox),
                                   font=("Arial", 9))
             refresh_btn.pack(side="left", padx=(0, 5))
             
             # Open folder button
-            open_folder_btn = tk.Button(buttons_frame, text="📂 Open Folder", 
+            open_folder_btn = tk.Button(buttons_frame, text="📂 打开文件夹",
                                       command=lambda: self.open_step_folder(step_name),
                                       font=("Arial", 9))
             open_folder_btn.pack(side="left", padx=5)
             
             # Close button
-            close_btn = tk.Button(buttons_frame, text="❌ Close", 
+            close_btn = tk.Button(buttons_frame, text="❌ 关闭",
                                 command=popup.destroy, font=("Arial", 9))
             close_btn.pack(side="right")
             
@@ -1521,7 +1529,7 @@ CONTENT GENERATED:
             
         except Exception as e:
             self.logger.error(f"Failed to show step files for {step_name}: {e}")
-            show_error("Error", f"Failed to load file details: {e}")
+            show_error("错误", f"加载文件详情失败：{e}")
     
     def refresh_step_files_popup(self, step_name, listbox):
         """Refresh the files list in the popup."""
@@ -1543,12 +1551,12 @@ CONTENT GENERATED:
                         full_path = os.path.join(self.get_output_dir(), file_path)
                         if os.path.exists(full_path):
                             size = os.path.getsize(full_path)
-                            size_str = f"{size:,} bytes" if size < 1024 else f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
+                            size_str = f"{size:,} 字节" if size < 1024 else f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
                             listbox.insert(tk.END, f"📄 {file_path} ({size_str})")
                         else:
-                            listbox.insert(tk.END, f"❌ {file_path} (missing)")
+                            listbox.insert(tk.END, f"❌ {file_path}（缺失）")
                 else:
-                    listbox.insert(tk.END, "No files generated yet")
+                    listbox.insert(tk.END, "尚未生成文件")
             
             # Refresh main progress display too
             self.refresh_progress_display()
@@ -1583,36 +1591,36 @@ CONTENT GENERATED:
                 
         except Exception as e:
             self.logger.error(f"Failed to open folder for {step_name}: {e}")
-            show_error("Error", f"Failed to open folder: {e}")
+            show_error("错误", f"打开文件夹失败：{e}")
     
     def reset_workflow_state(self):
         """Reset the workflow state to start over."""
         if not AGENTIC_AVAILABLE or not self.story_orchestrator:
-            show_warning("Warning", "Agentic mode not available")
+            show_warning("警告", "智能编排模式不可用")
             return
         
         # Confirm with user
         import tkinter.messagebox as msgbox
         result = msgbox.askyesno(
-            "Reset Workflow",
-            "Are you sure you want to reset the entire workflow?\n\n"
-            "This will mark all steps as not started, but won't delete generated files."
+            "重置工作流",
+            "确定要重置整个工作流吗？\n\n"
+            "这会把所有步骤标记为未开始，但不会删除已经生成的文件。"
         )
         
         if result:
             try:
                 self.story_orchestrator.reset_workflow_state()
                 self.refresh_progress_display()
-                show_success("Success", "Workflow state reset successfully")
+                show_success("成功", "工作流状态已重置")
                 self.logger.info("🔄 Workflow state reset by user")
             except Exception as e:
                 self.logger.error(f"Failed to reset workflow state: {e}")
-                show_error("Error", f"Failed to reset workflow: {e}")
+                show_error("错误", f"重置工作流失败：{e}")
     
     def create_from_existing_work(self):
         """Create checkpoint state by scanning existing work in the output directory."""
         if not AGENTIC_AVAILABLE or not self.story_orchestrator:
-            show_warning("Warning", "Agentic mode not available")
+            show_warning("警告", "智能编排模式不可用")
             return
         
         try:
@@ -1633,27 +1641,27 @@ CONTENT GENERATED:
             total_files = sum(len(step.output_files) for step in state.steps.values())
             
             if completed_steps:
-                message = f"Found existing work:\n\n"
-                message += f"✅ Completed steps: {', '.join(completed_steps)}\n"
-                message += f"📁 Total files found: {total_files}\n\n"
+                message = "找到已有成果：\n\n"
+                message += f"✅ 已完成步骤：{', '.join(STEP_NAMES_ZH.get(step, step) for step in completed_steps)}\n"
+                message += f"📁 找到文件总数：{total_files}\n\n"
                 
                 if state.current_step:
-                    message += f"🎢 Next step: {state.current_step}"
+                    message += f"🎢 下一步：{STEP_NAMES_ZH.get(state.current_step, state.current_step)}"
                 else:
-                    message += f"🎆 All steps appear complete!"
+                    message += "🎆 所有步骤似乎都已完成！"
                 
-                show_success("Existing Work Detected", message)
+                show_success("检测到已有成果", message)
             else:
                 show_info(
-                    "No Existing Work", 
-                    "No existing workflow files found.\n\nYou can start a new workflow or generate content in the individual tabs first."
+                    "没有已有成果",
+                    "没有找到已有的工作流文件。\n\n可以启动新工作流，或先在各功能页中生成内容。"
                 )
             
             self.logger.info(f"🔍 Scanned existing work: {len(completed_steps)} steps completed, {total_files} files")
             
         except Exception as e:
             self.logger.error(f"Failed to scan existing work: {e}")
-            show_error("Error", f"Failed to scan existing work: {e}")
+            show_error("错误", f"扫描已有成果失败：{e}")
     
     def update_progress_on_step_completion(self, step_name: str):
         """Update progress display when a step completes."""

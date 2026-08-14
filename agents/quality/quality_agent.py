@@ -357,19 +357,19 @@ class QualityControlAgent(BaseAgent):
     def _create_improvement_prompt(self, content: str, recommendations: List[str], context: Dict) -> str:
         """Create prompt for content improvement."""
         return f"""
-Please improve the following content based on these specific recommendations:
+请根据以下具体建议改进内容：
 
-RECOMMENDATIONS:
+改进建议：
 {chr(10).join(f"- {rec}" for rec in recommendations)}
 
-ORIGINAL CONTENT:
+原始内容：
 {content}
 
-CONTEXT:
-Genre: {context.get('genre', 'general')}
-Scene type: {context.get('scene_type', 'general')}
+背景：
+类型：{context.get('genre', '通用')}
+场景类型：{context.get('scene_type', '通用')}
 
-Please provide the improved version that addresses the recommendations while maintaining the original intent and style.
+请在保持原意和原有风格的同时，给出落实上述建议的改进版本。
 """
     
     def _validate_content(self, content: str, context: Dict, standards: Dict) -> AgentResult:

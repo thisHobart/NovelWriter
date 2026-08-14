@@ -59,7 +59,7 @@ _current_model: str = DEFAULT_API_MODEL
 # NovelWriter's system prompt for API generations (A5: system prompts are
 # app-owned; the package default would otherwise apply).
 ROLE_DESCRIPTION = (
-    "You are a helpful fiction writing assistant. You will create original text only."
+    "你是一名乐于助人的小说写作助手。你只创作原创文本。"
 )
 
 # max_tokens for API generations (the CLI backends use their own defaults).
@@ -205,7 +205,7 @@ def send_prompt_gemini_direct(prompt, model_name="gemini-2.5-pro", max_output_to
 def send_prompt_claude_direct(prompt, model="claude-sonnet-4-5-20250929", max_tokens=8192,
                               temperature=0.7,
                               role_description=(
-                                  "You are a skilled creative writer focused on producing original fiction."
+                                  "你是一名擅长创作原创小说的专业创意写作者。"
                               )):
     """Send a prompt to Anthropic's Claude API directly (legacy helper)."""
     return send_prompt_claude(

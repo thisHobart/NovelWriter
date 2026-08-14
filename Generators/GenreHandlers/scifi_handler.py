@@ -25,7 +25,7 @@ class SciFiHandler(BaseGenreHandler):
     
     def get_faction_capitals_info(self, factions):
         """Extract capital system and planet information for sci-fi factions."""
-        faction_section = "\n## Faction Capitals:\n"
+        faction_section = "\n## 势力首都：\n"
         for faction in factions:
             faction_name = faction.get("faction_name", "Unknown Faction")
             # Find the capital system and planet
@@ -34,11 +34,11 @@ class SciFiHandler(BaseGenreHandler):
                 capital_planet = next((planet for planet in capital_system.get("habitable_planets", []) 
                                     if planet.get("is_capital", False)), None)
                 if capital_planet:
-                    faction_section += f"- {faction_name}: {capital_planet.get('name', 'N/A')} in {capital_system.get('name', 'N/A')}\n"
+                    faction_section += f"- {faction_name}：{capital_system.get('name', 'N/A')} 星系的 {capital_planet.get('name', 'N/A')}\n"
                     stats = capital_planet.get("stats", {})
-                    faction_section += f"  - Population: {stats.get('population', 'Unknown')}\n"
-                    faction_section += f"  - Climate: {stats.get('climate', 'Unknown')}\n"
-                    faction_section += f"  - Infrastructure: {stats.get('infrastructure', {}).get('description', 'Unknown')}\n"
+                    faction_section += f"  - 人口：{stats.get('population', '未知')}\n"
+                    faction_section += f"  - 气候：{stats.get('climate', '未知')}\n"
+                    faction_section += f"  - 基础设施：{stats.get('infrastructure', {}).get('description', '未知')}\n"
         return faction_section
     
     def get_character_attributes(self):
@@ -96,4 +96,4 @@ class SciFiHandler(BaseGenreHandler):
 
     def get_location_type_name(self):
         """Return the location type name for sci-fi."""
-        return "Planets" 
+        return "Planets"

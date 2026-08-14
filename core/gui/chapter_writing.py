@@ -5,6 +5,7 @@ import re
 from core.generation.helper_fns import open_file, write_file, save_prompt_to_file, read_json
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP # Import for section mapping
+from core.localization import zh_label
 
 class ChapterWriting:
     def __init__(self, parent, app):
@@ -16,21 +17,21 @@ class ChapterWriting:
         self.chapter_writing_frame.pack(expand=True, fill="both")
 
         # Title Label
-        self.title_label = ttk.Label(self.chapter_writing_frame, text="Write Chapters", font=("Helvetica", 16))
+        self.title_label = ttk.Label(self.chapter_writing_frame, text="撰写章节", font=("Helvetica", 16))
         self.title_label.pack(pady=10)
 
         # Entry to select chapter number
-        self.chapter_label = ttk.Label(self.chapter_writing_frame, text="Enter Chapter Number:")
+        self.chapter_label = ttk.Label(self.chapter_writing_frame, text="输入章节编号：")
         self.chapter_label.pack()
         self.chapter_number_entry = ttk.Entry(self.chapter_writing_frame)
         self.chapter_number_entry.pack(pady=5)
 
         # Button to write chapter/story - command will be set to dispatcher
-        self.write_prose_button = ttk.Button(self.chapter_writing_frame, text="Write", command=self._dispatch_prose_generation)
+        self.write_prose_button = ttk.Button(self.chapter_writing_frame, text="开始撰写", command=self._dispatch_prose_generation)
         self.write_prose_button.pack(pady=20)
 
         # Button to re-write chapter - initially hidden
-        self.rewrite_button = ttk.Button(self.chapter_writing_frame, text="Re-Write", command=self.rewrite_chapter)
+        self.rewrite_button = ttk.Button(self.chapter_writing_frame, text="重写", command=self.rewrite_chapter)
         # self.rewrite_button.pack(pady=20) # Keep hidden for now
         self.rewrite_button.pack_forget() # Explicitly hide
 
@@ -39,14 +40,14 @@ class ChapterWriting:
         separator.pack(fill='x', pady=20)
 
         # Automation section label
-        automation_label = ttk.Label(self.chapter_writing_frame, text="Automated Chapter Writing", font=("Helvetica", 14, "bold"))
+        automation_label = ttk.Label(self.chapter_writing_frame, text="自动章节写作", font=("Helvetica", 14, "bold"))
         automation_label.pack(pady=(10, 5))
 
         # Progress display frame
         self.progress_frame = ttk.Frame(self.chapter_writing_frame)
         self.progress_frame.pack(pady=5)
         
-        self.progress_label = ttk.Label(self.progress_frame, text="Progress: Analyzing...")
+        self.progress_label = ttk.Label(self.progress_frame, text="进度：正在分析…")
         self.progress_label.pack()
 
         # Automation buttons frame
@@ -54,15 +55,15 @@ class ChapterWriting:
         automation_buttons_frame.pack(pady=10)
 
         # Button to analyze chapters
-        self.analyze_button = ttk.Button(automation_buttons_frame, text="📊 Analyze Chapters", command=self.analyze_chapters)
+        self.analyze_button = ttk.Button(automation_buttons_frame, text="📊 分析章节", command=self.analyze_chapters)
         self.analyze_button.pack(side="left", padx=5)
 
         # Button to write next chapter
-        self.write_next_button = ttk.Button(automation_buttons_frame, text="✍️ Write Next Chapter", command=self.write_next_chapter)
+        self.write_next_button = ttk.Button(automation_buttons_frame, text="✍️ 撰写下一章", command=self.write_next_chapter)
         self.write_next_button.pack(side="left", padx=5)
 
         # Button to write all remaining chapters
-        self.write_all_button = ttk.Button(automation_buttons_frame, text="🚀 Write All Chapters", command=self.write_all_chapters)
+        self.write_all_button = ttk.Button(automation_buttons_frame, text="🚀 撰写全部章节", command=self.write_all_chapters)
         self.write_all_button.pack(side="left", padx=5)
 
         # Initialize progress display
@@ -95,14 +96,14 @@ class ChapterWriting:
         if story_length == "Short Story":
             self.chapter_label.pack_forget()
             self.chapter_number_entry.pack_forget()
-            self.write_prose_button.config(text="Write Short Story")
+            self.write_prose_button.config(text="撰写短篇小说")
             self.rewrite_button.pack_forget() # Ensure rewrite is hidden for short story
             if self.app and hasattr(self.app, 'logger'):
                 self.app.logger.debug("ChapterWriting: Configured for Short Story.")
         elif story_length in ["Novella", "Novel (Standard)", "Novel (Epic)"]:
             self.chapter_label.pack(pady=(10,0)) # Re-pack if previously hidden
             self.chapter_number_entry.pack(pady=5) # Re-pack
-            self.write_prose_button.config(text="Write Chapter")
+            self.write_prose_button.config(text="撰写章节")
             # self.rewrite_button.pack(pady=20) # Decide later if rewrite is shown for longer forms
             self.rewrite_button.pack_forget() # Keep hidden for now for long form too
             if self.app and hasattr(self.app, 'logger'):
@@ -110,7 +111,7 @@ class ChapterWriting:
         else: # Default or unknown
             self.chapter_label.pack(pady=(10,0)) 
             self.chapter_number_entry.pack(pady=5)
-            self.write_prose_button.config(text="Write")
+            self.write_prose_button.config(text="开始撰写")
             self.rewrite_button.pack_forget()
             if self.app and hasattr(self.app, 'logger'):
                 self.app.logger.debug(f"ChapterWriting: Configured for default/unknown story length '{story_length}'.")
@@ -119,7 +120,7 @@ class ChapterWriting:
         """Dispatches to the correct prose generation method based on story length."""
         if not (self.app and hasattr(self.app, 'param_ui')):
             self.app.logger.error("ChapterWriting: Parameters.py not available for dispatching prose generation.")
-            show_error("Error", "Cannot determine story parameters for prose generation.")
+            show_error("错误", "无法确定正文生成所需的故事参数。")
             return
 
         params = self.app.param_ui.get_current_parameters()
@@ -132,7 +133,7 @@ class ChapterWriting:
             self.write_chapter() # Existing function, to be refactored
         else:
             self.app.logger.error(f"ChapterWriting: Unknown story length '{story_length}' for prose generation.")
-            show_error("Error", f"ChapterWriting: Unsupported story length '{story_length}'.")
+            show_error("错误", f"章节写作不支持故事篇幅“{zh_label(story_length)}”。")
             
     def _write_short_story_prose(self):
         """Generates the full prose for a short story, scene by scene."""
@@ -143,12 +144,12 @@ class ChapterWriting:
 
         try:
             parameters = self.app.param_ui.get_current_parameters()
-            novel_title = parameters.get("novel_title", "Untitled Short Story")
+            novel_title = parameters.get("novel_title", "未命名短篇小说")
             selected_structure_name = parameters.get("story_structure")
 
             if not selected_structure_name:
                 self.app.logger.error("No story structure selected. Cannot determine input file for short story prose.")
-                show_error("Error", "No story structure selected in parameters.")
+                show_error("错误", "作品参数中尚未选择故事结构。")
                 return
 
             # 1. Determine and Read Input File (scene plan for the short story)
@@ -161,15 +162,15 @@ class ChapterWriting:
                 scene_plan_content = open_file(scene_plan_filepath)
                 if not scene_plan_content.strip():
                     self.app.logger.error(f"Scene plan file '{scene_plan_filename}' is empty.")
-                    show_error("Error", f"The scene plan file '{scene_plan_filename}' is empty. Cannot generate prose.")
+                    show_error("错误", f"场景规划文件“{scene_plan_filename}”为空，无法生成正文。")
                     return
             except FileNotFoundError:
                 self.app.logger.error(f"Scene plan file not found: {scene_plan_filepath}")
-                show_error("Error", f"Scene plan file '{scene_plan_filename}' not found. Please generate scenes first via the 'Scene Planning' tab.")
+                show_error("错误", f"找不到场景规划文件“{scene_plan_filename}”，请先在“场景规划”页生成场景。")
                 return
             except Exception as e:
                 self.app.logger.error(f"Error reading scene plan file '{scene_plan_filepath}': {e}", exc_info=True)
-                show_error("Error", f"Could not read the scene plan file: {e}")
+                show_error("错误", f"无法读取场景规划文件：{e}")
                 return
 
             # 2. Parse Individual Scenes from the scene_plan_content
@@ -182,7 +183,7 @@ class ChapterWriting:
             # --- New parsing logic using re.finditer --- 
             parsed_scenes = []
             # Pattern to match both colon and dash formats with optional space:
-            heading_pattern = r'^## Scene \d+\s*[:\-].*$' 
+            heading_pattern = r'^#{2,}\s*(?:Scene|场景)\s*\d+\s*[:：\-].*$'
             self.app.logger.debug(f"Using ULTRA-SPECIFIC heading_pattern: {heading_pattern}")
 
             # Log the beginning of the content that finditer will process
@@ -233,7 +234,7 @@ class ChapterWriting:
             
             if not parsed_scenes:
                 self.app.logger.error(f"Could not parse any scenes from '{scene_plan_filename}'. Check scene heading format (e.g., '### Scene 1: Title').")
-                show_error("Error", "Could not parse scenes from the plan. Ensure scenes start with '### Scene X: ...' or '**Scene X: ...**'.")
+                show_error("错误", "无法从规划中解析场景，请确保场景以“### 场景 X：...”或“## 场景 X - ...”开头。")
                 return
 
             self.app.logger.info(f"Successfully parsed {len(parsed_scenes)} scenes from '{scene_plan_filename}'.")
@@ -253,7 +254,7 @@ class ChapterWriting:
             except Exception as e:
                 self.app.logger.warning(f"Could not load lore for short story prose: {e}")
 
-            character_roster_summary = "Character roster not available."
+            character_roster_summary = "没有可用的人物名单。"
             try:
                 characters_json_path = os.path.join(output_dir, "characters.json")
                 if os.path.exists(characters_json_path):
@@ -261,27 +262,27 @@ class ChapterWriting:
                     if characters_data and "characters" in characters_data:
                         summaries = []
                         for char_info in characters_data["characters"]:
-                            details = [f"\n\n Name: {char_info.get('name', 'N/A')}\n"]
-                            details.append(f" - Role: {char_info.get('role', 'N/A')}\n")
-                            details.append(f" - Gender: {char_info.get('gender', 'N/A')}\n")
-                            details.append(f" - Age: {char_info.get('age', 'N/A')}\n")
-                            details.append(f" - Appearance: {char_info.get('appearance_summary', 'N/A')}\n")
+                            details = [f"\n\n姓名：{char_info.get('name', '无')}\n"]
+                            details.append(f" - 角色：{char_info.get('role', '无')}\n")
+                            details.append(f" - 性别：{char_info.get('gender', '无')}\n")
+                            details.append(f" - 年龄：{char_info.get('age', '无')}\n")
+                            details.append(f" - 外貌：{char_info.get('appearance_summary', '无')}\n")
                             goals = char_info.get('goals', [])
-                            if goals: details.append(f" -    Primary Goal: {goals[0] if goals else 'N/A'}\n")
+                            if goals: details.append(f" - 主要目标：{goals[0] if goals else '无'}\n")
                             strengths = char_info.get('strengths', [])
-                            if strengths: details.append(f" -    Key Strength: {strengths[0] if strengths else 'N/A'}\n")
+                            if strengths: details.append(f" - 主要优点：{strengths[0] if strengths else '无'}\n")
                             flaws = char_info.get('flaws', [])
-                            if flaws: details.append(f" -    Key Flaw: {flaws[0] if flaws else 'N/A'}\n")
+                            if flaws: details.append(f" - 主要缺点：{flaws[0] if flaws else '无'}\n")
                             backstory = char_info.get('backstory_summary', '')
-                            if backstory: details.append(f" -    Backstory Summary: {backstory}")
+                            if backstory: details.append(f" - 背景摘要：{backstory}")
                             summaries.append("\n".join(details))
                         if summaries:
-                            character_roster_summary = "Key Characters:\n" + "\n".join(summaries)
+                            character_roster_summary = "主要人物：\n" + "\n".join(summaries)
                             self.app.logger.info(f"Loaded and summarized character roster from {characters_json_path}")
             except Exception as e:
                 self.app.logger.warning(f"Could not load or process character roster from {characters_json_path}: {e}", exc_info=True)
             # --- Load Faction Summary ---
-            faction_summary_info = "Faction information not available."
+            faction_summary_info = "没有可用的势力信息。"
             try:
                 factions_json_path = os.path.join(output_dir, "story", "lore", "factions.json")
                 if os.path.exists(factions_json_path):
@@ -289,13 +290,13 @@ class ChapterWriting:
                     if factions_data: # Assuming factions_data is a list of faction dicts
                         summaries = []
                         for faction_info in factions_data[:5]: # Limit to top 5 for prompt brevity
-                            details = [f"\n\n Faction Name: {faction_info.get('faction_name', 'N/A')}\n"]
-                            details.append(f" - Profile: {faction_info.get('faction_profile', 'N/A')}\n")
+                            details = [f"\n\n势力名称：{faction_info.get('faction_name', '无')}\n"]
+                            details.append(f" - 简介：{faction_info.get('faction_profile', '无')}\n")
                             traits = faction_info.get('primary_traits', [])
-                            if traits: details.append(f" - Primary Traits: {', '.join(traits)}\n")
+                            if traits: details.append(f" - 主要特征：{', '.join(traits)}\n")
                             summaries.append("\n".join(details))
                         if summaries:
-                            faction_summary_info = "Key Factions Overview:\n" + "\n".join(summaries)
+                            faction_summary_info = "主要势力概览：\n" + "\n".join(summaries)
                             self.app.logger.info(f"Loaded and summarized faction info from {factions_json_path}")
             except Exception as e:
                 self.app.logger.warning(f"Could not load or process faction info from {factions_json_path}: {e}", exc_info=True)
@@ -305,36 +306,36 @@ class ChapterWriting:
             for scene_index, single_scene_description in enumerate(parsed_scenes):
                 self.app.logger.info(f"Processing Scene {scene_index + 1}/{len(parsed_scenes)} for prose generation.")
                 
-                title_line = f"You are an AI assistant helping to write a science fiction short story titled '{novel_title}'."
-                if not novel_title or novel_title == "Untitled Short Story":
-                    title_line = "You are an AI assistant helping to write a science fiction short story."
+                title_line = f"请撰写科幻短篇小说《{novel_title}》中的一个场景。"
+                if not novel_title or novel_title == "未命名短篇小说":
+                    title_line = "请撰写一部科幻短篇小说中的一个场景。"
 
                 prompt_lines = [
                     title_line,
-                    f"The story follows the '{selected_structure_name}' framework.",
-                    "I will provide you with the description for a single scene. Please write the full prose for this scene.",
-                    "Focus ONLY on the current scene description provided below. Do not try to write other scenes or summarize the story.",
-                    "\n## Current Scene Description:",
+                    f"故事采用“{zh_label(selected_structure_name)}”框架。",
+                    "下面会提供单个场景的描述，请写出这个场景的完整正文。",
+                    "只聚焦下方当前场景，不要写其他场景，也不要概括整个故事。",
+                    "\n## 当前场景描述：",
                     single_scene_description,
-                    "\n## Overall Story Context (for your reference):"
+                    "\n## 整体故事背景（供参考）："
                 ]
-                if novel_title and novel_title != "Untitled Short Story":
-                    prompt_lines.append(f"Title: {novel_title}")
-                prompt_lines.append(f"Structure: {selected_structure_name}")
-                prompt_lines.append(f"Full Universe Lore: {lore_content}") # Full lore
+                if novel_title and novel_title != "未命名短篇小说":
+                    prompt_lines.append(f"标题：{novel_title}")
+                prompt_lines.append(f"结构：{zh_label(selected_structure_name)}")
+                prompt_lines.append(f"完整世界观：{lore_content}")
                 prompt_lines.append(f"\n{character_roster_summary}") # Detailed character roster
                 prompt_lines.append(f"\n{faction_summary_info}")   # Faction summary
 
                 prompt_lines.extend([
-                    "\n## Instructions for Writing This Scene:",
-                    " - Write engaging and descriptive prose for this scene.",
-                    " - Include character actions, dialogue (if appropriate for the scene description), thoughts, and emotions, consistent with their profiles in the roster.",
-                    " - Ensure the setting is clear.",
-                    " - The scene should flow logically and advance the plot or character development as indicated in its description.",
-                    " - Adhere strictly to the provided 'Full Universe Lore Context' for all world-building details (e.g., planetary features, technology, species). Do not introduce new significant details not found in the lore or this scene's description.",
-                    " - If specific details (e.g., number of suns/moons for a planet) are not present in the lore, use generic descriptions (e.g., 'the sun set') or omit such details rather than inventing new canonical facts.",
-                    " - Provide ONLY the prose for this scene. Do NOT add any extra commentary, scene numbers, or titles yourself. I will handle the final assembly.",
-                    " - Do NOT use backticks."
+                    "\n## 本场景写作要求：",
+                    " - 写出有吸引力、富有描写性的场景正文。",
+                    " - 根据人物名单中的设定，写出人物行动、对白（如适合本场景）、思想和情绪。",
+                    " - 清楚交代场景环境。",
+                    " - 场景应衔接合理，并按描述推动情节或人物发展。",
+                    " - 所有世界构建细节（如行星特征、技术、物种）必须严格遵守所提供的完整世界观，不要加入世界观或场景描述中不存在的重要新设定。",
+                    " - 若世界观没有给出某项细节（如行星的太阳/月亮数量），请使用普通描述（如“太阳落下”）或省略，不要编造新的固定设定。",
+                    " - 只提供本场景正文，不要附加评论、场景编号或标题，最终组装由程序处理。",
+                    " - 不要使用代码围栏。"
                 ])
                 prompt = "\n".join(prompt_lines)
 
@@ -350,7 +351,7 @@ class ChapterWriting:
                     scene_prose = send_prompt(prompt, model=selected_model)
                     if not scene_prose or not scene_prose.strip():
                         self.app.logger.warning(f"LLM returned empty or whitespace-only response for Scene {scene_index + 1}.")
-                        scene_prose = f"[[[LLM CAME BACK BLANK FOR SCENE {scene_index + 1}]]]" # Placeholder - corrected extra brace
+                        scene_prose = f"[[[大模型未返回第 {scene_index + 1} 个场景的正文]]]"
                     else:
                         self.app.logger.info(f"Received prose for Scene {scene_index + 1}. Length: {len(scene_prose)} chars.")
                     all_generated_prose.append(scene_prose)
@@ -363,7 +364,7 @@ class ChapterWriting:
             # --- Concatenate and Save Full Story ---
             if not all_generated_prose:
                 self.app.logger.error("No prose was generated for any scene. Cannot save short story.")
-                show_error("Error", "No prose could be generated for the short story.")
+                show_error("错误", "未能为短篇小说生成任何正文。")
                 return
 
             full_story_content = "\n\n---\n\n".join(all_generated_prose) # Join scenes with a separator
@@ -379,11 +380,11 @@ class ChapterWriting:
                 # show_success("Success", f"Short story prose generated and saved to {output_story_filename}")
             except Exception as e_write:
                 self.app.logger.error(f"Error writing full short story to file '{output_story_filepath}': {e_write}", exc_info=True)
-                show_error("Error", f"Failed to save the complete short story: {e_write}")
+                show_error("错误", f"保存完整短篇小说失败：{e_write}")
 
         except Exception as e:
             self.app.logger.error(f"An unexpected error occurred in _write_short_story_prose: {e}", exc_info=True)
-            show_error("Error", f"An unexpected error occurred: {str(e)}")
+            show_error("错误", f"发生意外错误：{str(e)}")
 
     def normalize_markdown(self, scenes):
         # Match scene headings specifically (e.g., **Scene 1: ...**)
@@ -399,7 +400,7 @@ class ChapterWriting:
         try:
             target_chapter_number_global = int(self.chapter_number_entry.get())
             if target_chapter_number_global <= 0:
-                show_error("Error", "Chapter number must be a positive integer.")
+                show_error("错误", "章节编号必须是正整数。")
                 return
             self.app.logger.info(f"Target chapter (global): {target_chapter_number_global}")
 
@@ -411,7 +412,7 @@ class ChapterWriting:
             try:
                 if not os.path.exists(parameters_file_path):
                     self.app.logger.error(f"Parameters file not found: {parameters_file_path}. Cannot determine structure for chapter writing.")
-                    show_error("Error", f"Parameters file 'parameters.txt' not found in {output_dir}.")
+                    show_error("错误", f"在 {output_dir} 中找不到参数文件 parameters.txt。")
                     return
                 with open(parameters_file_path, "r", encoding="utf-8") as f:
                     for line in f:
@@ -433,7 +434,7 @@ class ChapterWriting:
             sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
             if not sections_to_process:
                 self.app.logger.error(f"Section definitions for '{selected_structure_name}' not found in STRUCTURE_SECTIONS_MAP.")
-                show_error("Error", f"Cannot find structure definition for '{selected_structure_name}'.")
+                show_error("错误", f"找不到故事结构“{zh_label(selected_structure_name)}”的定义。")
                 return
 
             current_section_name_for_chapter = None
@@ -452,7 +453,11 @@ class ChapterWriting:
                 try:
                     outline_content = open_file(chapter_outline_input_filepath)
                     # Count chapters in this section's outline
-                    chapters_in_this_section_outline = re.findall(r"^(?:\*{2,}|#{2,})\s*Chapter\s*(\d+)(?:[:\s\S]*?)?$", outline_content, re.MULTILINE | re.IGNORECASE)
+                    chapters_in_this_section_outline = re.findall(
+                        r"^(?:\*{2,}|#{2,})\s*(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:[:：\s\S]*?)?$",
+                        outline_content,
+                        re.MULTILINE | re.IGNORECASE,
+                    )
                     num_chapters_in_section = len(chapters_in_this_section_outline)
                     self.app.logger.debug(f"Section '{section_name_iter}' has {num_chapters_in_section} chapters in its outline.")
 
@@ -473,7 +478,7 @@ class ChapterWriting:
             
             if not current_section_name_for_chapter:
                 self.app.logger.error(f"Could not determine which section target chapter {target_chapter_number_global} belongs to. Total chapters counted: {chapter_count_accumulator}.")
-                show_error("Error", f"Could not locate chapter {target_chapter_number_global} within the known structure sections. Ensure all chapter outlines are generated.")
+                show_error("错误", f"无法在已知结构阶段中定位第 {target_chapter_number_global} 章，请确保所有章节大纲均已生成。")
                 return
 
             # 3. Construct the Correct Filename and Path for the detailed scene plan of the target chapter
@@ -491,15 +496,15 @@ class ChapterWriting:
                 scenes_content_for_chapter = open_file(scene_plan_filepath)
                 if not scenes_content_for_chapter.strip():
                     self.app.logger.error(f"Scene plan file '{scene_plan_filepath}' is empty.")
-                    show_error("Error", f"Scene plan file for Chapter {target_chapter_number_global} is empty.")
+                    show_error("错误", f"第 {target_chapter_number_global} 章的场景规划文件为空。")
                     return
             except FileNotFoundError:
                 self.app.logger.error(f"Scene plan file not found: {scene_plan_filepath}")
-                show_error("Error", f"Scene plan file for Chapter {target_chapter_number_global} not found in '{scene_plans_subdir_name}'. Ensure scenes are planned.")
+                show_error("错误", f"在“{scene_plans_subdir_name}”中找不到第 {target_chapter_number_global} 章的场景规划，请先规划场景。")
                 return
             except Exception as e_read_scenes:
                 self.app.logger.error(f"Error reading scene plan file '{scene_plan_filepath}': {e_read_scenes}", exc_info=True)
-                show_error("Error", f"Could not read scene plan for Chapter {target_chapter_number_global}: {e_read_scenes}")
+                show_error("错误", f"无法读取第 {target_chapter_number_global} 章的场景规划：{e_read_scenes}")
                 return
 
             # --- Original logic from here, using scenes_content_for_chapter --- 
@@ -519,7 +524,7 @@ class ChapterWriting:
 
             # Detect the number of scenes using regex from the content of the specific chapter file
             # Use the same robust pattern as _write_short_story_prose
-            scene_heading_pattern_for_chapter = r'^## Scene \d+:.*$'
+            scene_heading_pattern_for_chapter = r'^#{2,}\s*(?:Scene|场景)\s*\d+\s*[:：\-].*$'
             scene_details_list = [] # Will store (heading, body) tuples or just full scene content strings
             
             # Using re.finditer to parse scenes within this chapter's plan
@@ -531,7 +536,7 @@ class ChapterWriting:
 
             if not scene_matches_in_chapter:
                 self.app.logger.error(f"No scene headings found within {scene_plan_filepath}. Cannot process chapter.")
-                show_error("Error", f"No individual scenes found in the plan for Chapter {target_chapter_number_global}.")
+                show_error("错误", f"第 {target_chapter_number_global} 章的规划中没有找到独立场景。")
                 return
             
             # Construct scene_details_list from finditer matches (heading + body for each scene)
@@ -548,7 +553,7 @@ class ChapterWriting:
             self.app.logger.info(f"Successfully parsed {len(scene_details_list)} scenes for Chapter {target_chapter_number_global} from its plan file.")
 
             # --- Load Character Roster Summary ---
-            character_roster_summary = "Character roster not available."
+            character_roster_summary = "没有可用的人物名单。"
             try:
                 characters_json_path = os.path.join(output_dir, "story", "lore", "characters.json")
                 if os.path.exists(characters_json_path):
@@ -557,27 +562,27 @@ class ChapterWriting:
                         # (Identical summarization logic as in _write_short_story_prose)
                         summaries = []
                         for char_info in characters_data["characters"]:
-                            details = [f"\n\n Name: {char_info.get('name', 'N/A')}\n"]
-                            details.append(f" - Role: {char_info.get('role', 'N/A')}\n")
-                            details.append(f" - Gender: {char_info.get('gender', 'N/A')}\n")
-                            details.append(f" - Age: {char_info.get('age', 'N/A')}\n")
-                            details.append(f" - Appearance: {char_info.get('appearance_summary', 'N/A')}\n")
+                            details = [f"\n\n姓名：{char_info.get('name', '无')}\n"]
+                            details.append(f" - 角色：{char_info.get('role', '无')}\n")
+                            details.append(f" - 性别：{char_info.get('gender', '无')}\n")
+                            details.append(f" - 年龄：{char_info.get('age', '无')}\n")
+                            details.append(f" - 外貌：{char_info.get('appearance_summary', '无')}\n")
                             goals = char_info.get('goals', [])
-                            if goals: details.append(f" -    Primary Goal: {goals[0] if goals else 'N/A'}\n")
+                            if goals: details.append(f" - 主要目标：{goals[0] if goals else '无'}\n")
                             strengths = char_info.get('strengths', [])
-                            if strengths: details.append(f" -    Key Strength: {strengths[0] if strengths else 'N/A'}\n")
+                            if strengths: details.append(f" - 主要优点：{strengths[0] if strengths else '无'}\n")
                             flaws = char_info.get('flaws', [])
-                            if flaws: details.append(f" -    Key Flaw: {flaws[0] if flaws else 'N/A'}\n")
+                            if flaws: details.append(f" - 主要缺点：{flaws[0] if flaws else '无'}\n")
                             backstory = char_info.get('backstory_summary', '')
-                            if backstory: details.append(f" -    Backstory Summary: {backstory}")
+                            if backstory: details.append(f" - 背景摘要：{backstory}")
                             summaries.append("\n".join(details))
                         if summaries:
-                            character_roster_summary = "Key Characters:\n" + "\n".join(summaries)
+                            character_roster_summary = "主要人物：\n" + "\n".join(summaries)
                             self.app.logger.info(f"Loaded character roster for Chapter {target_chapter_number_global}.")
             except Exception as e_char_load:
                 self.app.logger.warning(f"Could not load/process character roster for Chapter {target_chapter_number_global}: {e_char_load}", exc_info=True)
 
-            faction_summary_info = "Faction information not available."
+            faction_summary_info = "没有可用的势力信息。"
             try:
                 factions_json_path = os.path.join(output_dir, "story", "lore", "factions.json")
                 if os.path.exists(factions_json_path):
@@ -586,13 +591,13 @@ class ChapterWriting:
                         # (Identical summarization logic as in _write_short_story_prose)
                         summaries = []
                         for faction_info in factions_data[:5]: 
-                            details = [f"\n\n Faction Name: {faction_info.get('faction_name', 'N/A')}\n"]
-                            details.append(f" - Profile: {faction_info.get('faction_profile', 'N/A')}\n")
+                            details = [f"\n\n势力名称：{faction_info.get('faction_name', '无')}\n"]
+                            details.append(f" - 简介：{faction_info.get('faction_profile', '无')}\n")
                             traits = faction_info.get('primary_traits', [])
-                            if traits: details.append(f" - Primary Traits: {', '.join(traits)}\n")
+                            if traits: details.append(f" - 主要特征：{', '.join(traits)}\n")
                             summaries.append("\n".join(details))
                         if summaries:
-                            faction_summary_info = "Key Factions Overview:\n" + "\n".join(summaries)
+                            faction_summary_info = "主要势力概览：\n" + "\n".join(summaries)
                             self.app.logger.info(f"Loaded faction summary for Chapter {target_chapter_number_global}.")
             except Exception as e_faction_load:
                 self.app.logger.warning(f"Could not load/process faction info for Chapter {target_chapter_number_global}: {e_faction_load}", exc_info=True)
@@ -617,25 +622,25 @@ class ChapterWriting:
                 # Generate prompt for the API request
                 # This prompt needs to be updated to be similar to _write_short_story_prose's prompt
                 prompt_lines = [
-                    f"You are an AI assistant helping to write Chapter {target_chapter_number_global} of a science fiction {story_length.lower()}.",
-                    f"This story follows the '{selected_structure_name}' framework. We are currently in the '{current_section_name_for_chapter}' part of this structure.",
-                    f"I will provide you with the detailed plan for a single scene within Chapter {target_chapter_number_global}. Please write the full prose for THIS SCENE ONLY.",
-                    "Do not try to write other scenes or summarize the chapter.",
-                    f"\n## Current Scene Description (Scene {scene_idx_in_chapter} of Chapter {target_chapter_number_global}):",
+                    f"请撰写科幻{zh_label(story_length)}第 {target_chapter_number_global} 章中的一个场景。",
+                    f"故事采用“{zh_label(selected_structure_name)}”框架，当前位于“{zh_label(current_section_name_for_chapter)}”部分。",
+                    f"下面会提供第 {target_chapter_number_global} 章内单个场景的详细规划，请只写这个场景的完整正文。",
+                    "不要写其他场景，也不要概括本章。",
+                    f"\n## 当前场景描述（第 {target_chapter_number_global} 章，场景 {scene_idx_in_chapter}）：",
                     single_scene_detail_from_plan, # This is the full content for one scene from the plan file
-                    "\n## Overall Story Context (for your reference):",
-                    f"Full Universe Lore: {lore_content}",
+                    "\n## 整体故事背景（供参考）：",
+                    f"完整世界观：{lore_content}",
                     f"\n{character_roster_summary}",
                     f"\n{faction_summary_info}",
-                    "\n## Instructions for Writing This Scene:",
-                    " - Write engaging and descriptive prose for this scene.",
-                    " - Include character actions, dialogue (if appropriate for the scene description), thoughts, and emotions, consistent with their profiles in the roster.",
-                    " - Ensure the setting is clear.",
-                    " - The scene should flow logically and advance the plot or character development as indicated in its description.",
-                    " - Adhere strictly to the provided 'Full Universe Lore Context' for all world-building details (e.g., planetary features, technology, species). Do not introduce new significant details not found in the lore or this scene's description.",
-                    " - If specific details (e.g., number of suns/moons for a planet) are not present in the lore, use generic descriptions (e.g., 'the sun set') or omit such details rather than inventing new canonical facts.",
-                    " - Provide ONLY the prose for this scene. Do NOT add any extra commentary, scene numbers, or titles yourself. I will handle the final assembly of the chapter.",
-                    " - Do NOT use backticks."
+                    "\n## 本场景写作要求：",
+                    " - 写出有吸引力、富有描写性的场景正文。",
+                    " - 根据人物名单中的设定，写出人物行动、对白（如适合本场景）、思想和情绪。",
+                    " - 清楚交代场景环境。",
+                    " - 场景应衔接合理，并按描述推动情节或人物发展。",
+                    " - 所有世界构建细节（如行星特征、技术、物种）必须严格遵守所提供的完整世界观，不要加入世界观或场景描述中不存在的重要新设定。",
+                    " - 若世界观没有给出某项细节（如行星的太阳/月亮数量），请使用普通描述（如“太阳落下”）或省略，不要编造新的固定设定。",
+                    " - 只提供本场景正文，不要附加评论、场景编号或标题，最终章节组装由程序处理。",
+                    " - 不要使用代码围栏。"
                 ]
                 prompt = "\n".join(prompt_lines)
 
@@ -651,7 +656,7 @@ class ChapterWriting:
                     scene_prose_text = send_prompt(prompt, model=selected_model)
                     if not scene_prose_text or not scene_prose_text.strip():
                         self.app.logger.warning(f"LLM returned empty response for Chapter {target_chapter_number_global}, Scene {scene_idx_in_chapter}.")
-                        scene_prose_text = f"[[[LLM CAME BACK BLANK FOR CHAPTER {target_chapter_number_global}, SCENE {scene_idx_in_chapter}]]]"
+                        scene_prose_text = f"[[[大模型未返回第 {target_chapter_number_global} 章第 {scene_idx_in_chapter} 个场景的正文]]]"
                     else:
                         self.app.logger.info(f"Received prose for Chapter {target_chapter_number_global}, Scene {scene_idx_in_chapter}. Length: {len(scene_prose_text)} chars.")
                     generated_scenes_for_chapter.append(scene_prose_text)
@@ -678,10 +683,10 @@ class ChapterWriting:
 
         except ValueError:
             self.app.logger.error("Invalid chapter number entered.", exc_info=True) # Log before showing messagebox
-            show_error("Error", "Please enter a valid chapter number.")
+            show_error("错误", "请输入有效的章节编号。")
         except Exception as e_main:
             self.app.logger.error(f"Failed to write chapter {target_chapter_number_global if 'target_chapter_number_global' in locals() else 'UNKNOWN'}: {e_main}", exc_info=True)
-            show_error("Error", f"Failed to write chapter: {str(e_main)}")
+            show_error("错误", f"撰写章节失败：{str(e_main)}")
 
     def rewrite_chapter(self):
         # Ensure the `try` block is correctly paired with an `except` or `finally`
@@ -712,11 +717,11 @@ class ChapterWriting:
                     chapter_file_in = chapter_file.read()
             except FileNotFoundError:
                 self.app.logger.error(f"Chapter file to rewrite not found: {chapter_filepath_input}")
-                show_error("Error", f"Chapter file '{chapter_filename_input}' not found to rewrite.")
+                show_error("错误", f"找不到待重写的章节文件“{chapter_filename_input}”。")
                 return
             except Exception as e_read_rewrite:
                 self.app.logger.error(f"Error reading chapter file {chapter_filepath_input} for rewrite: {e_read_rewrite}", exc_info=True)
-                show_error("Error", f"Could not read chapter for rewrite: {e_read_rewrite}")
+                show_error("错误", f"无法读取待重写章节：{e_read_rewrite}")
                 return
 
             self.app.logger.info(f"Trying to re-write chapter {chapter_number}....") # Changed from print
@@ -725,21 +730,21 @@ class ChapterWriting:
             # similar to _write_short_story_prose and the refactored write_chapter to ensure consistency.
             # For now, it uses a simpler prompt structure.
             prompt = (
-                f"Please read and then re-write this scene of Chapter {chapter_number} in my novel.\n"
-                f"The scene is far too short and only a rough draft of what I need. Please make it much longer."
-                f"Please also check that the narrative is engaging, includes vivid descriptions, and develops the characters and plot as described.\n"
-                f"As an English Professor in storytelling, Ask yourself 'what is missing?'"
-                f"As a reminder, here are the story parameters:\n\n"
+                f"请阅读并重写小说第 {chapter_number} 章的这一场景。\n"
+                "当前场景太短，只是一份粗略草稿，请大幅扩写。"
+                "同时检查叙事是否有吸引力、描写是否生动，并按原有规划发展人物和情节。\n"
+                "请以叙事写作教授的视角思考：还缺少什么？"
+                "以下是故事参数，供提醒：\n\n"
                 f"{parameters}\n\n"
-                f"When reading the text please check if there is there anything missing from the text? Such as:\n"
-                f"* location descriptions (as appropriate for the genre)\n"
-                f"* character dialogue\n"
-                f"* character descriptions\n"
-                f"* character thoughts and emotions\n"
-                f"* character introspections (what are the main characters thinking about?)\n"
-                f"* character actions that progress the story\n"
-                f"* character interactions beyond dialogue\n\n"
-                f"Here is the text for this chapter:\n\n"
+                "阅读正文时，请检查是否缺少以下内容：\n"
+                "* 符合类型特点的地点描写\n"
+                "* 人物对白\n"
+                "* 人物描写\n"
+                "* 人物思想和情绪\n"
+                "* 人物内省（主要人物在思考什么）\n"
+                "* 推动故事的人物行动\n"
+                "* 对白之外的人物互动\n\n"
+                "以下是本章正文：\n\n"
                 f"{chapter_file_in}"
             )
 
@@ -752,14 +757,14 @@ class ChapterWriting:
             
             write_file(output_rewrite_filepath, response)
             self.app.logger.info(f"Chapter {chapter_number} re-written and saved successfully to: {output_rewrite_filepath}") # Changed from print
-            show_success("Success", f"Chapter {chapter_number} RE-saved successfully to {output_rewrite_filename}")
+            show_success("成功", f"第 {chapter_number} 章已重写并保存到 {output_rewrite_filename}")
 
         except ValueError:
             self.app.logger.error("Invalid chapter number entered for rewrite.", exc_info=True)
-            show_error("Error", "Please enter a valid chapter number for rewrite.")
+            show_error("错误", "请输入有效的待重写章节编号。")
         except Exception as e_rewrite_main:
             self.app.logger.error(f"Failed to RE-write chapter {chapter_number if 'chapter_number' in locals() else 'UNKNOWN'}: {e_rewrite_main}", exc_info=True)
-            show_error("Error", f"Failed to RE-write chapter: {str(e_rewrite_main)}")
+            show_error("错误", f"重写章节失败：{str(e_rewrite_main)}")
 
     # ===== AUTOMATED CHAPTER WRITING METHODS =====
     
@@ -778,13 +783,13 @@ class ChapterWriting:
             next_chapter = progress.get('next_chapter')
             
             if total > 0:
-                status_text = f"Progress: {completed}/{total} chapters ({percentage:.1f}%)"
+                status_text = f"进度：已完成 {completed}/{total} 章（{percentage:.1f}%）"
                 if next_chapter:
-                    status_text += f" - Next: Chapter {next_chapter}"
+                    status_text += f" - 下一章：第 {next_chapter} 章"
                 else:
-                    status_text += " - All Complete! ✅"
+                    status_text += " - 已全部完成！✅"
             else:
-                status_text = "Progress: No chapters found (run story structure first)"
+                status_text = "进度：未找到章节（请先生成故事结构）"
                 
             self.progress_label.config(text=status_text)
             
@@ -796,14 +801,14 @@ class ChapterWriting:
             self.write_all_button.config(state="normal" if has_remaining else "disabled")
             
         except Exception as e:
-            self.progress_label.config(text=f"Progress: Error - {str(e)}")
+            self.progress_label.config(text=f"进度：发生错误 - {str(e)}")
             if self.app and hasattr(self.app, 'logger'):
                 self.app.logger.error(f"Error updating progress display: {e}")
     
     def analyze_chapters(self):
         """Analyze the chapter structure and update progress display."""
         try:
-            self.analyze_button.config(state="disabled", text="📊 Analyzing...")
+            self.analyze_button.config(state="disabled", text="📊 正在分析…")
             self.update_progress_display()
             
             # Import here to avoid circular imports
@@ -816,29 +821,29 @@ class ChapterWriting:
             completed = len(plan.chapters_completed)
             remaining = len(plan.chapters_to_write)
             
-            message = f"Analysis Complete!\n\nTotal Chapters: {total}\nCompleted: {completed}\nRemaining: {remaining}"
+            message = f"分析完成！\n\n章节总数：{total}\n已完成：{completed}\n剩余：{remaining}"
             
             if remaining > 0:
                 next_chapters = plan.chapters_to_write[:5]  # Show first 5
-                message += f"\n\nNext to write: {', '.join(map(str, next_chapters))}"
+                message += f"\n\n接下来撰写：{', '.join(map(str, next_chapters))}"
                 if len(plan.chapters_to_write) > 5:
-                    message += f" (and {len(plan.chapters_to_write) - 5} more)"
+                    message += f"（另有 {len(plan.chapters_to_write) - 5} 章）"
             
-            show_success("Chapter Analysis", message)
+            show_success("章节分析", message)
             
         except Exception as e:
-            error_msg = f"Error analyzing chapters: {str(e)}"
-            show_error("Analysis Error", error_msg)
+            error_msg = f"分析章节时出错：{str(e)}"
+            show_error("分析错误", error_msg)
             if self.app and hasattr(self.app, 'logger'):
                 self.app.logger.error(f"Chapter analysis error: {e}")
         finally:
-            self.analyze_button.config(state="normal", text="📊 Analyze Chapters")
+            self.analyze_button.config(state="normal", text="📊 分析章节")
             self.update_progress_display()
     
     def write_next_chapter(self):
         """Write the next chapter automatically."""
         try:
-            self.write_next_button.config(state="disabled", text="✍️ Writing...")
+            self.write_next_button.config(state="disabled", text="✍️ 正在撰写…")
             
             # Import here to avoid circular imports
             from agents.writing.chapter_writing_agent import write_next_chapters
@@ -852,24 +857,24 @@ class ChapterWriting:
                     chapter_num = chapters_written[0]
                     # show_success("Chapter Written", f"Successfully wrote Chapter {chapter_num}!")
                 else:
-                    show_success("Complete", "All chapters are already written!")
+                    show_success("已完成", "所有章节都已经写完！")
                     
             else:
-                show_error("Writing Error", f"Failed to write chapter: {result.message}")
+                show_error("写作错误", f"撰写章节失败：{result.message}")
                 
         except Exception as e:
-            error_msg = f"Error writing next chapter: {str(e)}"
-            show_error("Writing Error", error_msg)
+            error_msg = f"撰写下一章时出错：{str(e)}"
+            show_error("写作错误", error_msg)
             if self.app and hasattr(self.app, 'logger'):
                 self.app.logger.error(f"Next chapter writing error: {e}")
         finally:
-            self.write_next_button.config(state="normal", text="✍️ Write Next Chapter")
+            self.write_next_button.config(state="normal", text="✍️ 撰写下一章")
             self.update_progress_display()
     
     def write_all_chapters(self):
         """Write all remaining chapters automatically."""
         try:
-            self.write_all_button.config(state="disabled", text="🚀 Writing All...")
+            self.write_all_button.config(state="disabled", text="🚀 正在撰写全部章节…")
             
             # Import here to avoid circular imports
             from agents.writing.chapter_writing_agent import write_next_chapters
@@ -898,13 +903,13 @@ class ChapterWriting:
                 
                 # show_success("Batch Writing Complete", message)
             else:
-                show_error("Writing Error", f"Failed to write chapters: {result.message}")
+                show_error("写作错误", f"撰写章节失败：{result.message}")
                 
         except Exception as e:
-            error_msg = f"Error writing all chapters: {str(e)}"
-            show_error("Writing Error", error_msg)
+            error_msg = f"撰写全部章节时出错：{str(e)}"
+            show_error("写作错误", error_msg)
             if self.app and hasattr(self.app, 'logger'):
                 self.app.logger.error(f"All chapters writing error: {e}")
         finally:
-            self.write_all_button.config(state="normal", text="🚀 Write All Chapters")
+            self.write_all_button.config(state="normal", text="🚀 撰写全部章节")
             self.update_progress_display()

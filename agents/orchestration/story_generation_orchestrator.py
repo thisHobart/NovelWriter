@@ -27,6 +27,17 @@ from agents.review.review_agent import ReviewAndRetryAgent
 from agents.writing.chapter_writing_agent import ChapterWritingAgent
 from agents.orchestration.checkpoint_state import CheckpointStateManager, CheckpointStatus, WorkflowState
 
+WORKFLOW_STEP_NAMES_ZH = {
+    "lore": "设定",
+    "structure": "结构",
+    "scenes": "场景",
+    "chapters": "章节",
+}
+
+
+def _step_name_zh(step_name: str) -> str:
+    return WORKFLOW_STEP_NAMES_ZH.get(step_name, step_name)
+
 # Note: GUI components will be integrated separately
 # This orchestrator focuses on the generation workflow logic
 
@@ -127,10 +138,10 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         # Checkpoint messages for each step
         self.checkpoint_messages = {
-            "lore": "📚 **Lore Generation Complete**\n\nI've created the world-building foundation for your story. Please review the generated lore content and approve to continue with story structure.",
-            "structure": "🏗️ **Story Structure Complete**\n\nI've developed the story structure and plot outline. Please review the story arcs and approve to continue with scene planning.",
-            "scenes": "🎬 **Scene Planning Complete**\n\nI've created detailed scene plans for your story. Please review the scene breakdowns and approve to continue with chapter writing.",
-            "chapters": "📖 **Chapter Writing Complete**\n\nI've finished writing all chapters of your story. Please review the generated content - your story is complete!"
+            "lore": "📚 **设定生成完成**\n\n故事的世界构建基础已经生成。请检查设定内容，确认后继续设计故事结构。",
+            "structure": "🏗️ **故事结构完成**\n\n故事结构和情节大纲已经生成。请检查故事弧，确认后继续规划场景。",
+            "scenes": "🎬 **场景规划完成**\n\n详细场景规划已经生成。请检查场景划分，确认后继续撰写章节。",
+            "chapters": "📖 **章节写作完成**\n\n所有章节已经写完。请检查生成内容，故事创作已完成！"
         }
         
         self.logger.info("Story Generation Orchestrator initialized")
@@ -221,7 +232,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             step_completed=True,
             content_generated=content,
             quality_score=quality_score,
-            checkpoint_message=self.checkpoint_messages.get(step_name, f"Step {step_name} completed"),
+            checkpoint_message=self.checkpoint_messages.get(step_name, f"{_step_name_zh(step_name)}步骤已完成"),
             next_steps=next_steps
         )
         
@@ -332,7 +343,7 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         # Validate step name
         if step_name not in self.workflow_steps:
-            error_msg = f"Invalid step name: {step_name}. Valid steps: {self.workflow_steps}"
+            error_msg = f"无效的步骤名称：{step_name}。可用步骤：{self.workflow_steps}"
             self.logger.error(error_msg)
             return StoryGenerationResult(
                 success=False,
@@ -341,7 +352,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                 quality_scores={},
                 consistency_reports=[],
                 recommendations=[error_msg],
-                execution_summary=f"Invalid step: {step_name}"
+                execution_summary=f"无效步骤：{_step_name_zh(step_name)}"
             )
         
         try:
@@ -350,7 +361,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             # Check dependencies for this step
             if not self._check_single_step_dependencies(step_name):
-                error_msg = f"Dependencies not met for step {step_name}"
+                error_msg = f"尚未满足{_step_name_zh(step_name)}步骤的依赖条件"
                 self.logger.error(error_msg)
                 self.update_step_progress(step_name, CheckpointStatus.FAILED)
                 return StoryGenerationResult(
@@ -360,7 +371,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                     quality_scores={},
                     consistency_reports=[],
                     recommendations=[error_msg],
-                    execution_summary=f"Dependencies not met for {step_name}"
+                    execution_summary=f"尚未满足{_step_name_zh(step_name)}步骤的依赖条件"
                 )
             
             # Execute the specific step
@@ -393,7 +404,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                     else:
                         # Step execution succeeded but no files were created - mark as failed
                         self.update_step_progress(step_name, CheckpointStatus.FAILED)
-                        error_msg = f"Step {step_name} execution completed but no output files were generated"
+                        error_msg = f"{_step_name_zh(step_name)}步骤已执行，但没有生成输出文件"
                         self.logger.error(error_msg)
                         return StoryGenerationResult(
                             success=False,
@@ -420,7 +431,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                     quality_scores={step_name: validation_result.get("quality_score", 0.8)},
                     consistency_reports=validation_result.get("consistency_reports", []),
                     recommendations=validation_result.get("recommendations", []),
-                    execution_summary=f"Successfully completed {step_name} step"
+                    execution_summary=f"{_step_name_zh(step_name)}步骤已成功完成"
                 )
                 
                 self.logger.info(f"✅ Single step completed successfully: {step_name}")
@@ -430,7 +441,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                 # Update step status to failed
                 self.update_step_progress(step_name, CheckpointStatus.FAILED)
                 
-                error_msg = f"Step {step_name} execution failed"
+                error_msg = f"{_step_name_zh(step_name)}步骤执行失败"
                 if "error" in step_result:
                     error_msg += f": {step_result['error']}"
                 
@@ -442,7 +453,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                     quality_scores={},
                     consistency_reports=[],
                     recommendations=[error_msg],
-                    execution_summary=f"Failed to execute {step_name}"
+                    execution_summary=f"执行{_step_name_zh(step_name)}步骤失败"
                 )
                 
         except Exception as e:
@@ -455,8 +466,8 @@ class StoryGenerationOrchestrator(BaseAgent):
                 workflow_completed=[],
                 quality_scores={},
                 consistency_reports=[],
-                recommendations=[f"Execution error: {str(e)}"],
-                execution_summary=f"Error executing {step_name}: {str(e)}"
+                recommendations=[f"执行错误：{str(e)}"],
+                execution_summary=f"执行{_step_name_zh(step_name)}步骤时出错：{str(e)}"
             )
     
     def _check_single_step_dependencies(self, step_name: str) -> bool:
@@ -878,7 +889,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             # Check dependencies
             if not self._check_step_dependencies(step, workflow_completed):
-                error_msg = f"Dependencies not met for step {step}"
+                error_msg = f"尚未满足{_step_name_zh(step)}步骤的依赖条件"
                 self.logger.error(error_msg)
                 return StoryGenerationResult(
                     success=False,
@@ -887,7 +898,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                     quality_scores=quality_scores,
                     consistency_reports=consistency_reports,
                     recommendations=[error_msg],
-                    execution_summary=f"Workflow failed at step {step}",
+                    execution_summary=f"工作流在{_step_name_zh(step)}步骤失败",
                     awaiting_user_approval=False
                 )
             
@@ -910,8 +921,8 @@ class StoryGenerationOrchestrator(BaseAgent):
                             workflow_completed=workflow_completed,
                             quality_scores=quality_scores,
                             consistency_reports=consistency_reports,
-                            recommendations=[f"Step {step} generation failed after {max_retries} attempts"],
-                            execution_summary=f"Workflow failed during {step} generation",
+                            recommendations=[f"{_step_name_zh(step)}步骤在重试 {max_retries} 次后仍生成失败"],
+                            execution_summary=f"工作流在生成{_step_name_zh(step)}内容时失败",
                             awaiting_user_approval=False
                         )
                     continue
@@ -978,7 +989,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                             quality_scores=quality_scores,
                             consistency_reports=consistency_reports,
                             recommendations=all_recommendations,
-                            execution_summary=f"Workflow cancelled at step {step} by user",
+                            execution_summary=f"用户已在{_step_name_zh(step)}步骤取消工作流",
                             current_checkpoint=checkpoint,
                             awaiting_user_approval=True
                         )
@@ -988,11 +999,11 @@ class StoryGenerationOrchestrator(BaseAgent):
                     workflow_completed.append(step)
         
         # Generate execution summary
-        summary = f"Completed {len(workflow_completed)}/{len(plan.workflow_steps)} workflow steps. "
+        summary = f"已完成 {len(workflow_completed)}/{len(plan.workflow_steps)} 个工作流步骤。"
         if quality_scores:
             avg_quality = sum(quality_scores.values()) / len(quality_scores)
-            summary += f"Average quality score: {avg_quality:.2f}. "
-        summary += f"Generated: {', '.join(workflow_completed)}"
+            summary += f"平均质量评分：{avg_quality:.2f}。"
+        summary += f"已生成：{', '.join(_step_name_zh(step) for step in workflow_completed)}"
         
         return StoryGenerationResult(
             success=len(workflow_completed) == len(plan.workflow_steps),
@@ -1804,8 +1815,8 @@ class StoryGenerationOrchestrator(BaseAgent):
         if not steps_to_generate:
             return AgentResult(
                 success=True,
-                data={"message": "All requested steps already completed"},
-                messages=["No remaining steps to generate"],
+                data={"message": "请求的步骤均已完成"},
+                messages=["没有需要继续生成的步骤"],
                 metrics={"existing_steps": len(existing_steps)}
             )
         
@@ -1836,7 +1847,7 @@ class StoryGenerationOrchestrator(BaseAgent):
         return AgentResult(
             success=result.success,
             data={"generation_result": result},
-            messages=[f"Resume generation: {result.execution_summary}"],
+            messages=[f"继续生成：{result.execution_summary}"],
             metrics={
                 "steps_completed": len(result.workflow_completed),
                 "existing_steps": len(existing_steps),
@@ -1870,7 +1881,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             # Check dependencies (should be satisfied since we loaded existing content)
             if not self._check_step_dependencies(step, workflow_completed):
-                error_msg = f"Dependencies not met for step {step}"
+                error_msg = f"尚未满足{_step_name_zh(step)}步骤的依赖条件"
                 self.logger.error(error_msg)
                 return StoryGenerationResult(
                     success=False,
@@ -1879,7 +1890,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                     quality_scores=quality_scores,
                     consistency_reports=consistency_reports,
                     recommendations=[error_msg],
-                    execution_summary=f"Workflow failed at step {step}"
+                    execution_summary=f"工作流在{_step_name_zh(step)}步骤失败"
                 )
             
             # Generate content for this step
@@ -1893,8 +1904,8 @@ class StoryGenerationOrchestrator(BaseAgent):
                     workflow_completed=workflow_completed,
                     quality_scores=quality_scores,
                     consistency_reports=consistency_reports,
-                    recommendations=[f"Step {step} generation failed"],
-                    execution_summary=f"Workflow failed during {step} generation"
+                    recommendations=[f"{_step_name_zh(step)}步骤生成失败"],
+                    execution_summary=f"工作流在生成{_step_name_zh(step)}内容时失败"
                 )
             
             # Store generated content
@@ -1919,11 +1930,11 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         # Generate execution summary
         new_steps = [step for step in plan.workflow_steps]
-        summary = f"Resumed generation: completed {len(new_steps)} new steps. "
+        summary = f"已继续生成并完成 {len(new_steps)} 个新步骤。"
         if quality_scores:
             avg_quality = sum(quality_scores.values()) / len(quality_scores)
-            summary += f"Average quality score: {avg_quality:.2f}. "
-        summary += f"New steps: {', '.join(new_steps)}"
+            summary += f"平均质量评分：{avg_quality:.2f}。"
+        summary += f"新完成步骤：{', '.join(_step_name_zh(step) for step in new_steps)}"
         
         return StoryGenerationResult(
             success=True,

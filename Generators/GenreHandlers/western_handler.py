@@ -162,13 +162,13 @@ class WesternHandler(BaseGenreHandler):
     
     def get_faction_capitals_info(self, factions):
         """Extract territory information for western factions"""
-        faction_section = "\n## Faction Territories:\n"
+        faction_section = "\n## 势力领地：\n"
         for faction in factions:
             faction_name = faction.get("faction_name", "Unknown Faction")
             territory = faction.get("territory", "Unknown Location")
             faction_section += f"- {faction_name}: {territory}\n"
-            faction_section += f"  - Type: {faction.get('faction_type', 'Unknown')}\n"
-            faction_section += f"  - Description: {faction.get('description', 'No description')}\n"
+            faction_section += f"  - 类型：{faction.get('faction_type', '未知')}\n"
+            faction_section += f"  - 描述：{faction.get('description', '无描述')}\n"
         return faction_section
     
     def get_character_attributes(self):
@@ -210,4 +210,4 @@ class WesternHandler(BaseGenreHandler):
 
     def get_location_type_name(self):
         """Return the location type name for western."""
-        return "Territories" 
+        return "Territories"

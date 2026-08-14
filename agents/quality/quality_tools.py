@@ -124,32 +124,32 @@ class AnalyzeCoherenceTool(BaseTool):
     def _create_coherence_prompt(self, content: str, context: Dict, genre: str) -> str:
         """Create prompt for coherence analysis."""
         prompt = f"""
-Analyze the coherence and logical flow of this {genre} story content.
+分析以下 {genre} 故事内容的连贯性和逻辑流程。
 
-CONTENT TO ANALYZE:
+待分析内容：
 {content}
 
-ANALYSIS CRITERIA:
-1. Logical flow and sequence of events
-2. Internal consistency within the content
-3. Character behavior consistency
-4. Plot development coherence
-5. Setting and world-building consistency
+分析标准：
+1. 事件的逻辑流程和先后顺序
+2. 内容内部的一致性
+3. 人物行为的一致性
+4. 情节发展的连贯性
+5. 场景和世界构建的一致性
 
-Please provide your analysis in the following JSON format:
+请使用以下 JSON 格式提供分析：
 {{
     "coherence_score": 0.0-1.0,
-    "issues": ["list of specific issues found"],
-    "suggestions": ["list of improvement suggestions"],
-    "strengths": ["list of coherent elements"],
-    "detailed_analysis": "paragraph explaining the analysis"
+    "issues": ["发现的具体问题"],
+    "suggestions": ["改进建议"],
+    "strengths": ["连贯性较好的部分"],
+    "detailed_analysis": "分析说明"
 }}
 
-Focus on specific, actionable feedback that can help improve the content.
+反馈应具体且可执行，能够帮助改进内容。
 """
         
         if context.get("previous_chapters"):
-            prompt += f"\n\nPREVIOUS CONTEXT:\n{context['previous_chapters'][-1][:500]}..."
+            prompt += f"\n\n前文背景：\n{context['previous_chapters'][-1][:500]}..."
         
         return prompt
     
@@ -284,27 +284,27 @@ class AnalyzePacingTool(BaseTool):
     def _create_pacing_prompt(self, content: str, target_pacing: str, scene_type: str) -> str:
         """Create prompt for pacing analysis."""
         return f"""
-Analyze the pacing and rhythm of this {scene_type} scene content.
+分析以下 {scene_type} 场景内容的节奏和韵律。
 
-TARGET PACING: {target_pacing}
-CONTENT:
+目标节奏：{target_pacing}
+内容：
 {content}
 
-ANALYSIS CRITERIA:
-1. Sentence rhythm and variation
-2. Paragraph flow
-3. Tension building/release
-4. Information delivery rate
-5. Appropriateness for scene type
+分析标准：
+1. 句子节奏及变化
+2. 段落衔接
+3. 张力的建立和释放
+4. 信息传递速度
+5. 是否适合场景类型
 
-Provide analysis in JSON format:
+请使用 JSON 格式提供分析：
 {{
     "pacing_score": 0.0-1.0,
     "current_pacing": "fast/medium/slow/varied",
     "matches_target": true/false,
-    "pacing_issues": ["specific issues"],
-    "pacing_suggestions": ["improvement suggestions"],
-    "rhythm_analysis": "detailed analysis of rhythm and flow"
+    "pacing_issues": ["具体问题"],
+    "pacing_suggestions": ["改进建议"],
+    "rhythm_analysis": "对节奏和衔接的详细分析"
 }}
 """
     
@@ -427,29 +427,29 @@ class EvaluateProseQualityTool(BaseTool):
     def _create_prose_prompt(self, content: str, style_target: str, genre_standards: Dict) -> str:
         """Create prompt for prose quality evaluation."""
         return f"""
-Evaluate the prose quality of this {style_target} style content.
+评估以下 {style_target} 风格内容的文笔质量。
 
-CONTENT:
+内容：
 {content}
 
-EVALUATION CRITERIA:
-1. Clarity and readability
-2. Sentence variety and flow
-3. Word choice and vocabulary
-4. Show vs. tell balance
-5. Engagement and voice
-6. Technical writing quality
+评估标准：
+1. 清晰度和可读性
+2. 句式变化和流畅度
+3. 用词和词汇
+4. 展示与讲述的平衡
+5. 吸引力和叙述声音
+6. 写作技术质量
 
-Provide evaluation in JSON format:
+请使用 JSON 格式提供评估：
 {{
     "prose_score": 0.0-1.0,
     "clarity_score": 0.0-1.0,
     "engagement_score": 0.0-1.0,
     "style_consistency": 0.0-1.0,
-    "strengths": ["list of prose strengths"],
-    "weaknesses": ["list of areas for improvement"],
-    "specific_suggestions": ["actionable improvement suggestions"],
-    "overall_assessment": "detailed prose analysis"
+    "strengths": ["文笔优点"],
+    "weaknesses": ["需要改进的方面"],
+    "specific_suggestions": ["可执行的改进建议"],
+    "overall_assessment": "详细的文笔分析"
 }}
 """
     

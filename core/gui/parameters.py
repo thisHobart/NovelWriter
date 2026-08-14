@@ -18,6 +18,13 @@ from core.generation.helper_fns import write_file, write_json, load_schema, vali
 # from core.generation.rag_helper import upsert_text
 from core.config.genre_configs import get_genre_config
 from Generators.GenreHandlers import get_supported_genres
+from core.localization import (
+    GENDER_BIAS_ZH_LABELS,
+    SUBGENRE_ZH_LABELS,
+    ZH_LABELS,
+    internal_label,
+    zh_label,
+)
 
 # --- Define Length and Structure Options ---
 # Simplified for initial implementation
@@ -103,6 +110,33 @@ class Parameters:
         self.output_dir_var = tk.StringVar(value="current_work") # Default output dir
         self.gender_bias_options = self.get_gender_bias_options() # Get options first
         self.gender_bias_var = tk.StringVar(value=self.gender_bias_options[0]) # Default to first option ("Balanced")
+        # 中文界面变量与内部英文标识分离，保证旧参数文件和业务判断继续兼容。
+        self.genre_display_var = tk.StringVar(value=zh_label(self.genre_var.get()))
+        self.subgenre_display_var = tk.StringVar(value=zh_label(self.subgenre_var.get()))
+        self.length_display_var = tk.StringVar()
+        self.structure_display_var = tk.StringVar()
+        self.gender_bias_display_var = tk.StringVar(
+            value=GENDER_BIAS_ZH_LABELS[self.gender_bias_options[0]]
+        )
+        # 外部工作流仍可能直接设置内部变量；用单向跟踪保持中文显示同步。
+        self.genre_var.trace_add(
+            "write", lambda *_: self.genre_display_var.set(zh_label(self.genre_var.get()))
+        )
+        self.subgenre_var.trace_add(
+            "write", lambda *_: self.subgenre_display_var.set(zh_label(self.subgenre_var.get()))
+        )
+        self.length_var.trace_add(
+            "write", lambda *_: self.length_display_var.set(zh_label(self.length_var.get()))
+        )
+        self.structure_var.trace_add(
+            "write", lambda *_: self.structure_display_var.set(zh_label(self.structure_var.get()))
+        )
+        self.gender_bias_var.trace_add(
+            "write",
+            lambda *_: self.gender_bias_display_var.set(
+                GENDER_BIAS_ZH_LABELS.get(self.gender_bias_var.get(), self.gender_bias_var.get())
+            ),
+        )
         # self.gender_bias_var = tk.StringVar(value="Balanced (50F/50M)") # Added for gender bias, with default
 
         # Dictionary to hold dynamically created tk variables for settings/chars/etc.
@@ -119,7 +153,7 @@ class Parameters:
         self.create_genre_selector(top_selector_frame) # Create selectors inside this frame
 
         # Frame for always-visible core parameters (Length, Structure, Title etc.)
-        core_params_frame = ttk.LabelFrame(self.main_frame, text="Core Details")
+        core_params_frame = ttk.LabelFrame(self.main_frame, text="核心信息")
         core_params_frame.pack(side="top", fill="x", pady=5, padx=5)
         self.create_core_parameters_ui(core_params_frame) # Create core param widgets inside
 
@@ -133,9 +167,9 @@ class Parameters:
         button_frame.pack(side="bottom", pady=10)
 
         # Add Save/Load buttons (using pack within button_frame)
-        self.save_button = ttk.Button(button_frame, text="Save Parameters", command=self.save_parameters)
+        self.save_button = ttk.Button(button_frame, text="保存参数", command=self.save_parameters)
         self.save_button.pack(side="left", padx=5)
-        self.load_button = ttk.Button(button_frame, text="Load Parameters", command=self.load_parameters)
+        self.load_button = ttk.Button(button_frame, text="加载参数", command=self.load_parameters)
         self.load_button.pack(side="left", padx=5)
 
         # --- Initial Setup --- 
@@ -149,14 +183,19 @@ class Parameters:
         parent_frame.columnconfigure(1, weight=1)
         parent_frame.columnconfigure(3, weight=1)
         
-        ttk.Label(parent_frame, text="Genre").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Label(parent_frame, text="类型").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         # Get supported genres dynamically from genre handlers
         supported_genres = get_supported_genres()
-        genre_dropdown = ttk.Combobox(parent_frame, textvariable=self.genre_var, values=supported_genres, state="readonly")
+        genre_dropdown = ttk.Combobox(
+            parent_frame,
+            textvariable=self.genre_display_var,
+            values=[zh_label(genre) for genre in supported_genres],
+            state="readonly",
+        )
         genre_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         
-        ttk.Label(parent_frame, text="Subgenre").grid(row=0, column=2, padx=5, pady=5, sticky="w")
-        self.subgenre_dropdown = ttk.Combobox(parent_frame, textvariable=self.subgenre_var, state="readonly")
+        ttk.Label(parent_frame, text="子类型").grid(row=0, column=2, padx=5, pady=5, sticky="w")
+        self.subgenre_dropdown = ttk.Combobox(parent_frame, textvariable=self.subgenre_display_var, state="readonly")
         self.subgenre_dropdown.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         
         genre_dropdown.bind('<<ComboboxSelected>>', self.on_genre_select)
@@ -168,55 +207,65 @@ class Parameters:
         current_row = 0
 
         # Output Directory
-        ttk.Label(parent_frame, text="Output Directory:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(parent_frame, text="输出目录：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
         dir_frame = ttk.Frame(parent_frame) # Frame to hold entry and button
         dir_frame.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         dir_frame.columnconfigure(0, weight=1) # Make entry expand
 
         self.output_dir_entry = ttk.Entry(dir_frame, textvariable=self.output_dir_var)
         self.output_dir_entry.grid(row=0, column=0, sticky="ew")
-        self.browse_button = ttk.Button(dir_frame, text="Browse...", command=self.browse_directory)
+        self.browse_button = ttk.Button(dir_frame, text="浏览…", command=self.browse_directory)
         self.browse_button.grid(row=0, column=1, padx=(3,0))
         current_row += 1
 
         # Story Length
-        ttk.Label(parent_frame, text="Story Length:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
-        self.length_combobox = ttk.Combobox(parent_frame, textvariable=self.length_var, values=LENGTH_OPTIONS, state="readonly")
+        ttk.Label(parent_frame, text="故事篇幅：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        self.length_combobox = ttk.Combobox(
+            parent_frame,
+            textvariable=self.length_display_var,
+            values=[zh_label(length) for length in LENGTH_OPTIONS],
+            state="readonly",
+        )
         self.length_combobox.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         self.length_combobox.bind("<<ComboboxSelected>>", self.on_length_select)
         current_row += 1
 
         # Story Structure
-        ttk.Label(parent_frame, text="Story Structure:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
-        self.structure_combobox = ttk.Combobox(parent_frame, textvariable=self.structure_var, state="disabled")
+        ttk.Label(parent_frame, text="故事结构：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        self.structure_combobox = ttk.Combobox(parent_frame, textvariable=self.structure_display_var, state="disabled")
         self.structure_combobox.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         self.structure_combobox.bind("<<ComboboxSelected>>", self.on_structure_select)
         current_row += 1
         
         # Title, Author, Theme, Tone
-        ttk.Label(parent_frame, text="Novel Title:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(parent_frame, text="作品标题：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
         self.title_entry = ttk.Entry(parent_frame, textvariable=self.title_var)
         self.title_entry.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         current_row += 1
         
-        ttk.Label(parent_frame, text="Author Name:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(parent_frame, text="作者姓名：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
         self.author_entry = ttk.Entry(parent_frame, textvariable=self.author_var)
         self.author_entry.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         current_row += 1
         
-        ttk.Label(parent_frame, text="Theme:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(parent_frame, text="主题：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
         self.theme_entry = ttk.Entry(parent_frame, textvariable=self.theme_var)
         self.theme_entry.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         current_row += 1
         
-        ttk.Label(parent_frame, text="Tone:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(parent_frame, text="基调：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
         self.tone_entry = ttk.Entry(parent_frame, textvariable=self.tone_var)
         self.tone_entry.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         current_row += 1
 
         # Gender Generation Bias
-        ttk.Label(parent_frame, text="Gender Generation Bias:").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
-        self.gender_bias_combobox = ttk.Combobox(parent_frame, textvariable=self.gender_bias_var, values=self.gender_bias_options, state="readonly")
+        ttk.Label(parent_frame, text="角色性别比例：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        self.gender_bias_combobox = ttk.Combobox(
+            parent_frame,
+            textvariable=self.gender_bias_display_var,
+            values=[GENDER_BIAS_ZH_LABELS[option] for option in self.gender_bias_options],
+            state="readonly",
+        )
         self.gender_bias_combobox.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
         # Add tooltip for Gender Bias - this part was missing from the previous structure of this function
         # For simplicity, adding it directly. Ideally, tooltips would be managed more centrally if there were many.
@@ -228,18 +277,20 @@ class Parameters:
         """Opens a dialog to select the output directory."""
         directory = filedialog.askdirectory(
             initialdir=self.output_dir_var.get(), # Start in current dir
-            title="Select Output Directory"
+            title="选择输出目录"
         )
         if directory: # If user selected a directory (didn't cancel)
             self.output_dir_var.set(directory)
             self.logger.info(f"Output directory set by user to: {directory}")
 
     def on_genre_select(self, event=None):
+        self.genre_var.set(internal_label(self.genre_display_var.get(), ZH_LABELS))
         self.populate_subgenres()
         self.update_dynamic_tabs() # Update tabs when genre changes
         self.trigger_callbacks()
 
     def on_subgenre_select(self, event=None):
+        self.subgenre_var.set(internal_label(self.subgenre_display_var.get(), SUBGENRE_ZH_LABELS))
         self.update_dynamic_tabs() # Update tabs when subgenre changes
         self.trigger_callbacks()
         
@@ -289,13 +340,15 @@ class Parameters:
              subgenres = ()
         
         current_subgenre = self.subgenre_var.get()
-        self.subgenre_dropdown['values'] = subgenres
+        self.subgenre_dropdown['values'] = [zh_label(subgenre) for subgenre in subgenres]
         
         if subgenres:
             if current_subgenre not in subgenres:
                  self.subgenre_var.set(subgenres[0])
+            self.subgenre_display_var.set(zh_label(self.subgenre_var.get()))
         else:
             self.subgenre_var.set("")
+            self.subgenre_display_var.set("")
             
     def update_dynamic_tabs(self):
         """Destroy and recreate dynamic tabs based on current genre/subgenre."""
@@ -314,8 +367,8 @@ class Parameters:
              self.logger.warning(f"No genre config found for {genre} - {subgenre} during dynamic tab update.")
              # Maybe add a default placeholder tab?
              placeholder_frame = ttk.Frame(self.notebook)
-             self.notebook.add(placeholder_frame, text="Settings")
-             ttk.Label(placeholder_frame, text="No specific settings for this subgenre.").pack(padx=10, pady=10)
+             self.notebook.add(placeholder_frame, text="设置")
+             ttk.Label(placeholder_frame, text="该子类型没有专用设置。").pack(padx=10, pady=10)
              return
         
         # Create tabs based on config keys
@@ -329,7 +382,7 @@ class Parameters:
 
     def _create_dynamic_widget(self, parent, setting_name, value, row_num):
         """Helper to create widget and store its variable."""
-        label = ttk.Label(parent, text=setting_name.replace('_', ' ').title())
+        label = ttk.Label(parent, text=zh_label(setting_name.replace('_', ' ').title()))
         label.grid(row=row_num, column=0, padx=5, pady=2, sticky='w')
         
         var_key = setting_name.lower().replace(' ', '_') # Consistent key for dict
@@ -349,7 +402,7 @@ class Parameters:
 
     def create_settings_tab(self, settings):
         settings_frame = ttk.Frame(self.notebook)
-        self.notebook.add(settings_frame, text="Specific Settings")
+        self.notebook.add(settings_frame, text="类型设置")
         settings_frame.columnconfigure(1, weight=1)
         
         i = 0
@@ -359,19 +412,23 @@ class Parameters:
 
     def create_character_tab(self, protagonist_types):
         char_frame = ttk.Frame(self.notebook)
-        self.notebook.add(char_frame, text="Protagonist")
+        self.notebook.add(char_frame, text="主角")
         char_frame.columnconfigure(1, weight=1)
 
         self._create_dynamic_widget(char_frame, "Protagonist Type", protagonist_types, 0)
 
     def create_conflict_tab(self, conflict_scales):
         conflict_frame = ttk.Frame(self.notebook)
-        self.notebook.add(conflict_frame, text="Conflict")
+        self.notebook.add(conflict_frame, text="冲突")
         conflict_frame.columnconfigure(1, weight=1)
 
         self._create_dynamic_widget(conflict_frame, "Conflict Scale", conflict_scales, 0)
 
     def get_current_parameters(self):
+        # 用户可能在测试或外部代码中直接设置内部变量，因此此处仅同步性别显示值。
+        displayed_bias = self.gender_bias_display_var.get()
+        if displayed_bias:
+            self.gender_bias_var.set(internal_label(displayed_bias, GENDER_BIAS_ZH_LABELS))
         params = {
             "output_directory": self.output_dir_var.get(),
             "genre": self.genre_var.get(),
@@ -478,7 +535,7 @@ class Parameters:
             self.logger.info(f"Parameters saved to {filepath}")
             # show_success("Success", f"Parameters saved to {filepath}")
         except Exception as e:
-            show_error("Error", f"Failed to save parameters: {e}")
+            show_error("错误", f"保存参数失败：{e}")
             self.logger.error(f"Error saving parameters to {filepath}: {e}", exc_info=True)
 
     def load_parameters(self):
@@ -511,7 +568,7 @@ class Parameters:
                             key, value = line.split(":", 1)
                             loaded_params[key.strip()] = value.strip()
              except Exception as e:
-                 show_error("Error", f"Failed to read parameters file {filepath}: {e}")
+                 show_error("错误", f"读取参数文件 {filepath} 失败：{e}")
                  self.logger.error(f"Error reading parameters file {filepath}: {e}", exc_info=True)
                  # Continue with defaults below
 
@@ -520,18 +577,25 @@ class Parameters:
         self.output_dir_var.set(loaded_params.get("Output Directory", current_dir))
 
         self.genre_var.set(loaded_params.get("Genre", "Sci-Fi"))
+        self.genre_display_var.set(zh_label(self.genre_var.get()))
         self.populate_subgenres() # IMPORTANT: Update subgenres before setting subgenre var
         self.subgenre_var.set(loaded_params.get("Subgenre", "")) # Load saved subgenre
+        self.subgenre_display_var.set(zh_label(self.subgenre_var.get()))
         
         self.length_var.set(loaded_params.get("Story Length", LENGTH_OPTIONS[0]))
+        self.length_display_var.set(zh_label(self.length_var.get()))
         self.on_length_select() # Update structure options based on loaded length
         self.structure_var.set(loaded_params.get("Story Structure", self.structure_var.get())) # Load structure
+        self.structure_display_var.set(zh_label(self.structure_var.get()))
         
         self.title_var.set(loaded_params.get("Novel Title", ""))
         self.author_var.set(loaded_params.get("Author Name", ""))
         self.theme_var.set(loaded_params.get("Theme", ""))
         self.tone_var.set(loaded_params.get("Tone", ""))
         self.gender_bias_var.set(loaded_params.get("Gender Generation Bias String", self.gender_bias_options[0]))
+        self.gender_bias_display_var.set(GENDER_BIAS_ZH_LABELS.get(
+            self.gender_bias_var.get(), self.gender_bias_var.get()
+        ))
 
         # --- Load Backend/Model Preferences ---
         if self.app:
@@ -608,23 +672,28 @@ class Parameters:
                 self.logger.error(f"Error executing callback {callback.__name__}: {e}", exc_info=True)
 
     def on_length_select(self, event=None):
+        if self.length_display_var.get():
+            self.length_var.set(internal_label(self.length_display_var.get(), ZH_LABELS))
         selected_length = self.length_var.get()
         if selected_length in STRUCTURE_MAP:
             available_structures = STRUCTURE_MAP[selected_length]
-            self.structure_combobox['values'] = available_structures
+            self.structure_combobox['values'] = [zh_label(structure) for structure in available_structures]
             self.structure_combobox['state'] = 'readonly'
             default = DEFAULT_STRUCTURE.get(selected_length, available_structures[0])
             # Only set default if structure var is empty or not in new list
             if not self.structure_var.get() or self.structure_var.get() not in available_structures:
                 self.structure_var.set(default)
+            self.structure_display_var.set(zh_label(self.structure_var.get()))
         else:
             self.structure_combobox['values'] = []
             self.structure_combobox['state'] = 'disabled'
             self.structure_var.set("")
+            self.structure_display_var.set("")
         self.trigger_callbacks() # Ensure callbacks are triggered
 
     def on_structure_select(self, event=None):
         """Called when the story structure is manually selected."""
+        self.structure_var.set(internal_label(self.structure_display_var.get(), ZH_LABELS))
         self.trigger_callbacks() # Ensure callbacks are triggered
 
     def get_gender_bias_options(self):
