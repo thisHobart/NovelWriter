@@ -738,7 +738,11 @@ class ChapterWriting:
             
             write_file(chapter_filepath_output, chapter_content_full)
             if legal_loop_enabled:
-                quality_loop.accept_result(target_chapter_number_global, loop_result)
+                quality_loop.accept_result(
+                    target_chapter_number_global,
+                    loop_result,
+                    chapter_path=chapter_filepath_output,
+                )
             self.app.logger.info(f"Chapter {target_chapter_number_global} successfully written to: {chapter_filepath_output}")
             # show_success("Success", f"Chapter {target_chapter_number_global} generated and saved to {chapter_filename_output}")
 

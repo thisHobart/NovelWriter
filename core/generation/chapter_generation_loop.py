@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from agents.review.legal_suspense_review_agent import DomainReview, LegalSuspenseReviewAgent
+from core.generation.chapter_acceptance import (
+    ChapterAcceptanceResult,
+    ChapterAcceptanceService,
+)
 from core.generation.helper_fns import parse_scene_sections
 from core.generation.story_ledger import StoryLedgerManager
 
@@ -21,6 +25,7 @@ class QualityGateError(RuntimeError):
 class ChapterLoopResult:
     scenes: List[str]
     contract: Dict[str, Any]
+    base_revision: int
     plan_content: str
     plan_revised: bool
     plan_review: DomainReview
@@ -44,6 +49,7 @@ class ChapterGenerationLoop:
         max_plan_retries: int = 2,
         max_scene_retries: int = 2,
         reviewer: Optional[LegalSuspenseReviewAgent] = None,
+        acceptance_service: Optional[ChapterAcceptanceService] = None,
     ):
         self.output_dir = output_dir
         self.model = model
@@ -52,6 +58,7 @@ class ChapterGenerationLoop:
         self.max_scene_retries = max_scene_retries
         self.ledger = StoryLedgerManager(output_dir)
         self.reviewer = reviewer or LegalSuspenseReviewAgent(model=model, logger=self.logger)
+        self.acceptance_service = acceptance_service or ChapterAcceptanceService(self.ledger)
 
     def run(
         self,
@@ -63,6 +70,7 @@ class ChapterGenerationLoop:
         on_plan_revised: Optional[Callable[[str], None]] = None,
     ) -> ChapterLoopResult:
         self.ledger.initialize(parameters)
+        base_revision = self.ledger.current_revision()
         case_bible = self.ledger.load_case_bible()
         design_context = self.ledger.load_design_context()
         if self.ledger.case_bible_needs_refresh(case_bible, design_context):
@@ -284,6 +292,7 @@ class ChapterGenerationLoop:
         return ChapterLoopResult(
             scenes=generated_scenes,
             contract=contract,
+            base_revision=base_revision,
             plan_content=current_plan,
             plan_revised=plan_revised,
             plan_review=plan_review,
@@ -292,14 +301,29 @@ class ChapterGenerationLoop:
             retry_count=retry_count,
         )
 
-    def accept_result(self, chapter_number: int, result: ChapterLoopResult) -> None:
-        """Commit an accepted chapter to the suspense ledger after prose is saved."""
+    def accept_result(
+        self,
+        chapter_number: int,
+        result: ChapterLoopResult,
+        chapter_path: Optional[str] = None,
+    ) -> ChapterAcceptanceResult:
+        """Validate final saved prose and atomically advance accepted story state."""
         if not result.chapter_review or not result.chapter_review.passed:
             raise QualityGateError("不能把未通过章节级检查的内容写入悬疑账本")
-        self.ledger.accept_chapter(
+        resolved_path = chapter_path or os.path.join(
+            self.output_dir,
+            "story",
+            "content",
+            "chapters",
+            f"chapter_{chapter_number}.md",
+        )
+        return self.acceptance_service.accept(
             chapter_number,
+            result.chapter_content,
             result.contract,
             result.chapter_review.to_dict(),
+            result.base_revision,
+            resolved_path,
         )
 
     def _load_previous_chapter_tail(self, chapter_number: int) -> str:

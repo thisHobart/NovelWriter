@@ -733,8 +733,13 @@ class ChapterWritingAgent(BaseAgent):
             # Update durable story knowledge only after the chapter file has
             # been written successfully, so a disk error cannot mark a missing
             # chapter as accepted.
+            acceptance_result = None
             if domain_loop_result:
-                quality_loop.accept_result(chapter_info.chapter_number, domain_loop_result)
+                acceptance_result = quality_loop.accept_result(
+                    chapter_info.chapter_number,
+                    domain_loop_result,
+                    chapter_path=output_path,
+                )
             
             # Perform chapter-level review if enabled
             chapter_review = None
@@ -753,6 +758,9 @@ class ChapterWritingAgent(BaseAgent):
                 "is_short_story": is_short_story,
                 "scene_reviews_count": len(scene_reviews)
             }
+            if acceptance_result:
+                result_data["story_revision"] = acceptance_result.committed_revision
+                result_data["chapter_delta_file"] = acceptance_result.delta_path
 
             if domain_loop_result:
                 result_data["legal_suspense_review"] = {

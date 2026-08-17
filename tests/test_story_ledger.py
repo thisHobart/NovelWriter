@@ -45,6 +45,8 @@ def test_contract_hash_and_chapter_acceptance(tmp_path):
     assert ledger["personal_costs"]["林衡"] == ["主角被暂停接触案卷"]
     assert len(ledger["accepted_chapters"]) == 1
     assert ledger["accepted_chapters"][0]["score"] == 3.8
+    assert ledger["revision"] == 1
+    assert len(ledger["chapter_commits"]) == 1
 
 
 def test_design_context_refreshes_generated_case_bible(tmp_path):

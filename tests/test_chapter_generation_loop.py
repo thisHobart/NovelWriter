@@ -107,11 +107,14 @@ def test_loop_passes_continuity_and_commits_only_after_save(tmp_path):
     chapter_path = tmp_path / "story" / "content" / "chapters" / "chapter_1.md"
     chapter_path.parent.mkdir(parents=True)
     chapter_path.write_text(result.chapter_content, encoding="utf-8")
-    loop.accept_result(1, result)
+    acceptance = loop.accept_result(1, result)
 
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     assert ledger["accepted_chapters"][0]["chapter"] == 1
     assert ledger["clues"][0]["id"] == "C001"
+    assert ledger["revision"] == 1
+    assert acceptance.committed_revision == 1
+    assert result.base_revision == 0
 
 
 def test_first_scene_receives_previous_chapter_tail(tmp_path):
