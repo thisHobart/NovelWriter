@@ -3,6 +3,7 @@ from core.gui.notifications import show_success, show_error, show_warning
 from core.generation.ai_helper import send_prompt, get_backend
 import re
 from core.generation.helper_fns import open_file, write_file, read_json, save_prompt_to_file
+from core.generation.prompt_context import format_faction_summary
 import os
 import traceback
 import json
@@ -416,15 +417,7 @@ class StoryStructure:
                     show_error("错误", f"未从 {factions_json_file_path} 找到或提取到势力数据。")
                     return
                     
-                # Create a summary for the prompt
-                faction_summaries = []
-                for f in major_factions:
-                    name = f.get("faction_name", "未知势力")
-                    profile = f.get("faction_profile", "无简介")
-                    traits = ", ".join(f.get("primary_traits", []))
-                    summary = f"- {name}：{profile}（特征：{traits}）"
-                    faction_summaries.append(summary)
-                faction_overview = "\n".join(faction_summaries)
+                faction_overview = format_faction_summary(major_factions)
                 
             except FileNotFoundError:
                 self.app.logger.error(f"Factions JSON file not found: {factions_json_file_path}. Cannot proceed.")
@@ -996,7 +989,11 @@ class StoryStructure:
             if os.path.exists(faction_json_path):
                 faction_data = read_json(faction_json_path) # Assuming read_json returns list of dicts
                 if faction_data: # Check if faction_data is not None or empty
-                    factions_list = [f.get('faction_name', '无') for f in faction_data]
+                    factions_list = [
+                        f.get('faction_name') or f.get('name') or '无'
+                        for f in faction_data
+                        if isinstance(f, dict)
+                    ]
                     factions_summary = f"主要势力：{', '.join(factions_list[:3])}{'……' if len(factions_list) > 3 else ''}（完整名单见 factions.json）。"
                 self.app.logger.info(f"Loaded faction data for summary from {faction_json_path}")
         except Exception as e:

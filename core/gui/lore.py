@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from core.gui.notifications import show_success, show_error, show_warning
 from core.generation.ai_helper import send_prompt, get_backend
+from core.generation.prompt_context import format_faction_summary
 # from core.generation.rag_helper import upsert_text
 import json
 import os
@@ -220,11 +221,14 @@ class Lore:
             
             # Print factions to console for debugging
             if factions:
-                self.app.logger.info(f"Generated {len(factions)} factions. First faction example: {factions[0].get('faction_name', 'N/A')}")
+                first_name = factions[0].get('faction_name') or factions[0].get('name') or 'N/A'
+                self.app.logger.info(f"Generated {len(factions)} factions. First faction example: {first_name}")
                 for i, faction_data in enumerate(factions):
                     self.app.logger.debug(f"Faction {i+1} Summary:")
-                    self.app.logger.debug(f"  Name: {faction_data.get('faction_name', 'N/A')}")
-                    self.app.logger.debug(f"  Profile: {faction_data.get('faction_profile', 'N/A')}")
+                    faction_name = faction_data.get('faction_name') or faction_data.get('name') or 'N/A'
+                    faction_profile = faction_data.get('faction_profile') or faction_data.get('description') or 'N/A'
+                    self.app.logger.debug(f"  Name: {faction_name}")
+                    self.app.logger.debug(f"  Profile: {faction_profile}")
                     self.app.logger.debug(f"  Systems: {len(faction_data.get('systems', []))}")
             else:
                 self.app.logger.warning("Faction generation returned no factions.")
@@ -577,9 +581,7 @@ class Lore:
             prompt_lines.append("\n## 势力摘要：")
             prompt_lines.append("\n请重点处理前两个势力，其他势力稍后再处理。\n")
             if factions:
-                for faction_dict in factions:
-                    faction_name = faction_dict.get('faction_name', '未知势力')
-                    prompt_lines.append(f"- {faction_name}")
+                prompt_lines.append(format_faction_summary(factions))
             else:
                 prompt_lines.append("- 未加载势力")
             
@@ -602,7 +604,7 @@ class Lore:
                     # Fallback: add basic faction names only
                     faction_section = "\n## 势力名称：\n"
                     for faction in factions:
-                        faction_name = faction.get("faction_name", "未知势力")
+                        faction_name = faction.get("faction_name") or faction.get("name") or "未知势力"
                         faction_section += f"- {faction_name}\n"
                     prompt += faction_section
 

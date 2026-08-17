@@ -9,6 +9,20 @@ from core.generation.helper_fns import (
     read_json,
     parse_scene_sections,
 )
+from core.generation.prompt_context import (
+    CHINESE_PROSE_REQUIREMENTS,
+    analyze_chinese_prose_style,
+    build_location_guidance,
+    build_story_parameter_lines,
+    find_scene_world_conflicts,
+    format_faction_summary,
+    format_genre_label,
+    is_legal_suspense,
+    normalize_story_parameters,
+    sanitize_lore_content,
+)
+from core.generation.chapter_generation_loop import ChapterGenerationLoop
+from core.generation.story_ledger import compact_json
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP # Import for section mapping
 from core.localization import zh_label
@@ -150,6 +164,8 @@ class ChapterWriting:
 
         try:
             parameters = self.app.param_ui.get_current_parameters()
+            story_params = normalize_story_parameters(parameters)
+            genre_label = format_genre_label(story_params)
             novel_title = parameters.get("novel_title", "未命名短篇小说")
             selected_structure_name = parameters.get("story_structure")
 
@@ -205,14 +221,16 @@ class ChapterWriting:
             try:
                 lore_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
                 if os.path.exists(lore_path):
-                    lore_content = open_file(lore_path)
+                    lore_content = sanitize_lore_content(open_file(lore_path))
                     self.app.logger.info(f"Loaded lore context from {lore_path}")
             except Exception as e:
                 self.app.logger.warning(f"Could not load lore for short story prose: {e}")
 
             character_roster_summary = "没有可用的人物名单。"
             try:
-                characters_json_path = os.path.join(output_dir, "characters.json")
+                characters_json_path = os.path.join(output_dir, "story", "lore", "characters.json")
+                if not os.path.exists(characters_json_path):
+                    characters_json_path = os.path.join(output_dir, "characters.json")
                 if os.path.exists(characters_json_path):
                     characters_data = read_json(characters_json_path) # Assuming read_json is in helper_fns
                     if characters_data and "characters" in characters_data:
@@ -243,37 +261,35 @@ class ChapterWriting:
                 factions_json_path = os.path.join(output_dir, "story", "lore", "factions.json")
                 if os.path.exists(factions_json_path):
                     factions_data = read_json(factions_json_path) # Assuming read_json is from helper_fns
-                    if factions_data: # Assuming factions_data is a list of faction dicts
-                        summaries = []
-                        for faction_info in factions_data[:5]: # Limit to top 5 for prompt brevity
-                            details = [f"\n\n势力名称：{faction_info.get('faction_name', '无')}\n"]
-                            details.append(f" - 简介：{faction_info.get('faction_profile', '无')}\n")
-                            traits = faction_info.get('primary_traits', [])
-                            if traits: details.append(f" - 主要特征：{', '.join(traits)}\n")
-                            summaries.append("\n".join(details))
-                        if summaries:
-                            faction_summary_info = "主要势力概览：\n" + "\n".join(summaries)
-                            self.app.logger.info(f"Loaded and summarized faction info from {factions_json_path}")
+                    if factions_data:
+                        faction_summary_info = format_faction_summary(factions_data)
+                        self.app.logger.info(f"Loaded and summarized faction info from {factions_json_path}")
             except Exception as e:
                 self.app.logger.warning(f"Could not load or process faction info from {factions_json_path}: {e}", exc_info=True)
+
+            conflicts = find_scene_world_conflicts(scene_plan_content, lore_content, story_params)
+            if conflicts:
+                conflict_text = "、".join(conflicts)
+                self.app.logger.error(f"Scene plan conflicts with non-scifi lore: {conflict_text}")
+                show_error("场景规划与世界观冲突", f"场景规划包含世界观未定义的科幻设定：{conflict_text}。请重新生成场景规划。")
+                return
 
             # --- Loop Through Scenes and Generate Prose ---
             all_generated_prose = []
             for scene_index, single_scene_description in enumerate(parsed_scenes):
                 self.app.logger.info(f"Processing Scene {scene_index + 1}/{len(parsed_scenes)} for prose generation.")
                 
-                title_line = f"请撰写科幻短篇小说《{novel_title}》中的一个场景。"
+                title_line = f"请撰写{genre_label}短篇小说《{novel_title}》中的一个场景。"
                 if not novel_title or novel_title == "未命名短篇小说":
-                    title_line = "请撰写一部科幻短篇小说中的一个场景。"
+                    title_line = f"请撰写一部{genre_label}短篇小说中的一个场景。"
 
                 prompt_lines = [
                     title_line,
                     f"故事采用“{zh_label(selected_structure_name)}”框架。",
                     "下面会提供单个场景的描述，请写出这个场景的完整正文。",
                     "只聚焦下方当前场景，不要写其他场景，也不要概括整个故事。",
-                    "\n## 当前场景描述：",
-                    single_scene_description,
-                    "\n## 整体故事背景（供参考）："
+                    *build_story_parameter_lines(story_params),
+                    "\n## 整体故事背景（高于场景规划）："
                 ]
                 if novel_title and novel_title != "未命名短篇小说":
                     prompt_lines.append(f"标题：{novel_title}")
@@ -281,6 +297,11 @@ class ChapterWriting:
                 prompt_lines.append(f"完整世界观：{lore_content}")
                 prompt_lines.append(f"\n{character_roster_summary}") # Detailed character roster
                 prompt_lines.append(f"\n{faction_summary_info}")   # Faction summary
+                prompt_lines.extend([
+                    "\n## 当前场景描述：",
+                    single_scene_description,
+                    "若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。",
+                ])
 
                 prompt_lines.extend([
                     "\n## 本场景写作要求：",
@@ -288,8 +309,8 @@ class ChapterWriting:
                     " - 根据人物名单中的设定，写出人物行动、对白（如适合本场景）、思想和情绪。",
                     " - 清楚交代场景环境。",
                     " - 场景应衔接合理，并按描述推动情节或人物发展。",
-                    " - 所有世界构建细节（如行星特征、技术、物种）必须严格遵守所提供的完整世界观，不要加入世界观或场景描述中不存在的重要新设定。",
-                    " - 若世界观没有给出某项细节（如行星的太阳/月亮数量），请使用普通描述（如“太阳落下”）或省略，不要编造新的固定设定。",
+                    *[f" - {line}" for line in build_location_guidance(story_params)],
+                    *[f" - {line}" for line in CHINESE_PROSE_REQUIREMENTS],
                     " - 只提供本场景正文，不要附加评论、场景编号或标题，最终组装由程序处理。",
                     " - 不要使用代码围栏。"
                 ])
@@ -310,6 +331,9 @@ class ChapterWriting:
                         scene_prose = f"[[[大模型未返回第 {scene_index + 1} 个场景的正文]]]"
                     else:
                         self.app.logger.info(f"Received prose for Scene {scene_index + 1}. Length: {len(scene_prose)} chars.")
+                        style_warnings = analyze_chinese_prose_style(scene_prose)
+                        if style_warnings:
+                            self.app.logger.warning(f"Scene {scene_index + 1} Chinese style warnings: {'; '.join(style_warnings)}")
                     all_generated_prose.append(scene_prose)
                 except Exception as e_llm:
                     self.app.logger.error(f"Error calling LLM for Scene {scene_index + 1}: {e_llm}", exc_info=True)
@@ -385,6 +409,8 @@ class ChapterWriting:
             except Exception as e_params:
                 self.app.logger.error(f"Error reading parameters file ({parameters_file_path}): {e_params}. Using defaults.", exc_info=True)
                 # Continue with defaults if param file reading fails, but log it.
+            story_params = normalize_story_parameters(params_from_file)
+            genre_label = format_genre_label(story_params)
             
             # 2. Determine the Correct Section for the Given Chapter Number
             sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
@@ -526,17 +552,8 @@ class ChapterWriting:
                 if os.path.exists(factions_json_path):
                     factions_data = read_json(factions_json_path)
                     if factions_data:
-                        # (Identical summarization logic as in _write_short_story_prose)
-                        summaries = []
-                        for faction_info in factions_data[:5]: 
-                            details = [f"\n\n势力名称：{faction_info.get('faction_name', '无')}\n"]
-                            details.append(f" - 简介：{faction_info.get('faction_profile', '无')}\n")
-                            traits = faction_info.get('primary_traits', [])
-                            if traits: details.append(f" - 主要特征：{', '.join(traits)}\n")
-                            summaries.append("\n".join(details))
-                        if summaries:
-                            faction_summary_info = "主要势力概览：\n" + "\n".join(summaries)
-                            self.app.logger.info(f"Loaded faction summary for Chapter {target_chapter_number_global}.")
+                        faction_summary_info = format_faction_summary(factions_data)
+                        self.app.logger.info(f"Loaded faction summary for Chapter {target_chapter_number_global}.")
             except Exception as e_faction_load:
                 self.app.logger.warning(f"Could not load/process faction info for Chapter {target_chapter_number_global}: {e_faction_load}", exc_info=True)
 
@@ -545,62 +562,166 @@ class ChapterWriting:
             try:
                 lore_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
                 if os.path.exists(lore_path):
-                    lore_content = open_file(lore_path)
+                    lore_content = sanitize_lore_content(open_file(lore_path))
                     self.app.logger.info(f"Loaded lore content for Chapter {target_chapter_number_global}.")
             except Exception as e_lore_load:
                 self.app.logger.warning(f"Could not load lore content for Chapter {target_chapter_number_global}: {e_lore_load}", exc_info=True)
             # --- End Context Loading --- 
 
+            conflicts = find_scene_world_conflicts(scenes_content_for_chapter, lore_content, story_params)
+            if conflicts:
+                conflict_text = "、".join(conflicts)
+                self.app.logger.error(f"Scene plan conflicts with non-scifi lore: {conflict_text}")
+                show_error("场景规划与世界观冲突", f"第 {target_chapter_number_global} 章场景规划包含世界观未定义的科幻设定：{conflict_text}。请重新生成该章场景规划。")
+                return
+
             generated_scenes_for_chapter = [] # Changed from `scenes` to avoid conflict with original `scenes_content_for_chapter`
+            legal_loop_enabled = is_legal_suspense(story_params)
 
-            # Iterate over the scenes parsed from the current chapter's scene plan file
-            for scene_idx_in_chapter, single_scene_detail_from_plan in enumerate(scene_details_list, start=1):
-                self.app.logger.info(f"Processing Scene {scene_idx_in_chapter}/{len(scene_details_list)} for Chapter {target_chapter_number_global}.")
+            def generate_scene_prose(
+                scene_plan,
+                scene_number,
+                previous_scene_tail="",
+                next_scene_plan="",
+                contract=None,
+            ):
+                """Generate one scene with explicit continuity boundaries."""
+                self.app.logger.info(
+                    f"Processing Scene {scene_number} for Chapter {target_chapter_number_global}."
+                )
+                continuity_lines = []
+                if contract:
+                    continuity_lines.extend([
+                        "\n## 本章质量契约（必须兑现，不得擅自增加真相）：",
+                        compact_json(contract, max_chars=10000),
+                    ])
+                if previous_scene_tail:
+                    continuity_lines.extend([
+                        "\n## 上一场或上一章的已验收结尾（从这一状态续写，不得重演已完成动作）：",
+                        previous_scene_tail,
+                    ])
+                if next_scene_plan:
+                    continuity_lines.extend([
+                        "\n## 下一场边界（仅用于控制本场收束；禁止提前写出下一场事件）：",
+                        next_scene_plan,
+                    ])
 
-                # Generate prompt for the API request
-                # This prompt needs to be updated to be similar to _write_short_story_prose's prompt
                 prompt_lines = [
-                    f"请撰写科幻{zh_label(story_length)}第 {target_chapter_number_global} 章中的一个场景。",
+                    f"请撰写{genre_label}{zh_label(story_length)}第 {target_chapter_number_global} 章中的一个场景。",
                     f"故事采用“{zh_label(selected_structure_name)}”框架，当前位于“{zh_label(current_section_name_for_chapter)}”部分。",
                     f"下面会提供第 {target_chapter_number_global} 章内单个场景的详细规划，请只写这个场景的完整正文。",
                     "不要写其他场景，也不要概括本章。",
-                    f"\n## 当前场景描述（第 {target_chapter_number_global} 章，场景 {scene_idx_in_chapter}）：",
-                    single_scene_detail_from_plan, # This is the full content for one scene from the plan file
-                    "\n## 整体故事背景（供参考）：",
+                    *build_story_parameter_lines(story_params),
+                    "\n## 整体故事背景（高于场景规划）：",
                     f"完整世界观：{lore_content}",
                     f"\n{character_roster_summary}",
                     f"\n{faction_summary_info}",
+                    f"\n## 当前场景描述（第 {target_chapter_number_global} 章，场景 {scene_number}）：",
+                    scene_plan,
+                    *continuity_lines,
+                    "若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。",
                     "\n## 本场景写作要求：",
                     " - 写出有吸引力、富有描写性的场景正文。",
                     " - 根据人物名单中的设定，写出人物行动、对白（如适合本场景）、思想和情绪。",
                     " - 清楚交代场景环境。",
                     " - 场景应衔接合理，并按描述推动情节或人物发展。",
-                    " - 所有世界构建细节（如行星特征、技术、物种）必须严格遵守所提供的完整世界观，不要加入世界观或场景描述中不存在的重要新设定。",
-                    " - 若世界观没有给出某项细节（如行星的太阳/月亮数量），请使用普通描述（如“太阳落下”）或省略，不要编造新的固定设定。",
+                    " - 只推进一个明确的问题或张力，用可核实的动作、证物、证词和程序细节表现，不用抽象总结代替情节。",
+                    " - 严格控制信息差：人物只能依据其已知信息行动，线索出现后才允许据此推断。",
+                    " - 如涉及反转，必须由本章契约中已安排的公平伏笔触发，并改变人物的判断或行动。",
+                    " - 法律程序须符合本章契约与案件底稿，不得让角色凭身份跳过取证、移交、质证等关键约束。",
+                    " - 本场结束时人物处境必须发生具体变化；不要重复上一场已经完成的动作、介绍和环境描写。",
+                    *[f" - {line}" for line in build_location_guidance(story_params)],
+                    *[f" - {line}" for line in CHINESE_PROSE_REQUIREMENTS],
                     " - 只提供本场景正文，不要附加评论、场景编号或标题，最终章节组装由程序处理。",
                     " - 不要使用代码围栏。"
                 ]
                 prompt = "\n".join(prompt_lines)
 
-                prompt_filename_base = f"write_chapter_{target_chapter_number_global}_scene_{scene_idx_in_chapter}_prompt"
+                prompt_filename_base = f"write_chapter_{target_chapter_number_global}_scene_{scene_number}_prompt"
                 prompt_filepath = save_prompt_to_file(output_dir, prompt_filename_base, prompt)
                 log_msg_source = f"(from {prompt_filepath})" if prompt_filepath else "(from memory, save failed)"
 
                 current_backend = get_backend()
                 backend_info = f"{current_backend}" if current_backend != "api" else f"api/{selected_model}"
-                self.app.logger.info(f"Sending prompt for Chapter {target_chapter_number_global}, Scene {scene_idx_in_chapter} {log_msg_source} to LLM ({backend_info}).")
-                
-                try:
-                    scene_prose_text = send_prompt(prompt, model=selected_model)
-                    if not scene_prose_text or not scene_prose_text.strip():
-                        self.app.logger.warning(f"LLM returned empty response for Chapter {target_chapter_number_global}, Scene {scene_idx_in_chapter}.")
-                        scene_prose_text = f"[[[大模型未返回第 {target_chapter_number_global} 章第 {scene_idx_in_chapter} 个场景的正文]]]"
-                    else:
-                        self.app.logger.info(f"Received prose for Chapter {target_chapter_number_global}, Scene {scene_idx_in_chapter}. Length: {len(scene_prose_text)} chars.")
-                    generated_scenes_for_chapter.append(scene_prose_text)
-                except Exception as e_llm_scene:
-                    self.app.logger.error(f"Error calling LLM for Chapter {target_chapter_number_global}, Scene {scene_idx_in_chapter}: {e_llm_scene}", exc_info=True)
-                    generated_scenes_for_chapter.append(f"[[[ERROR GENERATING CHAPTER {target_chapter_number_global}, SCENE {scene_idx_in_chapter}: {e_llm_scene}]]]")
+                self.app.logger.info(
+                    f"Sending prompt for Chapter {target_chapter_number_global}, Scene {scene_number} "
+                    f"{log_msg_source} to LLM ({backend_info})."
+                )
+                scene_prose_text = send_prompt(prompt, model=selected_model)
+                if not scene_prose_text or not scene_prose_text.strip():
+                    raise RuntimeError(
+                        f"大模型未返回第 {target_chapter_number_global} 章第 {scene_number} 个场景的正文"
+                    )
+
+                self.app.logger.info(
+                    f"Received prose for Chapter {target_chapter_number_global}, Scene {scene_number}. "
+                    f"Length: {len(scene_prose_text)} chars."
+                )
+                style_warnings = analyze_chinese_prose_style(scene_prose_text)
+                if style_warnings:
+                    self.app.logger.warning(
+                        f"Chapter {target_chapter_number_global} Scene {scene_number} "
+                        f"Chinese style warnings: {'; '.join(style_warnings)}"
+                    )
+                return scene_prose_text
+
+            if legal_loop_enabled:
+                self.app.logger.info(
+                    f"Chapter {target_chapter_number_global} is legal suspense; "
+                    "enabling design-generation-review loop."
+                )
+                quality_loop = ChapterGenerationLoop(
+                    output_dir=output_dir,
+                    model=selected_model,
+                    logger=self.app.logger,
+                )
+
+                def save_revised_plan(revised_plan):
+                    from datetime import datetime
+
+                    archive_dir = os.path.join(output_dir, "archive", "quality_loop", "scene_plans")
+                    os.makedirs(archive_dir, exist_ok=True)
+                    base_name = os.path.splitext(scene_plan_filename_base)[0]
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    archive_path = os.path.join(
+                        archive_dir,
+                        f"{base_name}_before_{timestamp}.md",
+                    )
+                    write_file(archive_path, scenes_content_for_chapter)
+                    write_file(scene_plan_filepath, revised_plan)
+                    self.app.logger.info(
+                        f"Quality loop revised the scene plan; original archived at {archive_path}."
+                    )
+
+                loop_result = quality_loop.run(
+                    chapter_number=target_chapter_number_global,
+                    plan_content=scenes_content_for_chapter,
+                    parameters=story_params,
+                    lore=lore_content,
+                    generate_scene=generate_scene_prose,
+                    on_plan_revised=save_revised_plan,
+                )
+                generated_scenes_for_chapter = loop_result.scenes
+            else:
+                # Preserve the original best-effort behavior for other genres.
+                for scene_idx_in_chapter, single_scene_detail_from_plan in enumerate(scene_details_list, start=1):
+                    try:
+                        generated_scenes_for_chapter.append(
+                            generate_scene_prose(
+                                scene_plan=single_scene_detail_from_plan,
+                                scene_number=scene_idx_in_chapter,
+                            )
+                        )
+                    except Exception as e_llm_scene:
+                        self.app.logger.error(
+                            f"Error calling LLM for Chapter {target_chapter_number_global}, "
+                            f"Scene {scene_idx_in_chapter}: {e_llm_scene}",
+                            exc_info=True,
+                        )
+                        generated_scenes_for_chapter.append(
+                            f"[[[ERROR GENERATING CHAPTER {target_chapter_number_global}, "
+                            f"SCENE {scene_idx_in_chapter}: {e_llm_scene}]]]"
+                        )
                 
             # Combine all scenes for this chapter into one string
             chapter_content_full = "\n\n---\n\n".join(generated_scenes_for_chapter)
@@ -616,6 +737,8 @@ class ChapterWriting:
             chapter_filepath_output = os.path.join(full_chapters_subdir_path, chapter_filename_output)
             
             write_file(chapter_filepath_output, chapter_content_full)
+            if legal_loop_enabled:
+                quality_loop.accept_result(target_chapter_number_global, loop_result)
             self.app.logger.info(f"Chapter {target_chapter_number_global} successfully written to: {chapter_filepath_output}")
             # show_success("Success", f"Chapter {target_chapter_number_global} generated and saved to {chapter_filename_output}")
 
@@ -719,13 +842,22 @@ class ChapterWriting:
             total = progress.get('total_chapters', 0)
             percentage = progress.get('completion_percentage', 0)
             next_chapter = progress.get('next_chapter')
+            next_chapter_ready = progress.get('next_chapter_ready', False)
+            missing_scene_plans = progress.get('missing_scene_plans', [])
             
             if total > 0:
                 status_text = f"进度：已完成 {completed}/{total} 章（{percentage:.1f}%）"
                 if next_chapter:
                     status_text += f" - 下一章：第 {next_chapter} 章"
+                    if not next_chapter_ready:
+                        status_text += "（缺少场景规划）"
                 else:
                     status_text += " - 已全部完成！✅"
+                if missing_scene_plans:
+                    missing_text = "、".join(map(str, missing_scene_plans[:8]))
+                    status_text += f"；缺少规划：第 {missing_text} 章"
+                    if len(missing_scene_plans) > 8:
+                        status_text += "等"
             else:
                 status_text = "进度：未找到章节（请先生成故事结构）"
                 
@@ -733,7 +865,7 @@ class ChapterWriting:
             
             # Update button states
             has_chapters = total > 0
-            has_remaining = next_chapter is not None
+            has_remaining = next_chapter is not None and next_chapter_ready
             
             self.write_next_button.config(state="normal" if has_remaining else "disabled")
             self.write_all_button.config(state="normal" if has_remaining else "disabled")
@@ -758,6 +890,11 @@ class ChapterWriting:
             total = len(chapter_info_list)
             completed = len(plan.chapters_completed)
             remaining = len(plan.chapters_to_write)
+            missing_scene_plans = [
+                chapter.chapter_number
+                for chapter in chapter_info_list
+                if not chapter.exists and not chapter.plan_exists
+            ]
             
             message = f"分析完成！\n\n章节总数：{total}\n已完成：{completed}\n剩余：{remaining}"
             
@@ -766,6 +903,12 @@ class ChapterWriting:
                 message += f"\n\n接下来撰写：{', '.join(map(str, next_chapters))}"
                 if len(plan.chapters_to_write) > 5:
                     message += f"（另有 {len(plan.chapters_to_write) - 5} 章）"
+            if missing_scene_plans:
+                message += (
+                    "\n\n尚未生成详细场景规划：第 "
+                    + "、".join(map(str, missing_scene_plans))
+                    + " 章。这些章节需先在“场景规划”页补齐。"
+                )
             
             show_success("章节分析", message)
             

@@ -2,7 +2,20 @@ from tkinter import ttk, messagebox
 from core.gui.notifications import show_success, show_error, show_warning
 from core.generation.ai_helper import send_prompt, get_backend
 import re
-from core.generation.helper_fns import open_file, write_file, save_prompt_to_file
+from core.generation.helper_fns import (
+    open_file,
+    parse_scene_sections,
+    save_prompt_to_file,
+    write_file,
+)
+from core.generation.prompt_context import (
+    build_location_guidance,
+    build_story_parameter_lines,
+    find_scene_world_conflicts,
+    format_genre_label,
+    normalize_story_parameters,
+    sanitize_lore_content,
+)
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
 from core.localization import zh_label
@@ -44,6 +57,18 @@ class ScenePlanning:
         if output_dir is None:
             output_dir = self.app.get_output_dir()
         return get_directory_manager(output_dir, use_new_structure=True)
+
+    @staticmethod
+    def _has_usable_scene_plan(scene_plan_path):
+        """Return True only for an existing, non-empty, parseable scene plan."""
+        if not os.path.isfile(scene_plan_path):
+            return False
+        try:
+            with open(scene_plan_path, "r", encoding="utf-8") as scene_file:
+                content = scene_file.read()
+        except (OSError, UnicodeError):
+            return False
+        return bool(parse_scene_sections(content))
 
 
     def _update_ui_based_on_parameters(self):
@@ -147,6 +172,9 @@ class ScenePlanning:
         except Exception as e:
             print(f"Error reading parameters file ({parameters_file_path}): {e}. Using default structure: {selected_structure_name}")
         # --- End Reading Parameters ---
+        story_params = normalize_story_parameters(params)
+        genre_label = format_genre_label(story_params)
+        location_guidance = build_location_guidance(story_params)
 
         # --- STRUCTURE_SECTIONS_MAP is now imported from parameters.py ---
         # The local definition has been removed. 
@@ -177,13 +205,16 @@ class ScenePlanning:
                     continue # Skip to the next section
 
                 prompt = (
-                    f"请为采用“{zh_label(selected_structure_name)}”框架的小说生成章节大纲。"
+                    f"请为一部{genre_label}小说生成章节大纲。"
+                    f"小说采用“{zh_label(selected_structure_name)}”框架。"
                     f"该结构包含：{', '.join(zh_label(section) for section in sections_to_process)}。\n"
                     f"当前重点是 **{zh_label(current_section_name)}**。以下是这一部分的详细规划：\n\n{detailed_section_content}\n\n"
                     f"请根据“{zh_label(current_section_name)}”的详细规划，逐章生成大纲。"
                     "每一章都应有明确目的，并推动这一结构部分的故事。"
-                    "为每章建议所含场景，并列出本章涉及的人物、势力和地点（包括行星）。"
+                    "为每章建议所含场景，并列出本章涉及的人物、势力和具体地点。"
                     f"“{zh_label(current_section_name)}”从第 {chapter_number_offset} 章开始，请依次分配章号。\n"
+                    + "\n".join(build_story_parameter_lines(story_params)) + "\n"
+                    + "\n".join(f"- {line}" for line in location_guidance) + "\n"
                     "请以 Markdown 格式输出，不要使用代码围栏，也不要在响应中写出“Markdown”一词。"
                 )
 
@@ -193,6 +224,16 @@ class ScenePlanning:
                 # print(prompt) # Uncomment for debugging full prompt
                 print("----------------------------------------------------------------")
                 response = send_prompt(prompt, model=selected_model)
+
+                conflicts = find_scene_world_conflicts(response, detailed_section_content, story_params)
+                if conflicts:
+                    show_error(
+                        "章节大纲与题材冲突",
+                        "生成结果包含上游设定未定义的科幻内容："
+                        + "、".join(conflicts)
+                        + "。本部分未保存，请重新生成。",
+                    )
+                    continue
 
                 # Dynamically count chapters in the LLM's response for this section
                 # Adjusted regex to be more flexible with markdown chapter headings (##, ###, **** etc.)
@@ -259,6 +300,9 @@ class ScenePlanning:
         except Exception as e:
             print(f"Error reading parameters file ({parameters_file_path}): {e}. Using default structure for scene planning: {selected_structure_name}")
         # --- End Reading Parameters ---
+        story_params = normalize_story_parameters(params)
+        genre_label = format_genre_label(story_params)
+        location_guidance = build_location_guidance(story_params)
 
         # STRUCTURE_SECTIONS_MAP is imported from parameters.py
         sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
@@ -272,7 +316,7 @@ class ScenePlanning:
             # Load the overall lore content once
             lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
             try:
-                lore_content = open_file(lore_content_path).strip()
+                lore_content = sanitize_lore_content(open_file(lore_content_path))
             except FileNotFoundError:
                 show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
                 lore_content = "缺少整体世界观背景。"
@@ -321,13 +365,14 @@ class ScenePlanning:
                     current_chapter_for_prompt = overall_chapter_number + i
                     
                     prompt = (
-                        f"请为科幻小说第 {current_chapter_for_prompt} 章规划场景。\n"
+                        f"请为{genre_label}小说第 {current_chapter_for_prompt} 章规划场景。\n"
                         f"故事采用“{zh_label(selected_structure_name)}”框架，包含：{', '.join(zh_label(section) for section in sections_to_process)}。\n"
                         f"当前正在设计 **{zh_label(current_section_name)}** 的场景。\n\n"
                         f"以下是包含第 {current_chapter_for_prompt} 章的“{zh_label(current_section_name)}”逐章大纲：\n{section_chapter_outline_content}\n\n"
                         f"请重点把上述大纲中的第 {current_chapter_for_prompt} 章扩展为详细场景。"
-                        "每个场景需说明：环境（行星、具体地点）、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。"
-                        f"请保持人物弧光、势力和地点（包括行星）与第 {current_chapter_for_prompt} 章大纲中的建议一致。\n"
+                        "每个场景需说明：环境与具体地点、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。"
+                        f"请保持人物弧光、势力和地点与第 {current_chapter_for_prompt} 章大纲中的建议一致。\n"
+                        + "\n".join(f"- {line}" for line in location_guidance) + "\n"
                         f"整体世界观如下，供参考：\n{lore_content}\n\n"
                         "请使用结构清晰的 Markdown，每个场景设置标题。"
                     )
@@ -338,6 +383,17 @@ class ScenePlanning:
                     # print(prompt) # Uncomment for full prompt debugging
                     print("-------------------------------------------------------------------")
                     response = send_prompt(prompt, model=selected_model)
+
+                    conflicts = find_scene_world_conflicts(response, lore_content, story_params)
+                    if conflicts:
+                        show_error(
+                            "场景规划与世界观冲突",
+                            "第 " + str(current_chapter_for_prompt)
+                            + " 章包含世界观未定义的科幻内容："
+                            + "、".join(conflicts)
+                            + "。该章未保存，请重新生成。",
+                        )
+                        continue
 
                     output_scene_plan_base = f"scenes_{safe_selected_structure_name}_{safe_section_name}_ch{current_chapter_for_prompt}.md"
                     os.makedirs(scene_plans_dir, exist_ok=True)
@@ -392,6 +448,9 @@ class ScenePlanning:
         except Exception as e:
             self.app.logger.error(f"Error reading parameters file ({parameters_file_path}): {e}. Using defaults.", exc_info=True)
         # --- End Reading Parameters ---
+        story_params = normalize_story_parameters(params_from_file)
+        genre_label = format_genre_label(story_params)
+        location_guidance = build_location_guidance(story_params)
 
         sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
         if not sections_to_process:
@@ -402,13 +461,15 @@ class ScenePlanning:
         try:
             lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
             try:
-                lore_content = open_file(lore_content_path).strip()
+                lore_content = sanitize_lore_content(open_file(lore_content_path))
             except FileNotFoundError:
                 show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
                 self.app.logger.warning(f"Lore file {lore_content_path} not found for scene planning.")
                 lore_content = "缺少整体世界观背景。"
             
             overall_chapter_number = 1 
+            generated_chapters = []
+            skipped_chapters = []
 
             for current_section_name in sections_to_process:
                 safe_selected_structure_name = selected_structure_name.lower().replace(' ', '_')
@@ -444,11 +505,30 @@ class ScenePlanning:
 
                 for i in range(len(chapters_in_section_file)):
                     current_chapter_for_prompt = overall_chapter_number + i
+                    output_scene_plan_base = (
+                        f"scenes_{safe_selected_structure_name}_{safe_section_name}"
+                        f"_ch{current_chapter_for_prompt}.md"
+                    )
+                    os.makedirs(scene_plans_dir, exist_ok=True)
+                    output_scene_plan_filepath = os.path.join(
+                        scene_plans_dir,
+                        output_scene_plan_base,
+                    )
+
+                    if self._has_usable_scene_plan(output_scene_plan_filepath):
+                        skipped_chapters.append(current_chapter_for_prompt)
+                        self.app.logger.info(
+                            "Skipping Chapter %s scene planning; usable file already exists: %s",
+                            current_chapter_for_prompt,
+                            output_scene_plan_filepath,
+                        )
+                        continue
                     
                     prompt_lines = [
-                        f"请为故事第 {current_chapter_for_prompt} 章规划场景（篇幅：{zh_label(story_length)}）。",
+                        f"请为{genre_label}故事第 {current_chapter_for_prompt} 章规划场景（篇幅：{zh_label(story_length)}）。",
                         f"故事采用“{zh_label(selected_structure_name)}”框架，包含：{', '.join(zh_label(section) for section in sections_to_process)}。",
                         f"当前正在设计 **{zh_label(current_section_name)}** 的场景。",
+                        *build_story_parameter_lines(story_params),
                         f"\n以下是包含第 {current_chapter_for_prompt} 章的“{zh_label(current_section_name)}”逐章大纲：\n{section_chapter_outline_content}",
                         f"\n请重点把上述大纲中的第 {current_chapter_for_prompt} 章扩展为详细场景。"
                     ]
@@ -457,8 +537,9 @@ class ScenePlanning:
                         prompt_lines.append("本故事是中篇小说，本章场景应紧凑而有冲击力，聚焦必要的情节推进和人物时刻。")
                     
                     prompt_lines.extend([
-                        "每个场景需说明：环境（行星、具体地点）、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。",
-                        f"请保持人物弧光、势力和地点（包括行星）与第 {current_chapter_for_prompt} 章大纲中的建议一致。",
+                        "每个场景需说明：环境与具体地点、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。",
+                        f"请保持人物弧光、势力和地点与第 {current_chapter_for_prompt} 章大纲中的建议一致。",
+                        *[f"- {line}" for line in location_guidance],
                         f"整体世界观如下，供参考：\n{lore_content}",
                         "\n请使用结构清晰的 Markdown。每个场景必须使用阿拉伯数字编号，并以独立标题开始，例如“### 场景 1：场景标题”或“## 场景 2 - 场景标题”。不要使用“场景一”之类的中文数字编号，也不要只使用加粗文本充当场景标题。"
                     ])
@@ -476,16 +557,31 @@ class ScenePlanning:
 
                     response = send_prompt(prompt, model=selected_model)
 
-                    # --- Create subdirectory for these scene plans ---
-                    output_scene_plan_base = f"scenes_{safe_selected_structure_name}_{safe_section_name}_ch{current_chapter_for_prompt}.md"
-                    os.makedirs(scene_plans_dir, exist_ok=True)
-                    output_scene_plan_filepath = os.path.join(scene_plans_dir, output_scene_plan_base)
+                    conflicts = find_scene_world_conflicts(response, lore_content, story_params)
+                    if conflicts:
+                        show_error(
+                            "场景规划与世界观冲突",
+                            "第 " + str(current_chapter_for_prompt)
+                            + " 章包含世界观未定义的科幻内容："
+                            + "、".join(conflicts)
+                            + "。该章未保存，请重新生成。",
+                        )
+                        continue
+
                     write_file(output_scene_plan_filepath, response)
+                    generated_chapters.append(current_chapter_for_prompt)
                     self.app.logger.info(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 
                 overall_chapter_number += len(chapters_in_section_file) 
 
-            #show_success("Success", f"Scene plans for '{selected_structure_name}' generated successfully.")
+            if generated_chapters:
+                generated_text = "、".join(map(str, generated_chapters))
+                message = f"已生成第 {generated_text} 章的场景规划。"
+            else:
+                message = "没有缺失或损坏的场景规划，无需重新生成。"
+            if skipped_chapters:
+                message += f"\n已跳过 {len(skipped_chapters)} 个现有有效文件。"
+            show_success("增量场景规划完成", message)
 
         except FileNotFoundError as fnf_e:
             self.app.logger.error(f"Scene Plan: File not found - {fnf_e}", exc_info=True)
@@ -508,6 +604,9 @@ class ScenePlanning:
             return
         
         parameters = self.app.param_ui.get_current_parameters()
+        story_params = normalize_story_parameters(parameters)
+        genre_label = format_genre_label(story_params)
+        location_guidance = build_location_guidance(story_params)
         selected_structure_name = parameters.get("story_structure")
         novel_title = parameters.get("novel_title", "未命名短篇小说")
 
@@ -543,15 +642,16 @@ class ScenePlanning:
         try:
             lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
             if os.path.exists(lore_content_path):
-                lore_content = open_file(lore_content_path).strip()
+                lore_content = sanitize_lore_content(open_file(lore_content_path))
                 self.app.logger.info(f"Loaded lore context from {lore_content_path}")
         except Exception as e:
             self.app.logger.warning(f"Could not load lore for short story scene planning: {e}")
 
         # --- Construct the Prompt ---
         prompt_lines = [
-            f"请为短篇小说《{novel_title}》规划场景。",
+            f"请为{genre_label}短篇小说《{novel_title}》规划场景。",
             f"故事采用“{zh_label(selected_structure_name)}”框架。",
+            *build_story_parameter_lines(story_params),
             "以下是完整短篇小说的详细总体情节：\n\n",
             "--- 短篇小说详细情节 ---",
             short_story_plot_content,
@@ -559,12 +659,13 @@ class ScenePlanning:
             "\n请根据详细情节，把故事拆分成一系列清晰、独立的场景。",
             "每个场景需说明：\n",
             "  - 建议的场景编号（如场景 1、场景 2）。\n",
-            "  - 环境（行星、具体地点）。\n",
+            "  - 环境与具体地点。\n",
             "  - 出场人物。\n",
             "  - 场景中的关键行动和事件。\n",
             "  - 关键对白片段或对白概要。\n",
             "  - 该场景如何依据详细情节推动整体故事，或发展人物/主题。\n",
             "确保场景之间衔接自然，并覆盖详细情节中的完整叙事弧。\n",
+            *[f"- {line}" for line in location_guidance],
             "\n重要格式要求：",
             "每个场景必须以 Markdown 标题开始，并使用阿拉伯数字编号，例如“### 场景 1：<场景标题>”或“## 场景 2 - <场景标题>”。不要使用中文数字编号或只加粗的标题。",
             "标题下方再列出该场景的环境、人物、关键行动等要点。",
@@ -587,6 +688,16 @@ class ScenePlanning:
         if not response:
             self.app.logger.error(f"Failed to generate short story scenes from LLM ({backend_info}). No response.")
             show_error("错误", "大模型生成短篇场景失败。")
+            return
+
+        conflicts = find_scene_world_conflicts(response, lore_content, story_params)
+        if conflicts:
+            show_error(
+                "场景规划与世界观冲突",
+                "生成结果包含世界观未定义的科幻内容："
+                + "、".join(conflicts)
+                + "。结果未保存，请重新生成。",
+            )
             return
         
         self.app.logger.info(f"Received short story scenes from LLM. Length: {len(response)} chars.")

@@ -1,5 +1,6 @@
 """Regression tests for agentic chapter generation model and result handling."""
 
+import json
 import logging
 
 import pytest
@@ -10,6 +11,7 @@ from agents.writing.chapter_writing_agent import (
     SceneReview,
 )
 from core.generation import ai_helper, helper_fns
+from agents.writing.chapter_writing_agent import get_chapter_progress
 
 
 def _bare_agent(tmp_path, app=None, model="hosted-llm"):
@@ -60,6 +62,114 @@ def test_scene_generation_raises_instead_of_returning_error_placeholder(monkeypa
 
     with pytest.raises(RuntimeError, match="hosted endpoint unavailable"):
         agent._generate_scene_prose(1, 1, "### 场景 1：开端", {"parameters": {}})
+
+
+def test_scene_prompt_uses_selected_genre_and_conflict_priority(monkeypatch, tmp_path):
+    agent = _bare_agent(tmp_path)
+    calls = {}
+
+    def fake_send_prompt(prompt, model=None):
+        calls["prompt"] = prompt
+        return "生成的法律悬疑场景"
+
+    monkeypatch.setattr(ai_helper, "send_prompt", fake_send_prompt)
+    monkeypatch.setattr(helper_fns, "save_prompt_to_file", lambda *args, **kwargs: None)
+
+    agent._generate_scene_prose(
+        1,
+        1,
+        "### 场景 1：庭审前夜",
+        {
+            "parameters": {
+                "Genre": "Mystery",
+                "Subgenre": "Legal Thriller",
+                "Story Length": "Novel (Epic)",
+                "Story Structure": "Episodic",
+            },
+            "lore": "新都法院是主要地点。",
+        },
+    )
+
+    prompt = calls["prompt"]
+    assert "悬疑推理（法律惊悚）" in prompt
+    assert "请撰写科幻" not in prompt
+    assert "作品参数（最高优先级）" in prompt
+    assert "事实冲突时依次以作品参数、整体世界观、当前场景规划为准" in prompt
+    assert "采用自然、克制的现代中文小说语言" in prompt
+    assert "不得把城市改写成星球" in prompt
+
+
+def test_lore_sanitizer_removes_leading_model_analysis():
+    dirty_lore = """**Defining the Genre**
+The model is deciding how to frame the story.
+
+**Analyzing the Elements**
+The model is still planning.
+
+**一、核心世界观与社会背景**
+故事发生在新都，司法系统是冲突中心。
+"""
+
+    cleaned = ChapterWritingAgent._sanitize_lore_content(dirty_lore)
+
+    assert cleaned.startswith("**一、核心世界观与社会背景**")
+    assert "Defining the Genre" not in cleaned
+    assert "Analyzing the Elements" not in cleaned
+
+
+@pytest.mark.parametrize(
+    "faction, expected",
+    [
+        (
+            {
+                "name": "新都检察院",
+                "description": "负责重大刑事案件公诉。",
+                "type": "司法机关",
+                "jurisdiction": "新都",
+                "goals": ["查明证据链", "赢得审判"],
+            },
+            ["势力名称：新都检察院", "简介：负责重大刑事案件公诉。", "主要目标：查明证据链, 赢得审判"],
+        ),
+        (
+            {
+                "faction_name": "旧版势力",
+                "faction_profile": "旧版字段仍应兼容。",
+                "primary_traits": ["谨慎"],
+            },
+            ["势力名称：旧版势力", "简介：旧版字段仍应兼容。", "主要特征：谨慎"],
+        ),
+    ],
+)
+def test_faction_summary_supports_current_and_legacy_schema(tmp_path, faction, expected):
+    agent = _bare_agent(tmp_path)
+    lore_dir = tmp_path / "story" / "lore"
+    lore_dir.mkdir(parents=True)
+    (lore_dir / "factions.json").write_text(
+        json.dumps([faction], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    summary = agent._load_faction_summary()
+
+    for text in expected:
+        assert text in summary
+    assert "势力名称：无" not in summary
+
+
+def test_non_scifi_scene_conflict_stops_generation(monkeypatch, tmp_path):
+    agent = _bare_agent(tmp_path)
+    monkeypatch.setattr(ai_helper, "send_prompt", lambda *args, **kwargs: pytest.fail("LLM should not be called"))
+
+    with pytest.raises(ValueError, match="行星"):
+        agent._generate_scene_prose(
+            1,
+            1,
+            "### 场景 1：圣兰卡星\n环境：行星",
+            {
+                "parameters": {"Genre": "Mystery", "Subgenre": "Legal Thriller"},
+                "lore": "圣兰卡是一座沿海城市。",
+            },
+        )
 
 
 def test_error_placeholder_is_not_a_completed_chapter(tmp_path):
@@ -117,3 +227,34 @@ def test_single_chapter_passes_review_arguments_by_name(tmp_path):
     assert review_call["section_name"] == "Rising Action"
     assert review_call["scene_reviews"] == [scene_review]
     assert (tmp_path / "chapters" / "chapter_7.md").read_text(encoding="utf-8") == "生成的场景正文"
+
+
+def test_automatic_progress_detects_structured_workspace(tmp_path):
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "parameters.txt").write_text(
+        "Story Structure: Episodic Structure\nStory Length: Novel (Epic)\n",
+        encoding="utf-8",
+    )
+    outline_dir = tmp_path / "story" / "planning" / "chapter_outlines"
+    plan_dir = tmp_path / "story" / "planning" / "detailed_scene_plans"
+    chapter_dir = tmp_path / "story" / "content" / "chapters"
+    outline_dir.mkdir(parents=True)
+    plan_dir.mkdir(parents=True)
+    chapter_dir.mkdir(parents=True)
+    (outline_dir / "chapter_outlines_episodic_structure_episode_1_introduction.md").write_text(
+        "### 第 1 章：开端\n\n### 第 2 章：质证\n",
+        encoding="utf-8",
+    )
+    (plan_dir / "scenes_episodic_structure_episode_1_introduction_ch1.md").write_text(
+        "### 场景 1：开端\n规划",
+        encoding="utf-8",
+    )
+    (chapter_dir / "chapter_1.md").write_text("第一章正文", encoding="utf-8")
+
+    progress = get_chapter_progress(str(tmp_path))
+
+    assert progress["total_chapters"] == 2
+    assert progress["completed_chapters"] == 1
+    assert progress["next_chapter"] == 2
+    assert not progress["next_chapter_ready"]
+    assert progress["missing_scene_plans"] == [2]

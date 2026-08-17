@@ -20,6 +20,18 @@ from dataclasses import dataclass, asdict
 from agents.base.agent import BaseAgent, AgentResult
 from core.generation.helper_fns import open_file, write_file, read_json, parse_scene_sections
 from core.generation.ai_helper import send_prompt, get_backend
+from core.generation.prompt_context import (
+    CHINESE_PROSE_REQUIREMENTS,
+    analyze_chinese_prose_style,
+    build_location_guidance,
+    format_faction_summary,
+    format_genre_label,
+    find_scene_world_conflicts,
+    is_legal_suspense,
+    sanitize_lore_content,
+)
+from core.generation.chapter_generation_loop import ChapterGenerationLoop
+from core.generation.story_ledger import compact_json
 from core.config.directory_config import get_directory_manager
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
 from core.localization import zh_label
@@ -134,6 +146,7 @@ class ChapterInfo:
     scene_plan_file: str
     output_file: str
     exists: bool = False
+    plan_exists: bool = False
 
 
 class ChapterWritingAgent(BaseAgent):
@@ -147,14 +160,18 @@ class ChapterWritingAgent(BaseAgent):
     - Provide progress tracking and validation
     """
     
-    def __init__(self, output_dir: str, app_instance=None, use_new_structure: bool = False,
+    def __init__(self, output_dir: str, app_instance=None, use_new_structure: Optional[bool] = None,
                  quality_thresholds: Optional[QualityThresholds] = None,
                  model: Optional[str] = None):
         super().__init__(name="ChapterWritingAgent", model=model)
         self.output_dir = output_dir
         self.app = app_instance
-        self.use_new_structure = use_new_structure
-        self.dir_manager = get_directory_manager(output_dir, use_new_structure)
+        self.use_new_structure = (
+            self._detect_structured_workspace(output_dir)
+            if use_new_structure is None
+            else use_new_structure
+        )
+        self.dir_manager = get_directory_manager(output_dir, self.use_new_structure)
         self.logger = logging.getLogger(self.__class__.__name__)
         
         # Phase 3: Configurable quality thresholds
@@ -174,6 +191,16 @@ class ChapterWritingAgent(BaseAgent):
             except Exception as e:
                 self.logger.warning(f"Failed to initialize review system: {e}")
                 self.review_agent = None
+
+    @staticmethod
+    def _detect_structured_workspace(output_dir: str) -> bool:
+        """Detect projects using story/system/quality directory layout."""
+        structured_markers = (
+            os.path.join(output_dir, "system", "parameters.txt"),
+            os.path.join(output_dir, "story", "planning"),
+            os.path.join(output_dir, "story", "structure"),
+        )
+        return any(os.path.exists(path) for path in structured_markers)
     
     def get_available_tools(self) -> List[str]:
         """Return list of available tools/capabilities for this agent."""
@@ -384,7 +411,8 @@ class ChapterWritingAgent(BaseAgent):
             section_name="Complete Short Story",
             scene_plan_file=scene_plan_file,
             output_file=output_file,
-            exists=self._is_valid_generated_output(output_path)
+            exists=self._is_valid_generated_output(output_path),
+            plan_exists=os.path.isfile(scene_plan_path),
         )
         
         self.logger.info(f"Short story analysis: Scene plan = {scene_plan_file}, Output = {output_file}, Exists = {story_info.exists}")
@@ -424,6 +452,15 @@ class ChapterWritingAgent(BaseAgent):
                     scene_plans_dir = self.dir_manager.get_scene_plans_dir()
                     scene_plan_file = f"{scene_plans_dir}/scenes_{safe_struct}_{safe_section}_ch{chapter_num}.md"
                     scene_plan_path = os.path.join(self.output_dir, scene_plan_file)
+                    if not os.path.exists(scene_plan_path):
+                        legacy_scene_path = os.path.join(
+                            self.output_dir,
+                            "detailed_scene_plans",
+                            os.path.basename(scene_plan_file),
+                        )
+                        if os.path.exists(legacy_scene_path):
+                            scene_plan_path = legacy_scene_path
+                            scene_plan_file = os.path.relpath(legacy_scene_path, self.output_dir)
                     
                     # Determine output file using directory manager
                     chapters_dir = self.dir_manager.get_chapters_dir()
@@ -435,7 +472,8 @@ class ChapterWritingAgent(BaseAgent):
                         section_name=section_name,
                         scene_plan_file=scene_plan_file,
                         output_file=output_file,
-                        exists=self._is_valid_generated_output(output_path)
+                        exists=self._is_valid_generated_output(output_path),
+                        plan_exists=os.path.isfile(scene_plan_path),
                     )
                     chapters.append(chapter_info)
                     
@@ -597,27 +635,84 @@ class ChapterWritingAgent(BaseAgent):
                     metrics={}
                 )
                 
-            # Generate prose for each scene with reviews
+            # Generate prose for each scene with reviews. Legal suspense uses a
+            # bounded design-generation-review loop; other genres retain the
+            # lighter legacy path.
             generated_scenes = []
             scene_reviews = []
-            
-            for i, scene in enumerate(scenes, 1):
-                if is_short_story:
-                    self.logger.info(f"Writing scene {i}/{len(scenes)} for short story")
-                else:
-                    self.logger.info(f"Writing scene {i}/{len(scenes)} for Chapter {chapter_info.chapter_number}")
-                
-                prose = self._generate_scene_prose(
+            domain_loop_result = None
+
+            if not is_short_story and is_legal_suspense(context.get("parameters", {})):
+                self.logger.info(
+                    "Chapter %s is legal suspense; enabling design-generation-review loop",
                     chapter_info.chapter_number,
-                    i,
-                    scene,
-                    context,
-                    is_short_story=is_short_story
                 )
-                generated_scenes.append(prose)
-                
-                # Perform scene-level review if enabled
-                if self.review_agent:
+                quality_loop = ChapterGenerationLoop(
+                    output_dir=self.output_dir,
+                    model=self._get_selected_model(),
+                    logger=self.logger,
+                )
+
+                def generate_scene(**kwargs):
+                    return self._generate_scene_prose(
+                        chapter_info.chapter_number,
+                        kwargs["scene_number"],
+                        kwargs["scene_plan"],
+                        context,
+                        is_short_story=False,
+                        previous_scene_tail=kwargs.get("previous_scene_tail", ""),
+                        next_scene_plan=kwargs.get("next_scene_plan", ""),
+                        chapter_contract=kwargs.get("contract"),
+                    )
+
+                def save_revised_plan(revised_plan: str) -> None:
+                    archive_dir = os.path.join(
+                        self.output_dir,
+                        "archive",
+                        "quality_loop",
+                        "scene_plans",
+                    )
+                    os.makedirs(archive_dir, exist_ok=True)
+                    base_name = os.path.splitext(os.path.basename(scene_plan_path))[0]
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    archive_path = os.path.join(
+                        archive_dir,
+                        f"{base_name}_before_{timestamp}.md",
+                    )
+                    write_file(archive_path, scenes_content)
+                    write_file(scene_plan_path, revised_plan)
+                    self.logger.info("Quality loop revised scene plan; original archived at %s", archive_path)
+
+                domain_loop_result = quality_loop.run(
+                    chapter_number=chapter_info.chapter_number,
+                    plan_content=scenes_content,
+                    parameters=context.get("parameters", {}),
+                    lore=context.get("lore", ""),
+                    generate_scene=generate_scene,
+                    on_plan_revised=save_revised_plan,
+                )
+                generated_scenes = domain_loop_result.scenes
+                scenes = self._parse_scenes(domain_loop_result.plan_content)
+            else:
+                for i, scene in enumerate(scenes, 1):
+                    if is_short_story:
+                        self.logger.info(f"Writing scene {i}/{len(scenes)} for short story")
+                    else:
+                        self.logger.info(f"Writing scene {i}/{len(scenes)} for Chapter {chapter_info.chapter_number}")
+
+                    prose = self._generate_scene_prose(
+                        chapter_info.chapter_number,
+                        i,
+                        scene,
+                        context,
+                        is_short_story=is_short_story
+                    )
+                    generated_scenes.append(prose)
+
+            # Keep the existing generic review records as a secondary report,
+            # but run them only on text accepted by the domain loop.
+            if self.review_agent:
+                for i, prose in enumerate(generated_scenes, 1):
                     scene_review = self._review_scene(prose, i, chapter_info.chapter_number)
                     if scene_review:
                         scene_reviews.append(scene_review)
@@ -634,6 +729,12 @@ class ChapterWritingAgent(BaseAgent):
                 os.makedirs(output_directory, exist_ok=True)
             
             write_file(output_path, final_content)
+
+            # Update durable story knowledge only after the chapter file has
+            # been written successfully, so a disk error cannot mark a missing
+            # chapter as accepted.
+            if domain_loop_result:
+                quality_loop.accept_result(chapter_info.chapter_number, domain_loop_result)
             
             # Perform chapter-level review if enabled
             chapter_review = None
@@ -652,6 +753,14 @@ class ChapterWritingAgent(BaseAgent):
                 "is_short_story": is_short_story,
                 "scene_reviews_count": len(scene_reviews)
             }
+
+            if domain_loop_result:
+                result_data["legal_suspense_review"] = {
+                    "enabled": True,
+                    "retry_count": domain_loop_result.retry_count,
+                    "plan_revised": domain_loop_result.plan_revised,
+                    "chapter_review": domain_loop_result.chapter_review.to_dict(),
+                }
             
             # Add review data if available
             if chapter_review:
@@ -702,7 +811,7 @@ class ChapterWritingAgent(BaseAgent):
             if not os.path.exists(lore_file):
                 lore_file = os.path.join(self.output_dir, "generated_lore.md")
             if os.path.exists(lore_file):
-                context["lore"] = open_file(lore_file)
+                context["lore"] = self._sanitize_lore_content(open_file(lore_file))
             else:
                 context["lore"] = "Lore not available."
                 
@@ -716,6 +825,11 @@ class ChapterWritingAgent(BaseAgent):
             self.logger.error(f"Error loading writing context: {e}")
             
         return context
+
+    @staticmethod
+    def _sanitize_lore_content(content: str) -> str:
+        """Backward-compatible wrapper for the shared lore sanitizer."""
+        return sanitize_lore_content(content)
         
     def _load_character_roster(self) -> str:
         """Load character roster summary."""
@@ -773,20 +887,7 @@ class ChapterWritingAgent(BaseAgent):
             if os.path.exists(factions_file):
                 factions_data = read_json(factions_file)
                 if factions_data:
-                    summaries = []
-                    for faction in factions_data[:5]:  # Top 5 factions
-                        details = [
-                            f"\n\n势力：{faction.get('faction_name', '无')}",
-                            f"简介：{faction.get('faction_profile', '无')}"
-                        ]
-                        
-                        traits = faction.get('primary_traits', [])
-                        if traits:
-                            details.append(f"主要特征：{', '.join(traits)}")
-                            
-                        summaries.append("\n".join(details))
-                        
-                    return "主要势力：\n" + "\n".join(summaries)
+                    return format_faction_summary(factions_data)
         except Exception as e:
             self.logger.error(f"Error loading faction summary: {e}")
             
@@ -796,53 +897,134 @@ class ChapterWritingAgent(BaseAgent):
         """Parse individual scenes from scene plan content."""
         return parse_scene_sections(scenes_content)
         
-    def _generate_scene_prose(self, chapter_num: int, scene_num: int, scene_plan: str, context: Dict[str, Any], is_short_story: bool = False) -> str:
+    def _get_selected_model(self) -> str:
+        """Resolve the live GUI model or the orchestrator-provided model."""
+        from core.generation.ai_helper import DEFAULT_API_MODEL
+
+        if self.app and hasattr(self.app, "get_selected_model"):
+            return self.app.get_selected_model()
+        return self.model or DEFAULT_API_MODEL
+
+    def _generate_scene_prose(
+        self,
+        chapter_num: int,
+        scene_num: int,
+        scene_plan: str,
+        context: Dict[str, Any],
+        is_short_story: bool = False,
+        previous_scene_tail: str = "",
+        next_scene_plan: str = "",
+        chapter_contract: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Generate prose for a single scene using genuine NovelWriter AI functions."""
         
         story_params = context.get("parameters", {})
         structure = story_params.get("Story Structure", "Unknown")
         length = story_params.get("Story Length", "Unknown")
+        theme = story_params.get("Theme", "")
+        tone = story_params.get("Tone", "")
+
+        genre_label = format_genre_label(story_params)
+
+        conflicts = find_scene_world_conflicts(
+            scene_plan,
+            context.get("lore", ""),
+            story_params,
+        )
+        if conflicts:
+            raise ValueError(
+                "场景规划包含世界观未定义的科幻设定："
+                + "、".join(conflicts)
+                + "。请重新生成场景规划。"
+            )
+
+        parameter_lines = [
+            "\n## 作品参数（最高优先级）：",
+            f"- 类型：{genre_label}",
+            f"- 篇幅：{zh_label(length)}",
+            f"- 结构：{zh_label(structure)}",
+        ]
+        if theme:
+            parameter_lines.append(f"- 主题：{zh_label(theme)}")
+        if tone:
+            parameter_lines.append(f"- 基调：{zh_label(tone)}")
+        parameter_lines.extend([
+            "- 类型、主题和基调不得被世界观资料中的其他类型元素覆盖。",
+            "- 事实冲突时依次以作品参数、整体世界观、当前场景规划为准；场景规划中的冲突内容必须静默纠正。",
+            "- 不要混合互相冲突的地点、时代或机构，也不要把名称相近的设定擅自视为同一对象。",
+            *[f"- {line}" for line in build_location_guidance(story_params)],
+        ])
+
+        continuity_lines = []
+        if chapter_contract:
+            continuity_lines.extend([
+                "\n## 本章质量契约（必须兑现，不得擅自增加真相）：",
+                compact_json(chapter_contract, max_chars=10000),
+            ])
+        if previous_scene_tail:
+            continuity_lines.extend([
+                "\n## 上一场或上一章的已验收结尾（从这一状态续写，不得重演已完成动作）：",
+                previous_scene_tail,
+            ])
+        if next_scene_plan:
+            continuity_lines.extend([
+                "\n## 下一场边界（仅用于控制本场收束；禁止提前写出下一场事件）：",
+                next_scene_plan,
+            ])
         
         # Build prompt using the same format as the existing writing system
         if is_short_story:
             prompt_lines = [
-                f"请撰写科幻{zh_label(length)}中的一个场景。",
+                f"请撰写一部{genre_label}作品中的一个场景。",
                 f"故事采用“{zh_label(structure)}”框架。",
                 "下面会提供短篇小说中单个场景的详细规划，请只写这个场景的完整正文。",
                 "不要写其他场景，也不要概括整个故事。",
-                f"\n## 当前场景描述（场景 {scene_num}）：",
-                scene_plan,
-                "\n## 整体故事背景（供参考）：",
+                *parameter_lines,
+                "\n## 整体故事背景（高于场景规划）：",
                 f"完整世界观：{context.get('lore', '无可用内容')}",
                 f"\n{context.get('characters', '没有可用的人物信息')}",
                 f"\n{context.get('factions', '没有可用的势力信息')}",
+                f"\n## 当前场景描述（场景 {scene_num}）：",
+                scene_plan,
+                *continuity_lines,
+                "若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。",
                 "\n## 本场景写作要求：",
                 "- 写出有吸引力、富有描写性的场景正文。",
                 "- 写出人物行动、对白（如适合）、思想和情绪。",
                 "- 清楚交代场景环境。",
                 "- 场景应衔接合理，并推动情节或人物发展。",
                 "- 所有世界构建细节必须严格遵守所提供的世界观。",
+                *[f"- {line}" for line in CHINESE_PROSE_REQUIREMENTS],
                 "- 只提供本场景正文，不要附加评论或标题。",
                 "- 不要使用代码围栏。"
             ]
         else:
             prompt_lines = [
-                f"请撰写科幻{zh_label(length)}第 {chapter_num} 章中的一个场景。",
+                f"请撰写一部{genre_label}作品第 {chapter_num} 章中的一个场景。",
                 f"故事采用“{zh_label(structure)}”框架。",
                 f"下面会提供第 {chapter_num} 章中单个场景的详细规划，请只写这个场景的完整正文。",
                 "不要写其他场景，也不要概括本章。",
-                f"\n## 当前场景描述（第 {chapter_num} 章，场景 {scene_num}）：",
-                scene_plan,
-                "\n## 整体故事背景（供参考）：",
+                *parameter_lines,
+                "\n## 整体故事背景（高于场景规划）：",
                 f"完整世界观：{context.get('lore', '无可用内容')}",
                 f"\n{context.get('characters', '没有可用的人物信息')}",
                 f"\n{context.get('factions', '没有可用的势力信息')}",
+                f"\n## 当前场景描述（第 {chapter_num} 章，场景 {scene_num}）：",
+                scene_plan,
+                *continuity_lines,
+                "若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。",
                 "\n## 本场景写作要求：",
                 "- 写出有吸引力、富有描写性的场景正文。",
                 "- 写出人物行动、对白（如适合）、思想和情绪。",
                 "- 清楚交代场景环境。",
                 "- 场景应衔接合理，并推动情节或人物发展。",
+                "- 只推进一个明确的问题或张力，用可核实的动作、证物、证词和程序细节表现，不用抽象总结代替情节。",
+                "- 严格控制信息差：人物只能依据其已知信息行动，线索出现后才允许据此推断。",
+                "- 如涉及反转，必须由本章契约中已安排的公平伏笔触发，并改变人物的判断或行动。",
+                "- 法律程序须符合本章契约与案件底稿，不得让角色凭身份跳过取证、移交、质证等关键约束。",
+                "- 本场结束时人物处境必须发生具体变化；不要重复上一场已经完成的动作、介绍和环境描写。",
                 "- 所有世界构建细节必须严格遵守所提供的世界观。",
+                *[f"- {line}" for line in CHINESE_PROSE_REQUIREMENTS],
                 "- 只提供本场景正文，不要附加评论或标题。",
                 "- 不要使用代码围栏。"
             ]
@@ -858,10 +1040,7 @@ class ChapterWritingAgent(BaseAgent):
             # orchestrator's model into this agent, so they retain the selected
             # provider and its matching credentials (for hosted-llm, the
             # HOSTED_LLM_* variables loaded by ai_helper).
-            if self.app and hasattr(self.app, 'get_selected_model'):
-                model = self.app.get_selected_model()
-            else:
-                model = self.model or DEFAULT_API_MODEL
+            model = self._get_selected_model()
                 
             # Save prompt to file (following existing pattern)
             if is_short_story:
@@ -890,6 +1069,15 @@ class ChapterWritingAgent(BaseAgent):
                     raise RuntimeError(f"LLM returned empty response for Scene {scene_num} of short story")
                 else:
                     raise RuntimeError(f"LLM returned empty response for Chapter {chapter_num}, Scene {scene_num}")
+
+            style_warnings = analyze_chinese_prose_style(response)
+            if style_warnings:
+                self.logger.warning(
+                    "Chapter %s Scene %s style warnings: %s",
+                    chapter_num,
+                    scene_num,
+                    "; ".join(style_warnings),
+                )
             
             if is_short_story:
                 self.logger.info(f"Generated prose for Scene {scene_num} of short story. Length: {len(response)} chars")
@@ -912,6 +1100,18 @@ class ChapterWritingAgent(BaseAgent):
         total = len(chapter_info_list)
         completed = sum(1 for ch in chapter_info_list if ch.exists)
         remaining = total - completed
+        incomplete = [chapter for chapter in chapter_info_list if not chapter.exists]
+        missing_scene_plans = [
+            chapter.chapter_number for chapter in incomplete if not chapter.plan_exists
+        ]
+        next_chapter = min(
+            (chapter.chapter_number for chapter in incomplete),
+            default=None,
+        )
+        next_info = next(
+            (chapter for chapter in incomplete if chapter.chapter_number == next_chapter),
+            None,
+        )
         
         # Group by section
         section_progress = {}
@@ -927,9 +1127,11 @@ class ChapterWritingAgent(BaseAgent):
             "total_chapters": total,
             "completed_chapters": completed,
             "remaining_chapters": remaining,
+            "missing_scene_plans": missing_scene_plans,
             "completion_percentage": (completed / total * 100) if total > 0 else 0,
             "section_progress": section_progress,
-            "next_chapter": min([ch.chapter_number for ch in chapter_info_list if not ch.exists]) if remaining > 0 else None
+            "next_chapter": next_chapter,
+            "next_chapter_ready": bool(next_info and next_info.plan_exists),
         }
     
     # ========== REVIEW SYSTEM METHODS ==========
