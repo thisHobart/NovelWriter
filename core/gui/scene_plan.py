@@ -309,7 +309,7 @@ class ScenePlanning:
             show_error("错误", f"场景规划不支持故事篇幅“{zh_label(story_length)}”。")
             return
 
-        run_in_background(
+        return run_in_background(
             self.app.root,
             work,
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -331,7 +331,7 @@ class ScenePlanning:
     def generate_chapter_outline(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._generate_chapter_outline(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -458,11 +458,13 @@ class ScenePlanning:
         except FileNotFoundError as fnf_e: # Should be caught per-file above, but as a fallback
             show_error("错误", f"找不到必需文件：{fnf_e}")
             print(f"Error: File not found - {fnf_e}")
+            raise
         except Exception as e:
             print(f"Failed to generate chapter outline: {e}")
             import traceback
             traceback.print_exc()
             show_error("错误", f"生成章节大纲失败：{str(e)}")
+            raise
 
 
     # Generate an outline of the scenes within each chapter
@@ -816,9 +818,11 @@ class ScenePlanning:
         except FileNotFoundError as fnf_e:
             self.app.logger.error(f"Scene Plan: File not found - {fnf_e}", exc_info=True)
             show_error("错误", f"场景规划找不到必需文件：{fnf_e}")
+            raise
         except Exception as e:
             self.app.logger.error(f"Failed to generate scene plans: {e}", exc_info=True)
             show_error("错误", f"生成场景规划失败：{str(e)}")
+            raise
 
 
     def _plan_short_story_scenes(self, ui):
@@ -953,3 +957,4 @@ class ScenePlanning:
         except Exception as e:
             self.app.logger.error(f"Error saving short story scenes to {output_filename_full_path}: {e}", exc_info=True)
             show_error("错误", f"保存短篇场景失败：{e}")
+            raise

@@ -49,7 +49,7 @@ def test_work_runs_off_main_thread_and_reports_on_it(root):
         seen["result"] = value
         seen["callback_thread"] = threading.current_thread()
 
-    run_in_background(
+    task = run_in_background(
         root,
         work,
         on_success=on_success,
@@ -67,6 +67,7 @@ def test_work_runs_off_main_thread_and_reports_on_it(root):
     # 按钮状态与原文案都必须恢复，否则界面会永久卡在忙碌态。
     assert str(button.cget("state")) == "normal"
     assert button.cget("text") == "生成"
+    assert task.result() == "结果"
 
 
 def test_failure_restores_the_ui_and_reports_the_error(root):
@@ -77,7 +78,7 @@ def test_failure_restores_the_ui_and_reports_the_error(root):
     def work():
         raise RuntimeError("后端不可用")
 
-    run_in_background(
+    task = run_in_background(
         root,
         work,
         on_error=errors.append,
@@ -92,6 +93,8 @@ def test_failure_restores_the_ui_and_reports_the_error(root):
     assert str(button.cget("state")) == "normal"
     assert str(other.cget("state")) == "normal"
     assert button.cget("text") == "生成"
+    with pytest.raises(RuntimeError, match="后端不可用"):
+        task.result()
 
 
 def test_cancel_button_is_wired_and_reports_cancellation(root):

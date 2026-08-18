@@ -15,6 +15,7 @@ from typing import Dict, List, Any, Optional, Tuple, Callable
 import json
 import logging
 import os
+import glob
 import threading
 import time
 from dataclasses import dataclass, field
@@ -802,7 +803,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             app = self.app_instance
             chapter_writing_ui = app.chapter_writing_ui
-            output_dir = story_params.get("output_directory", "current_work")
+            output_dir = app.get_output_dir()
             
             prose_results = {
                 "functions_executed": [],
@@ -815,27 +816,24 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             # Step 1: Write Short Story Prose
             self.logger.info("🔹 Step 1: Clicking 'Write Short Story' button")
-            try:
-                chapter_writing_ui._write_short_story_prose()
-                prose_results["functions_executed"].append("Write Short Story")
-                prose_results["button_clicks"].append("write_short_story_button")
-                self.logger.info("✅ Short Story prose generation completed")
-                
-                # Phase 1: Intelligent review of generated content
-                self._review_step_output("short_story_prose", output_dir, prose_results)
-                
-            except Exception as e:
-                self.logger.warning(f"⚠️ Short Story prose generation failed: {e}")
-            
-            # Final pause to ensure prose file is written
-            time.sleep(2.0)
+            self._run_gui_operation(
+                chapter_writing_ui._dispatch_prose_generation,
+                "撰写短篇正文",
+            )
+            self._require_outputs(
+                output_dir,
+                "撰写短篇正文",
+                patterns=("story/content/prose_short_story_*.md",),
+            )
+            prose_results["functions_executed"].append("Write Short Story")
+            prose_results["button_clicks"].append("write_short_story_button")
+            self._review_step_output("short_story_prose", output_dir, prose_results)
             
             # Check what files were generated
             generated_files = []
             
             # Look for short story prose files
             prose_files_pattern = os.path.join(output_dir, "story", "content", "prose_short_story_*.md")
-            import glob
             prose_files = glob.glob(prose_files_pattern)
             
             for prose_file in prose_files:
@@ -844,6 +842,9 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             prose_results["files_generated"] = generated_files
             prose_results["total_functions_executed"] = len(prose_results["functions_executed"])
+
+            if not generated_files:
+                raise RuntimeError("短篇正文任务结束后未生成正文文件")
             
             self.logger.info(f"🎉 Short Story prose generation completed! Generated {len(generated_files)} files")
             self.logger.info(f"📁 Files: {', '.join(generated_files)}")
@@ -1166,6 +1167,72 @@ class StoryGenerationOrchestrator(BaseAgent):
                 "content": None,
                 "error": str(e)
             }
+
+    def _run_gui_operation(self, starter: Callable[[], Any], operation_name: str) -> Any:
+        """Start one GUI background job and wait until its callbacks are processed.
+
+        The complete workflow is invoked on Tk's main thread.  The individual
+        generation buttons deliberately use worker threads, so simply sleeping
+        here races the LLM.  Pumping Tk while waiting lets ``task_runner`` deliver
+        the result and keeps the window responsive without starting the dependent
+        operation early.
+        """
+        self._last_operation_started_ns = time.time_ns()
+        task = starter()
+        if task is None or not hasattr(task, "done") or not hasattr(task, "result"):
+            raise RuntimeError(f"{operation_name}未能启动后台任务")
+
+        app = getattr(self, "app_instance", None)
+        root = getattr(app, "root", None)
+        if root is None:
+            raise RuntimeError(f"等待{operation_name}时无法访问界面主循环")
+
+        self.logger.info("⏳ Waiting for GUI operation: %s", operation_name)
+        while not task.done.is_set():
+            root.update()
+            time.sleep(0.05)
+
+        # Process restore/on_success/on_done callbacks scheduled by task_runner.
+        root.update()
+        result = task.result()
+        if result is False:
+            raise RuntimeError(f"{operation_name}返回失败结果")
+        self.logger.info("✅ GUI operation completed: %s", operation_name)
+        return result
+
+    def _require_outputs(
+        self,
+        output_dir: str,
+        operation_name: str,
+        *,
+        relative_paths: Tuple[str, ...] = (),
+        patterns: Tuple[str, ...] = (),
+        require_fresh: bool = True,
+    ) -> None:
+        """Reject an operation before its dependent step if outputs are absent."""
+        missing = []
+        started_ns = getattr(self, "_last_operation_started_ns", 0)
+
+        def is_valid(path: str) -> bool:
+            return (
+                os.path.isfile(path)
+                and os.path.getsize(path) > 0
+                and (not require_fresh or os.stat(path).st_mtime_ns >= started_ns)
+            )
+
+        for relative_path in relative_paths:
+            path = os.path.join(output_dir, relative_path)
+            if not is_valid(path):
+                missing.append(relative_path)
+        for pattern in patterns:
+            matches = [
+                path for path in glob.glob(os.path.join(output_dir, pattern))
+                if is_valid(path)
+            ]
+            if not matches:
+                missing.append(pattern)
+        if missing:
+            raise RuntimeError(f"{operation_name}没有生成有效输出：{', '.join(missing)}")
     
     def _generate_lore(self, story_params: Dict) -> Dict[str, Any]:
         """Generate lore by clicking the actual GUI buttons like a human would."""
@@ -1187,40 +1254,36 @@ class StoryGenerationOrchestrator(BaseAgent):
             lore_results = {}
             
             self.logger.info("🔹 Step 2: Clicking 'Generate Factions' button")
-            lore_ui.generate_factions()
+            self._run_gui_operation(lore_ui.generate_factions, "生成势力")
+            self._require_outputs(
+                app.get_output_dir(), "生成势力",
+                relative_paths=("story/lore/factions.json",),
+            )
             self.logger.info("✅ Generate Factions completed")
             
-            # Tactical pause to allow file operations to complete
-            import time
-            time.sleep(1.0)
-            
             self.logger.info("🔹 Step 3: Clicking 'Generate Characters' button")
-            lore_ui.generate_characters()
+            self._run_gui_operation(lore_ui.generate_characters, "生成角色")
+            self._require_outputs(
+                app.get_output_dir(), "生成角色",
+                relative_paths=("story/lore/characters.json",),
+            )
             self.logger.info("✅ Generate Characters completed")
             
-            # Tactical pause to allow file operations to complete
-            time.sleep(1.0)
-            
             self.logger.info("🔹 Step 4: Clicking 'Generate Lore' button")
-            lore_content = lore_ui.generate_lore()
+            lore_content = self._run_gui_operation(lore_ui.generate_lore, "生成世界观")
+            self._require_outputs(
+                app.get_output_dir(), "生成世界观",
+                relative_paths=("story/lore/generated_lore.md",),
+            )
             self.logger.info("✅ Generate Lore completed")
             
-            # Tactical pause to allow file operations to complete
-            time.sleep(1.5)  # Longer pause after LLM call
-            
             self.logger.info("🔹 Step 5: Clicking 'Enhance main characters' button")
-            lore_ui.main_character_enhancement()
+            self._run_gui_operation(lore_ui.main_character_enhancement, "完善主要角色")
             self.logger.info("✅ Enhance main characters completed")
             
-            # Tactical pause to allow file operations to complete
-            time.sleep(1.5)  # Longer pause after LLM calls
-            
             self.logger.info("🔹 Step 6: Clicking 'Suggest Story Titles' button")
-            lore_ui.suggest_titles()
+            self._run_gui_operation(lore_ui.suggest_titles, "推荐标题")
             self.logger.info("✅ Suggest Story Titles completed")
-            
-            # Final pause to ensure all files are written
-            time.sleep(1.0)
             
             # Collect all the generated files from the output directory
             output_dir = app.get_output_dir()
@@ -1233,6 +1296,19 @@ class StoryGenerationOrchestrator(BaseAgent):
                     ):
                         generated_files.append(os.path.relpath(os.path.join(root, file), output_dir))
             generated_files.sort()
+
+            required_lore_files = [
+                "story/lore/factions.json",
+                "story/lore/characters.json",
+                "story/lore/generated_lore.md",
+            ]
+            missing_lore_files = [
+                path for path in required_lore_files
+                if not os.path.isfile(os.path.join(output_dir, path))
+                or os.path.getsize(os.path.join(output_dir, path)) == 0
+            ]
+            if missing_lore_files:
+                raise RuntimeError(f"设定阶段缺少有效输出：{', '.join(missing_lore_files)}")
             
             lore_results = {
                 "parameters_file": "system/parameters.txt",
@@ -1275,7 +1351,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             app = self.app_instance
             story_structure_ui = app.structure_ui
-            output_dir = story_params.get("output_directory", "current_work")  # Define output_dir early
+            output_dir = app.get_output_dir()
             
             # Step 1: Save parameters first (like you do)
             self.logger.info("🔹 Step 1: Saving parameters to file")
@@ -1292,73 +1368,57 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             # Step 2: Generate Character Arcs
             self.logger.info("🔹 Step 2: Clicking 'Generate Character Arcs' button")
-            try:
-                story_structure_ui.generate_arcs()
-                structure_results["functions_executed"].append("Generate Character Arcs")
-                structure_results["button_clicks"].append("c_arc_button")
-                self.logger.info("✅ Character Arcs generation completed")
-                
-                # Phase 1: Intelligent review of generated content
-                self._review_step_output("character_arcs", output_dir, structure_results)
-                
-            except Exception as e:
-                self.logger.warning(f"⚠️ Character Arcs generation failed: {e}")
-            
-            # Tactical pause to allow file operations to complete
-            time.sleep(1.5)  # Longer pause after LLM call
+            self._run_gui_operation(story_structure_ui.generate_arcs, "生成人物弧光")
+            self._require_outputs(
+                output_dir, "生成人物弧光",
+                relative_paths=("story/structure/character_arcs.md",),
+            )
+            structure_results["functions_executed"].append("Generate Character Arcs")
+            structure_results["button_clicks"].append("c_arc_button")
+            self._review_step_output("character_arcs", output_dir, structure_results)
             
             # Step 3: Generate Faction Arcs
             self.logger.info("🔹 Step 3: Clicking 'Generate Faction Arcs' button")
-            try:
-                story_structure_ui.generate_faction_arcs()
-                structure_results["functions_executed"].append("Generate Faction Arcs")
-                structure_results["button_clicks"].append("f_arc_button")
-                self.logger.info("✅ Faction Arcs generation completed")
-                
-                # Phase 1: Intelligent review of generated content
-                self._review_step_output("faction_arcs", output_dir, structure_results)
-                
-            except Exception as e:
-                self.logger.warning(f"⚠️ Faction Arcs generation failed: {e}")
-            
-            # Tactical pause to allow file operations to complete
-            time.sleep(1.5)  # Longer pause after LLM call
+            self._run_gui_operation(story_structure_ui.generate_faction_arcs, "生成并协调势力弧光")
+            self._require_outputs(
+                output_dir, "生成并协调势力弧光",
+                relative_paths=(
+                    "story/structure/faction_arcs.md",
+                    "story/structure/reconciled_arcs.md",
+                ),
+            )
+            structure_results["functions_executed"].append("Generate Faction Arcs")
+            structure_results["button_clicks"].append("f_arc_button")
+            self._review_step_output("faction_arcs", output_dir, structure_results)
             
             # Step 4: Add Locations to Arcs
             self.logger.info("🔹 Step 4: Clicking 'Add Locations to Arcs' button")
-            try:
-                story_structure_ui.add_planets_to_arcs()
-                structure_results["functions_executed"].append("Add Locations to Arcs")
-                structure_results["button_clicks"].append("cfp_arc_button")
-                self.logger.info("✅ Add Locations to Arcs completed")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Add Locations to Arcs failed: {e}")
-            
-            # Tactical pause to allow file operations to complete
-            time.sleep(1.5)  # Longer pause after LLM call
+            self._run_gui_operation(story_structure_ui.add_planets_to_arcs, "将地点融入故事弧")
+            self._require_outputs(
+                output_dir, "将地点融入故事弧",
+                relative_paths=("story/planning/reconciled_locations_arcs.md",),
+            )
+            structure_results["functions_executed"].append("Add Locations to Arcs")
+            structure_results["button_clicks"].append("cfp_arc_button")
             
             # Step 5: Create Detailed Plot (dispatches based on story length)
             self.logger.info("🔹 Step 5: Clicking 'Create Detailed Plot' button")
-            try:
-                story_structure_ui._dispatch_detailed_plot_creation()
-                structure_results["functions_executed"].append("Create Detailed Plot")
-                structure_results["button_clicks"].append("detailed_plot_button")
-                self.logger.info("✅ Detailed Plot creation completed")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Detailed Plot creation failed: {e}")
-            
-            # Final pause to ensure all structure files are written
-            time.sleep(2.0)  # Longer pause after complex operations
-            
-            # Step 6: Improve Structure (if available)
-            self.logger.info("🔹 Step 6: Executing 'Improve Structure' function")
-            try:
-                story_structure_ui.improve_structure()
-                structure_results["functions_executed"].append("Improve Structure")
-                structure_results["button_clicks"].append("improve_structure_function")
-                self.logger.info("✅ Improve Structure completed")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Improve Structure failed: {e}")
+            self._run_gui_operation(
+                story_structure_ui._dispatch_detailed_plot_creation,
+                "创建详细情节",
+            )
+            story_length = story_params.get("story_length", "Novel (Standard)")
+            story_structure = story_params.get("story_structure", "6-Act Structure")
+            if story_length == "Short Story":
+                plot_pattern = "story/structure/plot_short_story_*.md"
+            else:
+                safe_structure = story_structure.lower().replace(" ", "_")
+                plot_pattern = f"story/structure/{safe_structure}_*.md"
+            self._require_outputs(
+                output_dir, "创建详细情节", patterns=(plot_pattern,),
+            )
+            structure_results["functions_executed"].append("Create Detailed Plot")
+            structure_results["button_clicks"].append("detailed_plot_button")
             
             # Check what files were generated
             generated_files = []
@@ -1368,13 +1428,21 @@ class StoryGenerationOrchestrator(BaseAgent):
                 "story/structure/character_arcs.md",
                 "story/structure/faction_arcs.md", 
                 "story/structure/reconciled_arcs.md",
-                "story/structure/locations_arcs.md",
+                "story/planning/reconciled_locations_arcs.md",
                 "story/structure/detailed_plot.md",
                 "story/structure/plot_short_story_3-act_structure.md",
                 "story/structure/plot_novella.md",
                 "story/structure/plot_novel.md",
                 "story/structure/improved_structure.md"
             ]
+
+            structure_dir = os.path.join(output_dir, "story", "structure")
+            if os.path.isdir(structure_dir):
+                for filename in os.listdir(structure_dir):
+                    if filename.endswith(".md"):
+                        relative_path = f"story/structure/{filename}"
+                        if relative_path not in potential_files:
+                            potential_files.append(relative_path)
             
             for filename in potential_files:
                 filepath = os.path.join(output_dir, filename)
@@ -1383,6 +1451,30 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             structure_results["files_generated"] = generated_files
             structure_results["total_functions_executed"] = len(structure_results["functions_executed"])
+
+            required_structure_files = {
+                "story/structure/character_arcs.md",
+                "story/structure/faction_arcs.md",
+                "story/structure/reconciled_arcs.md",
+                "story/planning/reconciled_locations_arcs.md",
+            }
+            missing_structure_files = sorted(required_structure_files - set(generated_files))
+            arc_files = {
+                "story/structure/character_arcs.md",
+                "story/structure/faction_arcs.md",
+                "story/structure/reconciled_arcs.md",
+            }
+            plot_files = [
+                path for path in generated_files
+                if path.startswith("story/structure/") and path not in arc_files
+            ]
+            if missing_structure_files or not plot_files:
+                details = []
+                if missing_structure_files:
+                    details.append(f"缺少文件：{', '.join(missing_structure_files)}")
+                if not plot_files:
+                    details.append("缺少详细情节输出")
+                raise RuntimeError("结构阶段输出不完整；" + "；".join(details))
             
             self.logger.info(f"🎉 Story Structure generation complete! Executed {len(structure_results['functions_executed'])} functions: {structure_results['functions_executed']}")
             
@@ -1411,7 +1503,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             app = self.app_instance
             scene_plan_ui = app.outlining_ui
-            output_dir = story_params.get("output_directory", "current_work")
+            output_dir = app.get_output_dir()
             
             scene_results = {
                 "functions_executed": [],
@@ -1427,40 +1519,37 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             if story_length != "Short Story":
                 self.logger.info("🔹 Step 1: Clicking 'Generate Chapter Outlines' button")
-                try:
-                    scene_plan_ui.generate_chapter_outline()
-                    scene_results["functions_executed"].append("Generate Chapter Outlines")
-                    scene_results["button_clicks"].append("chapter_outline_button")
-                    self.logger.info("✅ Chapter Outlines generation completed")
-                    
-                    # Phase 1: Intelligent review of generated content
-                    self._review_step_output("chapter_outlines", output_dir, scene_results)
-                    
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Chapter Outlines generation failed: {e}")
-                
-                # Tactical pause to allow file operations to complete
-                time.sleep(1.5)  # Longer pause after LLM call
+                self._run_gui_operation(scene_plan_ui.generate_chapter_outline, "生成章节大纲")
+                self._require_outputs(
+                    output_dir, "生成章节大纲",
+                    patterns=("story/planning/chapter_outlines/chapter_outlines_*.md",),
+                )
+                scene_results["functions_executed"].append("Generate Chapter Outlines")
+                scene_results["button_clicks"].append("chapter_outline_button")
+                self._review_step_output("chapter_outlines", output_dir, scene_results)
                 
             else:
                 self.logger.info("🔹 Skipping Chapter Outlines for Short Story")
             
             # Step 2: Plan Scenes (dispatches based on story length)
             self.logger.info("🔹 Step 2: Clicking 'Plan Scenes' button")
-            try:
-                scene_plan_ui._dispatch_scene_planning()
-                scene_results["functions_executed"].append("Plan Scenes")
-                scene_results["button_clicks"].append("plan_scenes_button")
-                self.logger.info("✅ Scene Planning completed")
-                
-                # Phase 1: Intelligent review of generated content
-                self._review_step_output("scenes", output_dir, scene_results)
-                
-            except Exception as e:
-                self.logger.warning(f"⚠️ Scene Planning failed: {e}")
-            
-            # Final pause to ensure all scene planning files are written
-            time.sleep(2.0)  # Longer pause after complex operations
+            self._run_gui_operation(scene_plan_ui._dispatch_scene_planning, "规划场景")
+            scene_pattern = (
+                "story/planning/scenes_short_story_*.md"
+                if story_length == "Short Story"
+                else "story/planning/detailed_scene_plans/scenes_*.md"
+            )
+            self._require_outputs(
+                output_dir,
+                "规划场景",
+                patterns=(scene_pattern,),
+                # Long-form planning intentionally reuses plans whose Markdown
+                # and contract have already passed its own usability check.
+                require_fresh=story_length == "Short Story",
+            )
+            scene_results["functions_executed"].append("Plan Scenes")
+            scene_results["button_clicks"].append("plan_scenes_button")
+            self._review_step_output("scenes", output_dir, scene_results)
             
             # Check what files were generated
             generated_files = []
@@ -1553,9 +1642,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                 # Analyze story structure to find chapters
                 self.logger.info("📊 Analyzing chapter structure...")
                 
-                # Tactical pause to ensure all prerequisite files are available
-                time.sleep(1.0)
-                
                 chapter_info_list, story_parameters = chapter_agent.analyze_chapter_structure()
                 
                 if not chapter_info_list:
@@ -1577,6 +1663,16 @@ class StoryGenerationOrchestrator(BaseAgent):
             self.logger.info(f"📈 Chapter Progress: {progress['completed_chapters']}/{progress['total_chapters']} completed ({progress['completion_percentage']:.1f}%)")
             
             if not plan.chapters_to_write:
+                if len(plan.chapters_completed) != plan.total_chapters:
+                    return {
+                        "success": False,
+                        "content": None,
+                        "error": (
+                            "章节计划状态不一致：没有待写章节，但仅完成 "
+                            f"{len(plan.chapters_completed)}/{plan.total_chapters} 章"
+                        ),
+                        "step": "chapters",
+                    }
                 self.logger.info("✅ All chapters already written")
                 return {
                     "success": True,
@@ -1594,9 +1690,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             
             result = chapter_agent.write_chapters_batch(chapter_info_list, plan)
             
-            # Final pause to ensure all chapter files are written
-            time.sleep(2.0)  # Longer pause after complex writing operations
-            
             if result.success:
                 chapters_written = result.data.get("chapters_written", [])
                 errors = result.data.get("errors", [])
@@ -1607,6 +1700,25 @@ class StoryGenerationOrchestrator(BaseAgent):
                 
                 # Get updated progress
                 final_progress = chapter_agent.get_progress_report(chapter_info_list)
+
+                completed_count = final_progress.get("completed_chapters", 0)
+                if completed_count != plan.total_chapters or errors:
+                    return {
+                        "success": False,
+                        "content": {
+                            "chapters_written": chapters_written,
+                            "chapters_completed": completed_count,
+                            "total_chapters": plan.total_chapters,
+                            "errors": errors,
+                            "progress": final_progress,
+                        },
+                        "error": (
+                            "章节未全部完成："
+                            f"{completed_count}/{plan.total_chapters}；"
+                            + ("；".join(errors) if errors else "存在未完成章节")
+                        ),
+                        "step": "chapters",
+                    }
                 
                 return {
                     "success": True,

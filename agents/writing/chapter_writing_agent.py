@@ -602,7 +602,11 @@ class ChapterWritingAgent(BaseAgent):
                 break
                     
         # Prepare result with review metrics
-        success = len(chapters_written) > 0
+        success = (
+            not cancellation_message
+            and not errors
+            and len(chapters_written) == len(plan.chapters_to_write)
+        )
         message = f"已写完 {len(chapters_written)} 章"
         if cancellation_message:
             message += "（已按请求停止）"

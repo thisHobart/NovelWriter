@@ -213,7 +213,7 @@ class ChapterWriting:
 
         if story_length == "Short Story":
             request = self._build_request(parameters=params)
-            self._start_background(
+            return self._start_background(
                 lambda: self._write_short_story_prose(request),
                 busy_button=self.write_prose_button,
                 busy_text="正在撰写短篇…",
@@ -236,7 +236,7 @@ class ChapterWriting:
             return
 
         request = self._build_request(parameters=params, chapter_number=chapter_number)
-        self._start_background(
+        return self._start_background(
             lambda: self.write_chapter(request),
             busy_button=self.write_prose_button,
             busy_text=f"正在撰写第 {chapter_number} 章…",

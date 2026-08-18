@@ -31,6 +31,8 @@ class BackgroundTask:
     thread: threading.Thread
     cancel_token: CancelToken
     done: threading.Event = field(default_factory=threading.Event)
+    value: Any = None
+    error: Optional[BaseException] = None
 
     @property
     def running(self) -> bool:
@@ -38,6 +40,14 @@ class BackgroundTask:
 
     def cancel(self) -> None:
         self.cancel_token.cancel()
+
+    def result(self) -> Any:
+        """Return the worker result, re-raising its exception when it failed."""
+        if not self.done.is_set():
+            raise RuntimeError("后台任务尚未完成")
+        if self.error is not None:
+            raise self.error
+        return self.value
 
 
 def run_in_background(
@@ -131,6 +141,10 @@ def run_in_background(
                 pass  # window closed while work was running
             return
 
+        if kind == "ok":
+            task.value = payload
+        elif kind in {"error", "cancelled"}:
+            task.error = payload
         task.done.set()
         try:
             restore()

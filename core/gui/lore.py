@@ -209,7 +209,7 @@ class Lore:
         except (TypeError, ValueError):
             show_error("错误", "请输入有效的数量。")
             return
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._generate_factions(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -301,7 +301,7 @@ class Lore:
         except (TypeError, ValueError):
             show_error("错误", "请输入有效的数量。")
             return
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._generate_characters(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -531,7 +531,7 @@ class Lore:
     def generate_lore(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._generate_lore(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -789,7 +789,7 @@ class Lore:
     def suggest_titles(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._suggest_titles(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -919,7 +919,7 @@ class Lore:
     def main_character_enhancement(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._main_character_enhancement(ui),
             on_error=lambda exc: show_error("错误", str(exc)),

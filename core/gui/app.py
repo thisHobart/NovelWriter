@@ -846,6 +846,9 @@ class NovelWriterApp:
             return
         
         try:
+            self.start_workflow_btn.config(state="disabled")
+            self.resume_workflow_btn.config(state="disabled")
+
             # Gather story parameters
             story_params = self.gather_story_parameters()
             
@@ -876,6 +879,9 @@ class NovelWriterApp:
         except Exception as e:
             self.logger.error(f"Workflow execution failed: {e}")
             self.handle_workflow_error([str(e)])
+        finally:
+            self.start_workflow_btn.config(state="normal")
+            self.resume_workflow_btn.config(state="normal")
     
     def resume_workflow(self):
         """Resume an interrupted workflow."""

@@ -346,6 +346,7 @@ def test_batch_cancellation_keeps_finished_chapters_and_stops(tmp_path):
 
     assert written == [1]
     assert result.data["chapters_written"] == [1]
+    assert result.success is False
     assert "已按请求停止" in result.messages[0]
     assert (tmp_path / "chapters" / "chapter_1.md").exists()
     assert not (tmp_path / "chapters" / "chapter_2.md").exists()
@@ -381,3 +382,33 @@ def test_batch_stops_after_first_rejected_chapter(tmp_path):
     assert attempted == [1]
     assert result.data["chapters_written"] == []
     assert result.data["errors"] == ["第 1 章：验收失败"]
+    assert result.success is False
+
+
+def test_batch_partial_write_is_not_reported_as_success(tmp_path):
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+
+    def write_first_then_reject(chapter_info):
+        if chapter_info.chapter_number == 1:
+            return AgentResult(success=True, data={}, messages=[], metrics={})
+        return AgentResult(success=False, data={}, messages=["验收失败"], metrics={})
+
+    agent._write_single_chapter = write_first_then_reject
+    chapter_infos = [
+        ChapterInfo(number, "Rising Action", f"scene_{number}.md", f"chapter_{number}.md")
+        for number in (1, 2, 3)
+    ]
+    plan = ChapterWritingPlan(
+        total_chapters=3,
+        chapters_to_write=[1, 2, 3],
+        chapters_completed=[],
+        batch_size=3,
+        enable_reviews=False,
+    )
+
+    result = agent.write_chapters_batch(chapter_infos, plan)
+
+    assert result.success is False
+    assert result.data["chapters_written"] == [1]
+    assert result.data["errors"] == ["第 2 章：验收失败"]

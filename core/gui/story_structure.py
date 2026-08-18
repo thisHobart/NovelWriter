@@ -147,7 +147,7 @@ class StoryStructure:
             show_error("错误", f"当前操作不支持故事篇幅“{zh_label(story_length)}”。")
             return
 
-        run_in_background(
+        return run_in_background(
             self.app.root,
             work,
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -170,7 +170,7 @@ class StoryStructure:
     def generate_arcs(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._generate_arcs(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -375,7 +375,7 @@ class StoryStructure:
     def generate_faction_arcs(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._generate_faction_arcs(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
@@ -580,7 +580,7 @@ class StoryStructure:
     def add_planets_to_arcs(self):
         """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         ui = snapshot_ui(self.app)
-        run_in_background(
+        return run_in_background(
             self.app.root,
             lambda: self._add_planets_to_arcs(ui),
             on_error=lambda exc: show_error("错误", str(exc)),
