@@ -4,6 +4,7 @@ import logging
 
 from core.gui import scene_plan as scene_plan_module
 from core.gui.scene_plan import ScenePlanning
+from core.gui.task_runner import snapshot_ui
 
 
 class FakeApp:
@@ -57,7 +58,8 @@ def test_existing_scene_plans_are_skipped_and_only_missing_are_generated(monkeyp
 
     planner = object.__new__(ScenePlanning)
     planner.app = FakeApp(tmp_path)
-    planner._plan_long_form_scenes()
+    # 规划现在跑在后台线程上，界面取值由主线程快照传入。
+    planner._plan_long_form_scenes(snapshot_ui(planner.app))
 
     second_plan = plan_dir / "scenes_episodic_structure_episode_1_introduction_ch2.md"
     assert len(calls) == 1

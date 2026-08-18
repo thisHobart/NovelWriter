@@ -15,7 +15,12 @@ import logging
 
 from core.generation.ai_helper import send_prompt
 from core.generation.helper_fns import write_file, write_json, load_schema, validate_json_schema
-# from core.generation.rag_helper import upsert_text
+from core.generation.domain_profiles import (
+    DEFAULT_QUALITY_LOOP_MODE,
+    QUALITY_LOOP_FROM_LABEL,
+    QUALITY_LOOP_LABELS,
+    QUALITY_LOOP_MODES,
+)
 from core.config.genre_configs import get_genre_config
 from Generators.GenreHandlers import get_supported_genres
 from core.localization import (
@@ -108,6 +113,17 @@ class Parameters:
         self.theme_var = tk.StringVar()
         self.tone_var = tk.StringVar()
         self.output_dir_var = tk.StringVar(value="current_work") # Default output dir
+        # 质量闭环档位：关闭 / 标准 / 严格。关闭档只生成正文，不做领域评审。
+        self.quality_loop_var = tk.StringVar(value=DEFAULT_QUALITY_LOOP_MODE)
+        self.quality_loop_display_var = tk.StringVar(
+            value=QUALITY_LOOP_LABELS[DEFAULT_QUALITY_LOOP_MODE]
+        )
+        self.quality_loop_var.trace_add(
+            "write",
+            lambda *_: self.quality_loop_display_var.set(
+                QUALITY_LOOP_LABELS.get(self.quality_loop_var.get(), self.quality_loop_var.get())
+            ),
+        )
         self.gender_bias_options = self.get_gender_bias_options() # Get options first
         self.gender_bias_var = tk.StringVar(value=self.gender_bias_options[0]) # Default to first option ("Balanced")
         # 中文界面变量与内部英文标识分离，保证旧参数文件和业务判断继续兼容。
@@ -267,6 +283,24 @@ class Parameters:
             state="readonly",
         )
         self.gender_bias_combobox.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
+        current_row += 1
+
+        # Quality Loop mode
+        ttk.Label(parent_frame, text="质量闭环：").grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        self.quality_loop_combobox = ttk.Combobox(
+            parent_frame,
+            textvariable=self.quality_loop_display_var,
+            values=[QUALITY_LOOP_LABELS[mode] for mode in QUALITY_LOOP_MODES],
+            state="readonly",
+        )
+        self.quality_loop_combobox.grid(row=current_row, column=1, sticky="ew", padx=5, pady=2)
+        self.quality_loop_combobox.bind("<<ComboboxSelected>>", self.on_quality_loop_select)
+        ttk.Label(
+            parent_frame,
+            text="标准：按题材做规划/场景/整章评审；严格：提高门槛并拉满重试；关闭：只生成正文（调用量约为标准档的四成）。",
+            wraplength=420,
+            font=("TkDefaultFont", 8),
+        ).grid(row=current_row, column=2, sticky="w", padx=5, pady=2)
         # Add tooltip for Gender Bias - this part was missing from the previous structure of this function
         # For simplicity, adding it directly. Ideally, tooltips would be managed more centrally if there were many.
         # gender_tooltip_label = ttk.Label(parent_frame, text="Set a bias for character gender generation (Female/Male ratio).", wraplength=200, font=("TkDefaultFont", 8))
@@ -282,6 +316,14 @@ class Parameters:
         if directory: # If user selected a directory (didn't cancel)
             self.output_dir_var.set(directory)
             self.logger.info(f"Output directory set by user to: {directory}")
+
+    def on_quality_loop_select(self, event=None):
+        self.quality_loop_var.set(
+            QUALITY_LOOP_FROM_LABEL.get(
+                self.quality_loop_display_var.get(), DEFAULT_QUALITY_LOOP_MODE
+            )
+        )
+        self.trigger_callbacks()
 
     def on_genre_select(self, event=None):
         self.genre_var.set(internal_label(self.genre_display_var.get(), ZH_LABELS))
@@ -439,6 +481,7 @@ class Parameters:
             "author_name": self.author_var.get(),
             "theme": self.theme_var.get(),
             "tone": self.tone_var.get(),
+            "quality_loop": self.quality_loop_var.get(),
         }
 
         # Include Backend and Model if app instance is available
@@ -505,7 +548,7 @@ class Parameters:
         # Define the order for saving - include core params first
         param_order = ["Output Directory", "Genre", "Subgenre", "Story Length", "Story Structure", 
                        "Novel Title", "Author Name", "Theme", "Tone", "Gender Generation Bias String",
-                       "Backend", "Model"] # Persist Model selection
+                       "Quality Loop", "Backend", "Model"] # Persist Model selection
         
         output_lines = []
         # Add ordered core params
@@ -592,6 +635,14 @@ class Parameters:
         self.author_var.set(loaded_params.get("Author Name", ""))
         self.theme_var.set(loaded_params.get("Theme", ""))
         self.tone_var.set(loaded_params.get("Tone", ""))
+        loaded_quality_loop = str(loaded_params.get("Quality Loop", DEFAULT_QUALITY_LOOP_MODE)).strip()
+        if loaded_quality_loop in QUALITY_LOOP_FROM_LABEL:
+            loaded_quality_loop = QUALITY_LOOP_FROM_LABEL[loaded_quality_loop]
+        if loaded_quality_loop not in QUALITY_LOOP_MODES:
+            loaded_quality_loop = DEFAULT_QUALITY_LOOP_MODE
+        self.quality_loop_var.set(loaded_quality_loop)
+        self.quality_loop_display_var.set(QUALITY_LOOP_LABELS[loaded_quality_loop])
+
         self.gender_bias_var.set(loaded_params.get("Gender Generation Bias String", self.gender_bias_options[0]))
         self.gender_bias_display_var.set(GENDER_BIAS_ZH_LABELS.get(
             self.gender_bias_var.get(), self.gender_bias_var.get()

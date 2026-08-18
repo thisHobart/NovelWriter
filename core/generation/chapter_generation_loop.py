@@ -1,4 +1,4 @@
-"""Design-generation-review loop for legal suspense chapters."""
+"""Design-generation-review loop, parameterized by domain profile."""
 
 from __future__ import annotations
 
@@ -8,17 +8,48 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from agents.review.legal_suspense_review_agent import DomainReview, LegalSuspenseReviewAgent
+from agents.review.domain_review_agent import DomainReview, DomainReviewAgent
+from core.generation.cancellation import CancelToken, raise_if_cancelled
 from core.generation.chapter_acceptance import (
     ChapterAcceptanceResult,
     ChapterAcceptanceService,
+)
+from core.generation.domain_profiles import (
+    QUALITY_LOOP_OFF,
+    DomainProfile,
+    apply_quality_loop_mode,
+    resolve_domain_profile,
+    resolve_quality_loop_mode,
 )
 from core.generation.helper_fns import parse_scene_sections
 from core.generation.story_ledger import StoryLedgerManager
 
 
 class QualityGateError(RuntimeError):
-    """Raised when content still fails after the bounded retry loop."""
+    """Raised when content still fails after the bounded retry loop.
+
+    Carries whatever prose was produced before the gate failed so callers can
+    archive it for inspection instead of writing it into the manuscript.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        partial_scenes: Optional[List[str]] = None,
+        chapter_number: Optional[int] = None,
+    ):
+        super().__init__(message)
+        self.partial_scenes = list(partial_scenes or [])
+        self.chapter_number = chapter_number
+
+
+def skipped_review(stage: str) -> DomainReview:
+    """A stand-in verdict for stages the quality loop was told to skip."""
+    return DomainReview(
+        stage=stage,
+        passed=True,
+        reviewer_warning="质量闭环已关闭，本阶段未做领域评审",
+    )
 
 
 @dataclass
@@ -32,6 +63,7 @@ class ChapterLoopResult:
     scene_reviews: List[DomainReview] = field(default_factory=list)
     chapter_review: Optional[DomainReview] = None
     retry_count: int = 0
+    profile_key: str = ""
 
     @property
     def chapter_content(self) -> str:
@@ -46,19 +78,63 @@ class ChapterGenerationLoop:
         output_dir: str,
         model: str,
         logger: Optional[logging.Logger] = None,
-        max_plan_retries: int = 2,
-        max_scene_retries: int = 2,
-        reviewer: Optional[LegalSuspenseReviewAgent] = None,
+        max_plan_retries: Optional[int] = None,
+        max_scene_retries: Optional[int] = None,
+        reviewer: Optional[DomainReviewAgent] = None,
         acceptance_service: Optional[ChapterAcceptanceService] = None,
+        profile: Optional[DomainProfile] = None,
+        cancel_token: Optional[CancelToken] = None,
     ):
         self.output_dir = output_dir
         self.model = model
         self.logger = logger or logging.getLogger("chapter-generation-loop")
-        self.max_plan_retries = max_plan_retries
-        self.max_scene_retries = max_scene_retries
+        # None 表示「跟随领域档案」；显式数字覆盖档案默认值。
+        self._max_plan_retries = max_plan_retries
+        self._max_scene_retries = max_scene_retries
+        self.max_plan_retries = max_plan_retries if max_plan_retries is not None else 2
+        self.max_scene_retries = max_scene_retries if max_scene_retries is not None else 2
         self.ledger = StoryLedgerManager(output_dir)
-        self.reviewer = reviewer or LegalSuspenseReviewAgent(model=model, logger=self.logger)
+        self.profile = profile
+        self._injected_reviewer = reviewer
+        self.reviewer = reviewer
         self.acceptance_service = acceptance_service or ChapterAcceptanceService(self.ledger)
+        self.cancel_token = cancel_token
+
+    def _check_cancelled(self) -> None:
+        raise_if_cancelled(self.cancel_token)
+
+    def _bind_profile(self, parameters: Dict[str, Any], mode: str) -> DomainProfile:
+        """Settle which domain profile governs this chapter, then build the reviewer.
+
+        A project's profile is locked into the story bible the first time it is
+        initialized. Re-resolving from parameters on every run would silently
+        switch the review dimensions mid-book and make accepted chapters
+        incomparable, so the locked value wins and drift is only reported.
+        """
+        resolved = self.profile or resolve_domain_profile(parameters)
+        locked = self.ledger.locked_profile()
+        if locked and locked.key != resolved.key:
+            self.logger.warning(
+                "Story bible is locked to domain profile '%s' but parameters resolve to "
+                "'%s'; keeping the locked profile. Start a new project to change it.",
+                locked.key,
+                resolved.key,
+            )
+            resolved = locked
+
+        resolved = apply_quality_loop_mode(resolved, mode)
+        self.profile = resolved
+        if self._max_plan_retries is None:
+            self.max_plan_retries = resolved.max_plan_retries
+        if self._max_scene_retries is None:
+            self.max_scene_retries = resolved.max_scene_retries
+        if self._injected_reviewer is None:
+            self.reviewer = DomainReviewAgent(
+                model=self.model,
+                profile=resolved,
+                logger=self.logger,
+            )
+        return resolved
 
     def run(
         self,
@@ -69,19 +145,34 @@ class ChapterGenerationLoop:
         generate_scene: Callable[..., str],
         on_plan_revised: Optional[Callable[[str], None]] = None,
     ) -> ChapterLoopResult:
+        self._check_cancelled()
         self.ledger.initialize(parameters)
+        mode = resolve_quality_loop_mode(parameters)
+        profile = self._bind_profile(parameters, mode)
+        reviews_enabled = mode != QUALITY_LOOP_OFF
+        self.logger.info(
+            "Chapter %s uses domain profile '%s' (%s), quality loop mode '%s'",
+            chapter_number,
+            profile.key,
+            profile.label,
+            mode,
+        )
         base_revision = self.ledger.current_revision()
         case_bible = self.ledger.load_case_bible()
-        design_context = self.ledger.load_design_context()
-        if self.ledger.case_bible_needs_refresh(case_bible, design_context):
-            self.logger.info("Building case bible from whole-story structure and chapter outlines")
-            case_bible = self.reviewer.build_case_bible(
-                parameters,
-                lore,
-                design_context,
-                case_bible,
-            )
-            case_bible = self.ledger.save_case_bible(case_bible, design_context)
+        if reviews_enabled:
+            design_context = self.ledger.load_design_context()
+            if self.ledger.case_bible_needs_refresh(case_bible, design_context):
+                self.logger.info(
+                    "Building %s from whole-story structure and chapter outlines",
+                    profile.bible_noun,
+                )
+                case_bible = self.reviewer.build_case_bible(
+                    parameters,
+                    lore,
+                    design_context,
+                    case_bible,
+                )
+                case_bible = self.ledger.save_case_bible(case_bible, design_context)
         suspense_ledger = self.ledger.load_suspense_ledger()
 
         current_plan = plan_content
@@ -89,48 +180,68 @@ class ChapterGenerationLoop:
         retry_count = 0
         contract = self.ledger.load_contract(chapter_number, current_plan)
         if contract is None:
-            contract = self.reviewer.build_chapter_contract(
-                chapter_number,
-                current_plan,
-                parameters,
-                lore,
-                case_bible,
-                suspense_ledger,
+            # 关闭档不调用大模型建契约：用确定性回落契约，账本仍能连续记账。
+            contract = (
+                self.reviewer.build_chapter_contract(
+                    chapter_number,
+                    current_plan,
+                    parameters,
+                    lore,
+                    case_bible,
+                    suspense_ledger,
+                )
+                if reviews_enabled
+                else self.reviewer.deterministic_contract(
+                    chapter_number, parameters, current_plan
+                )
             )
 
-        plan_review = self.reviewer.review_plan(current_plan, contract, case_bible, suspense_ledger)
-        self.ledger.save_review(chapter_number, "plan", plan_review.to_dict())
+        if not reviews_enabled:
+            plan_review = skipped_review("plan")
+        else:
+            plan_review = self.reviewer.review_plan(
+                current_plan, contract, case_bible, suspense_ledger
+            )
+            self.ledger.save_review(chapter_number, "plan", plan_review.to_dict())
 
-        for attempt in range(self.max_plan_retries):
-            if plan_review.passed:
-                break
-            retry_count += 1
-            self.logger.warning(
-                "Chapter %s plan failed domain gate (attempt %s): %s",
-                chapter_number,
-                attempt + 1,
-                "; ".join(plan_review.repair_instructions),
-            )
-            revised_plan = self.reviewer.revise_plan(current_plan, plan_review, contract)
-            if not parse_scene_sections(revised_plan):
-                raise QualityGateError("场景规划修订结果没有可解析的场景标题")
-            current_plan = revised_plan
-            plan_revised = True
-            contract = self.reviewer.build_chapter_contract(
-                chapter_number,
-                current_plan,
-                parameters,
-                lore,
-                case_bible,
-                suspense_ledger,
-            )
-            plan_review = self.reviewer.review_plan(current_plan, contract, case_bible, suspense_ledger)
-            self.ledger.save_review(chapter_number, f"plan_retry_{attempt + 1}", plan_review.to_dict())
+            for attempt in range(self.max_plan_retries):
+                if plan_review.passed:
+                    break
+                retry_count += 1
+                self.logger.warning(
+                    "Chapter %s plan failed domain gate (attempt %s): %s",
+                    chapter_number,
+                    attempt + 1,
+                    "; ".join(plan_review.repair_instructions),
+                )
+                revised_plan = self.reviewer.revise_plan(current_plan, plan_review, contract)
+                if not parse_scene_sections(revised_plan):
+                    raise QualityGateError(
+                        "场景规划修订结果没有可解析的场景标题", chapter_number=chapter_number
+                    )
+                current_plan = revised_plan
+                plan_revised = True
+                contract = self.reviewer.build_chapter_contract(
+                    chapter_number,
+                    current_plan,
+                    parameters,
+                    lore,
+                    case_bible,
+                    suspense_ledger,
+                )
+                plan_review = self.reviewer.review_plan(
+                    current_plan, contract, case_bible, suspense_ledger
+                )
+                self.ledger.save_review(
+                    chapter_number, f"plan_retry_{attempt + 1}", plan_review.to_dict()
+                )
 
-        if not plan_review.passed:
-            raise QualityGateError(
-                f"第 {chapter_number} 章场景规划在 {self.max_plan_retries} 次修订后仍未通过法律悬疑质量检查"
-            )
+            if not plan_review.passed:
+                raise QualityGateError(
+                    f"第 {chapter_number} 章场景规划在 {self.max_plan_retries} 次修订后"
+                    f"仍未通过{profile.label}质量检查",
+                    chapter_number=chapter_number,
+                )
 
         if plan_revised and on_plan_revised:
             on_plan_revised(current_plan)
@@ -138,13 +249,15 @@ class ChapterGenerationLoop:
         contract = self.ledger.save_contract(chapter_number, contract, current_plan)
         scenes = parse_scene_sections(current_plan)
         if not scenes:
-            raise QualityGateError("场景规划中没有可生成的场景")
+            raise QualityGateError("场景规划中没有可生成的场景", chapter_number=chapter_number)
 
         generated_scenes: List[str] = []
         scene_reviews: List[DomainReview] = []
         previous_chapter_tail = self._load_previous_chapter_tail(chapter_number)
 
         for index, scene_plan in enumerate(scenes, start=1):
+            # 场景边界是安全点：已完成的场景还在内存里，尚未落盘也未提交账本。
+            self._check_cancelled()
             previous_tail = (
                 generated_scenes[-1][-2500:]
                 if generated_scenes
@@ -157,9 +270,20 @@ class ChapterGenerationLoop:
                 previous_scene_tail=previous_tail,
                 next_scene_plan=next_scene_plan,
                 contract=contract,
+                profile=profile,
             )
             if not prose or not prose.strip():
-                raise QualityGateError(f"第 {chapter_number} 章场景 {index} 的正文为空")
+                raise QualityGateError(
+                    f"第 {chapter_number} 章场景 {index} 的正文为空",
+                    partial_scenes=generated_scenes,
+                    chapter_number=chapter_number,
+                )
+
+            if not reviews_enabled:
+                generated_scenes.append(prose)
+                scene_reviews.append(skipped_review(f"scene_{index}"))
+                continue
+
             review = self.reviewer.review_scene(
                 prose,
                 scene_plan,
@@ -193,7 +317,9 @@ class ChapterGenerationLoop:
                 )
                 if not prose or not prose.strip():
                     raise QualityGateError(
-                        f"第 {chapter_number} 章场景 {index} 的修订正文为空"
+                        f"第 {chapter_number} 章场景 {index} 的修订正文为空",
+                        partial_scenes=generated_scenes,
+                        chapter_number=chapter_number,
                     )
                 review = self.reviewer.review_scene(
                     prose,
@@ -213,12 +339,30 @@ class ChapterGenerationLoop:
 
             if not review.passed:
                 raise QualityGateError(
-                    f"第 {chapter_number} 章场景 {index} 在 {self.max_scene_retries} 次修订后仍未通过质量检查"
+                    f"第 {chapter_number} 章场景 {index} 在 {self.max_scene_retries} 次修订后仍未通过质量检查",
+                    partial_scenes=[*generated_scenes, prose],
+                    chapter_number=chapter_number,
                 )
             generated_scenes.append(prose)
             scene_reviews.append(review)
 
+        # 这里不再检查取消：所有场景都已生成，收尾（评审与验收）应当走完，
+        # 否则取消等于丢掉一整章的成果。下一章开始前才是下一个安全点。
         chapter_content = "\n\n---\n\n".join(generated_scenes)
+        if not reviews_enabled:
+            return ChapterLoopResult(
+                scenes=generated_scenes,
+                contract=contract,
+                base_revision=base_revision,
+                plan_content=current_plan,
+                plan_revised=plan_revised,
+                plan_review=plan_review,
+                scene_reviews=scene_reviews,
+                chapter_review=skipped_review("chapter"),
+                retry_count=retry_count,
+                profile_key=profile.key,
+            )
+
         chapter_review = self.reviewer.review_chapter(
             chapter_content,
             contract,
@@ -236,7 +380,10 @@ class ChapterGenerationLoop:
                 break
             target = self._target_scene(repair_review.repair_scope, len(generated_scenes))
             retry_count += 1
-            previous_tail = generated_scenes[target - 2][-2500:] if target > 1 else ""
+            # 修第一场时同样要带上一章结尾，否则重写出来的开头会与上一章脱节。
+            previous_tail = (
+                generated_scenes[target - 2][-2500:] if target > 1 else previous_chapter_tail
+            )
             next_scene_plan = scenes[target] if target < len(scenes) else ""
             generated_scenes[target - 1] = self.reviewer.revise_scene(
                 generated_scenes[target - 1],
@@ -286,7 +433,9 @@ class ChapterGenerationLoop:
 
         if not chapter_review.passed or not repaired_scene_passed:
             raise QualityGateError(
-                f"第 {chapter_number} 章在定向修订后仍未通过章节级质量检查，请人工审核"
+                f"第 {chapter_number} 章在定向修订后仍未通过章节级质量检查，请人工审核",
+                partial_scenes=generated_scenes,
+                chapter_number=chapter_number,
             )
 
         return ChapterLoopResult(
@@ -299,6 +448,7 @@ class ChapterGenerationLoop:
             scene_reviews=scene_reviews,
             chapter_review=chapter_review,
             retry_count=retry_count,
+            profile_key=profile.key,
         )
 
     def accept_result(

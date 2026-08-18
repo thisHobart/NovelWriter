@@ -191,3 +191,21 @@ def save_prompt_to_file(output_dir, base_name, content, subfolder="system/prompt
         # The caller will log this failure contextually.
         # logger.error(f"Internal error in save_prompt_to_file for prompt '{base_name}': {e}", exc_info=True) # Removed module log
         return None
+
+
+def archive_failed_generation(output_dir, chapter_number, scenes, label="chapter"):
+    """Archive prose that failed the quality gate, outside the manuscript tree.
+
+    Failed output must never reach story/content/chapters/ — that directory is
+    the manuscript. Returns the archive path, or "" when there was nothing to
+    keep.
+    """
+    content = "\n\n---\n\n".join(scene for scene in scenes or [] if scene and scene.strip())
+    if not content.strip():
+        return ""
+    archive_dir = os.path.join(output_dir, "archive", "failed_generations")
+    os.makedirs(archive_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = os.path.join(archive_dir, f"{label}_{chapter_number}_{timestamp}.md")
+    write_file(path, content)
+    return path

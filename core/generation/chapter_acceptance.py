@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
+from core.generation.domain_profiles import GENERAL, DomainProfile, get_domain_profile
 from core.generation.story_ledger import (
     RevisionConflictError,
     StoryLedgerManager,
@@ -159,12 +160,27 @@ def stable_contract_hash(contract: Dict[str, Any]) -> str:
     )
 
 
+def _slot_records(
+    contract: Dict[str, Any],
+    profile: DomainProfile,
+    slot: str,
+) -> List[Dict[str, Any]]:
+    """Collect every contract field the profile routes into one delta slot."""
+    records: List[Dict[str, Any]] = []
+    for spec in profile.fields_for_slot(slot):
+        records.extend(_records(contract.get(spec.name)))
+    return records
+
+
 class DefaultChapterDeltaExtractor:
     """Build a deterministic delta envelope from final prose and contract declarations.
 
     The extractor deliberately does not claim to understand every prose fact. It
     records contract-declared state transitions and stable textual signals. A
     semantic/LLM extractor can replace this class without changing the commit path.
+
+    Which contract fields feed the two tracked record streams (clue_updates /
+    evidence_updates) is decided by the domain profile, not hardcoded here.
     """
 
     def extract(
@@ -173,7 +189,9 @@ class DefaultChapterDeltaExtractor:
         content: str,
         contract: Dict[str, Any],
         base_revision: int,
+        profile: Optional[DomainProfile] = None,
     ) -> ChapterDelta:
+        profile = profile or GENERAL
         knowledge_updates = [
             {"audience": "reader", "fact": str(fact), "source": "contract"}
             for fact in contract.get("reader_knows_after", [])
@@ -228,8 +246,8 @@ class DefaultChapterDeltaExtractor:
             facts_contradicted=_records(contract.get("facts_contradicted")),
             character_updates=_records(contract.get("character_updates")),
             timeline_events=_records(contract.get("timeline_events")),
-            clue_updates=_records(contract.get("fair_play_clues")),
-            evidence_updates=_records(contract.get("evidence_updates")),
+            clue_updates=_slot_records(contract, profile, "clue_updates"),
+            evidence_updates=_slot_records(contract, profile, "evidence_updates"),
             plot_thread_updates=plot_updates,
             knowledge_updates=knowledge_updates,
             personal_cost_updates=personal_cost_updates,
@@ -330,7 +348,9 @@ class CanonConsistencyGate:
         delta: ChapterDelta,
         case_bible: Dict[str, Any],
         suspense_ledger: Dict[str, Any],
+        profile: Optional[DomainProfile] = None,
     ) -> ValidationReport:
+        profile = profile or GENERAL
         issues: List[ValidationIssue] = []
         current_revision = int(suspense_ledger.get("revision", 0) or 0)
         accepted_entry = next(
@@ -383,7 +403,7 @@ class CanonConsistencyGate:
             issues.append(
                 ValidationIssue(
                     "case_bible_not_ready",
-                    f"案件底稿状态为 {case_status}；本次允许提交，但应补做案件底稿审计",
+                    f"{profile.bible_noun}状态为 {case_status}；本次允许提交，但应补做底稿审计",
                     severity="warning",
                     repair_target="case_bible",
                 )
@@ -394,14 +414,14 @@ class CanonConsistencyGate:
             delta.clue_updates,
             suspense_ledger.get("clues", []),
             record_type="clue",
-            immutable_fields=("true_meaning",),
+            immutable_fields=profile.immutable_fields_for_slot("clue_updates"),
         )
         self._check_stable_record_conflicts(
             issues,
             delta.evidence_updates,
             suspense_ledger.get("evidence", []),
             record_type="evidence",
-            immutable_fields=("item", "origin", "type"),
+            immutable_fields=profile.immutable_fields_for_slot("evidence_updates"),
         )
         existing_facts = list(case_bible.get("truth", []))
         existing_facts.extend(suspense_ledger.get("facts", []))
@@ -495,11 +515,27 @@ class ChapterAcceptanceService:
         extractor: Optional[DefaultChapterDeltaExtractor] = None,
         artifact_validator: Optional[ArtifactValidator] = None,
         consistency_gate: Optional[CanonConsistencyGate] = None,
+        profile: Optional[DomainProfile] = None,
     ):
         self.ledger = ledger
+        self.profile = profile
         self.extractor = extractor or DefaultChapterDeltaExtractor()
         self.artifact_validator = artifact_validator or ArtifactValidator()
         self.consistency_gate = consistency_gate or CanonConsistencyGate()
+
+    def resolve_profile(self, contract: Dict[str, Any]) -> DomainProfile:
+        """Pick the profile that governs this commit.
+
+        Resolved per call rather than at construction: the service is often built
+        before the ledger has a case bible, and the contract itself records which
+        profile produced it.
+        """
+        if self.profile:
+            return self.profile
+        contract_key = contract.get("domain_profile")
+        if contract_key:
+            return get_domain_profile(contract_key)
+        return self.ledger.locked_profile() or GENERAL
 
     def accept(
         self,
@@ -539,7 +575,10 @@ class ChapterAcceptanceService:
             )
             raise ChapterAcceptanceError(report) from exc
 
-        delta = self.extractor.extract(chapter_number, final_content, contract, base_revision)
+        profile = self.resolve_profile(contract)
+        delta = self.extractor.extract(
+            chapter_number, final_content, contract, base_revision, profile
+        )
         artifact_report = self.artifact_validator.validate(
             delta,
             final_content,
@@ -559,6 +598,7 @@ class ChapterAcceptanceService:
             delta,
             self.ledger.load_case_bible(),
             self.ledger.load_suspense_ledger(),
+            profile,
         )
         consistency_report_path = self.ledger.save_review(
             chapter_number,

@@ -1,5 +1,6 @@
 from tkinter import ttk, messagebox
 from core.gui.notifications import show_success, show_error, show_warning
+from core.gui.task_runner import run_in_background, snapshot_ui
 from core.generation.ai_helper import send_prompt, get_backend
 import re
 from core.generation.helper_fns import open_file, write_file, read_json, save_prompt_to_file
@@ -134,20 +135,54 @@ class StoryStructure:
         story_length = params.get("story_length")
         self.app.logger.info(f"Dispatching detailed plot creation for story length: {story_length}")
 
+        ui = snapshot_ui(self.app)
         if story_length == "Short Story":
-            self._outline_short_story_plot()
+            work = lambda: self._outline_short_story_plot(ui)
         elif story_length in ["Novella", "Novel (Standard)", "Novel (Epic)"]:
             # Novella, Novel, and Epic will use the existing improve_structure logic.
             # improve_structure itself will make minor prompt adjustments for Novella.
-            self.improve_structure()
+            work = lambda: self.improve_structure(ui)
         else:
             self.app.logger.error(f"Unknown story length '{story_length}' for detailed plot creation.")
             show_error("错误", f"当前操作不支持故事篇幅“{zh_label(story_length)}”。")
+            return
+
+        run_in_background(
+            self.app.root,
+            work,
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.detailed_plot_button,
+            busy_text="正在生成详细情节…",
+            logger=self.app.logger if self.app else None,
+        )
 
     # Generate character story arcs using individual backstories
+    def _busy_widgets(self):
+        """后台任务运行期间需要锁住的按钮。"""
+        return (
+            self.c_arc_button,
+            self.f_arc_button,
+            self.cfp_arc_button,
+            self.detailed_plot_button,
+        )
+
     def generate_arcs(self):
-        selected_model = self.app.get_selected_model() # Get selected model
-        output_dir = self.app.get_output_dir()
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._generate_arcs(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.c_arc_button,
+            busy_text="正在生成人物弧光…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _generate_arcs(self, ui):
+        selected_model = ui.model # Get selected model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.app.logger.info(f"Generating Character Arcs using model: {selected_model}, output_dir: {output_dir}")
         
@@ -338,8 +373,21 @@ class StoryStructure:
 
     # Generate faction story arcs, THEN reconcile faction and character arcs
     def generate_faction_arcs(self):
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir()
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._generate_faction_arcs(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.f_arc_button,
+            busy_text="正在生成势力弧光…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _generate_faction_arcs(self, ui):
+        selected_model = ui.model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.app.logger.info(f"Faction Arc Generation & Reconciliation started. Model: {selected_model}, Output Dir: {output_dir}")
 
@@ -530,14 +578,27 @@ class StoryStructure:
 
     # Add in the locations to the reconciled story arc (generic for all genres)
     def add_planets_to_arcs(self):
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir()
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._add_planets_to_arcs(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.cfp_arc_button,
+            busy_text="正在融合地点…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _add_planets_to_arcs(self, ui):
+        selected_model = ui.model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         
         # Get current genre to determine location type
         try:
             from Generators.GenreHandlers import get_genre_handler
-            params = self.app.param_ui.get_current_parameters()
+            params = ui.parameters
             current_genre = params.get("genre", "Sci-Fi")
             genre_handler = get_genre_handler(current_genre)
             location_type_name = genre_handler.get_location_type_name()
@@ -671,8 +732,8 @@ class StoryStructure:
     # TODO: review if this is needed. Perhaps we can skip.
     #   Although the output seems useful, it's not clear that it's needed.
     # def generate_structure(self):
-    #     selected_model = self.app.get_selected_model()
-    #     output_dir = self.app.get_output_dir()
+    #     selected_model = ui.model
+    #     output_dir = ui.output_dir
     #     os.makedirs(output_dir, exist_ok=True)
     #     print(f"Generating structure with model: {selected_model}, output dir: {output_dir}")
 
@@ -740,8 +801,8 @@ class StoryStructure:
     # Less smart LLMs keep killing off the location data, so need to keep adding it back.
     # TODO: review if this is needed. Perhaps we can skip.
     # def generate_structure_with_locations(self):
-    #     selected_model = self.app.get_selected_model() 
-    #     output_dir = self.app.get_output_dir()
+    #     selected_model = ui.model 
+    #     output_dir = ui.output_dir
     #     os.makedirs(output_dir, exist_ok=True)
     #     print(f"Generating structure w/locations with model: {selected_model}, output dir: {output_dir}")
 
@@ -778,9 +839,9 @@ class StoryStructure:
 
     # Flesh out the acts of structure
     # Loop over each act (section) of the story arc
-    def improve_structure(self):
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir()
+    def improve_structure(self, ui):
+        selected_model = ui.model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         # print(f"Improving structure with model: {selected_model}, output dir: {output_dir}") # Replaced
         self.app.logger.info(f"Improving structure. Model: {selected_model}, Output Dir: {output_dir}")
@@ -915,9 +976,9 @@ class StoryStructure:
             self.app.logger.error(f"Failed to improve story structure: {e}", exc_info=True)
             show_error("错误", f"细化故事结构失败：{str(e)}")
 
-    def _outline_short_story_plot(self):
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir()
+    def _outline_short_story_plot(self, ui):
+        selected_model = ui.model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.app.logger.info(f"Outlining Short Story Plot. Model: {selected_model}, Output Dir: {output_dir}")
 
@@ -927,7 +988,7 @@ class StoryStructure:
             show_error("错误", "无法加载故事参数。")
             return
         
-        parameters = self.app.param_ui.get_current_parameters()
+        parameters = ui.parameters
         selected_structure_name = parameters.get("story_structure")
         novel_title = parameters.get("novel_title", "未命名短篇小说")
 

@@ -18,23 +18,26 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 
 from agents.base.agent import BaseAgent, AgentResult
-from core.generation.helper_fns import open_file, write_file, read_json, parse_scene_sections
+from core.generation.helper_fns import (
+    archive_failed_generation,
+    open_file,
+    write_file,
+    read_json,
+    parse_scene_sections,
+)
 from core.generation.ai_helper import send_prompt, get_backend
 from core.generation.prompt_context import (
-    CHINESE_PROSE_REQUIREMENTS,
     analyze_chinese_prose_style,
-    build_location_guidance,
     format_faction_summary,
-    format_genre_label,
     find_scene_world_conflicts,
-    is_legal_suspense,
     sanitize_lore_content,
 )
-from core.generation.chapter_generation_loop import ChapterGenerationLoop
-from core.generation.story_ledger import compact_json
+from core.generation.cancellation import CancelToken, GenerationCancelled, raise_if_cancelled
+from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from core.generation.domain_profiles import DomainProfile, resolve_domain_profile
+from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.config.directory_config import get_directory_manager
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
-from core.localization import zh_label
 
 # Import review system (with fallback if not available)
 try:
@@ -160,11 +163,16 @@ class ChapterWritingAgent(BaseAgent):
     - Provide progress tracking and validation
     """
     
+    # 类级默认值：绕过 __init__ 构造的实例（测试里用 object.__new__）也能安全读取。
+    cancel_token: Optional[CancelToken] = None
+
     def __init__(self, output_dir: str, app_instance=None, use_new_structure: Optional[bool] = None,
                  quality_thresholds: Optional[QualityThresholds] = None,
-                 model: Optional[str] = None):
+                 model: Optional[str] = None,
+                 cancel_token: Optional[CancelToken] = None):
         super().__init__(name="ChapterWritingAgent", model=model)
         self.output_dir = output_dir
+        self.cancel_token = cancel_token
         self.app = app_instance
         self.use_new_structure = (
             self._detect_structured_workspace(output_dir)
@@ -513,6 +521,7 @@ class ChapterWritingAgent(BaseAgent):
         errors = []
         all_chapter_reviews = []  # Collect chapter reviews for batch analysis
         batch_number = 1
+        cancellation_message = ""
         
         for i in range(0, len(plan.chapters_to_write), plan.batch_size):
             batch = plan.chapters_to_write[i:i + plan.batch_size]
@@ -522,6 +531,8 @@ class ChapterWritingAgent(BaseAgent):
             
             for chapter_num in batch:
                 try:
+                    # 章节边界是取消的安全点：上一章已经落盘并提交，下一章尚未开始。
+                    raise_if_cancelled(self.cancel_token)
                     chapter_info = next(ch for ch in chapter_info_list if ch.chapter_number == chapter_num)
                     result = self._write_single_chapter(chapter_info)
                     
@@ -540,6 +551,11 @@ class ChapterWritingAgent(BaseAgent):
                         error_msg = result.messages[0] if result.messages else "未知错误"
                         errors.append(f"第 {chapter_num} 章：{error_msg}")
                         
+                except GenerationCancelled as cancelled:
+                    # 已写完的章节保留，未开始的章节直接放弃。
+                    cancellation_message = str(cancelled)
+                    self.logger.info("Chapter batch cancelled before Chapter %s", chapter_num)
+                    break
                 except Exception as e:
                     error_msg = f"第 {chapter_num} 章：{str(e)}"
                     errors.append(error_msg)
@@ -553,11 +569,15 @@ class ChapterWritingAgent(BaseAgent):
                                    f"Quality {batch_review.average_quality:.2f}, "
                                    f"Consistency {batch_review.consistency_score:.2f}")
             
+            if cancellation_message:
+                break
             batch_number += 1
                     
         # Prepare result with review metrics
         success = len(chapters_written) > 0
         message = f"已写完 {len(chapters_written)} 章"
+        if cancellation_message:
+            message += "（已按请求停止）"
         if errors:
             message += f"，发生 {len(errors)} 个错误"
         
@@ -635,54 +655,48 @@ class ChapterWritingAgent(BaseAgent):
                     metrics={}
                 )
                 
-            # Generate prose for each scene with reviews. Legal suspense uses a
-            # bounded design-generation-review loop; other genres retain the
-            # lighter legacy path.
-            generated_scenes = []
+            # 所有题材（含短篇）都走同一条设计-生成-审阅闭环；具体的评分维度、
+            # 契约字段和门槛由领域档案决定。未通过闸门的正文不会落到稿件目录。
             scene_reviews = []
-            domain_loop_result = None
+            quality_loop = ChapterGenerationLoop(
+                output_dir=self.output_dir,
+                model=self._get_selected_model(),
+                logger=self.logger,
+                cancel_token=self.cancel_token,
+            )
 
-            if not is_short_story and is_legal_suspense(context.get("parameters", {})):
-                self.logger.info(
-                    "Chapter %s is legal suspense; enabling design-generation-review loop",
+            def generate_scene(**kwargs):
+                return self._generate_scene_prose(
                     chapter_info.chapter_number,
+                    kwargs["scene_number"],
+                    kwargs["scene_plan"],
+                    context,
+                    is_short_story=is_short_story,
+                    previous_scene_tail=kwargs.get("previous_scene_tail", ""),
+                    next_scene_plan=kwargs.get("next_scene_plan", ""),
+                    chapter_contract=kwargs.get("contract"),
+                    profile=kwargs.get("profile"),
                 )
-                quality_loop = ChapterGenerationLoop(
-                    output_dir=self.output_dir,
-                    model=self._get_selected_model(),
-                    logger=self.logger,
+
+            def save_revised_plan(revised_plan: str) -> None:
+                archive_dir = os.path.join(
+                    self.output_dir,
+                    "archive",
+                    "quality_loop",
+                    "scene_plans",
                 )
+                os.makedirs(archive_dir, exist_ok=True)
+                base_name = os.path.splitext(os.path.basename(scene_plan_path))[0]
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                archive_path = os.path.join(
+                    archive_dir,
+                    f"{base_name}_before_{timestamp}.md",
+                )
+                write_file(archive_path, scenes_content)
+                write_file(scene_plan_path, revised_plan)
+                self.logger.info("Quality loop revised scene plan; original archived at %s", archive_path)
 
-                def generate_scene(**kwargs):
-                    return self._generate_scene_prose(
-                        chapter_info.chapter_number,
-                        kwargs["scene_number"],
-                        kwargs["scene_plan"],
-                        context,
-                        is_short_story=False,
-                        previous_scene_tail=kwargs.get("previous_scene_tail", ""),
-                        next_scene_plan=kwargs.get("next_scene_plan", ""),
-                        chapter_contract=kwargs.get("contract"),
-                    )
-
-                def save_revised_plan(revised_plan: str) -> None:
-                    archive_dir = os.path.join(
-                        self.output_dir,
-                        "archive",
-                        "quality_loop",
-                        "scene_plans",
-                    )
-                    os.makedirs(archive_dir, exist_ok=True)
-                    base_name = os.path.splitext(os.path.basename(scene_plan_path))[0]
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                    archive_path = os.path.join(
-                        archive_dir,
-                        f"{base_name}_before_{timestamp}.md",
-                    )
-                    write_file(archive_path, scenes_content)
-                    write_file(scene_plan_path, revised_plan)
-                    self.logger.info("Quality loop revised scene plan; original archived at %s", archive_path)
-
+            try:
                 domain_loop_result = quality_loop.run(
                     chapter_number=chapter_info.chapter_number,
                     plan_content=scenes_content,
@@ -691,23 +705,31 @@ class ChapterWritingAgent(BaseAgent):
                     generate_scene=generate_scene,
                     on_plan_revised=save_revised_plan,
                 )
-                generated_scenes = domain_loop_result.scenes
-                scenes = self._parse_scenes(domain_loop_result.plan_content)
-            else:
-                for i, scene in enumerate(scenes, 1):
-                    if is_short_story:
-                        self.logger.info(f"Writing scene {i}/{len(scenes)} for short story")
-                    else:
-                        self.logger.info(f"Writing scene {i}/{len(scenes)} for Chapter {chapter_info.chapter_number}")
+            except QualityGateError as gate_error:
+                archived = archive_failed_generation(
+                    self.output_dir,
+                    chapter_info.chapter_number,
+                    gate_error.partial_scenes,
+                    label="short_story" if is_short_story else "chapter",
+                )
+                self.logger.error(
+                    "Chapter %s failed the quality gate: %s%s",
+                    chapter_info.chapter_number,
+                    gate_error,
+                    f" Partial prose archived at {archived}." if archived else "",
+                )
+                message = str(gate_error)
+                if archived:
+                    message += f"（部分正文已归档：{archived}）"
+                return AgentResult(
+                    success=False,
+                    data={"archived_partial_prose": archived},
+                    messages=[message],
+                    metrics={},
+                )
 
-                    prose = self._generate_scene_prose(
-                        chapter_info.chapter_number,
-                        i,
-                        scene,
-                        context,
-                        is_short_story=is_short_story
-                    )
-                    generated_scenes.append(prose)
+            generated_scenes = domain_loop_result.scenes
+            scenes = self._parse_scenes(domain_loop_result.plan_content)
 
             # Keep the existing generic review records as a secondary report,
             # but run them only on text accepted by the domain loop.
@@ -733,17 +755,15 @@ class ChapterWritingAgent(BaseAgent):
             # Update durable story knowledge only after the chapter file has
             # been written successfully, so a disk error cannot mark a missing
             # chapter as accepted.
-            acceptance_result = None
-            if domain_loop_result:
-                acceptance_result = quality_loop.accept_result(
-                    chapter_info.chapter_number,
-                    domain_loop_result,
-                    chapter_path=output_path,
-                )
+            acceptance_result = quality_loop.accept_result(
+                chapter_info.chapter_number,
+                domain_loop_result,
+                chapter_path=output_path,
+            )
             
             # Perform chapter-level review if enabled
             chapter_review = None
-            if self.review_agent and not is_short_story:  # Skip chapter review for short stories
+            if self.review_agent:
                 chapter_review = self._review_chapter(
                     chapter_content=final_content,
                     scene_reviews=scene_reviews,
@@ -795,6 +815,9 @@ class ChapterWritingAgent(BaseAgent):
                 metrics={"scenes_count": len(scenes), "scene_reviews": len(scene_reviews)}
             )
             
+        except GenerationCancelled:
+            # 取消不是章节级失败，交给批量循环终止整轮。
+            raise
         except Exception as e:
             return AgentResult(
                 success=False,
@@ -923,16 +946,11 @@ class ChapterWritingAgent(BaseAgent):
         previous_scene_tail: str = "",
         next_scene_plan: str = "",
         chapter_contract: Optional[Dict[str, Any]] = None,
+        profile: Optional[DomainProfile] = None,
     ) -> str:
         """Generate prose for a single scene using genuine NovelWriter AI functions."""
-        
-        story_params = context.get("parameters", {})
-        structure = story_params.get("Story Structure", "Unknown")
-        length = story_params.get("Story Length", "Unknown")
-        theme = story_params.get("Theme", "")
-        tone = story_params.get("Tone", "")
 
-        genre_label = format_genre_label(story_params)
+        story_params = context.get("parameters", {})
 
         conflicts = find_scene_world_conflicts(
             scene_plan,
@@ -946,99 +964,22 @@ class ChapterWritingAgent(BaseAgent):
                 + "。请重新生成场景规划。"
             )
 
-        parameter_lines = [
-            "\n## 作品参数（最高优先级）：",
-            f"- 类型：{genre_label}",
-            f"- 篇幅：{zh_label(length)}",
-            f"- 结构：{zh_label(structure)}",
-        ]
-        if theme:
-            parameter_lines.append(f"- 主题：{zh_label(theme)}")
-        if tone:
-            parameter_lines.append(f"- 基调：{zh_label(tone)}")
-        parameter_lines.extend([
-            "- 类型、主题和基调不得被世界观资料中的其他类型元素覆盖。",
-            "- 事实冲突时依次以作品参数、整体世界观、当前场景规划为准；场景规划中的冲突内容必须静默纠正。",
-            "- 不要混合互相冲突的地点、时代或机构，也不要把名称相近的设定擅自视为同一对象。",
-            *[f"- {line}" for line in build_location_guidance(story_params)],
-        ])
+        prompt = build_scene_prompt(
+            scene_plan=scene_plan,
+            scene_number=scene_num,
+            parameters=story_params,
+            lore=context.get("lore", ""),
+            character_roster=context.get("characters", ""),
+            faction_summary=context.get("factions", ""),
+            profile=profile or resolve_domain_profile(story_params),
+            chapter_number=None if is_short_story else chapter_num,
+            structure_name=story_params.get("Story Structure", ""),
+            novel_title=story_params.get("Novel Title", "") if is_short_story else "",
+            contract=chapter_contract,
+            previous_scene_tail=previous_scene_tail,
+            next_scene_plan=next_scene_plan,
+        )
 
-        continuity_lines = []
-        if chapter_contract:
-            continuity_lines.extend([
-                "\n## 本章质量契约（必须兑现，不得擅自增加真相）：",
-                compact_json(chapter_contract, max_chars=10000),
-            ])
-        if previous_scene_tail:
-            continuity_lines.extend([
-                "\n## 上一场或上一章的已验收结尾（从这一状态续写，不得重演已完成动作）：",
-                previous_scene_tail,
-            ])
-        if next_scene_plan:
-            continuity_lines.extend([
-                "\n## 下一场边界（仅用于控制本场收束；禁止提前写出下一场事件）：",
-                next_scene_plan,
-            ])
-        
-        # Build prompt using the same format as the existing writing system
-        if is_short_story:
-            prompt_lines = [
-                f"请撰写一部{genre_label}作品中的一个场景。",
-                f"故事采用“{zh_label(structure)}”框架。",
-                "下面会提供短篇小说中单个场景的详细规划，请只写这个场景的完整正文。",
-                "不要写其他场景，也不要概括整个故事。",
-                *parameter_lines,
-                "\n## 整体故事背景（高于场景规划）：",
-                f"完整世界观：{context.get('lore', '无可用内容')}",
-                f"\n{context.get('characters', '没有可用的人物信息')}",
-                f"\n{context.get('factions', '没有可用的势力信息')}",
-                f"\n## 当前场景描述（场景 {scene_num}）：",
-                scene_plan,
-                *continuity_lines,
-                "若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。",
-                "\n## 本场景写作要求：",
-                "- 写出有吸引力、富有描写性的场景正文。",
-                "- 写出人物行动、对白（如适合）、思想和情绪。",
-                "- 清楚交代场景环境。",
-                "- 场景应衔接合理，并推动情节或人物发展。",
-                "- 所有世界构建细节必须严格遵守所提供的世界观。",
-                *[f"- {line}" for line in CHINESE_PROSE_REQUIREMENTS],
-                "- 只提供本场景正文，不要附加评论或标题。",
-                "- 不要使用代码围栏。"
-            ]
-        else:
-            prompt_lines = [
-                f"请撰写一部{genre_label}作品第 {chapter_num} 章中的一个场景。",
-                f"故事采用“{zh_label(structure)}”框架。",
-                f"下面会提供第 {chapter_num} 章中单个场景的详细规划，请只写这个场景的完整正文。",
-                "不要写其他场景，也不要概括本章。",
-                *parameter_lines,
-                "\n## 整体故事背景（高于场景规划）：",
-                f"完整世界观：{context.get('lore', '无可用内容')}",
-                f"\n{context.get('characters', '没有可用的人物信息')}",
-                f"\n{context.get('factions', '没有可用的势力信息')}",
-                f"\n## 当前场景描述（第 {chapter_num} 章，场景 {scene_num}）：",
-                scene_plan,
-                *continuity_lines,
-                "若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。",
-                "\n## 本场景写作要求：",
-                "- 写出有吸引力、富有描写性的场景正文。",
-                "- 写出人物行动、对白（如适合）、思想和情绪。",
-                "- 清楚交代场景环境。",
-                "- 场景应衔接合理，并推动情节或人物发展。",
-                "- 只推进一个明确的问题或张力，用可核实的动作、证物、证词和程序细节表现，不用抽象总结代替情节。",
-                "- 严格控制信息差：人物只能依据其已知信息行动，线索出现后才允许据此推断。",
-                "- 如涉及反转，必须由本章契约中已安排的公平伏笔触发，并改变人物的判断或行动。",
-                "- 法律程序须符合本章契约与案件底稿，不得让角色凭身份跳过取证、移交、质证等关键约束。",
-                "- 本场结束时人物处境必须发生具体变化；不要重复上一场已经完成的动作、介绍和环境描写。",
-                "- 所有世界构建细节必须严格遵守所提供的世界观。",
-                *[f"- {line}" for line in CHINESE_PROSE_REQUIREMENTS],
-                "- 只提供本场景正文，不要附加评论或标题。",
-                "- 不要使用代码围栏。"
-            ]
-        
-        prompt = "\n".join(prompt_lines)
-        
         # Use genuine NovelWriter AI helper functions
         try:
             from core.generation.ai_helper import DEFAULT_API_MODEL, send_prompt
@@ -1051,11 +992,10 @@ class ChapterWritingAgent(BaseAgent):
             model = self._get_selected_model()
                 
             # Save prompt to file (following existing pattern)
-            if is_short_story:
-                prompt_filename = f"short_story_scene_{scene_num}_prompt"
-            else:
-                prompt_filename = f"write_chapter_{chapter_num}_scene_{scene_num}_prompt"
-                
+            prompt_filename = scene_prompt_filename(
+                scene_num, None if is_short_story else chapter_num
+            )
+
             try:
                 save_prompt_to_file(self.output_dir, prompt_filename, prompt)
             except Exception as e:
@@ -2092,9 +2032,14 @@ def analyze_story_chapters(output_dir: str, app_instance=None) -> Tuple[List[Cha
     return chapter_info_list, plan
 
 
-def write_next_chapters(output_dir: str, batch_size: int = 1, app_instance=None) -> AgentResult:
+def write_next_chapters(
+    output_dir: str,
+    batch_size: int = 1,
+    app_instance=None,
+    cancel_token: Optional[CancelToken] = None,
+) -> AgentResult:
     """Write the next batch of chapters automatically."""
-    agent = ChapterWritingAgent(output_dir, app_instance)
+    agent = ChapterWritingAgent(output_dir, app_instance, cancel_token=cancel_token)
     chapter_info_list, _ = agent.analyze_chapter_structure()
     plan = agent.create_writing_plan(chapter_info_list, batch_size)
     return agent.write_chapters_batch(chapter_info_list, plan)

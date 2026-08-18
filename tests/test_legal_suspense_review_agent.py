@@ -44,13 +44,16 @@ def test_contract_response_is_normalized():
 
 
 def test_review_gate_uses_scores_and_hard_failures():
-    passing = LegalSuspenseReviewAgent._normalize_review(
+    # 评分门槛与硬失败代码现在来自领域档案，因此要通过实例访问。
+    reviewer = LegalSuspenseReviewAgent(model="hosted-llm", send_prompt_fn=lambda *a, **k: "{}")
+
+    passing = reviewer._normalize_review(
         "chapter",
         {"scores": {dimension: 3.5 for dimension in SCORE_DIMENSIONS}},
     )
     assert passing.passed
 
-    failing = LegalSuspenseReviewAgent._normalize_review(
+    failing = reviewer._normalize_review(
         "chapter",
         {
             "scores": {dimension: 4 for dimension in SCORE_DIMENSIONS},

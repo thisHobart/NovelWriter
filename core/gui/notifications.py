@@ -7,6 +7,7 @@ that don't interrupt the workflow.
 
 import tkinter as tk
 from tkinter import ttk
+import queue
 import threading
 import time
 from typing import Optional, Callable
@@ -282,35 +283,72 @@ class ProgressNotification:
 # Global notification manager (will be initialized by the main app)
 _notification_manager: Optional[NotificationManager] = None
 
+# Notifications requested from worker threads. Tk widgets may only be touched
+# from the thread running the main loop, so background work parks its requests
+# here and a main-thread pump (started by init_notifications) shows them.
+_pending: "queue.Queue[tuple]" = queue.Queue()
+_main_thread_id: Optional[int] = None
+_PUMP_INTERVAL_MS = 150
+
 
 def init_notifications(parent_window: tk.Tk):
-    """Initialize the global notification manager."""
-    global _notification_manager
+    """Initialize the global notification manager and its main-thread pump."""
+    global _notification_manager, _main_thread_id
     _notification_manager = NotificationManager(parent_window)
+    _main_thread_id = threading.get_ident()
+
+    def pump():
+        drain_pending()
+        try:
+            parent_window.after(_PUMP_INTERVAL_MS, pump)
+        except tk.TclError:
+            pass  # window is gone; stop pumping
+
+    parent_window.after(_PUMP_INTERVAL_MS, pump)
+
+
+def drain_pending():
+    """Show every notification queued by worker threads. Main thread only."""
+    if not _notification_manager:
+        return
+    while True:
+        try:
+            kind, title, message, duration = _pending.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            getattr(_notification_manager, f"show_{kind}")(title, message, duration)
+        except tk.TclError:
+            return
+
+
+def _notify(kind: str, title: str, message: str, duration: int):
+    if not _notification_manager:
+        return
+    if _main_thread_id is not None and threading.get_ident() != _main_thread_id:
+        _pending.put((kind, title, message, duration))
+        return
+    getattr(_notification_manager, f"show_{kind}")(title, message, duration)
 
 
 def show_success(title: str, message: str, duration: int = 3000):
-    """Show a non-blocking success notification."""
-    if _notification_manager:
-        _notification_manager.show_success(title, message, duration)
+    """Show a non-blocking success notification (safe from any thread)."""
+    _notify("success", title, message, duration)
 
 
 def show_info(title: str, message: str, duration: int = 3000):
-    """Show a non-blocking info notification."""
-    if _notification_manager:
-        _notification_manager.show_info(title, message, duration)
+    """Show a non-blocking info notification (safe from any thread)."""
+    _notify("info", title, message, duration)
 
 
 def show_warning(title: str, message: str, duration: int = 4000):
-    """Show a non-blocking warning notification."""
-    if _notification_manager:
-        _notification_manager.show_warning(title, message, duration)
+    """Show a non-blocking warning notification (safe from any thread)."""
+    _notify("warning", title, message, duration)
 
 
 def show_error(title: str, message: str, duration: int = 5000):
-    """Show a non-blocking error notification."""
-    if _notification_manager:
-        _notification_manager.show_error(title, message, duration)
+    """Show a non-blocking error notification (safe from any thread)."""
+    _notify("error", title, message, duration)
 
 
 def create_progress_notification(title: str, initial_message: str = "") -> ProgressNotification:

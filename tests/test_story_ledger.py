@@ -2,7 +2,8 @@
 
 import json
 
-from core.generation.story_ledger import StoryLedgerManager
+from core.generation.domain_profiles import HORROR
+from core.generation.story_ledger import LEDGER_VERSION, StoryLedgerManager
 
 
 def test_contract_hash_and_chapter_acceptance(tmp_path):
@@ -75,3 +76,58 @@ def test_design_context_refreshes_generated_case_bible(tmp_path):
 
     (structure_dir / "act_1.md").write_text("真相：门禁时钟被调快。", encoding="utf-8")
     assert manager.case_bible_needs_refresh(saved, manager.load_design_context())
+
+
+def test_initialize_records_domain_profile_and_rules(tmp_path):
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Horror", "Subgenre": "Cosmic Horror"})
+
+    case_bible = manager.load_case_bible()
+    assert case_bible["domain_profile"] == "horror"
+    assert case_bible["version"] == LEDGER_VERSION
+    assert "legal_system" not in case_bible
+    assert case_bible["domain_rules"]["model"] == HORROR.rules_model
+    assert case_bible["domain_rules"]["baseline_rules"] == list(HORROR.baseline_rules)
+    assert manager.locked_profile().key == "horror"
+
+
+def test_locked_profile_survives_a_parameter_change(tmp_path):
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
+
+    # 换了参数再 initialize 不得改写已锁定的档案：评审维度一旦更换，
+    # 已接受章节的评分就不再可比。
+    manager.initialize({"Genre": "Romance", "Subgenre": "Regency Romance"})
+
+    assert manager.locked_profile().key == "legal_suspense"
+    assert manager.load_case_bible()["domain_profile"] == "legal_suspense"
+
+
+def test_pre_v3_case_bible_migrates_legal_system_to_domain_rules(tmp_path):
+    ledger_dir = tmp_path / "system" / "story_ledgers"
+    ledger_dir.mkdir(parents=True)
+    legacy_rules = {"model": "虚构法域", "baseline_rules": ["决定性物证必须记录来源"]}
+    (ledger_dir / "case_bible.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "status": "ready",
+                "truth": [{"id": "T001", "fact": "门禁时钟被调慢"}],
+                "legal_system": legacy_rules,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
+
+    case_bible = manager.load_case_bible()
+    assert case_bible["version"] == LEDGER_VERSION
+    assert "legal_system" not in case_bible
+    assert case_bible["domain_rules"] == legacy_rules
+    # 迁移前只有法律悬疑会走闭环，因此带 legal_system 的旧底稿归入法律悬疑。
+    assert case_bible["domain_profile"] == "legal_suspense"
+    # 迁移不得丢失既有真相。
+    assert case_bible["truth"] == [{"id": "T001", "fact": "门禁时钟被调慢"}]

@@ -13,11 +13,13 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from filelock import FileLock
 
+from core.generation.domain_profiles import DomainProfile, get_domain_profile, resolve_domain_profile
 from core.generation.helper_fns import read_json
 from core.generation.prompt_context import normalize_story_parameters
 
 
-LEDGER_VERSION = 2
+# v3：case_bible 的 `legal_system` 泛化为 `domain_rules`，并记录 `domain_profile`。
+LEDGER_VERSION = 3
 
 
 def source_hash(content: str) -> str:
@@ -123,11 +125,13 @@ class StoryLedgerManager:
         os.makedirs(self.conflict_dir, exist_ok=True)
         os.makedirs(self.review_dir, exist_ok=True)
         params = normalize_story_parameters(parameters)
+        profile = resolve_domain_profile(params)
         now = datetime.now().isoformat()
 
         if not os.path.exists(self.case_bible_path):
             case_bible = {
                 "version": LEDGER_VERSION,
+                "domain_profile": profile.key,
                 "project": {
                     "genre": params.get("Genre", ""),
                     "subgenre": params.get("Subgenre", ""),
@@ -142,19 +146,16 @@ class StoryLedgerManager:
                 "chronology": [],
                 "central_conflict": {},
                 "fair_play_obligations": [],
-                "legal_system": {
-                    "model": "虚构法域；具体规则以世界观为准，并在全书保持一致",
-                    "baseline_rules": [
-                        "侦查机关负责调查和收集证据，不能代替检察机关提起公诉",
-                        "搜查住宅原则上需要法官签发的搜查令或世界观明确规定的紧急例外",
-                        "决定性物证必须记录来源、提取、封存、移交和检验过程",
-                        "法医与技术结论必须可以复核，不能只依赖权力人物的口头判断",
-                    ],
+                "domain_rules": {
+                    "model": profile.rules_model,
+                    "baseline_rules": list(profile.baseline_rules),
                 },
                 "created_at": now,
                 "updated_at": now,
             }
             _atomic_write_json(self.case_bible_path, case_bible)
+        else:
+            self._migrate_case_bible(profile, now)
 
         if not os.path.exists(self.suspense_ledger_path):
             suspense_ledger = {
@@ -202,8 +203,55 @@ class StoryLedgerManager:
                 suspense_ledger["updated_at"] = now
                 _atomic_write_json(self.suspense_ledger_path, suspense_ledger)
 
+    def _migrate_case_bible(self, profile: DomainProfile, now: str) -> None:
+        """Bring a pre-v3 case bible up to the domain-profile layout."""
+        case_bible = self.load_case_bible()
+        if not case_bible:
+            return
+        migrated = False
+
+        legal_system = case_bible.pop("legal_system", None)
+        if legal_system is not None and "domain_rules" not in case_bible:
+            case_bible["domain_rules"] = legal_system
+            migrated = True
+        elif legal_system is not None:
+            migrated = True
+
+        if not case_bible.get("domain_profile"):
+            # 迁移前只有法律悬疑会走闭环，所以带 legal_system 的底稿必定是法律悬疑；
+            # 其余情况按当前参数分派。
+            case_bible["domain_profile"] = (
+                "legal_suspense" if legal_system is not None else profile.key
+            )
+            migrated = True
+
+        if not isinstance(case_bible.get("domain_rules"), dict):
+            case_bible["domain_rules"] = {
+                "model": profile.rules_model,
+                "baseline_rules": list(profile.baseline_rules),
+            }
+            migrated = True
+
+        if case_bible.get("version") != LEDGER_VERSION:
+            case_bible["version"] = LEDGER_VERSION
+            migrated = True
+
+        if migrated:
+            case_bible["updated_at"] = now
+            _atomic_write_json(self.case_bible_path, case_bible)
+
     def load_case_bible(self) -> Dict[str, Any]:
         return read_json(self.case_bible_path)
+
+    def locked_profile(self) -> Optional[DomainProfile]:
+        """Return the profile this project committed to, if the bible records one.
+
+        The profile determines the review dimensions and thresholds, so switching
+        it mid-book would make already-accepted chapters incomparable. Callers
+        should prefer this over re-resolving from parameters.
+        """
+        key = self.load_case_bible().get("domain_profile")
+        return get_domain_profile(key) if key else None
 
     def load_design_context(self, max_chars: int = 60000) -> str:
         """Load stable whole-story design sources used to establish case truth."""
@@ -254,6 +302,8 @@ class StoryLedgerManager:
     def save_case_bible(self, case_bible: Dict[str, Any], design_context: str) -> Dict[str, Any]:
         saved = deepcopy(case_bible)
         saved["version"] = LEDGER_VERSION
+        if not saved.get("domain_profile"):
+            saved["domain_profile"] = self.load_case_bible().get("domain_profile", "")
         saved["status"] = "degraded" if saved.get("case_bible_warning") else "ready"
         saved["generated_from_design"] = True
         saved["source_hash"] = source_hash(design_context)

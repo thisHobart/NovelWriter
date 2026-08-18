@@ -1,5 +1,6 @@
 from tkinter import ttk, messagebox
 from core.gui.notifications import show_success, show_error, show_warning
+from core.gui.task_runner import run_in_background, snapshot_ui
 from core.generation.ai_helper import send_prompt, get_backend
 import re
 from core.generation.helper_fns import (
@@ -132,19 +133,51 @@ class ScenePlanning:
         story_length = params.get("story_length")
         self.app.logger.info(f"ScenePlanning: Dispatching scene planning for story length: {story_length}")
 
+        ui = snapshot_ui(self.app)
         if story_length == "Short Story":
-            self._plan_short_story_scenes()
+            work = lambda: self._plan_short_story_scenes(ui)
         elif story_length in ["Novella", "Novel (Standard)", "Novel (Epic)"]:
-            self._plan_long_form_scenes() # Changed from self.scene_plan
+            work = lambda: self._plan_long_form_scenes(ui) # Changed from self.scene_plan
         else:
             self.app.logger.error(f"ScenePlanning: Unknown story length '{story_length}'.")
             show_error("错误", f"场景规划不支持故事篇幅“{zh_label(story_length)}”。")
+            return
+
+        run_in_background(
+            self.app.root,
+            work,
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.plan_scenes_button,
+            busy_text="正在规划场景…",
+            logger=self.app.logger if self.app else None,
+        )
 
 
     # Generate an outline of the chapters given the 6-act story structure
+    def _busy_widgets(self):
+        """后台任务运行期间需要锁住的按钮。"""
+        return (
+            self.chapter_outline_button,
+            self.plan_scenes_button,
+        )
+
     def generate_chapter_outline(self):
-        selected_model = self.app.get_selected_model() # Use app-wide selected model
-        output_dir = self.app.get_output_dir() # Get user-defined output directory
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._generate_chapter_outline(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.chapter_outline_button,
+            busy_text="正在生成章节大纲…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _generate_chapter_outline(self, ui):
+        selected_model = ui.model # Use app-wide selected model
+        output_dir = ui.output_dir # Get user-defined output directory
         os.makedirs(output_dir, exist_ok=True)
         dir_manager = self._get_directory_manager(output_dir)
         chapter_outlines_dir = dir_manager.get_chapter_outlines_path()
@@ -415,9 +448,9 @@ class ScenePlanning:
             show_error("错误", f"生成场景规划失败：{str(e)}")
 
     # Renamed from scene_plan to indicate its use for longer forms
-    def _plan_long_form_scenes(self):
-        selected_model = self.app.get_selected_model() 
-        output_dir = self.app.get_output_dir()
+    def _plan_long_form_scenes(self, ui):
+        selected_model = ui.model 
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         dir_manager = self._get_directory_manager(output_dir)
         chapter_outlines_dir = dir_manager.get_chapter_outlines_path()
@@ -591,9 +624,9 @@ class ScenePlanning:
             show_error("错误", f"生成场景规划失败：{str(e)}")
 
 
-    def _plan_short_story_scenes(self):
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir()
+    def _plan_short_story_scenes(self, ui):
+        selected_model = ui.model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.app.logger.info(f"Planning Short Story Scenes. Model: {selected_model}, Output Dir: {output_dir}")
 
@@ -603,7 +636,7 @@ class ScenePlanning:
             show_error("错误", "无法加载故事参数。")
             return
         
-        parameters = self.app.param_ui.get_current_parameters()
+        parameters = ui.parameters
         story_params = normalize_story_parameters(parameters)
         genre_label = format_genre_label(story_params)
         location_guidance = build_location_guidance(story_params)

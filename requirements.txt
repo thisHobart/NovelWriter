@@ -1,114 +1,27 @@
-# Shared LLM backend layer (llm-backends): core/generation/ai_helper.py and
-# the core/generation/llm_interface/ modules are compatibility shims over this
-# package (StoryDaemon docs/LLM_BACKENDS_INVENTORY.md, section 7.4 step 4).
-# Pinned git-URL install (the package is public); for day-to-day development
-# against a sibling checkout use instead:
+# NovelWriter 运行依赖
+#
+# 本文件只列出代码里真正 import 的直接依赖，传递依赖交给 pip 解析。
+# （此前是一份完整的 `pip freeze`，混入了 chromadb / fastapi / uvicorn /
+# kubernetes / onnxruntime / opentelemetry 以及三个 provider SDK——这些在
+# 删除 rag_helper.py 之后已经无人引用，provider SDK 也已由 llm-backends 管理。）
+
+# 共享 LLM 后端层：core/generation/ai_helper.py 和 core/generation/llm_interface/
+# 都是这个包的兼容门面（StoryDaemon docs/LLM_BACKENDS_INVENTORY.md 7.4 step 4）。
+# 日常开发若使用同级检出，可改为：
 #     pip install -e ../llm-backends
 llm-backends @ git+https://github.com/EdwardAThomson/llm-backends@v0.2.0
 
-annotated-types==0.7.0
-anthropic==0.69.0
-anyio==4.6.2.post1
-asgiref==3.8.1
-attrs==25.1.0
-backoff==2.2.1
-bcrypt==4.2.1
-build==1.2.2.post1
-cachetools==5.5.1
-certifi==2024.8.30
-charset-normalizer==3.4.1
-chroma-hnswlib==0.7.6
-chromadb==0.6.3
-click==8.1.8
-coloredlogs==15.0.1
-Deprecated==1.2.18
-distro==1.9.0
-docstring_parser==0.17.0
-durationpy==0.9
-fastapi==0.115.8
-filelock==3.17.0
-flatbuffers==25.1.24
-fsspec==2025.2.0
-google-ai-generativelanguage==0.6.15
-google-api-core==2.24.0
-google-api-python-client==2.159.0
-google-auth==2.38.0
-google-auth-httplib2==0.2.0
-google-generativeai==0.8.5
-googleapis-common-protos==1.66.0
-grpcio==1.70.0
-grpcio-status==1.70.0
-h11==0.14.0
-httpcore==1.0.7
-httplib2==0.22.0
-httptools==0.6.4
-httpx==0.27.2
-huggingface-hub==0.28.1
-humanfriendly==10.0
-idna==3.10
-importlib_metadata==8.5.0
-importlib_resources==6.5.2
-jiter==0.11.0
-jsonschema==4.25.1
-jsonschema-specifications==2024.10.1
-kubernetes==32.0.0
-markdown-it-py==3.0.0
-mdurl==0.1.2
-mmh3==5.1.0
-monotonic==1.6
-mpmath==1.3.0
-numpy==2.2.2
-oauthlib==3.2.2
-onnxruntime==1.20.1
-openai==2.3.0
-opentelemetry-api==1.30.0
-opentelemetry-exporter-otlp-proto-common==1.30.0
-opentelemetry-exporter-otlp-proto-grpc==1.30.0
-opentelemetry-instrumentation==0.51b0
-opentelemetry-instrumentation-asgi==0.51b0
-opentelemetry-instrumentation-fastapi==0.51b0
-opentelemetry-proto==1.30.0
-opentelemetry-sdk==1.30.0
-opentelemetry-semantic-conventions==0.51b0
-opentelemetry-util-http==0.51b0
-orjson==3.10.15
-overrides==7.7.0
-packaging==24.2
-posthog==3.11.0
-proto-plus==1.25.0
-protobuf==5.29.3
-pyasn1==0.6.1
-pyasn1_modules==0.4.1
-pydantic==2.9.2
-pydantic_core==2.23.4
-Pygments==2.19.1
-pyparsing==3.2.1
-PyPika==0.48.9
-pyproject_hooks==1.2.0
-python-dateutil==2.9.0.post0
-python-dotenv==1.1.1
-PyYAML==6.0.2
-referencing==0.36.2
-requests==2.32.3
-requests-oauthlib==2.0.0
-rich==13.9.4
-rpds-py==0.23.1
-rsa==4.9
-shellingham==1.5.4
-six==1.17.0
-sniffio==1.3.1
-starlette==0.45.3
-sympy==1.13.3
-tenacity==9.0.0
-tokenizers==0.21.0
-tqdm==4.67.0
-typer==0.15.1
-typing_extensions==4.12.2
-uritemplate==4.1.1
-urllib3==2.3.0
-uvicorn==0.34.0
-watchfiles==1.0.4
-websocket-client==1.8.0
-websockets==14.2
-wrapt==1.17.2
-zipp==3.21.0
+# .env 中的 API 密钥加载（core/generation/ai_helper.py）
+python-dotenv>=1.1.1
+
+# 参数与生成结果的 JSON Schema 校验（core/generation/helper_fns.py、core/gui/parameters.py）
+jsonschema>=4.25.1
+
+# 故事账本提交时的跨进程互斥锁（core/generation/story_ledger.py）
+filelock>=3.17.0
+
+# GUI 使用标准库 tkinter，无需在此声明。
+
+# --- 开发依赖 ---
+# pip install -r requirements.txt 会一并安装；仅运行应用可不装。
+pytest>=8.0

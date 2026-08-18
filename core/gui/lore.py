@@ -2,9 +2,9 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from core.gui.notifications import show_success, show_error, show_warning
+from core.gui.task_runner import run_in_background, snapshot_ui
 from core.generation.ai_helper import send_prompt, get_backend
 from core.generation.prompt_context import format_faction_summary
-# from core.generation.rag_helper import upsert_text
 import json
 import os
 import logging
@@ -189,13 +189,43 @@ class Lore:
 # Generation functions
 
     # Generate list of factions and some of their details
+    def _busy_widgets(self):
+        """后台任务运行期间需要锁住的按钮。"""
+        return (
+            self.factions_button,
+            self.characters_button,
+            self.generate_lore_button,
+            self.main_char_enh_button,
+            self.suggest_titles_button,
+        )
+
     def generate_factions(self):
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        try:
+            ui = snapshot_ui(
+                self.app,
+                num_factions=int(self.num_factions_var.get()),
+            )
+        except (TypeError, ValueError):
+            show_error("错误", "请输入有效的数量。")
+            return
+        run_in_background(
+            self.app.root,
+            lambda: self._generate_factions(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.factions_button,
+            busy_text="正在生成…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _generate_factions(self, ui):
         try:
             # Get the number of factions from the UI
-            num_factions = int(self.num_factions_var.get())
+            num_factions = ui.get("num_factions")
             
             # Get the selected gender bias percentages from ParametersUI
-            params = self.app.param_ui.get_current_parameters()
+            params = ui.parameters
             female_percentage = params.get("female_percentage", 50) # Default to 50 if not found
             male_percentage = params.get("male_percentage", 50)   # Default to 50 if not found
             genre = params.get("genre", "Sci-Fi")  # Get current genre
@@ -234,7 +264,7 @@ class Lore:
                 self.app.logger.warning("Faction generation returned no factions.")
 
             # Determine the output directory from the app settings
-            output_dir = self.app.get_output_dir()
+            output_dir = ui.output_dir
             
             # Use structured directory for factions file
             lore_dir = self.dir_manager.get_path('lore_dir')
@@ -262,12 +292,32 @@ class Lore:
     # Then match characters to the list of factions
     # Also generates relationships between characters?
     def generate_characters(self):
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
         try:
-            num_chars = int(self.num_chars_var.get())
+            ui = snapshot_ui(
+                self.app,
+                num_chars=int(self.num_chars_var.get()),
+            )
+        except (TypeError, ValueError):
+            show_error("错误", "请输入有效的数量。")
+            return
+        run_in_background(
+            self.app.root,
+            lambda: self._generate_characters(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.characters_button,
+            busy_text="正在生成…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _generate_characters(self, ui):
+        try:
+            num_chars = ui.get("num_chars")
             self.app.logger.info(f"Attempting to generate {num_chars} characters.")
             
             # Get the selected gender bias percentages and genre from Parameters.py
-            params = self.app.param_ui.get_current_parameters()
+            params = ui.parameters
             female_percentage = params.get("female_percentage", 50)
             male_percentage = params.get("male_percentage", 50)
             genre = params.get("genre", "Sci-Fi")
@@ -328,7 +378,7 @@ class Lore:
             # --- End Gender Count ---
             
             # Save to file
-            output_dir = self.app.get_output_dir()
+            output_dir = ui.output_dir
             
             # Use structured directory for characters file
             lore_dir = self.dir_manager.get_path('lore_dir')
@@ -479,10 +529,23 @@ class Lore:
 
 
     def generate_lore(self):
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._generate_lore(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.generate_lore_button,
+            busy_text="正在生成世界观…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _generate_lore(self, ui):
         """Generate lore using an internally constructed prompt and LLM"""
         self.app.logger.info("Lore generation process started.")
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir()
+        selected_model = ui.model
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.app.logger.info(f"Using model: {selected_model} for lore generation.")
         self.app.logger.info(f"Output directory for lore files: {output_dir}")
@@ -592,7 +655,7 @@ class Lore:
             self.app.logger.info("Enhancing prompt with faction capitals and detailed character info...")
             if factions:
                 # Get current genre and appropriate handler
-                params = self.app.param_ui.get_current_parameters()
+                params = ui.parameters
                 current_genre = params.get("genre", "Sci-Fi")
                 
                 try:
@@ -724,9 +787,22 @@ class Lore:
 
     # New function to suggest titles
     def suggest_titles(self):
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._suggest_titles(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.suggest_titles_button,
+            busy_text="正在推荐…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _suggest_titles(self, ui):
         self.app.logger.info("Title suggestion process started.")
-        selected_model = self.app.get_selected_model()
-        output_dir = self.app.get_output_dir() # This is typically "current_work"
+        selected_model = ui.model
+        output_dir = ui.output_dir # This is typically "current_work"
         # The save_prompt_to_file function will handle creating the 'prompts' subdirectory within output_dir.
         # os.makedirs(os.path.join(output_dir, "prompts"), exist_ok=True) # Ensured by save_prompt_to_file
 
@@ -841,9 +917,22 @@ class Lore:
 
     # Generate background story for the main characters
     def main_character_enhancement(self):
+        """读取界面输入后，把生成工作交给后台线程（见 core/gui/task_runner.py）。"""
+        ui = snapshot_ui(self.app)
+        run_in_background(
+            self.app.root,
+            lambda: self._main_character_enhancement(ui),
+            on_error=lambda exc: show_error("错误", str(exc)),
+            busy_widgets=self._busy_widgets(),
+            busy_button=self.main_char_enh_button,
+            busy_text="正在完善…",
+            logger=self.app.logger if self.app else None,
+        )
+
+    def _main_character_enhancement(self, ui):
         self.app.logger.info("Main character enhancement process started.")
-        selected_model = self.app.get_selected_model() 
-        output_dir = self.app.get_output_dir()
+        selected_model = ui.model 
+        output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
 
         self.app.logger.info(f"Using model: {selected_model} for main character enhancement")
@@ -909,7 +998,7 @@ class Lore:
                 self.app.logger.info(f"--- Generating backstory for: {char_name} ({char_role}) ---") # Original log line
 
                 # Get current genre for appropriate prompt
-                params = self.app.param_ui.get_current_parameters()
+                params = ui.parameters
                 current_genre = params.get("genre", "Sci-Fi")
                 current_subgenre = params.get("subgenre", "")
                 

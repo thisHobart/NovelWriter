@@ -187,7 +187,8 @@ def test_error_placeholder_is_not_a_completed_chapter(tmp_path):
 def test_single_chapter_passes_review_arguments_by_name(tmp_path):
     agent = _bare_agent(tmp_path)
     agent.review_agent = object()
-    agent._load_writing_context = lambda: {}
+    # 所有题材现在都走质量闭环；关闭档位让本用例专注于评审参数传递，不触发大模型。
+    agent._load_writing_context = lambda: {"parameters": {"Quality Loop": "off"}}
     agent._generate_scene_prose = lambda *args, **kwargs: "生成的场景正文"
 
     scene_review = SceneReview(
@@ -258,3 +259,93 @@ def test_automatic_progress_detects_structured_workspace(tmp_path):
     assert progress["next_chapter"] == 2
     assert not progress["next_chapter_ready"]
     assert progress["missing_scene_plans"] == [2]
+
+
+def test_failed_scene_archives_partial_prose_instead_of_writing_a_chapter(tmp_path):
+    """质量闸门失败时，稿件目录必须保持干净，部分正文只进归档。"""
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+    agent._load_writing_context = lambda: {"parameters": {"Quality Loop": "off"}}
+
+    def flaky_scene(chapter_num, scene_num, *args, **kwargs):
+        return "第一场正文。" if scene_num == 1 else ""
+
+    agent._generate_scene_prose = flaky_scene
+
+    scene_path = tmp_path / "plans" / "scene_3.md"
+    scene_path.parent.mkdir(parents=True)
+    scene_path.write_text(
+        "### 场景 1：开端\n规划一\n\n### 场景 2：转折\n规划二\n",
+        encoding="utf-8",
+    )
+
+    chapter_info = ChapterInfo(
+        chapter_number=3,
+        section_name="Rising Action",
+        scene_plan_file="plans/scene_3.md",
+        output_file="chapters/chapter_3.md",
+    )
+    result = agent._write_single_chapter(chapter_info)
+
+    assert not result.success
+    assert not (tmp_path / "chapters" / "chapter_3.md").exists()
+
+    archived = result.data["archived_partial_prose"]
+    assert archived
+    archived_text = helper_fns.open_file(archived)
+    assert "第一场正文。" in archived_text
+    # 归档路径必须在 archive/ 下，绝不能落进 story/content/。
+    assert "failed_generations" in archived.replace("\\", "/")
+    assert "story/content" not in archived.replace("\\", "/")
+    # 归档内容不得含有历史上的错误占位符。
+    assert "[[[ERROR" not in archived_text
+
+
+def test_batch_cancellation_keeps_finished_chapters_and_stops(tmp_path):
+    """取消发生在章节边界：已写完的章节保留，未开始的章节不写。"""
+    from core.generation.cancellation import CancelToken
+
+    from agents.writing.chapter_writing_agent import QualityThresholds
+
+    token = CancelToken()
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+    agent.cancel_token = token
+    agent.quality_thresholds = QualityThresholds()
+    agent._load_writing_context = lambda: {"parameters": {"Quality Loop": "off"}}
+
+    written = []
+
+    def one_chapter_then_cancel(chapter_num, scene_num, *args, **kwargs):
+        if chapter_num not in written:
+            written.append(chapter_num)
+        token.cancel()
+        return f"第 {chapter_num} 章正文。"
+
+    agent._generate_scene_prose = one_chapter_then_cancel
+
+    plan_dir = tmp_path / "plans"
+    plan_dir.mkdir()
+    chapter_infos = []
+    for number in (1, 2, 3):
+        (plan_dir / f"scene_{number}.md").write_text("### 场景 1：开端\n规划", encoding="utf-8")
+        chapter_infos.append(
+            ChapterInfo(
+                chapter_number=number,
+                section_name="Rising Action",
+                scene_plan_file=f"plans/scene_{number}.md",
+                output_file=f"chapters/chapter_{number}.md",
+            )
+        )
+
+    plan = agent.create_writing_plan(chapter_infos, batch_size=3)
+    result = agent.write_chapters_batch(chapter_infos, plan)
+
+    assert written == [1]
+    assert result.data["chapters_written"] == [1]
+    assert "已按请求停止" in result.messages[0]
+    assert (tmp_path / "chapters" / "chapter_1.md").exists()
+    assert not (tmp_path / "chapters" / "chapter_2.md").exists()
+    assert not (tmp_path / "chapters" / "chapter_3.md").exists()
+    # 取消不应被记成章节失败。
+    assert result.data["errors"] == []
