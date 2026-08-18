@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from core.generation.domain_profiles import GENERAL, DomainProfile, get_domain_profile
 from core.generation.story_ledger import (
+    CHARACTER_ATTRIBUTE_KEY,
     RevisionConflictError,
     StoryLedgerManager,
     source_hash,
@@ -26,11 +27,139 @@ TIME_PATTERN = re.compile(
     r"[零〇一二三四五六七八九十百两\d]{1,4}点"
     r"(?:[零〇一二三四五六七八九十百两\d]{1,4}分)?"
 )
+_CN_DIGITS = "零〇一二三四五六七八九十百千万两"
+# 中文小说里的数量绝大多数写作「三十四年」而不是「34年」，只匹配阿拉伯数字会
+# 让 numeric_expressions 对中文正文近乎空转。
 NUMBER_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?"
-    r"(?:秒|分钟|分|小时|天|周|月|年|人|件|起|次|米|公里|元|万|%)?"
+    rf"(?<![A-Za-z0-9_])(?:\d+(?:\.\d+)?|[{_CN_DIGITS}]{{1,6}})"
+    r"(?:秒|分钟|分|小时|天|周|月|年|岁|人|件|起|次|米|毫米|公里|元|万|份|页|条|章|%)"
+    r"|(?<![A-Za-z0-9_])\d+(?:\.\d+)?"
 )
 VOLATILE_CONTRACT_FIELDS = {"created_at", "updated_at", "generated_at", "accepted_at"}
+
+_CN_NUMERALS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+
+def parse_cn_number(text: str) -> Optional[int]:
+    """Parse an Arabic or Chinese numeral into an int, or None if it is not one."""
+    if text is None:
+        return None
+    text = str(text).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+
+    total = 0
+    section = 0
+    current = 0
+    seen = False
+    for char in text:
+        if char in _CN_NUMERALS:
+            current = _CN_NUMERALS[char]
+            seen = True
+        elif char in _CN_UNITS:
+            unit = _CN_UNITS[char]
+            seen = True
+            if unit == 10000:
+                total = (total + section + current) * unit
+                section = 0
+            else:
+                # 「十四」= 10 + 4：单位前没有数字时隐含 1。
+                section += (current or 1) * unit
+            current = 0
+        else:
+            return None
+    if not seen:
+        return None
+    return total + section + current
+
+
+_MEASURE_PATTERN = re.compile(
+    rf"^([{_CN_DIGITS}\d]+(?:\.\d+)?)\s*"
+    r"(秒|分钟|分|小时|天|周|个?月|年|岁|人|件|起|次|米|毫米|公里|元|万|份|页|条|章|%)?$"
+)
+
+
+def parse_measure(text: str) -> Optional[tuple[float, str]]:
+    """Parse '三十四年' / '34年' / '34' into a comparable (number, unit) pair.
+
+    Chinese and Arabic numerals must compare equal, otherwise a chapter that
+    spells a figure differently would read as a contradiction.
+    """
+    if text is None:
+        return None
+    match = _MEASURE_PATTERN.match(str(text).strip())
+    if not match:
+        return None
+    number = match.group(1)
+    if re.fullmatch(r"\d+(?:\.\d+)?", number):
+        value = float(number)
+    else:
+        parsed = parse_cn_number(number)
+        if parsed is None:
+            return None
+        value = float(parsed)
+    unit = match.group(2) or ""
+    return value, unit.lstrip("个")
+
+
+def values_conflict(old_value: Any, new_value: Any) -> bool:
+    """Whether two declared values genuinely disagree.
+
+    Falls back to whitespace-insensitive string comparison for anything that is
+    not a measurement.
+    """
+    old_measure = parse_measure(old_value)
+    new_measure = parse_measure(new_value)
+    if old_measure and new_measure:
+        old_number, old_unit = old_measure
+        new_number, new_unit = new_measure
+        if old_unit and new_unit and old_unit != new_unit:
+            # 单位不同就不是同一个量，交给人判断而不是在这里下结论。
+            return False
+        return old_number != new_number
+    normalize = lambda value: re.sub(r"\s+", "", str(value))
+    return normalize(old_value) != normalize(new_value)
+
+
+def parse_clock(text: str) -> Optional[tuple[int, int]]:
+    """Normalize a clock expression to (hour % 12, minute).
+
+    Comparing the hour modulo 12 deliberately treats 下午三点 and 三点 as the
+    same reading: this feeds warning-level checks, where a false alarm on the
+    12-hour ambiguity is worse than a missed one.
+    """
+    if not text:
+        return None
+    text = str(text).strip()
+
+    digital = re.match(r"^(?:(\d{1,2}):(\d{2}))(?::\d{2})?$", text)
+    if digital:
+        return int(digital.group(1)) % 12, int(digital.group(2))
+
+    chinese = re.match(
+        rf"^(?:凌晨|早上|上午|中午|下午|傍晚|晚上|午夜)?"
+        rf"([{_CN_DIGITS}\d]{{1,4}})点(?:([{_CN_DIGITS}\d]{{1,4}})分)?$",
+        text,
+    )
+    if not chinese:
+        return None
+    hour = parse_cn_number(chinese.group(1))
+    if hour is None:
+        return None
+    minute = 0
+    if chinese.group(2):
+        minute = parse_cn_number(chinese.group(2))
+        if minute is None:
+            return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour % 12, minute
 
 
 @dataclass(frozen=True)
@@ -261,6 +390,96 @@ class DefaultChapterDeltaExtractor:
 class ArtifactValidator:
     """Cheap deterministic checks that must pass before Canon comparison."""
 
+    @staticmethod
+    def _check_declared_times_against_prose(
+        issues: List[ValidationIssue],
+        delta: ChapterDelta,
+    ) -> None:
+        """Warn when a declared event time never shows up in the prose.
+
+        `text_signals` was extracted and stored but never read by anything, so a
+        chapter could declare an event at 00:12 while the prose said 三点零八分
+        and nothing noticed. Only fires when the prose does state some clock
+        time: a chapter with no clock reference at all simply keeps the event
+        off-page, which is not an error.
+        """
+        prose_times = {
+            parsed
+            for expression in delta.text_signals.get("time_expressions", [])
+            if (parsed := parse_clock(expression)) is not None
+        }
+        if not prose_times:
+            return
+
+        for event in delta.timeline_events:
+            declared = parse_clock(event.get("time"))
+            if declared is None or declared in prose_times:
+                continue
+            issues.append(
+                ValidationIssue(
+                    "declared_time_absent_from_prose",
+                    f"契约声明事件 {event.get('id')}（{event.get('event', '未命名')}）"
+                    f"发生在 {event.get('time')}，但正文里没有出现这个时刻",
+                    severity="warning",
+                    repair_target="prose",
+                    details={
+                        "id": event.get("id"),
+                        "declared_time": event.get("time"),
+                        "prose_times": sorted(
+                            delta.text_signals.get("time_expressions", [])
+                        )[:20],
+                    },
+                )
+            )
+
+    @staticmethod
+    def _check_declared_numbers_against_prose(
+        issues: List[ValidationIssue],
+        delta: ChapterDelta,
+    ) -> None:
+        """Warn when a declared stable measurement never appears in the prose.
+
+        Pairs with the ledger-side check: the gate keeps one value per
+        (character, attribute) across chapters, and this keeps the prose honest
+        about the value the contract declared for this chapter.
+        """
+        prose_measures = {
+            measure
+            for expression in delta.text_signals.get("numeric_expressions", [])
+            if (measure := parse_measure(expression)) is not None
+        }
+        if not prose_measures:
+            return
+        prose_numbers = {number for number, _ in prose_measures}
+
+        for record in delta.character_updates:
+            if not record.get("stable"):
+                continue
+            declared = parse_measure(record.get("value"))
+            if declared is None:
+                continue
+            number, unit = declared
+            # 单位可能被正文省略（「三十四年」写成「三十四个年头」），只比数值。
+            if number in prose_numbers:
+                continue
+            issues.append(
+                ValidationIssue(
+                    "declared_number_absent_from_prose",
+                    f"契约声明 {record.get('character')} 的"
+                    f"{record.get('attribute')} 为 {record.get('value')}，"
+                    f"但正文里没有出现这个数值",
+                    severity="warning",
+                    repair_target="prose",
+                    details={
+                        "character": record.get("character"),
+                        "attribute": record.get("attribute"),
+                        "declared_value": record.get("value"),
+                        "declared_number": number,
+                        "declared_unit": unit,
+                    },
+                )
+            )
+
     def validate(
         self,
         delta: ChapterDelta,
@@ -304,6 +523,9 @@ class ArtifactValidator:
             )
         if delta.base_revision < 0:
             issues.append(ValidationIssue("invalid_base_revision", "base_revision 不能小于零"))
+
+        self._check_declared_times_against_prose(issues, delta)
+        self._check_declared_numbers_against_prose(issues, delta)
 
         for field_name, records in (
             ("facts_added", delta.facts_added),
@@ -415,6 +637,7 @@ class CanonConsistencyGate:
             suspense_ledger.get("clues", []),
             record_type="clue",
             immutable_fields=profile.immutable_fields_for_slot("clue_updates"),
+            identity_fields=profile.identity_fields_for_slot("clue_updates"),
         )
         self._check_stable_record_conflicts(
             issues,
@@ -422,6 +645,7 @@ class CanonConsistencyGate:
             suspense_ledger.get("evidence", []),
             record_type="evidence",
             immutable_fields=profile.immutable_fields_for_slot("evidence_updates"),
+            identity_fields=profile.identity_fields_for_slot("evidence_updates"),
         )
         existing_facts = list(case_bible.get("truth", []))
         existing_facts.extend(suspense_ledger.get("facts", []))
@@ -431,6 +655,7 @@ class CanonConsistencyGate:
             existing_facts,
             record_type="fact",
             immutable_fields=("fact", "value"),
+            identity_fields=("fact",),
         )
         existing_timeline = list(case_bible.get("chronology", []))
         existing_timeline.extend(suspense_ledger.get("timeline_events", []))
@@ -440,6 +665,7 @@ class CanonConsistencyGate:
             existing_timeline,
             record_type="timeline",
             immutable_fields=("event", "time", "time_start", "time_end", "location_id"),
+            identity_fields=("event",),
         )
 
         for contradicted in delta.facts_contradicted:
@@ -451,6 +677,28 @@ class CanonConsistencyGate:
                     details=deepcopy(contradicted),
                 )
             )
+
+        # 只有声明为 stable 的属性才锁定取值：伤势、位置这类会随剧情变化的状态
+        # 若一并锁死，正常推进也会被判成矛盾。
+        self._check_stable_record_conflicts(
+            issues,
+            [record for record in delta.character_updates if record.get("stable")],
+            [
+                record
+                for record in suspense_ledger.get("character_updates", [])
+                if isinstance(record, dict) and record.get("stable")
+            ],
+            record_type="character_attribute",
+            immutable_fields=("value",),
+            identity_fields=CHARACTER_ATTRIBUTE_KEY,
+        )
+
+        self._check_overdue_plot_threads(
+            issues,
+            delta.chapter,
+            delta.plot_thread_updates,
+            suspense_ledger.get("plot_threads", []),
+        )
 
         if accepted_entry and accepted_entry.get("content_hash") not in (None, delta.content_hash):
             issues.append(
@@ -469,35 +717,142 @@ class CanonConsistencyGate:
         return ValidationReport(stage="canon_consistency", issues=issues)
 
     @staticmethod
+    def _check_overdue_plot_threads(
+        issues: List[ValidationIssue],
+        chapter: int,
+        proposed_threads: Iterable[Dict[str, Any]],
+        existing_threads: Iterable[Dict[str, Any]],
+    ) -> None:
+        """Flag threads that were opened with a deadline and never closed.
+
+        A thread only participates if it declared a positive `deadline_chapter`;
+        without a declared deadline there is nothing to be late for. Missing the
+        deadline exactly on this chapter still blocks, because revising this
+        chapter can resolve it — an already-passed deadline only warns, so an
+        early oversight cannot deadlock every remaining chapter.
+        """
+        state: Dict[str, Dict[str, Any]] = {}
+        for record in existing_threads:
+            if isinstance(record, dict) and record.get("id"):
+                state[str(record["id"])] = dict(record)
+        for record in proposed_threads:
+            if not isinstance(record, dict) or not record.get("id"):
+                continue
+            state.setdefault(str(record["id"]), {}).update(record)
+
+        for thread_id, record in state.items():
+            if str(record.get("status", "")).lower() != "open":
+                continue
+            try:
+                deadline = int(record.get("deadline_chapter") or 0)
+            except (TypeError, ValueError):
+                continue
+            if deadline <= 0 or chapter < deadline:
+                continue
+            issues.append(
+                ValidationIssue(
+                    "plot_thread_overdue",
+                    f"线索 {thread_id}（{record.get('thread', '未命名')}）应在第 {deadline} 章前"
+                    f"闭合，到第 {chapter} 章仍为 open",
+                    severity="blocking" if chapter == deadline else "warning",
+                    repair_target="contract",
+                    details={
+                        "id": thread_id,
+                        "thread": record.get("thread"),
+                        "deadline_chapter": deadline,
+                        "chapter": chapter,
+                    },
+                )
+            )
+
+    @staticmethod
+    def _identity_key(record: Dict[str, Any], identity_fields: Iterable[str]) -> Optional[str]:
+        """Build a content-based key so one thing stays one record across chapters.
+
+        Matching on `id` alone is not enough: nothing forces the model to reuse a
+        previously minted id, and a fresh id would otherwise let a contradicting
+        record slip past the gate unnoticed.
+        """
+        parts = []
+        for field_name in identity_fields:
+            value = record.get(field_name)
+            if value in (None, ""):
+                continue
+            parts.append(re.sub(r"\s+", "", str(value)).lower())
+        return "|".join(parts) if parts else None
+
+    @classmethod
     def _check_stable_record_conflicts(
+        cls,
         issues: List[ValidationIssue],
         proposed_records: Iterable[Dict[str, Any]],
         existing_records: Iterable[Dict[str, Any]],
         record_type: str,
         immutable_fields: Iterable[str],
+        identity_fields: Iterable[str] = (),
     ) -> None:
+        existing_records = [
+            record for record in existing_records if isinstance(record, dict)
+        ]
+        immutable_fields = tuple(immutable_fields)
+        identity_fields = tuple(identity_fields)
+
         existing_by_id = {
-            record.get("id"): record
-            for record in existing_records
-            if isinstance(record, dict) and record.get("id")
+            record.get("id"): record for record in existing_records if record.get("id")
         }
+        existing_by_identity: Dict[str, Dict[str, Any]] = {}
+        for record in existing_records:
+            key = cls._identity_key(record, identity_fields)
+            if key:
+                existing_by_identity.setdefault(key, record)
+
         for proposed in proposed_records:
             record_id = proposed.get("id")
-            existing = existing_by_id.get(record_id)
+            existing = existing_by_id.get(record_id) if record_id else None
+            matched_by_identity = False
+
+            if not existing:
+                # The id did not match anything already accepted. Fall back to the
+                # natural key so a renamed id cannot smuggle in a contradiction.
+                key = cls._identity_key(proposed, identity_fields)
+                existing = existing_by_identity.get(key) if key else None
+                matched_by_identity = existing is not None
+
             if not existing:
                 continue
+
+            if matched_by_identity:
+                issues.append(
+                    ValidationIssue(
+                        f"{record_type}_identity_reused",
+                        f"{record_type} “{cls._identity_key(proposed, identity_fields)}”"
+                        f" 已存在（id {existing.get('id')}），本章却使用了新 id {record_id}",
+                        severity="warning",
+                        repair_target="contract",
+                        details={
+                            "existing_id": existing.get("id"),
+                            "proposed_id": record_id,
+                            "identity_fields": list(identity_fields),
+                        },
+                    )
+                )
+
             for field_name in immutable_fields:
                 old_value = existing.get(field_name)
                 new_value = proposed.get(field_name)
-                if old_value in (None, "") or new_value in (None, "") or old_value == new_value:
+                if old_value in (None, "") or new_value in (None, ""):
+                    continue
+                if not values_conflict(old_value, new_value):
                     continue
                 issues.append(
                     ValidationIssue(
                         f"{record_type}_fact_conflict",
-                        f"{record_type} {record_id} 的 {field_name} 与已接受状态冲突",
+                        f"{record_type} {existing.get('id') or record_id} 的 {field_name}"
+                        f" 与已接受状态冲突",
                         repair_target="human_decision",
                         details={
-                            "id": record_id,
+                            "id": existing.get("id") or record_id,
+                            "proposed_id": record_id,
                             "field": field_name,
                             "existing": old_value,
                             "proposed": new_value,

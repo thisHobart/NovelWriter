@@ -552,15 +552,6 @@ class NovelWriterApp:
             variable=self.quality_threshold
         )
         threshold_scale.pack(side="left", fill="x", expand=True)
-        
-        # Auto-retry option
-        self.auto_retry = tk.BooleanVar(value=True)
-        retry_check = tk.Checkbutton(
-            quality_frame,
-            text="出现质量问题时自动重试",
-            variable=self.auto_retry
-        )
-        retry_check.pack(anchor="w")
     
     def create_workflow_progress_panel(self):
         """Create persistent workflow progress panel in right panel."""
@@ -873,7 +864,6 @@ class NovelWriterApp:
             generation_result = self.story_orchestrator.execute_complete_workflow(
                 story_parameters=story_params,
                 quality_threshold=self.quality_threshold.get(),
-                auto_retry=self.auto_retry.get()
             )
             
             # Handle dictionary result format

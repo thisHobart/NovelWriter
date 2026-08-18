@@ -3,7 +3,12 @@
 import json
 
 from core.generation.domain_profiles import HORROR
-from core.generation.story_ledger import LEDGER_VERSION, StoryLedgerManager
+from core.generation.story_ledger import (
+    LEDGER_VERSION,
+    StoryLedgerManager,
+    build_ledger_prompt_view,
+    compact_json,
+)
 
 
 def test_contract_hash_and_chapter_acceptance(tmp_path):
@@ -131,3 +136,39 @@ def test_pre_v3_case_bible_migrates_legal_system_to_domain_rules(tmp_path):
     assert case_bible["domain_profile"] == "legal_suspense"
     # 迁移不得丢失既有真相。
     assert case_bible["truth"] == [{"id": "T001", "fact": "门禁时钟被调慢"}]
+
+
+def test_compact_json_never_returns_broken_json():
+    data = {
+        "facts": [{"id": f"F{i}", "value": "很长的事实描述" * 30} for i in range(30)],
+        "plot_threads": [{"id": f"PT{i}", "status": "open"} for i in range(30)],
+    }
+
+    text = compact_json(data, 1200)
+    parsed = json.loads(text)
+
+    assert isinstance(parsed, dict)
+    assert "已截断" not in text
+    assert parsed["_context_meta"]["truncated"] is True
+
+
+def test_ledger_prompt_view_excludes_audit_history_and_prioritizes_due_threads():
+    ledger = {
+        "revision": 7,
+        "facts": [],
+        "plot_threads": [
+            {"id": "late", "status": "open", "deadline_chapter": 20},
+            {"id": "due", "status": "open", "deadline_chapter": 8},
+            {"id": "closed", "status": "closed", "deadline_chapter": 3},
+        ],
+        "accepted_chapters": [{"chapter": number} for number in range(1, 8)],
+        "chapter_commits": [{"chapter": number} for number in range(1, 8)],
+        "resolved_conflicts": [{"id": "old"}],
+    }
+
+    view = build_ledger_prompt_view(ledger, chapter_number=8)
+
+    assert [item["id"] for item in view["open_plot_threads"]] == ["due", "late"]
+    assert "accepted_chapters" not in view
+    assert "chapter_commits" not in view
+    assert "resolved_conflicts" not in view

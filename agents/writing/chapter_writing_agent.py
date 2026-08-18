@@ -24,6 +24,7 @@ from core.generation.helper_fns import (
     write_file,
     read_json,
     parse_scene_sections,
+    publish_chapter_with_acceptance,
 )
 from core.generation.ai_helper import send_prompt, get_backend
 from core.generation.prompt_context import (
@@ -34,6 +35,11 @@ from core.generation.prompt_context import (
 )
 from core.generation.cancellation import CancelToken, GenerationCancelled, raise_if_cancelled
 from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from core.generation.planning_contract import (
+    PlanningContractError,
+    load_planning_contracts,
+    validate_contract_sequence,
+)
 from core.generation.domain_profiles import DomainProfile, resolve_domain_profile
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.config.directory_config import get_directory_manager
@@ -165,6 +171,7 @@ class ChapterWritingAgent(BaseAgent):
     
     # 类级默认值：绕过 __init__ 构造的实例（测试里用 object.__new__）也能安全读取。
     cancel_token: Optional[CancelToken] = None
+    require_planning_contract: bool = True
 
     def __init__(self, output_dir: str, app_instance=None, use_new_structure: Optional[bool] = None,
                  quality_thresholds: Optional[QualityThresholds] = None,
@@ -173,6 +180,7 @@ class ChapterWritingAgent(BaseAgent):
         super().__init__(name="ChapterWritingAgent", model=model)
         self.output_dir = output_dir
         self.cancel_token = cancel_token
+        self.require_planning_contract = True
         self.app = app_instance
         self.use_new_structure = (
             self._detect_structured_workspace(output_dir)
@@ -515,6 +523,20 @@ class ChapterWritingAgent(BaseAgent):
                 messages=["所有章节均已写完"],
                 metrics={}
             )
+
+        if self.require_planning_contract:
+            try:
+                validate_contract_sequence(
+                    load_planning_contracts(self.output_dir),
+                    total_chapters=plan.total_chapters,
+                )
+            except PlanningContractError as exc:
+                return AgentResult(
+                    success=False,
+                    data={"chapters_written": []},
+                    messages=[f"场景规划契约前置检查未通过：{exc}"],
+                    metrics={},
+                )
             
         # Write chapters in batches with review collection
         chapters_written = []
@@ -550,6 +572,9 @@ class ChapterWritingAgent(BaseAgent):
                     else:
                         error_msg = result.messages[0] if result.messages else "未知错误"
                         errors.append(f"第 {chapter_num} 章：{error_msg}")
+                        # 小说章节具有顺序依赖；上一章未验收时继续写后文只会
+                        # 把错误扩散到更多章节。
+                        break
                         
                 except GenerationCancelled as cancelled:
                     # 已写完的章节保留，未开始的章节直接放弃。
@@ -560,6 +585,7 @@ class ChapterWritingAgent(BaseAgent):
                     error_msg = f"第 {chapter_num} 章：{str(e)}"
                     errors.append(error_msg)
                     self.logger.error(f"Error writing Chapter {chapter_num}: {e}")
+                    break
             
             # Perform batch-level review if we have chapter reviews
             if batch_chapter_reviews and self.review_agent and plan.enable_reviews:
@@ -572,6 +598,8 @@ class ChapterWritingAgent(BaseAgent):
             if cancellation_message:
                 break
             batch_number += 1
+            if errors:
+                break
                     
         # Prepare result with review metrics
         success = len(chapters_written) > 0
@@ -663,6 +691,7 @@ class ChapterWritingAgent(BaseAgent):
                 model=self._get_selected_model(),
                 logger=self.logger,
                 cancel_token=self.cancel_token,
+                require_planning_contract=self.require_planning_contract,
             )
 
             def generate_scene(**kwargs):
@@ -750,16 +779,18 @@ class ChapterWritingAgent(BaseAgent):
             if output_directory:
                 os.makedirs(output_directory, exist_ok=True)
             
-            write_file(output_path, final_content)
-
-            # Update durable story knowledge only after the chapter file has
-            # been written successfully, so a disk error cannot mark a missing
-            # chapter as accepted.
-            acceptance_result = quality_loop.accept_result(
+            acceptance_result = publish_chapter_with_acceptance(
+                self.output_dir,
                 chapter_info.chapter_number,
-                domain_loop_result,
-                chapter_path=output_path,
+                output_path,
+                final_content,
+                lambda saved_path: quality_loop.accept_result(
+                    chapter_info.chapter_number,
+                    domain_loop_result,
+                    chapter_path=saved_path,
+                ),
             )
+            final_content = domain_loop_result.chapter_content
             
             # Perform chapter-level review if enabled
             chapter_review = None

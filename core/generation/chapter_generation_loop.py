@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 from agents.review.domain_review_agent import DomainReview, DomainReviewAgent
 from core.generation.cancellation import CancelToken, raise_if_cancelled
 from core.generation.chapter_acceptance import (
+    ChapterAcceptanceError,
     ChapterAcceptanceResult,
     ChapterAcceptanceService,
 )
@@ -21,8 +22,12 @@ from core.generation.domain_profiles import (
     resolve_domain_profile,
     resolve_quality_loop_mode,
 )
-from core.generation.helper_fns import parse_scene_sections
-from core.generation.story_ledger import StoryLedgerManager
+from core.generation.helper_fns import parse_scene_sections, write_file
+from core.generation.planning_contract import (
+    PlanningContractError,
+    validate_planning_contract,
+)
+from core.generation.story_ledger import StoryLedgerManager, source_hash
 
 
 class QualityGateError(RuntimeError):
@@ -84,6 +89,8 @@ class ChapterGenerationLoop:
         acceptance_service: Optional[ChapterAcceptanceService] = None,
         profile: Optional[DomainProfile] = None,
         cancel_token: Optional[CancelToken] = None,
+        require_planning_contract: bool = False,
+        max_acceptance_retries: int = 2,
     ):
         self.output_dir = output_dir
         self.model = model
@@ -99,6 +106,8 @@ class ChapterGenerationLoop:
         self.reviewer = reviewer
         self.acceptance_service = acceptance_service or ChapterAcceptanceService(self.ledger)
         self.cancel_token = cancel_token
+        self.require_planning_contract = require_planning_contract
+        self.max_acceptance_retries = max(0, int(max_acceptance_retries))
 
     def _check_cancelled(self) -> None:
         raise_if_cancelled(self.cancel_token)
@@ -180,6 +189,12 @@ class ChapterGenerationLoop:
         retry_count = 0
         contract = self.ledger.load_contract(chapter_number, current_plan)
         if contract is None:
+            if self.require_planning_contract:
+                raise QualityGateError(
+                    f"第 {chapter_number} 章缺少与当前场景规划匹配的前置契约，"
+                    "请返回场景规划阶段重新生成",
+                    chapter_number=chapter_number,
+                )
             # 关闭档不调用大模型建契约：用确定性回落契约，账本仍能连续记账。
             contract = (
                 self.reviewer.build_chapter_contract(
@@ -195,6 +210,14 @@ class ChapterGenerationLoop:
                     chapter_number, parameters, current_plan
                 )
             )
+
+        if self.require_planning_contract:
+            try:
+                contract = validate_planning_contract(
+                    contract, chapter_number, require_origin=True
+                )
+            except PlanningContractError as exc:
+                raise QualityGateError(str(exc), chapter_number=chapter_number) from exc
 
         if not reviews_enabled:
             plan_review = skipped_review("plan")
@@ -221,14 +244,15 @@ class ChapterGenerationLoop:
                     )
                 current_plan = revised_plan
                 plan_revised = True
-                contract = self.reviewer.build_chapter_contract(
-                    chapter_number,
-                    current_plan,
-                    parameters,
-                    lore,
-                    case_bible,
-                    suspense_ledger,
-                )
+                if not self.require_planning_contract:
+                    contract = self.reviewer.build_chapter_contract(
+                        chapter_number,
+                        current_plan,
+                        parameters,
+                        lore,
+                        case_bible,
+                        suspense_ledger,
+                    )
                 plan_review = self.reviewer.review_plan(
                     current_plan, contract, case_bible, suspense_ledger
                 )
@@ -467,18 +491,149 @@ class ChapterGenerationLoop:
             "chapters",
             f"chapter_{chapter_number}.md",
         )
-        return self.acceptance_service.accept(
-            chapter_number,
-            result.chapter_content,
-            result.contract,
-            result.chapter_review.to_dict(),
-            result.base_revision,
-            resolved_path,
+        def accept_current() -> ChapterAcceptanceResult:
+            return self.acceptance_service.accept(
+                chapter_number,
+                result.chapter_content,
+                result.contract,
+                result.chapter_review.to_dict(),
+                result.base_revision,
+                resolved_path,
+            )
+
+        try:
+            return accept_current()
+        except ChapterAcceptanceError as acceptance_error:
+            report = acceptance_error.report
+
+        blocking = report.blocking_issues
+        # Contract/canon/rebase failures cannot be repaired by changing prose;
+        # automatically changing the trusted upstream contract here would undo
+        # the purpose of the planning gate.
+        if not blocking or any(issue.repair_target != "prose" for issue in blocking):
+            raise ChapterAcceptanceError(report)
+        if self.max_acceptance_retries == 0:
+            raise ChapterAcceptanceError(report)
+
+        scene_plans = parse_scene_sections(result.plan_content)
+        if not scene_plans or len(scene_plans) != len(result.scenes):
+            raise QualityGateError(
+                "最终验收失败后无法把正文场景映射回场景规划",
+                partial_scenes=result.scenes,
+                chapter_number=chapter_number,
+            )
+
+        last_report = report
+        for attempt in range(self.max_acceptance_retries):
+            self.logger.warning(
+                "Chapter %s failed final acceptance; prose repair %s/%s: %s",
+                chapter_number,
+                attempt + 1,
+                self.max_acceptance_retries,
+                "; ".join(issue.message for issue in last_report.blocking_issues),
+            )
+            scene_number, revised_scene = self.reviewer.revise_for_acceptance(
+                result.scenes,
+                scene_plans,
+                last_report.to_dict(),
+                result.contract,
+            )
+            target = scene_number - 1
+            previous_tail = (
+                result.scenes[target - 1][-2500:]
+                if target > 0
+                else self._load_previous_chapter_tail(chapter_number)
+            )
+            next_plan = scene_plans[target + 1] if target + 1 < len(scene_plans) else ""
+            scene_review = self.reviewer.review_scene(
+                revised_scene,
+                scene_plans[target],
+                scene_number,
+                previous_tail,
+                next_plan,
+                result.contract,
+                self.ledger.load_case_bible(),
+                self.ledger.load_suspense_ledger(),
+            )
+            self.ledger.save_review(
+                chapter_number,
+                f"acceptance_retry_{attempt + 1}_scene_{scene_number}",
+                scene_review.to_dict(),
+            )
+            if not scene_review.passed:
+                continue
+
+            candidate_scenes = list(result.scenes)
+            candidate_scenes[target] = revised_scene
+            chapter_review = self.reviewer.review_chapter(
+                "\n\n---\n\n".join(candidate_scenes),
+                result.contract,
+                self.ledger.load_case_bible(),
+                self.ledger.load_suspense_ledger(),
+            )
+            self.ledger.save_review(
+                chapter_number,
+                f"acceptance_retry_{attempt + 1}_chapter",
+                chapter_review.to_dict(),
+            )
+            if not chapter_review.passed:
+                continue
+
+            result.scenes = candidate_scenes
+            result.scene_reviews[target] = scene_review
+            result.chapter_review = chapter_review
+            result.retry_count += 1
+            write_file(resolved_path, result.chapter_content)
+            try:
+                return accept_current()
+            except ChapterAcceptanceError as acceptance_error:
+                last_report = acceptance_error.report
+                if any(
+                    issue.repair_target != "prose"
+                    for issue in last_report.blocking_issues
+                ):
+                    raise
+
+        raise QualityGateError(
+            f"第 {chapter_number} 章最终验收在 {self.max_acceptance_retries} 次正文修订后仍未通过",
+            partial_scenes=result.scenes,
+            chapter_number=chapter_number,
         )
 
     def _load_previous_chapter_tail(self, chapter_number: int) -> str:
         if chapter_number <= 1:
             return ""
+        if not self.require_planning_contract:
+            filename = f"chapter_{chapter_number - 1}.md"
+            candidates = (
+                os.path.join(self.output_dir, "story", "content", "chapters", filename),
+                os.path.join(self.output_dir, "chapters", filename),
+            )
+            for path in candidates:
+                if os.path.isfile(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as handle:
+                            return handle.read()[-2500:]
+                    except (OSError, UnicodeError) as exc:
+                        self.logger.warning(
+                            "Could not read previous chapter tail from %s: %s", path, exc
+                        )
+            return ""
+        previous_number = chapter_number - 1
+        ledger = self.ledger.load_suspense_ledger()
+        accepted = next(
+            (
+                item
+                for item in ledger.get("accepted_chapters", [])
+                if isinstance(item, dict) and item.get("chapter") == previous_number
+            ),
+            None,
+        )
+        if not accepted or not accepted.get("content_hash"):
+            raise QualityGateError(
+                f"第 {previous_number} 章尚未验收，不能继续生成第 {chapter_number} 章",
+                chapter_number=chapter_number,
+            )
         filename = f"chapter_{chapter_number - 1}.md"
         candidates = (
             os.path.join(self.output_dir, "story", "content", "chapters", filename),
@@ -489,10 +644,19 @@ class ChapterGenerationLoop:
                 continue
             try:
                 with open(path, "r", encoding="utf-8") as handle:
-                    return handle.read()[-2500:]
+                    content = handle.read()
+                if source_hash(content) != accepted["content_hash"]:
+                    raise QualityGateError(
+                        f"第 {previous_number} 章文件与验收账本不一致，不能作为下一章上下文",
+                        chapter_number=chapter_number,
+                    )
+                return content[-2500:]
             except (OSError, UnicodeError) as exc:
                 self.logger.warning("Could not read previous chapter tail from %s: %s", path, exc)
-        return ""
+        raise QualityGateError(
+            f"第 {previous_number} 章已记入验收账本，但找不到正式章节文件",
+            chapter_number=chapter_number,
+        )
 
     @staticmethod
     def _target_scene(repair_scope: str, scene_count: int) -> int:

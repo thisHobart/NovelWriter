@@ -3,6 +3,7 @@ from core.gui.notifications import show_success, show_error, show_warning
 from core.gui.task_runner import run_in_background, snapshot_ui
 from core.generation.ai_helper import send_prompt, get_backend
 import re
+from glob import glob
 from core.generation.helper_fns import (
     open_file,
     parse_scene_sections,
@@ -17,6 +18,17 @@ from core.generation.prompt_context import (
     normalize_story_parameters,
     sanitize_lore_content,
 )
+from core.generation.planning_contract import (
+    PlanningContractError,
+    build_existing_planning_index,
+    contract_output_instructions,
+    extract_scene_plan_contract,
+    load_planning_contracts,
+    validate_contract_sequence,
+    validate_planning_contract,
+)
+from core.generation.story_ledger import StoryLedgerManager
+from core.generation.domain_profiles import resolve_domain_profile
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
 from core.localization import zh_label
@@ -24,6 +36,8 @@ from core.config.directory_config import get_directory_manager
 
 
 class ScenePlanning:
+    planning_retry_limit = 2
+
     def __init__(self, parent, app):
         self.parent = parent
         self.app = app  # Store the app instance
@@ -60,7 +74,7 @@ class ScenePlanning:
         return get_directory_manager(output_dir, use_new_structure=True)
 
     @staticmethod
-    def _has_usable_scene_plan(scene_plan_path):
+    def _has_usable_scene_plan(scene_plan_path, output_dir=None, chapter_number=None):
         """Return True only for an existing, non-empty, parseable scene plan."""
         if not os.path.isfile(scene_plan_path):
             return False
@@ -69,7 +83,159 @@ class ScenePlanning:
                 content = scene_file.read()
         except (OSError, UnicodeError):
             return False
-        return bool(parse_scene_sections(content))
+        if not parse_scene_sections(content):
+            return False
+        if output_dir is None or chapter_number is None:
+            return True
+        contract = StoryLedgerManager(output_dir).load_contract(chapter_number, content)
+        if contract is None:
+            return False
+        try:
+            validate_planning_contract(contract, chapter_number, require_origin=True)
+        except PlanningContractError:
+            return False
+        return True
+
+    @staticmethod
+    def _contract_instructions(output_dir, chapter_number, story_params):
+        index = build_existing_planning_index(output_dir, chapter_number)
+        profile = resolve_domain_profile(story_params)
+        domain_fields = {
+            field.name: field.schema_hint for field in profile.contract_fields
+        }
+        return contract_output_instructions(
+            chapter_number, index, domain_fields=domain_fields
+        )
+
+    @staticmethod
+    def _save_scene_plan_and_contract(output_dir, scene_plan_path, response, chapter_number):
+        scene_markdown, contract = extract_scene_plan_contract(response, chapter_number)
+        write_file(scene_plan_path, scene_markdown)
+        StoryLedgerManager(output_dir).save_contract(chapter_number, contract, scene_markdown)
+        return scene_markdown
+
+    def _generate_valid_scene_response(
+        self,
+        prompt,
+        selected_model,
+        chapter_number,
+        lore_content,
+        story_params,
+        require_complete_sequence=False,
+    ):
+        """Generate one scene plan and retry only the failed planning artifact."""
+        feedback = ""
+        last_error = None
+        for attempt in range(self.planning_retry_limit + 1):
+            retry_prompt = prompt
+            if feedback:
+                retry_prompt += (
+                    "\n\n上一次结果未通过前置规划验收。只修复下面指出的问题，"
+                    "不要改变章节大纲中的核心事件：\n- " + feedback
+                )
+            response = send_prompt(retry_prompt, model=selected_model)
+            if not response or not response.strip():
+                last_error = PlanningContractError("大模型没有返回场景规划")
+            else:
+                try:
+                    scene_markdown, contract = extract_scene_plan_contract(
+                        response, chapter_number
+                    )
+                    if require_complete_sequence:
+                        validate_contract_sequence(
+                            [contract], total_chapters=chapter_number
+                        )
+                    conflicts = find_scene_world_conflicts(
+                        scene_markdown, lore_content, story_params
+                    )
+                    if conflicts:
+                        raise PlanningContractError(
+                            "包含世界观未定义的内容：" + "、".join(conflicts),
+                            chapters=(chapter_number,),
+                            code="world_conflict",
+                        )
+                    return response, scene_markdown, contract
+                except PlanningContractError as exc:
+                    last_error = exc
+            feedback = str(last_error)
+            if attempt < self.planning_retry_limit:
+                self.app.logger.warning(
+                    "Chapter %s planning failed validation; retry %s/%s: %s",
+                    chapter_number,
+                    attempt + 1,
+                    self.planning_retry_limit,
+                    last_error,
+                )
+        raise PlanningContractError(
+            f"第 {chapter_number} 章场景规划在 {self.planning_retry_limit} 次重试后仍未通过：{last_error}",
+            chapters=(chapter_number,),
+            code=getattr(last_error, "code", "planning_retry_exhausted"),
+        )
+
+    def _validate_sequence_with_retries(
+        self,
+        output_dir,
+        total_chapters,
+        selected_model,
+        lore_content,
+        story_params,
+    ):
+        """Repair only chapters named by the cross-chapter contract gate."""
+        for attempt in range(self.planning_retry_limit + 1):
+            try:
+                validate_contract_sequence(
+                    load_planning_contracts(output_dir),
+                    total_chapters=total_chapters,
+                )
+                return
+            except PlanningContractError as exc:
+                if attempt >= self.planning_retry_limit or not exc.chapters:
+                    raise
+                chapter_number = exc.chapters[0]
+                matches = glob(
+                    os.path.join(
+                        output_dir,
+                        "story",
+                        "planning",
+                        "**",
+                        f"*_ch{chapter_number}.md",
+                    ),
+                    recursive=True,
+                )
+                if not matches:
+                    raise PlanningContractError(
+                        f"{exc}；且找不到第 {chapter_number} 章场景规划，无法自动修复",
+                        chapters=(chapter_number,),
+                        code=exc.code,
+                    ) from exc
+                scene_plan_path = matches[0]
+                scene_markdown = open_file(scene_plan_path)
+                repair_prompt = f"""请修复第 {chapter_number} 章场景规划，使它通过跨章契约验收。只处理指出的问题，不改变章节大纲中的核心事件和场景数量。
+
+跨章验收错误：
+{exc}
+
+当前场景规划：
+{scene_markdown}
+
+{self._contract_instructions(output_dir, chapter_number, story_params)}
+"""
+                response, _, _ = self._generate_valid_scene_response(
+                    repair_prompt,
+                    selected_model,
+                    chapter_number,
+                    lore_content,
+                    story_params,
+                )
+                self._save_scene_plan_and_contract(
+                    output_dir, scene_plan_path, response, chapter_number
+                )
+                self.app.logger.info(
+                    "Repaired Chapter %s planning contract after sequence validation failure (%s/%s)",
+                    chapter_number,
+                    attempt + 1,
+                    self.planning_retry_limit,
+                )
 
 
     def _update_ui_based_on_parameters(self):
@@ -407,7 +573,10 @@ class ScenePlanning:
                         f"请保持人物弧光、势力和地点与第 {current_chapter_for_prompt} 章大纲中的建议一致。\n"
                         + "\n".join(f"- {line}" for line in location_guidance) + "\n"
                         f"整体世界观如下，供参考：\n{lore_content}\n\n"
-                        "请使用结构清晰的 Markdown，每个场景设置标题。"
+                        "请使用结构清晰的 Markdown，每个场景设置标题。\n\n"
+                        + self._contract_instructions(
+                            output_dir, current_chapter_for_prompt, story_params
+                        )
                     )
 
                     current_backend = get_backend()
@@ -415,23 +584,30 @@ class ScenePlanning:
                     print(f"--- Scene Plan Prompt for Chapter {current_chapter_for_prompt} (Section: {current_section_name}, Backend: {backend_info}) ---")
                     # print(prompt) # Uncomment for full prompt debugging
                     print("-------------------------------------------------------------------")
-                    response = send_prompt(prompt, model=selected_model)
-
-                    conflicts = find_scene_world_conflicts(response, lore_content, story_params)
-                    if conflicts:
+                    try:
+                        response, _, _ = self._generate_valid_scene_response(
+                            prompt,
+                            selected_model,
+                            current_chapter_for_prompt,
+                            lore_content,
+                            story_params,
+                        )
+                    except PlanningContractError as exc:
                         show_error(
-                            "场景规划与世界观冲突",
-                            "第 " + str(current_chapter_for_prompt)
-                            + " 章包含世界观未定义的科幻内容："
-                            + "、".join(conflicts)
-                            + "。该章未保存，请重新生成。",
+                            "场景规划契约无效",
+                            f"第 {current_chapter_for_prompt} 章未保存：{exc}",
                         )
                         continue
 
                     output_scene_plan_base = f"scenes_{safe_selected_structure_name}_{safe_section_name}_ch{current_chapter_for_prompt}.md"
                     os.makedirs(scene_plans_dir, exist_ok=True)
                     output_scene_plan_filepath = os.path.join(scene_plans_dir, output_scene_plan_base)
-                    write_file(output_scene_plan_filepath, response)
+                    self._save_scene_plan_and_contract(
+                        output_dir,
+                        output_scene_plan_filepath,
+                        response,
+                        current_chapter_for_prompt,
+                    )
                     print(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 
                 overall_chapter_number += len(chapters_in_section_file) # Increment global chapter counter by number of chapters processed in this section
@@ -548,7 +724,11 @@ class ScenePlanning:
                         output_scene_plan_base,
                     )
 
-                    if self._has_usable_scene_plan(output_scene_plan_filepath):
+                    if self._has_usable_scene_plan(
+                        output_scene_plan_filepath,
+                        output_dir,
+                        current_chapter_for_prompt,
+                    ):
                         skipped_chapters.append(current_chapter_for_prompt)
                         self.app.logger.info(
                             "Skipping Chapter %s scene planning; usable file already exists: %s",
@@ -574,7 +754,10 @@ class ScenePlanning:
                         f"请保持人物弧光、势力和地点与第 {current_chapter_for_prompt} 章大纲中的建议一致。",
                         *[f"- {line}" for line in location_guidance],
                         f"整体世界观如下，供参考：\n{lore_content}",
-                        "\n请使用结构清晰的 Markdown。每个场景必须使用阿拉伯数字编号，并以独立标题开始，例如“### 场景 1：场景标题”或“## 场景 2 - 场景标题”。不要使用“场景一”之类的中文数字编号，也不要只使用加粗文本充当场景标题。"
+                        "\n请使用结构清晰的 Markdown。每个场景必须使用阿拉伯数字编号，并以独立标题开始，例如“### 场景 1：场景标题”或“## 场景 2 - 场景标题”。不要使用“场景一”之类的中文数字编号，也不要只使用加粗文本充当场景标题。",
+                        self._contract_instructions(
+                            output_dir, current_chapter_for_prompt, story_params
+                        ),
                     ])
                     prompt = "\n".join(prompt_lines)
 
@@ -588,25 +771,39 @@ class ScenePlanning:
                     log_msg_source = f"(from {prompt_filepath})" if prompt_filepath else "(from memory, save failed)"
                     self.app.logger.info(f"Sending Scene Planning Prompt {log_msg_source} to LLM ({backend_info})...")
 
-                    response = send_prompt(prompt, model=selected_model)
-
-                    conflicts = find_scene_world_conflicts(response, lore_content, story_params)
-                    if conflicts:
+                    try:
+                        response, _, _ = self._generate_valid_scene_response(
+                            prompt,
+                            selected_model,
+                            current_chapter_for_prompt,
+                            lore_content,
+                            story_params,
+                        )
+                    except PlanningContractError as exc:
                         show_error(
-                            "场景规划与世界观冲突",
-                            "第 " + str(current_chapter_for_prompt)
-                            + " 章包含世界观未定义的科幻内容："
-                            + "、".join(conflicts)
-                            + "。该章未保存，请重新生成。",
+                            "场景规划契约无效",
+                            f"第 {current_chapter_for_prompt} 章未保存：{exc}",
                         )
                         continue
 
-                    write_file(output_scene_plan_filepath, response)
+                    self._save_scene_plan_and_contract(
+                        output_dir,
+                        output_scene_plan_filepath,
+                        response,
+                        current_chapter_for_prompt,
+                    )
                     generated_chapters.append(current_chapter_for_prompt)
                     self.app.logger.info(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 
                 overall_chapter_number += len(chapters_in_section_file) 
 
+            self._validate_sequence_with_retries(
+                output_dir,
+                overall_chapter_number - 1,
+                selected_model,
+                lore_content,
+                story_params,
+            )
             if generated_chapters:
                 generated_text = "、".join(map(str, generated_chapters))
                 message = f"已生成第 {generated_text} 章的场景规划。"
@@ -704,7 +901,8 @@ class ScenePlanning:
             "标题下方再列出该场景的环境、人物、关键行动等要点。",
             "\n如有需要，可参考以下整体世界观：",
             lore_content,
-            "\n现在请按场景输出完整的短篇规划，合并为一份结构清晰的 Markdown 文档，不要使用代码围栏。"
+            "\n现在请按场景输出完整的短篇规划，合并为一份结构清晰的 Markdown 文档，不要使用代码围栏。",
+            self._contract_instructions(output_dir, 1, story_params),
         ]
         prompt = "\n".join(prompt_lines)
 
@@ -716,14 +914,21 @@ class ScenePlanning:
         log_msg_source = f"(from {prompt_filepath})" if prompt_filepath else "(from memory, save failed)"
         self.app.logger.info(f"Sending Short Story Scene Planning Prompt {log_msg_source} to LLM ({backend_info})...")
 
-        response = send_prompt(prompt, model=selected_model)
-
-        if not response:
-            self.app.logger.error(f"Failed to generate short story scenes from LLM ({backend_info}). No response.")
-            show_error("错误", "大模型生成短篇场景失败。")
+        try:
+            response, scene_markdown, _ = self._generate_valid_scene_response(
+                prompt,
+                selected_model,
+                1,
+                lore_content,
+                story_params,
+                require_complete_sequence=True,
+            )
+        except PlanningContractError as exc:
+            self.app.logger.error("Short story planning contract is invalid: %s", exc)
+            show_error("场景规划契约无效", f"短篇场景未保存：{exc}")
             return
 
-        conflicts = find_scene_world_conflicts(response, lore_content, story_params)
+        conflicts = find_scene_world_conflicts(scene_markdown, lore_content, story_params)
         if conflicts:
             show_error(
                 "场景规划与世界观冲突",
@@ -740,7 +945,9 @@ class ScenePlanning:
         output_filename_full_path = os.path.join(output_dir, "story", "planning", output_filename_base)
         
         try:
-            write_file(output_filename_full_path, response)
+            self._save_scene_plan_and_contract(
+                output_dir, output_filename_full_path, response, 1
+            )
             self.app.logger.info(f"Short story scenes saved successfully to {output_filename_full_path}")
             # show_success("Success", f"Short story scenes generated and saved to {output_filename_full_path}")
         except Exception as e:

@@ -3,6 +3,7 @@ import re
 import jsonschema
 from jsonschema import validate
 from datetime import datetime
+from typing import Callable
 
 schema_directory = "schema/"
 
@@ -67,6 +68,59 @@ def write_file(full_path, data):
     except Exception as e:
         # Let the caller handle logging of this specific error context.
         raise IOError(f"Error writing {full_path}: {e}")
+
+
+def publish_chapter_with_acceptance(
+    output_dir: str,
+    chapter_number: int,
+    final_path: str,
+    content: str,
+    accept: Callable[[str], object],
+):
+    """Write a chapter, accept it, and recoverably isolate rejected output.
+
+    The official file must exist before the ledger commit, but it must also not
+    survive a rejected commit.  An existing accepted version is moved aside
+    first and restored on every failure.  Nothing is destructively deleted.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    transaction_dir = os.path.join(
+        output_dir,
+        "quality",
+        "chapter_transactions",
+        f"chapter_{chapter_number}",
+        timestamp,
+    )
+    os.makedirs(transaction_dir, exist_ok=True)
+    backup_path = os.path.join(transaction_dir, "previous_accepted.md")
+    rejected_path = os.path.join(transaction_dir, "rejected.md")
+    report_path = os.path.join(transaction_dir, "acceptance_report.json")
+    had_previous = os.path.isfile(final_path)
+
+    if had_previous:
+        os.replace(final_path, backup_path)
+    try:
+        write_file(final_path, content)
+        result = accept(final_path)
+    except Exception as exc:
+        if os.path.isfile(final_path):
+            os.replace(final_path, rejected_path)
+        if had_previous and os.path.isfile(backup_path):
+            os.makedirs(os.path.dirname(final_path), exist_ok=True)
+            os.replace(backup_path, final_path)
+        report = getattr(exc, "report", None)
+        if hasattr(report, "to_dict"):
+            report = report.to_dict()
+        payload = {
+            "chapter": chapter_number,
+            "error": str(exc),
+            "rejected_file": rejected_path if os.path.isfile(rejected_path) else "",
+            "report": report if isinstance(report, dict) else {},
+        }
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        raise
+    return result
 
 # JSON functions
 ## Read

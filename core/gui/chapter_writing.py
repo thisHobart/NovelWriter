@@ -9,6 +9,7 @@ from core.generation.helper_fns import (
     save_prompt_to_file,
     read_json,
     parse_scene_sections,
+    publish_chapter_with_acceptance,
 )
 from core.generation.prompt_context import (
     analyze_chinese_prose_style,
@@ -422,6 +423,7 @@ class ChapterWriting:
                 model=selected_model,
                 logger=self.app.logger,
                 cancel_token=self.cancel_token,
+                require_planning_contract=True,
             )
 
             def generate_scene_prose(
@@ -509,8 +511,15 @@ class ChapterWriting:
             os.makedirs(os.path.join(output_dir, "story", "content"), exist_ok=True)
             output_story_filepath = os.path.join(output_dir, "story", "content", output_story_filename)
 
-            write_file(output_story_filepath, full_story_content)
-            quality_loop.accept_result(1, loop_result, chapter_path=output_story_filepath)
+            publish_chapter_with_acceptance(
+                output_dir,
+                1,
+                output_story_filepath,
+                full_story_content,
+                lambda saved_path: quality_loop.accept_result(
+                    1, loop_result, chapter_path=saved_path
+                ),
+            )
             self.app.logger.info(f"Short story prose successfully written to: {output_story_filepath}")
 
         except GenerationCancelled:
@@ -751,6 +760,7 @@ class ChapterWriting:
                 model=selected_model,
                 logger=self.app.logger,
                 cancel_token=self.cancel_token,
+                require_planning_contract=True,
             )
 
             def generate_scene_prose(
@@ -861,11 +871,16 @@ class ChapterWriting:
             chapter_filename_output = f"chapter_{target_chapter_number_global}.md"
             chapter_filepath_output = os.path.join(full_chapters_subdir_path, chapter_filename_output)
             
-            write_file(chapter_filepath_output, chapter_content_full)
-            quality_loop.accept_result(
+            publish_chapter_with_acceptance(
+                output_dir,
                 target_chapter_number_global,
-                loop_result,
-                chapter_path=chapter_filepath_output,
+                chapter_filepath_output,
+                chapter_content_full,
+                lambda saved_path: quality_loop.accept_result(
+                    target_chapter_number_global,
+                    loop_result,
+                    chapter_path=saved_path,
+                ),
             )
             self.app.logger.info(f"Chapter {target_chapter_number_global} successfully written to: {chapter_filepath_output}")
             # show_success("Success", f"Chapter {target_chapter_number_global} generated and saved to {chapter_filename_output}")

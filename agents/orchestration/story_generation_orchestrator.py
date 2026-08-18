@@ -50,7 +50,6 @@ class StoryGenerationPlan:
     parameters: Dict[str, Any]
     quality_standards: Dict[str, float]
     use_agentic_validation: bool = True
-    iterative_improvement: bool = True
 
 
 @dataclass
@@ -460,7 +459,9 @@ class StoryGenerationOrchestrator(BaseAgent):
                     success=True,
                     generated_content={step_name: step_result["content"]},
                     workflow_completed=[step_name],
-                    quality_scores={step_name: validation_result.get("quality_score", 0.8)},
+                    quality_scores={step_name: validation_result["quality_score"]}
+                    if validation_result["quality_score"] is not None
+                    else {},
                     consistency_reports=validation_result.get("consistency_reports", []),
                     recommendations=validation_result.get("recommendations", []),
                     execution_summary=f"{_step_name_zh(step_name)}步骤已成功完成"
@@ -862,9 +863,8 @@ class StoryGenerationOrchestrator(BaseAgent):
                 "step": "chapters"
             }
     
-    def execute_complete_workflow(self, story_parameters: Dict[str, Any], 
-                                quality_threshold: float = 0.7, 
-                                auto_retry: bool = True) -> Dict[str, Any]:
+    def execute_complete_workflow(self, story_parameters: Dict[str, Any],
+                                quality_threshold: float = 0.7) -> Dict[str, Any]:
         """Execute the complete story generation workflow (GUI interface method).
         
         This is the main method called by the GUI to start the agentic workflow.
@@ -873,7 +873,6 @@ class StoryGenerationOrchestrator(BaseAgent):
         Args:
             story_parameters: Story parameters from the GUI
             quality_threshold: Minimum quality score (0.0-1.0)
-            auto_retry: Whether to retry if quality is below threshold
             
         Returns:
             Dictionary with workflow results
@@ -888,7 +887,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                 parameters=story_parameters,
                 quality_standards={"overall": quality_threshold},
                 use_agentic_validation=True,
-                iterative_improvement=auto_retry
             )
             
             # Execute the workflow
@@ -974,7 +972,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             parameters=story_params,
             quality_standards=quality_standards,
             use_agentic_validation=use_validation,
-            iterative_improvement=True
         )
         
         # Execute workflow
@@ -1072,17 +1069,14 @@ class StoryGenerationOrchestrator(BaseAgent):
                     
                     if validation_result["recommendations"]:
                         all_recommendations.extend(validation_result["recommendations"])
-                    
-                    # Check if iterative improvement is needed
-                    if plan.iterative_improvement and validation_result["needs_improvement"]:
-                        self.logger.info(f"Attempting iterative improvement for step {step}")
-                        improved_result = self._improve_step_content(step, step_result["content"], 
-                                                                   validation_result["recommendations"])
-                        if improved_result["success"]:
-                            generated_content[step] = improved_result["content"]
-                            step_quality_score = improved_result.get("quality_score", step_quality_score)
-                            quality_scores[step] = step_quality_score
-                
+
+                    if validation_result["needs_improvement"]:
+                        self.logger.warning(
+                            "%s 步骤质量评分 %.2f 低于阈值，建议见 recommendations",
+                            _step_name_zh(step),
+                            validation_result["quality_score"] or 0.0,
+                        )
+
                 # CHECKPOINT INTEGRATION: Create checkpoint if mode is enabled
                 if self.checkpoint_mode_enabled:
                     checkpoint = self._create_checkpoint(step, generated_content[step], step_quality_score)
@@ -1899,19 +1893,6 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         return validation_result
     
-    def _improve_step_content(self, step: str, content: Any, recommendations: List[str]) -> Dict[str, Any]:
-        """Attempt to improve step content based on recommendations."""
-        
-        # This would implement iterative improvement logic
-        # For now, we'll return the original content
-        self.logger.info(f"Iterative improvement for {step} with {len(recommendations)} recommendations")
-        
-        return {
-            "success": True,
-            "content": content,
-            "quality_score": 0.8  # Simulated improvement
-        }
-    
     def _content_to_text(self, content: Any) -> str:
         """Convert content to text for validation."""
         if isinstance(content, str):
@@ -1943,7 +1924,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             parameters=story_params,
             quality_standards=quality_standards,
             use_agentic_validation=use_validation,
-            iterative_improvement=False  # Less aggressive for step-by-step
         )
         
         result = self._execute_generation_workflow(plan)
@@ -1997,7 +1977,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             parameters=story_params,
             quality_standards=quality_standards,
             use_agentic_validation=use_validation,
-            iterative_improvement=False
         )
         
         # Load existing content for dependencies

@@ -6,8 +6,14 @@ import pytest
 
 from agents.review.legal_suspense_review_agent import DomainReview, SCORE_DIMENSIONS
 from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from core.generation.chapter_acceptance import (
+    ChapterAcceptanceError,
+    ValidationIssue,
+    ValidationReport,
+)
 from core.generation.cancellation import CancelToken, GenerationCancelled
 from core.generation.domain_profiles import HORROR
+from core.generation.story_ledger import StoryLedgerManager
 
 
 PLAN = """### 场景 1：收据
@@ -177,6 +183,61 @@ def test_plan_retry_is_bounded(tmp_path):
     assert reviewer.revision_count == 2
 
 
+def test_strict_planning_contract_retries_plan_without_rebuilding_contract(tmp_path):
+    class FailOncePlanReviewer(PassingReviewer):
+        def __init__(self):
+            super().__init__()
+            self.plan_reviews = 0
+            self.revision_count = 0
+
+        def review_plan(self, *args):
+            self.plan_reviews += 1
+            return failed_review("plan") if self.plan_reviews == 1 else passed_review("plan")
+
+        def revise_plan(self, scene_plan, *args):
+            self.revision_count += 1
+            return scene_plan.replace("证人交出收据", "证人当面交出收据")
+
+        def build_chapter_contract(self, *args):
+            raise AssertionError("严格前置模式不得在写作阶段重建契约")
+
+    reviewer = FailOncePlanReviewer()
+    contract = PassingReviewer().build_chapter_contract(1)
+    contract.update(
+        {
+            "origin": "scene_planning",
+            "schema_version": 2,
+            "facts_added": [],
+            "facts_confirmed": [],
+            "facts_contradicted": [],
+            "timeline_events": [],
+            "character_updates": [],
+            "plot_thread_updates": [],
+        }
+    )
+    StoryLedgerManager(str(tmp_path)).save_contract(1, contract, PLAN)
+    loop = ChapterGenerationLoop(
+        str(tmp_path),
+        "hosted-llm",
+        reviewer=reviewer,
+        require_planning_contract=True,
+        max_plan_retries=2,
+    )
+
+    result = loop.run(
+        1,
+        PLAN,
+        {},
+        "世界观",
+        lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+    )
+
+    assert reviewer.revision_count == 1
+    assert result.plan_revised is True
+    assert "当面交出" in result.plan_content
+    assert result.contract["origin"] == "scene_planning"
+
+
 class OneRetryReviewer(PassingReviewer):
     def __init__(self):
         super().__init__()
@@ -214,6 +275,66 @@ def test_scene_failure_triggers_targeted_retry(tmp_path):
     assert reviewer.revision_count == 1
     assert result.retry_count == 1
     assert "已删除重复动作" in result.scenes[0]
+
+
+def test_final_acceptance_retries_prose_and_reruns_quality_reviews(tmp_path):
+    class AcceptanceRepairReviewer(PassingReviewer):
+        def __init__(self):
+            super().__init__()
+            self.acceptance_repairs = 0
+
+        def revise_for_acceptance(self, scenes, scene_plans, report, contract):
+            self.acceptance_repairs += 1
+            return 1, scenes[0] + " 已补上验收要求的明确表述。"
+
+    class FlakyAcceptance:
+        def __init__(self):
+            self.calls = 0
+
+        def accept(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise ChapterAcceptanceError(
+                    ValidationReport(
+                        stage="artifact_validation",
+                        issues=[
+                            ValidationIssue(
+                                "missing_prose_statement",
+                                "正文缺少契约要求的明确表述",
+                                repair_target="prose",
+                            )
+                        ],
+                    )
+                )
+            return "accepted-after-repair"
+
+    reviewer = AcceptanceRepairReviewer()
+    acceptance = FlakyAcceptance()
+    loop = ChapterGenerationLoop(
+        str(tmp_path),
+        "hosted-llm",
+        reviewer=reviewer,
+        acceptance_service=acceptance,
+        max_acceptance_retries=2,
+    )
+    result = loop.run(
+        1,
+        PLAN,
+        {},
+        "世界观",
+        lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+    )
+    chapter_path = tmp_path / "story" / "content" / "chapters" / "chapter_1.md"
+    chapter_path.parent.mkdir(parents=True)
+    chapter_path.write_text(result.chapter_content, encoding="utf-8")
+
+    accepted = loop.accept_result(1, result, str(chapter_path))
+
+    assert accepted == "accepted-after-repair"
+    assert acceptance.calls == 2
+    assert reviewer.acceptance_repairs == 1
+    assert "已补上验收要求" in chapter_path.read_text(encoding="utf-8")
+    assert result.retry_count == 1
 
 
 class HorrorReviewer(PassingReviewer):

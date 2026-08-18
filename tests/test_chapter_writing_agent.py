@@ -5,8 +5,10 @@ import logging
 
 import pytest
 
+from agents.base.agent import AgentResult
 from agents.writing.chapter_writing_agent import (
     ChapterInfo,
+    ChapterWritingPlan,
     ChapterWritingAgent,
     SceneReview,
 )
@@ -20,6 +22,7 @@ def _bare_agent(tmp_path, app=None, model="hosted-llm"):
     agent.model = model
     agent.output_dir = str(tmp_path)
     agent.logger = logging.getLogger("chapter-writing-test")
+    agent.require_planning_contract = False
     return agent
 
 
@@ -349,3 +352,32 @@ def test_batch_cancellation_keeps_finished_chapters_and_stops(tmp_path):
     assert not (tmp_path / "chapters" / "chapter_3.md").exists()
     # 取消不应被记成章节失败。
     assert result.data["errors"] == []
+
+
+def test_batch_stops_after_first_rejected_chapter(tmp_path):
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+    attempted = []
+
+    def reject_first(chapter_info):
+        attempted.append(chapter_info.chapter_number)
+        return AgentResult(success=False, data={}, messages=["验收失败"], metrics={})
+
+    agent._write_single_chapter = reject_first
+    chapter_infos = [
+        ChapterInfo(number, "Rising Action", f"scene_{number}.md", f"chapter_{number}.md")
+        for number in (1, 2, 3)
+    ]
+    plan = ChapterWritingPlan(
+        total_chapters=3,
+        chapters_to_write=[1, 2, 3],
+        chapters_completed=[],
+        batch_size=3,
+        enable_reviews=False,
+    )
+
+    result = agent.write_chapters_batch(chapter_infos, plan)
+
+    assert attempted == [1]
+    assert result.data["chapters_written"] == []
+    assert result.data["errors"] == ["第 1 章：验收失败"]

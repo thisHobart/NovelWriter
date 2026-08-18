@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 from core.generation.ai_helper import send_prompt
 from core.generation.domain_profiles import DomainProfile, get_domain_profile
 from core.generation.prompt_context import analyze_chinese_prose_style
-from core.generation.story_ledger import compact_json
+from core.generation.story_ledger import build_ledger_prompt_view, compact_json
 
 
 class DomainReviewError(RuntimeError):
@@ -63,11 +63,23 @@ def extract_json_object(text: str) -> Dict[str, Any]:
 
 
 # 所有档案共有的章节契约字段。领域专属字段由 profile.contract_fields 追加。
+#
+# 后半段（facts_* / timeline_events / character_updates / plot_thread_updates）
+# 是长程状态的单一事实源：DefaultChapterDeltaExtractor 按同名键读取它们构造
+# ChapterDelta，CanonConsistencyGate 再拿 delta 与账本比对。此前这些键没有出现
+# 在契约 schema 里，大模型从不产出，delta 槽位恒为空表，跨章事实与时间线校验
+# 因此形同虚设。
 UNIVERSAL_CONTRACT_LISTS = (
     "reader_knows_before",
     "reader_knows_after",
     "reader_must_not_know_yet",
     "scene_boundaries",
+    "facts_added",
+    "facts_confirmed",
+    "facts_contradicted",
+    "timeline_events",
+    "character_updates",
+    "plot_thread_updates",
 )
 
 UNIVERSAL_CONTRACT_TEXTS = (
@@ -126,6 +138,18 @@ class DomainReviewAgent:
             '  "personal_cost": "本章不可逆个人代价",',
             '  "cost_character": "承担代价的人物",',
             '  "irreversible_change": "本章结束后的不可逆变化",',
+            # 以下四组构成长程状态的单一事实源。字段名与 CanonConsistencyGate
+            # 比对的 immutable_fields 一一对应，改动时两边必须同步。
+            '  "facts_added": [{"id":"F001","fact":"事实名称（属性，不是整句）",'
+            '"value":"该事实的取值","first_stated_at":"scene_1"}],',
+            '  "facts_confirmed": [{"id":"F001","fact":"事实名称","value":"取值（必须与既有记录一致）"}],',
+            '  "facts_contradicted": [{"id":"F001","reason":"本章为何推翻它","new_value":"新取值"}],',
+            '  "timeline_events": [{"id":"TL001","event":"事件名称","time":"HH:MM 或明确时刻",'
+            '"location_id":"地点"}],',
+            '  "character_updates": [{"id":"CU001","character":"人物规范名",'
+            '"attribute":"属性名","value":"取值","stable":true}],',
+            '  "plot_thread_updates": [{"id":"PT001","thread":"线索名称",'
+            '"status":"open 或 closed","deadline_chapter":0}],',
         ]
         lines.extend(
             f'  "{item.name}": {item.schema_hint},' for item in self.profile.contract_fields
@@ -234,7 +258,7 @@ class DomainReviewAgent:
 {compact_json(case_bible, 8000)}
 
 既有故事账本：
-{compact_json(suspense_ledger, 8000)}
+{compact_json(build_ledger_prompt_view(suspense_ledger, chapter_number), 8000)}
 
 世界观：
 {lore[:12000]}
@@ -244,7 +268,32 @@ class DomainReviewAgent:
 
 只输出一个 JSON 对象，不要使用代码围栏。字段必须包括：
 {self._contract_schema_block()}
-不要增加场景规划和世界观中不存在的决定性信息。"""
+不要增加场景规划和世界观中不存在的决定性信息。
+
+id 使用规则（最重要）：
+- 上面「既有故事账本」和「{profile.bible_noun}」里出现过的每一条记录都已经有
+  id。本章只要再次涉及同一件事物、同一条事实、同一个事件，就必须原样沿用它
+  已有的 id，不得另起新号。
+- 只有本章首次出现的事物才分配新 id，且必须与既有 id 不重复。
+- 判断是不是「同一件事」看内容而不是措辞：换一种说法描述同一条事实，仍然是
+  同一条记录，必须用原 id。
+
+长程状态字段的填写规则（facts_added、facts_confirmed、facts_contradicted、
+timeline_events、character_updates、plot_thread_updates）：
+- fact 写属性名而不是整句。例如写“保罗·米勒的死亡方式”，取值“后巷两枪”放进
+  value；不要把“保罗在后巷被两枪打死”整句塞进 fact，否则换一种说法就会被当成
+  另一条事实。
+- 本章只要复述或依赖某条既有事实，就放进 facts_confirmed，且 value 必须与账本
+  中的原值一致；只有本章确实要推翻它时才放进 facts_contradicted 并说明理由。
+- timeline_events 的 time 必须是明确时刻，同一事件在全书只能有一个时间。
+- character_updates 的 character 用人物规范名（与人物名单一致），不要使用别名或
+  简称；一个人物的每项属性各占一条记录，不要合并成一条。
+- character_updates 的 stable：工龄、年龄、籍贯、亲属关系等一经确立就不该再变的
+  属性填 true；伤势、所在位置、掌握的情报等会随剧情推进变化的填 false。填 true
+  的属性此后各章必须复述同一取值，数量务必与前文一致。
+- plot_thread_updates 里，本章新开的线索 status 填 open 并给出 deadline_chapter
+  （最晚必须闭合的章号）；本章了结的线索 status 填 closed。
+- 无法从场景规划中确定的条目就留空，不要臆造。"""
         try:
             contract = self._call_json(prompt)
         except Exception as exc:
@@ -397,7 +446,7 @@ class DomainReviewAgent:
 {compact_json(case_bible, 7000)}
 
 故事账本：
-{compact_json(suspense_ledger, 7000)}
+{compact_json(build_ledger_prompt_view(suspense_ledger, int(contract.get("chapter", 0) or 0)), 7000)}
 
 额外上下文：
 {extra_context}
@@ -519,3 +568,45 @@ class DomainReviewAgent:
 {scene_content}
 """
         return self.send_prompt(prompt, model=self.model).strip()
+
+    def revise_for_acceptance(
+        self,
+        scenes: List[str],
+        scene_plans: List[str],
+        acceptance_report: Dict[str, Any],
+        contract: Dict[str, Any],
+    ) -> tuple[int, str]:
+        """Choose and minimally repair one scene after final artifact rejection.
+
+        The planning contract is immutable here: final acceptance may repair
+        prose, but it may not rewrite upstream facts or thread obligations.
+        """
+        payload = {
+            f"scene_{index}": {"plan": scene_plans[index - 1], "prose": prose}
+            for index, prose in enumerate(scenes, 1)
+        }
+        prompt = f"""最终章节验收未通过。请只修改一个最相关的正文场景来修复验收报告指出的问题，不得修改章节契约，不得增加新事实或新支线。
+
+不可修改的章节契约：
+{compact_json(contract, 9000)}
+
+验收报告：
+{compact_json(acceptance_report, 9000)}
+
+场景规划与正文：
+{compact_json(payload, 18000)}
+
+只输出一个 JSON 对象：
+{{"scene_number": 1, "revised_scene": "修订后的完整场景正文"}}
+"""
+        raw = self._call_json(prompt)
+        try:
+            scene_number = int(raw.get("scene_number"))
+        except (TypeError, ValueError):
+            raise DomainReviewError("验收修订结果缺少有效 scene_number") from None
+        revised_scene = str(raw.get("revised_scene", "")).strip()
+        if not 1 <= scene_number <= len(scenes):
+            raise DomainReviewError("验收修订结果的 scene_number 超出范围")
+        if not revised_scene:
+            raise DomainReviewError("验收修订结果正文为空")
+        return scene_number, revised_scene

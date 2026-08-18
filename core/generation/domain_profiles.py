@@ -64,7 +64,13 @@ class ContractField:
     name: str
     schema_hint: str
     delta_slot: str = ""
+    # 约定：immutable_fields 的第一项是这条记录的「名字」，其余是随之固定的属性。
     immutable_fields: Tuple[str, ...] = ()
+    # 自然键：id 对不上时用它判定「说的是同一件事」，防止换一个 id 就绕过一致性
+    # 闸门。留空则按上述约定回落到 immutable_fields 的第一项；只有当记录的身份
+    # 字段不是首个不可变字段时才需要显式指定（例如线索按表面含义认身份，而被
+    # 锁定的是真实含义）。
+    identity_fields: Tuple[str, ...] = ()
 
     @property
     def is_list(self) -> bool:
@@ -113,6 +119,16 @@ class DomainProfile:
                     merged.append(name)
         return tuple(merged)
 
+    def identity_fields_for_slot(self, slot: str) -> Tuple[str, ...]:
+        merged: list[str] = []
+        for item in self.fields_for_slot(slot):
+            # 未显式声明时回落到首个不可变字段（见 ContractField.identity_fields）。
+            names = item.identity_fields or item.immutable_fields[:1]
+            for name in names:
+                if name not in merged:
+                    merged.append(name)
+        return tuple(merged)
+
 
 # --- 各题材档案 -----------------------------------------------------------
 
@@ -143,6 +159,9 @@ LEGAL_SUSPENSE = DomainProfile(
             ),
             delta_slot="clue_updates",
             immutable_fields=("true_meaning",),
+            # 线索按「表面含义」认身份，被锁定的却是「真实含义」，
+            # 不适用首个不可变字段的默认约定。
+            identity_fields=("surface_meaning",),
         ),
         ContractField(
             name="evidence_updates",
@@ -218,6 +237,9 @@ DETECTIVE_MYSTERY = DomainProfile(
             ),
             delta_slot="clue_updates",
             immutable_fields=("true_meaning",),
+            # 线索按「表面含义」认身份，被锁定的却是「真实含义」，
+            # 不适用首个不可变字段的默认约定。
+            identity_fields=("surface_meaning",),
         ),
         ContractField(
             name="evidence_updates",

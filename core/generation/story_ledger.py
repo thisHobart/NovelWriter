@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from glob import glob
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from filelock import FileLock
 
@@ -32,17 +33,47 @@ def _unique_extend(target: List[Any], values: Iterable[Any]) -> None:
             target.append(value)
 
 
-def _upsert_records(target: List[Dict[str, Any]], values: Iterable[Dict[str, Any]]) -> None:
-    """Apply current-state records while leaving the immutable delta as history."""
+# 人物属性的身份是「谁的哪项属性」，不是记录编号。chapter_acceptance 的一致性
+# 闸门共用这个键，两边必须一致。
+CHARACTER_ATTRIBUTE_KEY: Tuple[str, ...] = ("character", "attribute")
+
+
+def _record_key(
+    record: Dict[str, Any], key_fields: Tuple[str, ...]
+) -> Optional[Tuple[str, ...]]:
+    """Build the merge key for a record, or None when it carries no key."""
+    if key_fields:
+        parts = tuple(
+            re.sub(r"\s+", "", str(record.get(field, ""))).lower()
+            for field in key_fields
+        )
+        return parts if all(parts) else None
+    record_id = record.get("id")
+    return (str(record_id),) if record_id else None
+
+
+def _upsert_records(
+    target: List[Dict[str, Any]],
+    values: Iterable[Dict[str, Any]],
+    key_fields: Tuple[str, ...] = (),
+) -> None:
+    """Apply current-state records while leaving the immutable delta as history.
+
+    `key_fields` overrides the default id-based merge for streams whose identity
+    is compound. Character attributes are the motivating case: keying them by id
+    alone would let one character's tenure and age overwrite each other.
+    """
     for value in values:
         if not isinstance(value, dict):
             continue
-        record_id = value.get("id")
-        if not record_id:
+        key = _record_key(value, key_fields)
+        if key is None:
             if value not in target:
                 target.append(deepcopy(value))
             continue
-        existing = next((item for item in target if item.get("id") == record_id), None)
+        existing = next(
+            (item for item in target if _record_key(item, key_fields) == key), None
+        )
         if existing:
             existing.update(deepcopy(value))
         else:
@@ -516,6 +547,7 @@ class StoryLedgerManager:
             _upsert_records(
                 ledger.setdefault("character_updates", []),
                 chapter_delta.get("character_updates", []),
+                key_fields=CHARACTER_ATTRIBUTE_KEY,
             )
             _upsert_records(
                 ledger.setdefault("plot_threads", []),
@@ -588,6 +620,142 @@ class StoryLedgerManager:
         unresolved[:] = remaining
 
 
+def build_ledger_prompt_view(
+    ledger: Dict[str, Any],
+    chapter_number: int = 0,
+) -> Dict[str, Any]:
+    """Return the current story state needed by generation prompts.
+
+    Commit history, accepted chapter receipts and resolved conflicts are audit
+    data, not generation context.  Keeping them out prevents the useful state
+    near the end of the ledger from being displaced as a novel grows.
+    """
+
+    def deadline(record: Dict[str, Any]) -> int:
+        try:
+            return int(record.get("deadline_chapter") or 10**9)
+        except (TypeError, ValueError):
+            return 10**9
+
+    threads = [
+        deepcopy(item)
+        for item in ledger.get("plot_threads", [])
+        if isinstance(item, dict) and str(item.get("status", "open")).lower() != "closed"
+    ]
+    threads.sort(
+        key=lambda item: (
+            0 if chapter_number and deadline(item) <= chapter_number else 1,
+            deadline(item),
+            str(item.get("id", "")),
+        )
+    )
+    conflicts = [
+        deepcopy(item)
+        for item in ledger.get("unresolved_conflicts", [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "revision": int(ledger.get("revision", 0) or 0),
+        "clues": deepcopy(ledger.get("clues", [])),
+        "evidence": deepcopy(ledger.get("evidence", [])),
+        "reader_knowledge": deepcopy(ledger.get("reader_knowledge", [])),
+        "character_knowledge": deepcopy(ledger.get("character_knowledge", {})),
+        "personal_costs": deepcopy(ledger.get("personal_costs", {})),
+        "facts": deepcopy(ledger.get("facts", [])),
+        "timeline_events": deepcopy(ledger.get("timeline_events", [])),
+        "character_updates": deepcopy(ledger.get("character_updates", [])),
+        "open_plot_threads": threads,
+        "unresolved_conflicts": conflicts,
+        "_context_meta": {
+            "chapter": chapter_number,
+            "excluded_audit_fields": [
+                "accepted_chapters",
+                "chapter_commits",
+                "resolved_conflicts",
+            ],
+            "source_counts": {
+                key: len(value)
+                for key, value in ledger.items()
+                if isinstance(value, list)
+            },
+        },
+    }
+
+
 def compact_json(data: Any, max_chars: int = 16000) -> str:
-    text = json.dumps(data, ensure_ascii=False, indent=2)
-    return text if len(text) <= max_chars else text[:max_chars] + "\n...（已截断）"
+    """Serialize a bounded context without ever cutting JSON text in half.
+
+    Lists are reduced one complete item at a time and long strings are shortened
+    only as a last resort.  The output always remains parseable JSON and carries
+    omission metadata so a model is never shown a silently truncated document.
+    """
+    if max_chars <= 0:
+        raise ValueError("max_chars 必须大于零")
+
+    working = deepcopy(data)
+    omitted: Dict[str, int] = {}
+
+    def dump(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+
+    def list_candidates(value: Any, path: str = "$") -> List[Tuple[int, str, List[Any]]]:
+        found: List[Tuple[int, str, List[Any]]] = []
+        if isinstance(value, list):
+            if value:
+                found.append((len(dump(value[-1])), path, value))
+            for index, item in enumerate(value):
+                found.extend(list_candidates(item, f"{path}[{index}]"))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if key != "_context_meta":
+                    found.extend(list_candidates(item, f"{path}.{key}"))
+        return found
+
+    def string_candidates(value: Any, path: str = "$") -> List[Tuple[int, str, Any, Any]]:
+        found: List[Tuple[int, str, Any, Any]] = []
+        if isinstance(value, dict):
+            for key, item in value.items():
+                child_path = f"{path}.{key}"
+                if isinstance(item, str) and len(item) > 32:
+                    found.append((len(item), child_path, value, key))
+                else:
+                    found.extend(string_candidates(item, child_path))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                child_path = f"{path}[{index}]"
+                if isinstance(item, str) and len(item) > 32:
+                    found.append((len(item), child_path, value, index))
+                else:
+                    found.extend(string_candidates(item, child_path))
+        return found
+
+    while len(dump(working)) > max_chars:
+        lists = list_candidates(working)
+        if lists:
+            _, path, target = max(lists, key=lambda item: item[0])
+            target.pop()
+            omitted[path] = omitted.get(path, 0) + 1
+            continue
+        strings = string_candidates(working)
+        if strings:
+            length, path, parent, key = max(strings, key=lambda item: item[0])
+            parent[key] = parent[key][: max(16, length // 2)] + "…"
+            omitted[path] = omitted.get(path, 0) + 1
+            continue
+        break
+
+    if omitted and isinstance(working, dict):
+        meta = working.setdefault("_context_meta", {})
+        if not isinstance(meta, dict):
+            meta = {"original_context_meta": meta}
+            working["_context_meta"] = meta
+        meta["truncated"] = True
+        meta["omitted"] = omitted
+
+    text = dump(working)
+    # Metadata itself can exceed a very small budget.  Return a minimal, valid
+    # envelope rather than violating the size contract or emitting broken JSON.
+    if len(text) > max_chars:
+        minimal = {"_context_meta": {"truncated": True, "context_overflow": True}}
+        text = dump(minimal)
+    return text
