@@ -27,7 +27,11 @@ from core.generation.planning_contract import (
     PlanningContractError,
     validate_planning_contract,
 )
-from core.generation.story_ledger import StoryLedgerManager, source_hash
+from core.generation.story_ledger import (
+    StoryLedgerManager,
+    case_bible_gaps,
+    source_hash,
+)
 
 
 class QualityGateError(RuntimeError):
@@ -181,7 +185,18 @@ class ChapterGenerationLoop:
                     design_context,
                     case_bible,
                 )
+                # 结构阶段已经明确声明过的骨架优先于二次提炼的结果：那是作者写下
+                # 的，不是模型从散文里猜出来的，且已经通过了结构契约的校验与重试。
+                declared = self.ledger.declared_story_spine()
+                if declared:
+                    self.logger.info(
+                        "Applying %s declared by the structure stage: %s",
+                        profile.bible_noun,
+                        "、".join(sorted(declared)),
+                    )
+                    case_bible = self.ledger.merge_declared_story_spine(case_bible)
                 case_bible = self.ledger.save_case_bible(case_bible, design_context)
+            self._require_usable_case_bible(case_bible, profile, chapter_number)
         suspense_ledger = self.ledger.load_suspense_ledger()
 
         current_plan = plan_content
@@ -597,6 +612,38 @@ class ChapterGenerationLoop:
         raise QualityGateError(
             f"第 {chapter_number} 章最终验收在 {self.max_acceptance_retries} 次正文修订后仍未通过",
             partial_scenes=result.scenes,
+            chapter_number=chapter_number,
+        )
+
+    def _require_usable_case_bible(
+        self,
+        case_bible: Dict[str, Any],
+        profile: DomainProfile,
+        chapter_number: int,
+    ) -> None:
+        """Stop before writing prose against a story bible that says nothing.
+
+        The bible is derived from the structure and chapter-outline stages, which
+        have no gate of their own.  Checking it here is the first point where a
+        thin upstream design becomes detectable, and it is still cheap to fix:
+        every later check silently passes against an empty bible instead.
+        """
+        if not case_bible.get("generated_from_design"):
+            # 项目还没有全书结构或章节大纲可供提炼。这属于流程尚未走到，不是这一
+            # 步该拦的事，验收闸门已有 case_bible_not_ready 警告负责提醒。
+            return
+        gaps = case_bible_gaps(case_bible, profile)
+        if not gaps:
+            return
+        detail = "；".join(gaps)
+        self.ledger.save_review(
+            chapter_number,
+            "case_bible_gate",
+            {"stage": "case_bible", "passed": False, "gaps": gaps},
+        )
+        raise QualityGateError(
+            f"{profile.bible_noun}尚不足以支撑跨章校验：{detail}。"
+            "请先补全全书结构与章节大纲，再重新生成本章。",
             chapter_number=chapter_number,
         )
 

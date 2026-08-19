@@ -219,3 +219,55 @@ def test_cross_chapter_contract_failure_repairs_only_deadline_chapter(monkeypatc
 
     assert len(calls) == 1
     assert manager.load_contract(2, plans[2])["plot_thread_updates"][0]["status"] == "closed"
+
+
+def test_repeated_open_is_repaired_without_rewriting_markdown_or_calling_model(
+    monkeypatch, tmp_path
+):
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    plan_dir = tmp_path / "story" / "planning" / "detailed_scene_plans"
+    plan_dir.mkdir(parents=True)
+    manager = StoryLedgerManager(str(tmp_path))
+    markdown_by_chapter = {
+        1: "### 场景 1：钥匙失踪\n原始内容一",
+        2: "### 场景 1：继续调查\n原始内容二",
+        3: "### 场景 1：找到钥匙\n原始内容三",
+    }
+    updates = {
+        1: [{"id": "PT-001-01", "thread": "失踪钥匙", "status": "open", "deadline_chapter": 3}],
+        2: [{"id": "PT-001-01", "thread": "失踪钥匙", "status": "open", "deadline_chapter": 3}],
+        3: [{"id": "PT-001-01", "thread": "找到钥匙", "status": "closed"}],
+    }
+    for chapter in (1, 2, 3):
+        path = plan_dir / f"scenes_test_ch{chapter}.md"
+        path.write_text(markdown_by_chapter[chapter], encoding="utf-8")
+        manager.save_contract(
+            chapter,
+            {
+                **json.loads(json.dumps({
+                    "chapter": chapter,
+                    "origin": "scene_planning",
+                    "schema_version": 2,
+                    "facts_added": [], "facts_confirmed": [],
+                    "facts_contradicted": [], "timeline_events": [],
+                    "character_updates": [],
+                })),
+                "plot_thread_updates": updates[chapter],
+            },
+            markdown_by_chapter[chapter],
+        )
+
+    monkeypatch.setattr(
+        scene_plan_module,
+        "send_prompt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("结构性重复开启不应调用模型")
+        ),
+    )
+    planner._validate_sequence_with_retries(
+        str(tmp_path), 3, "hosted-llm", "世界观", {}
+    )
+
+    assert manager.load_contract(2, markdown_by_chapter[2])["plot_thread_updates"] == []
+    assert (plan_dir / "scenes_test_ch2.md").read_text(encoding="utf-8") == markdown_by_chapter[2]

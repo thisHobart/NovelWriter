@@ -562,3 +562,137 @@ def test_cancellation_stops_at_a_scene_boundary_without_committing(tmp_path):
     assert ledger["accepted_chapters"] == []
     assert ledger["revision"] == 0
     assert not (tmp_path / "story" / "content" / "chapters").exists()
+
+
+def _write_design_context(tmp_path):
+    structure_dir = tmp_path / "story" / "structure"
+    structure_dir.mkdir(parents=True, exist_ok=True)
+    (structure_dir / "act_1.md").write_text("全书结构草稿。", encoding="utf-8")
+
+
+def _write_declared_structure_contract(tmp_path):
+    _write_design_context(tmp_path)
+    contract = {
+        "sections": [
+            {
+                "section": "第1幕",
+                "section_index": 1,
+                "total_sections": 1,
+                "central_question": "谁伪造了法医时间戳？",
+                "central_conflict": {
+                    "legal_answer": "流浪汉纵火",
+                    "truth_answer": "专案组灭口",
+                    "moral_question": "结案率与程序正义",
+                },
+                "truths_introduced": [
+                    {"id": "T011", "fact": "门禁时钟被调慢"},
+                    {"id": "T012", "fact": "副检验员死于火灾之前"},
+                    {"id": "T013", "fact": "原始硬盘被转移"},
+                ],
+                "chronology_events": [
+                    {
+                        "id": "TL011",
+                        "order": 1,
+                        "event": "零点十二分运尸车进入法医中心",
+                        "known_initially_by": [],
+                    }
+                ],
+                "threads_opened": [],
+                "threads_closed": [],
+            }
+        ]
+    }
+    (tmp_path / "story" / "structure" / "structure_contract.json").write_text(
+        json.dumps(contract, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+class HollowBibleReviewer(PassingReviewer):
+    """结构与大纲太单薄时，提炼出来的底稿就是这种空壳。"""
+
+    def build_case_bible(self, parameters, lore, design_context, baseline):
+        return {
+            **baseline,
+            "central_question": "",
+            "central_conflict": {},
+            "truth": [],
+            "chronology": [],
+        }
+
+
+def test_hollow_case_bible_blocks_before_any_prose_is_written(tmp_path):
+    _write_design_context(tmp_path)
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
+
+    scenes_written = []
+
+    def generate_scene(**kwargs):
+        scenes_written.append(kwargs["scene_number"])
+        return "不应该被生成的正文。"
+
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=HollowBibleReviewer(),
+    )
+
+    with pytest.raises(QualityGateError, match="尚不足以支撑跨章校验"):
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={"Genre": "Mystery", "Subgenre": "Legal Thriller"},
+            lore="世界观",
+            generate_scene=generate_scene,
+        )
+
+    # 拦在生成之前，而不是写完再报错。
+    assert scenes_written == []
+    assert manager.load_case_bible()["status"] == "incomplete"
+
+
+def test_declared_structure_spine_makes_hollow_extraction_ready_end_to_end(tmp_path):
+    _write_declared_structure_contract(tmp_path)
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=HollowBibleReviewer(),
+    )
+
+    result = loop.run(
+        chapter_number=1,
+        plan_content=PLAN,
+        parameters={"Genre": "Mystery", "Subgenre": "Legal Thriller"},
+        lore="世界观",
+        generate_scene=lambda **kwargs: f"第 {kwargs['scene_number']} 场正文。",
+    )
+
+    saved = manager.load_case_bible()
+    assert len(result.scenes) == 2
+    assert saved["status"] == "ready"
+    assert saved["gaps"] == []
+    assert saved["central_question"] == "谁伪造了法医时间戳？"
+
+
+def test_project_without_design_context_is_not_blocked(tmp_path):
+    """还没走到结构阶段的项目不该被这道闸门拦住。"""
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
+
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=PassingReviewer(),
+    )
+
+    result = loop.run(
+        chapter_number=1,
+        plan_content=PLAN,
+        parameters={"Genre": "Mystery", "Subgenre": "Legal Thriller"},
+        lore="世界观",
+        generate_scene=lambda **kwargs: f"第 {kwargs['scene_number']} 场正文。",
+    )
+
+    assert len(result.scenes) == 2

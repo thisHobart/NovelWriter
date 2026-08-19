@@ -28,6 +28,7 @@ from core.generation.planning_contract import (
     validate_planning_contract,
 )
 from core.generation.story_ledger import StoryLedgerManager
+from core.generation.semantic_identity import resolve_contract_identities
 from core.generation.domain_profiles import resolve_domain_profile
 import os
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
@@ -108,8 +109,20 @@ class ScenePlanning:
         )
 
     @staticmethod
-    def _save_scene_plan_and_contract(output_dir, scene_plan_path, response, chapter_number):
-        scene_markdown, contract = extract_scene_plan_contract(response, chapter_number)
+    def _save_scene_plan_and_contract(
+        output_dir,
+        scene_plan_path,
+        response,
+        chapter_number,
+        *,
+        scene_markdown=None,
+        contract=None,
+    ):
+        # Callers that already validated and semantically normalised the
+        # contract must be able to save that exact object.  Re-extracting the
+        # raw LLM response here would silently discard the corrections.
+        if scene_markdown is None or contract is None:
+            scene_markdown, contract = extract_scene_plan_contract(response, chapter_number)
         write_file(scene_plan_path, scene_markdown)
         StoryLedgerManager(output_dir).save_contract(chapter_number, contract, scene_markdown)
         return scene_markdown
@@ -122,6 +135,7 @@ class ScenePlanning:
         lore_content,
         story_params,
         require_complete_sequence=False,
+        output_dir=None,
     ):
         """Generate one scene plan and retry only the failed planning artifact."""
         feedback = ""
@@ -141,6 +155,26 @@ class ScenePlanning:
                     scene_markdown, contract = extract_scene_plan_contract(
                         response, chapter_number
                     )
+                    project_dir = output_dir or getattr(self.app, "output_dir", None)
+                    if project_dir:
+                        resolution = resolve_contract_identities(
+                            contract,
+                            project_dir,
+                            chapter_number,
+                            selected_model,
+                            send_prompt,
+                        )
+                        contract = validate_planning_contract(
+                            resolution.contract, chapter_number
+                        )
+                        contract["schema_version"] = 2
+                        contract["origin"] = "scene_planning"
+                        for warning in resolution.warnings:
+                            self.app.logger.warning(
+                                "Chapter %s semantic contract warning: %s",
+                                chapter_number,
+                                warning,
+                            )
                     if require_complete_sequence:
                         validate_contract_sequence(
                             [contract], total_chapters=chapter_number
@@ -210,6 +244,31 @@ class ScenePlanning:
                     ) from exc
                 scene_plan_path = matches[0]
                 scene_markdown = open_file(scene_plan_path)
+                if exc.code == "thread_reopened":
+                    # Older projects may already contain this structural error.
+                    # Normalise only the saved contract: identical declarations
+                    # are removed; a reused ID with different meaning is judged
+                    # semantically and can receive a new program-assigned ID.
+                    # The creative Markdown is never rewritten for this repair.
+                    manager = StoryLedgerManager(output_dir)
+                    current = manager.load_contract(chapter_number, scene_markdown)
+                    if current is not None:
+                        resolution = resolve_contract_identities(
+                            current,
+                            output_dir,
+                            chapter_number,
+                            selected_model,
+                            send_prompt,
+                        )
+                        if resolution.contract != current:
+                            manager.save_contract(
+                                chapter_number, resolution.contract, scene_markdown
+                            )
+                            self.app.logger.info(
+                                "Normalised repeated thread ID in Chapter %s without rewriting Markdown",
+                                chapter_number,
+                            )
+                            continue
                 repair_prompt = f"""请修复第 {chapter_number} 章场景规划，使它通过跨章契约验收。只处理指出的问题，不改变章节大纲中的核心事件和场景数量。
 
 跨章验收错误：
@@ -220,15 +279,21 @@ class ScenePlanning:
 
 {self._contract_instructions(output_dir, chapter_number, story_params)}
 """
-                response, _, _ = self._generate_valid_scene_response(
+                response, repaired_markdown, repaired_contract = self._generate_valid_scene_response(
                     repair_prompt,
                     selected_model,
                     chapter_number,
                     lore_content,
                     story_params,
+                    output_dir=output_dir,
                 )
                 self._save_scene_plan_and_contract(
-                    output_dir, scene_plan_path, response, chapter_number
+                    output_dir,
+                    scene_plan_path,
+                    response,
+                    chapter_number,
+                    scene_markdown=repaired_markdown,
+                    contract=repaired_contract,
                 )
                 self.app.logger.info(
                     "Repaired Chapter %s planning contract after sequence validation failure (%s/%s)",
@@ -587,12 +652,13 @@ class ScenePlanning:
                     # print(prompt) # Uncomment for full prompt debugging
                     print("-------------------------------------------------------------------")
                     try:
-                        response, _, _ = self._generate_valid_scene_response(
+                        response, scene_markdown, contract = self._generate_valid_scene_response(
                             prompt,
                             selected_model,
                             current_chapter_for_prompt,
                             lore_content,
                             story_params,
+                            output_dir=output_dir,
                         )
                     except PlanningContractError as exc:
                         show_error(
@@ -609,6 +675,8 @@ class ScenePlanning:
                         output_scene_plan_filepath,
                         response,
                         current_chapter_for_prompt,
+                        scene_markdown=scene_markdown,
+                        contract=contract,
                     )
                     print(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 
@@ -774,12 +842,13 @@ class ScenePlanning:
                     self.app.logger.info(f"Sending Scene Planning Prompt {log_msg_source} to LLM ({backend_info})...")
 
                     try:
-                        response, _, _ = self._generate_valid_scene_response(
+                        response, scene_markdown, contract = self._generate_valid_scene_response(
                             prompt,
                             selected_model,
                             current_chapter_for_prompt,
                             lore_content,
                             story_params,
+                            output_dir=output_dir,
                         )
                     except PlanningContractError as exc:
                         show_error(
@@ -793,6 +862,8 @@ class ScenePlanning:
                         output_scene_plan_filepath,
                         response,
                         current_chapter_for_prompt,
+                        scene_markdown=scene_markdown,
+                        contract=contract,
                     )
                     generated_chapters.append(current_chapter_for_prompt)
                     self.app.logger.info(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
@@ -919,13 +990,14 @@ class ScenePlanning:
         self.app.logger.info(f"Sending Short Story Scene Planning Prompt {log_msg_source} to LLM ({backend_info})...")
 
         try:
-            response, scene_markdown, _ = self._generate_valid_scene_response(
+            response, scene_markdown, contract = self._generate_valid_scene_response(
                 prompt,
                 selected_model,
                 1,
                 lore_content,
                 story_params,
                 require_complete_sequence=True,
+                output_dir=output_dir,
             )
         except PlanningContractError as exc:
             self.app.logger.error("Short story planning contract is invalid: %s", exc)
@@ -950,7 +1022,12 @@ class ScenePlanning:
         
         try:
             self._save_scene_plan_and_contract(
-                output_dir, output_filename_full_path, response, 1
+                output_dir,
+                output_filename_full_path,
+                response,
+                1,
+                scene_markdown=scene_markdown,
+                contract=contract,
             )
             self.app.logger.info(f"Short story scenes saved successfully to {output_filename_full_path}")
             # show_success("Success", f"Short story scenes generated and saved to {output_filename_full_path}")

@@ -22,6 +22,10 @@ from core.generation.prompt_context import normalize_story_parameters
 # v3：case_bible 的 `legal_system` 泛化为 `domain_rules`，并记录 `domain_profile`。
 LEDGER_VERSION = 3
 
+# 低于这个条数的底稿无法支撑跨章事实比对：章节契约要靠既有 truth 记录复用 id，
+# 没有可引用的条目时每章都会重新发明一套事实。
+MIN_CASE_BIBLE_TRUTHS = 3
+
 
 def source_hash(content: str) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
@@ -80,6 +84,34 @@ def _upsert_records(
             target.append(deepcopy(value))
 
 
+# 记录最后一次被章节声明或复述的章号。上下文预算不够时，越久没有被任何章节
+# 提起的记录越先让位——契约要求「本章复述或依赖的既有事实必须放进
+# facts_confirmed」，所以真正在用的记录会不断被刷新，自然留在前面。
+TOUCHED_AT_FIELD = "_last_touched_chapter"
+
+
+def _stamp_touched(
+    records: Iterable[Dict[str, Any]], chapter_number: int
+) -> List[Dict[str, Any]]:
+    stamped: List[Dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        item = deepcopy(record)
+        item[TOUCHED_AT_FIELD] = chapter_number
+        stamped.append(item)
+    return stamped
+
+
+def _touched_at(record: Any) -> int:
+    if not isinstance(record, dict):
+        return 0
+    try:
+        return int(record.get(TOUCHED_AT_FIELD) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _atomic_write_json(path: str, data: Any) -> None:
     """Replace one JSON file atomically after the complete payload is written."""
     directory = os.path.dirname(path) or "."
@@ -102,6 +134,55 @@ def _atomic_write_json(path: str, data: Any) -> None:
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+def case_bible_gaps(
+    case_bible: Dict[str, Any], profile: Optional[DomainProfile] = None
+) -> List[str]:
+    """Report why a story bible cannot ground cross-chapter checks yet.
+
+    A bible that parsed as JSON is not the same as a bible that says anything.
+    Without a central question and at least a few established truths, every
+    downstream consistency check compares new chapters against an empty set and
+    silently passes, which is exactly how a novel drifts apart chapter by
+    chapter.  Reported as data so callers decide whether to block or warn.
+    """
+    gaps: List[str] = []
+    if not str(case_bible.get("central_question", "")).strip():
+        gaps.append("central_question 为空：全书没有确定要追问的核心问题")
+
+    truths = [
+        record
+        for record in case_bible.get("truth", [])
+        if isinstance(record, dict)
+        and str(record.get("id", "")).strip()
+        and str(record.get("fact", "")).strip()
+    ]
+    if len(truths) < MIN_CASE_BIBLE_TRUTHS:
+        gaps.append(
+            f"truth 只有 {len(truths)} 条可用记录，至少需要 {MIN_CASE_BIBLE_TRUTHS} 条"
+            "（章节契约要靠它复用事实 id）"
+        )
+
+    if not [
+        record
+        for record in case_bible.get("chronology", [])
+        if isinstance(record, dict) and str(record.get("event", "")).strip()
+    ]:
+        gaps.append("chronology 为空：没有可核对的故事真实时间线")
+
+    conflict = case_bible.get("central_conflict")
+    if not isinstance(conflict, dict) or not conflict:
+        gaps.append("central_conflict 为空：没有定义全书对抗结构")
+    elif profile is not None:
+        missing = [
+            key
+            for key in profile.central_conflict_schema
+            if not str(conflict.get(key, "")).strip()
+        ]
+        if missing:
+            gaps.append("central_conflict 缺少字段：" + "、".join(missing))
+    return gaps
 
 
 class RevisionConflictError(RuntimeError):
@@ -286,6 +367,24 @@ class StoryLedgerManager:
 
     def load_design_context(self, max_chars: int = 60000) -> str:
         """Load stable whole-story design sources used to establish case truth."""
+        structure_contract = self.load_structure_contract()
+        contract_section = ""
+        if structure_contract:
+            canonical_contract = json.dumps(
+                structure_contract, ensure_ascii=False, sort_keys=True
+            )
+            contract_section = (
+                "\n## 来源：story/structure/structure_contract.json"
+                "（结构阶段的完整声明，优先于散文）\n"
+                f"完整契约指纹：{source_hash(canonical_contract)}\n"
+                + json.dumps(structure_contract, ensure_ascii=False, indent=2)
+                + "\n"
+            )
+
+        # 为完整结构契约预留预算。即使契约异常庞大而需要截短，位于开头的完整
+        # 指纹仍会让任何字段变化进入 case_bible 的 source_hash。
+        reserved = min(len(contract_section), max_chars)
+        prose_budget = max(0, max_chars - reserved)
         patterns = (
             os.path.join(self.output_dir, "story", "structure", "*.md"),
             os.path.join(
@@ -309,21 +408,166 @@ class StoryLedgerManager:
                 continue
             relative_path = os.path.relpath(path, self.output_dir)
             section = f"\n## 来源：{relative_path}\n{content}\n"
-            if total + len(section) > max_chars:
-                remaining = max_chars - total
+            if total + len(section) > prose_budget:
+                remaining = prose_budget - total
                 if remaining > 200:
-                    sections.append(section[:remaining])
+                    partial = section[:remaining]
+                    sections.append(partial)
+                    total += len(partial)
                 break
             sections.append(section)
             total += len(section)
+
+        if contract_section:
+            sections.append(contract_section[: max_chars - total])
         return "".join(sections).strip()
+
+    def load_structure_contract(self) -> Dict[str, Any]:
+        """Load the declarations the structure stage made about the whole story.
+
+        These are authored, not inferred: preferring them over a second pass of
+        prose summarising keeps the spine exactly as the design stage stated it.
+        """
+        path = os.path.join(self.output_dir, "story", "structure", "structure_contract.json")
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def declared_story_spine(self) -> Dict[str, Any]:
+        """Flatten the per-section structure contracts into case-bible fields."""
+        sections = self.load_structure_contract().get("sections", [])
+        if not isinstance(sections, list) or not sections:
+            return {}
+        ordered = sorted(
+            (item for item in sections if isinstance(item, dict)),
+            key=lambda item: int(item.get("section_index", 0) or 0),
+        )
+        if not ordered:
+            return {}
+
+        spine: Dict[str, Any] = {}
+        first = ordered[0]
+        if str(first.get("central_question", "")).strip():
+            spine["central_question"] = first["central_question"]
+        if isinstance(first.get("central_conflict"), dict) and first["central_conflict"]:
+            spine["central_conflict"] = deepcopy(first["central_conflict"])
+
+        truths = []
+        chronology = []
+        for section in ordered:
+            for record in section.get("truths_introduced", []):
+                if not isinstance(record, dict) or not record.get("id"):
+                    continue
+                truths.append(
+                    {
+                        "id": record["id"],
+                        "fact": record.get("fact", ""),
+                        "source": f"structure:{section.get('section', '')}",
+                        "must_not_reveal_before": record.get("reveal_at_section", ""),
+                    }
+                )
+            for record in section.get("chronology_events", []):
+                if not isinstance(record, dict) or not record.get("id"):
+                    continue
+                chronology.append(deepcopy(record))
+        if truths:
+            spine["truth"] = truths
+        if chronology:
+            chronology.sort(key=lambda item: int(item.get("order", 0) or 0))
+            spine["chronology"] = chronology
+        return spine
+
+    def merge_declared_story_spine(
+        self, case_bible: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Merge authored declarations into an inferred bible without data loss.
+
+        Declared values win when they describe the same field or record, while
+        additional truths and chronology extracted from chapter outlines remain
+        available.  This is deliberately not ``dict.update``: replacing whole
+        lists would throw away useful design facts merely because the structure
+        contract did not repeat them.
+        """
+        merged = deepcopy(case_bible)
+        declared = self.declared_story_spine()
+        if not declared:
+            return merged
+
+        if "central_question" in declared:
+            merged["central_question"] = declared["central_question"]
+        if "central_conflict" in declared:
+            conflict = deepcopy(merged.get("central_conflict", {}))
+            if not isinstance(conflict, dict):
+                conflict = {}
+            conflict.update(deepcopy(declared["central_conflict"]))
+            merged["central_conflict"] = conflict
+
+        def merge_records(
+            current: Any,
+            authored: Any,
+            *,
+            fallback_field: str,
+        ) -> List[Dict[str, Any]]:
+            result = [
+                deepcopy(item) for item in (current or []) if isinstance(item, dict)
+            ]
+            for record in (authored or []):
+                if not isinstance(record, dict):
+                    continue
+                record_id = str(record.get("id", "")).strip()
+                fallback = re.sub(
+                    r"\s+", "", str(record.get(fallback_field, ""))
+                ).lower()
+                existing = next(
+                    (
+                        item for item in result
+                        if (
+                            record_id
+                            and str(item.get("id", "")).strip() == record_id
+                        )
+                        or (
+                            fallback
+                            and re.sub(
+                                r"\s+", "", str(item.get(fallback_field, ""))
+                            ).lower() == fallback
+                        )
+                    ),
+                    None,
+                )
+                if existing is None:
+                    result.append(deepcopy(record))
+                else:
+                    existing.update(deepcopy(record))
+            return result
+
+        merged["truth"] = merge_records(
+            merged.get("truth", []), declared.get("truth", []), fallback_field="fact"
+        )
+        merged["chronology"] = merge_records(
+            merged.get("chronology", []),
+            declared.get("chronology", []),
+            fallback_field="event",
+        )
+        def chronology_order(item: Dict[str, Any]) -> int:
+            try:
+                return int(item.get("order", 10**9) or 10**9)
+            except (TypeError, ValueError):
+                return 10**9
+
+        merged["chronology"].sort(key=chronology_order)
+        return merged
 
     @staticmethod
     def case_bible_needs_refresh(case_bible: Dict[str, Any], design_context: str) -> bool:
         if not design_context:
             return False
         expected_hash = source_hash(design_context)
-        if case_bible.get("status") in {"uninitialized", "degraded"}:
+        if case_bible.get("status") in {"uninitialized", "degraded", "incomplete"}:
             return True
         return bool(
             case_bible.get("generated_from_design")
@@ -335,7 +579,13 @@ class StoryLedgerManager:
         saved["version"] = LEDGER_VERSION
         if not saved.get("domain_profile"):
             saved["domain_profile"] = self.load_case_bible().get("domain_profile", "")
-        saved["status"] = "degraded" if saved.get("case_bible_warning") else "ready"
+        profile = get_domain_profile(saved.get("domain_profile", ""))
+        gaps = case_bible_gaps(saved, profile)
+        saved["gaps"] = gaps
+        if saved.get("case_bible_warning"):
+            saved["status"] = "degraded"
+        else:
+            saved["status"] = "incomplete" if gaps else "ready"
         saved["generated_from_design"] = True
         saved["source_hash"] = source_hash(design_context)
         saved["updated_at"] = datetime.now().isoformat()
@@ -539,19 +789,26 @@ class StoryLedgerManager:
         if chapter_delta:
             accepted_facts = list(chapter_delta.get("facts_added", []))
             accepted_facts.extend(chapter_delta.get("facts_confirmed", []))
-            _upsert_records(ledger.setdefault("facts", []), accepted_facts)
+            _upsert_records(
+                ledger.setdefault("facts", []),
+                _stamp_touched(accepted_facts, chapter_number),
+            )
             _upsert_records(
                 ledger.setdefault("timeline_events", []),
-                chapter_delta.get("timeline_events", []),
+                _stamp_touched(chapter_delta.get("timeline_events", []), chapter_number),
             )
             _upsert_records(
                 ledger.setdefault("character_updates", []),
-                chapter_delta.get("character_updates", []),
+                _stamp_touched(
+                    chapter_delta.get("character_updates", []), chapter_number
+                ),
                 key_fields=CHARACTER_ATTRIBUTE_KEY,
             )
             _upsert_records(
                 ledger.setdefault("plot_threads", []),
-                chapter_delta.get("plot_thread_updates", []),
+                _stamp_touched(
+                    chapter_delta.get("plot_thread_updates", []), chapter_number
+                ),
             )
 
         personal_cost_updates = (chapter_delta or {}).get("personal_cost_updates", [])
@@ -654,6 +911,14 @@ def build_ledger_prompt_view(
         for item in ledger.get("unresolved_conflicts", [])
         if isinstance(item, dict)
     ]
+
+    def by_relevance(key: str) -> List[Any]:
+        """Most recently touched first, so budget trimming drops the stalest."""
+        records = [deepcopy(item) for item in ledger.get(key, [])]
+        indexed = list(enumerate(records))
+        indexed.sort(key=lambda pair: (-_touched_at(pair[1]), pair[0]))
+        return [record for _, record in indexed]
+
     return {
         "revision": int(ledger.get("revision", 0) or 0),
         "clues": deepcopy(ledger.get("clues", [])),
@@ -661,9 +926,9 @@ def build_ledger_prompt_view(
         "reader_knowledge": deepcopy(ledger.get("reader_knowledge", [])),
         "character_knowledge": deepcopy(ledger.get("character_knowledge", {})),
         "personal_costs": deepcopy(ledger.get("personal_costs", {})),
-        "facts": deepcopy(ledger.get("facts", [])),
-        "timeline_events": deepcopy(ledger.get("timeline_events", [])),
-        "character_updates": deepcopy(ledger.get("character_updates", [])),
+        "facts": by_relevance("facts"),
+        "timeline_events": by_relevance("timeline_events"),
+        "character_updates": by_relevance("character_updates"),
         "open_plot_threads": threads,
         "unresolved_conflicts": conflicts,
         "_context_meta": {
@@ -682,15 +947,24 @@ def build_ledger_prompt_view(
     }
 
 
+# 最小截断信封 {"_context_meta":{"truncated":true,"context_overflow":true}} 缩进后
+# 就是这么大，压不下去。低于这个预算无法兑现「输出不超过 max_chars」的约定，
+# 与其静默超标不如直接报错。
+MIN_COMPACT_JSON_CHARS = 80
+
+
 def compact_json(data: Any, max_chars: int = 16000) -> str:
     """Serialize a bounded context without ever cutting JSON text in half.
 
-    Lists are reduced one complete item at a time and long strings are shortened
-    only as a last resort.  The output always remains parseable JSON and carries
-    omission metadata so a model is never shown a silently truncated document.
+    Every list keeps the same fraction of its items, so no single stream is
+    drained while others stay whole; long strings are shortened only as a last
+    resort.  The output always remains parseable JSON and carries omission
+    metadata so a model is never shown a silently truncated document.
     """
-    if max_chars <= 0:
-        raise ValueError("max_chars 必须大于零")
+    if max_chars < MIN_COMPACT_JSON_CHARS:
+        raise ValueError(
+            f"max_chars 至少需要 {MIN_COMPACT_JSON_CHARS}，否则连截断信封都放不下"
+        )
 
     working = deepcopy(data)
     omitted: Dict[str, int] = {}
@@ -698,11 +972,11 @@ def compact_json(data: Any, max_chars: int = 16000) -> str:
     def dump(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, indent=2)
 
-    def list_candidates(value: Any, path: str = "$") -> List[Tuple[int, str, List[Any]]]:
-        found: List[Tuple[int, str, List[Any]]] = []
+    def list_candidates(value: Any, path: str = "$") -> List[Tuple[str, List[Any]]]:
+        found: List[Tuple[str, List[Any]]] = []
         if isinstance(value, list):
             if value:
-                found.append((len(dump(value[-1])), path, value))
+                found.append((path, value))
             for index, item in enumerate(value):
                 found.extend(list_candidates(item, f"{path}[{index}]"))
         elif isinstance(value, dict):
@@ -729,28 +1003,52 @@ def compact_json(data: Any, max_chars: int = 16000) -> str:
                     found.extend(string_candidates(item, child_path))
         return found
 
-    while len(dump(working)) > max_chars:
-        lists = list_candidates(working)
-        if lists:
-            _, path, target = max(lists, key=lambda item: item[0])
-            target.pop()
-            omitted[path] = omitted.get(path, 0) + 1
-            continue
-        strings = string_candidates(working)
-        if strings:
-            length, path, parent, key = max(strings, key=lambda item: item[0])
-            parent[key] = parent[key][: max(16, length // 2)] + "…"
-            omitted[path] = omitted.get(path, 0) + 1
-            continue
-        break
-
-    if omitted and isinstance(working, dict):
+    def update_omission_meta() -> None:
+        if not omitted or not isinstance(working, dict):
+            return
         meta = working.setdefault("_context_meta", {})
         if not isinstance(meta, dict):
             meta = {"original_context_meta": meta}
             working["_context_meta"] = meta
         meta["truncated"] = True
         meta["omitted"] = omitted
+
+    # Proportional reduction is a one-parameter problem: every list keeps the
+    # same fraction of its items.  Binary-searching that fraction costs a
+    # handful of serializations instead of one per dropped item, which is what
+    # made a 120-chapter ledger spend minutes in here.
+    snapshots = [(path, target, list(target)) for path, target in list_candidates(working)]
+
+    def apply_fraction(fraction: float) -> int:
+        omitted.clear()
+        for path, target, original in snapshots:
+            keep = len(original) if fraction >= 1.0 else int(len(original) * fraction)
+            target[:] = original[:keep]
+            dropped = len(original) - keep
+            if dropped:
+                omitted[path] = dropped
+        update_omission_meta()
+        return len(dump(working))
+
+    if snapshots and apply_fraction(1.0) > max_chars:
+        low, high = 0.0, 1.0
+        best = 0.0
+        for _ in range(24):
+            middle = (low + high) / 2
+            if apply_fraction(middle) <= max_chars:
+                best, low = middle, middle
+            else:
+                high = middle
+        apply_fraction(best)
+
+    while len(dump(working)) > max_chars:
+        strings = string_candidates(working)
+        if not strings:
+            break
+        length, path, parent, key = max(strings, key=lambda item: item[0])
+        parent[key] = parent[key][: max(16, length // 2)] + "…"
+        omitted[path] = omitted.get(path, 0) + 1
+        update_omission_meta()
 
     text = dump(working)
     # Metadata itself can exceed a very small budget.  Return a minimal, valid

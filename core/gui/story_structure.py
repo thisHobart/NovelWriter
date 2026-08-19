@@ -3,14 +3,26 @@ from core.gui.notifications import show_success, show_error, show_warning
 from core.gui.task_runner import run_in_background, snapshot_ui
 from core.generation.ai_helper import send_prompt, get_backend
 import re
-from core.generation.helper_fns import open_file, write_file, read_json, save_prompt_to_file
+from core.generation.helper_fns import open_file, write_file, read_json, write_json, save_prompt_to_file
+from core.generation.design_contract import (
+    DesignContractError,
+    extract_structure_contract,
+    generate_with_contract_retry,
+    open_threads_after,
+    structure_contract_instructions,
+    validate_structure_sequence,
+)
 from core.generation.prompt_context import format_faction_summary
+from core.generation.domain_profiles import resolve_domain_profile
 import os
 import traceback
 import json
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP # Import the centralized map
 from core.localization import zh_label
 import logging
+
+STRUCTURE_CONTRACT_RETRY_LIMIT = 2
+
 
 class StoryStructure:
     def __init__(self, parent, app):
@@ -874,6 +886,7 @@ class StoryStructure:
             # print(f"Error reading parameters file ({parameters_file_path}): {e}. Using default structure: {selected_structure_name}") # Replaced
             self.app.logger.error(f"Error reading parameters file ({parameters_file_path}): {e}. Using default: {selected_structure_name}", exc_info=True)
         # --- End Reading Parameters ---
+        domain_profile = resolve_domain_profile(params)
 
         # --- STRUCTURE_SECTIONS_MAP is now imported from parameters.py ---
         sections_to_iterate = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
@@ -900,6 +913,7 @@ class StoryStructure:
 
             previous_section_content = "" # Initialize to store the output of the previous section
             previous_section_name_for_prompt = "" # Store the user-friendly name of the previous section
+            section_contracts = []  # 每段的机器可读契约，最后合起来做全书校验
 
             for i, section_name in enumerate(sections_to_iterate):
                 current_section_name_for_prompt = section_name # User-friendly name like "Act I: Setup"
@@ -930,6 +944,13 @@ class StoryStructure:
                     "请尽可能详细，以 Markdown 输出，不要使用代码围栏。"
                 ])
                 prompt = "\n".join(prompt_lines)
+                prompt += "\n\n" + structure_contract_instructions(
+                    section_name=current_section_name_for_prompt,
+                    section_index=i + 1,
+                    total_sections=len(sections_to_iterate),
+                    known_threads=open_threads_after(section_contracts),
+                    central_conflict_schema=domain_profile.central_conflict_schema,
+                )
 
                 safe_structure_name_for_file = selected_structure_name.lower().replace(' ', '_').replace(':', '').replace('/', '_')
                 safe_section_name_for_file = current_section_name_for_prompt.lower().replace(' ', '_').replace(':','').replace('/','_')
@@ -951,8 +972,43 @@ class StoryStructure:
                 backend_info = f"{current_backend}" if current_backend != "api" else f"api/{selected_model}"
                 log_msg_prompt_source = f"(from {prompt_filepath})" if prompt_filepath else "(from memory, save failed)"
                 self.app.logger.info(f"Sending prompt for section '{current_section_name_for_prompt}' {log_msg_prompt_source} to LLM ({backend_info})...")
-                response = send_prompt(prompt, model=selected_model)
-                
+                def _log_contract_retry(attempt, error, section=current_section_name_for_prompt):
+                    self.app.logger.warning(
+                        "Structure contract for '%s' failed validation; retry %s/%s: %s",
+                        section,
+                        attempt,
+                        STRUCTURE_CONTRACT_RETRY_LIMIT,
+                        error,
+                    )
+
+                section_index = i + 1
+                try:
+                    response, section_contract = generate_with_contract_retry(
+                        lambda request: send_prompt(request, model=selected_model),
+                        prompt,
+                        lambda text: extract_structure_contract(
+                            text,
+                            section_index,
+                            len(sections_to_iterate),
+                            central_conflict_schema=domain_profile.central_conflict_schema,
+                        ),
+                        retry_limit=STRUCTURE_CONTRACT_RETRY_LIMIT,
+                        on_retry=_log_contract_retry,
+                    )
+                except DesignContractError as exc:
+                    self.app.logger.error(
+                        "Section '%s' rejected by its structure contract: %s",
+                        current_section_name_for_prompt,
+                        exc,
+                    )
+                    show_error(
+                        "结构契约未通过",
+                        f"“{zh_label(current_section_name_for_prompt)}”未通过契约校验：{exc}",
+                    )
+                    return
+
+                section_contracts.append(section_contract)
+
                 safe_section_name_for_output = current_section_name_for_prompt.lower().replace(' ', '_').replace(':','').replace('/','_')
                 output_filename_base = f"{selected_structure_name.lower().replace(' ', '_')}_{safe_section_name_for_output}.md"
                 output_filename_full_path = os.path.join(output_dir, "story", "structure", output_filename_base)
@@ -960,9 +1016,21 @@ class StoryStructure:
                 self.app.logger.info(f"Saved details for section '{current_section_name_for_prompt}' to {output_filename_full_path}")
 
                 # Update for the next iteration
-                previous_section_content = response 
+                previous_section_content = response
                 previous_section_name_for_prompt = current_section_name_for_prompt
 
+            # 逐段校验只能保证单段自洽；悬念有没有人了结要等全部段落齐了才看得出来。
+            try:
+                validate_structure_sequence(section_contracts)
+            except DesignContractError as exc:
+                self.app.logger.error("Whole-story structure contract is inconsistent: %s", exc)
+                show_error("全书结构不自洽", str(exc))
+                return
+
+            write_json(
+                os.path.join(output_dir, "story", "structure", "structure_contract.json"),
+                {"sections": section_contracts},
+            )
             self.app.logger.info("Story structure improvement process complete!")
             # show_success("Success", f"Detailed sections for '{selected_structure_name}' generated.")
 

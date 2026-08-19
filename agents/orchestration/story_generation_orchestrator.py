@@ -23,7 +23,6 @@ from datetime import datetime
 
 from agents.base.agent import BaseAgent, AgentResult, AgentMessage
 from agents.quality.quality_agent import QualityControlAgent
-from agents.consistency.consistency_agent import ConsistencyAgent
 from agents.review.review_agent import ReviewAndRetryAgent
 from agents.writing.chapter_writing_agent import ChapterWritingAgent
 from agents.orchestration.checkpoint_state import CheckpointStateManager, CheckpointStatus, WorkflowState
@@ -74,7 +73,6 @@ class StoryGenerationResult:
     generated_content: Dict[str, Any]  # lore, structure, scenes, chapters
     workflow_completed: List[str]
     quality_scores: Dict[str, float]
-    consistency_reports: List[Dict]
     recommendations: List[str]
     execution_summary: str
     current_checkpoint: Optional[WorkflowCheckpoint] = None
@@ -108,7 +106,6 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         # Initialize validation agents
         self.quality_agent = QualityControlAgent(model=model, logger=logger)
-        self.consistency_agent = ConsistencyAgent(model=model, output_dir=output_dir, logger=logger)
         
         # Initialize Phase 1 review agent (safe, analysis-only)
         self.review_agent = ReviewAndRetryAgent(model=model, logger=logger)
@@ -382,7 +379,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                 generated_content={},
                 workflow_completed=[],
                 quality_scores={},
-                consistency_reports=[],
                 recommendations=[error_msg],
                 execution_summary=f"无效步骤：{_step_name_zh(step_name)}"
             )
@@ -401,7 +397,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     generated_content={},
                     workflow_completed=[],
                     quality_scores={},
-                    consistency_reports=[],
                     recommendations=[error_msg],
                     execution_summary=f"尚未满足{_step_name_zh(step_name)}步骤的依赖条件"
                 )
@@ -443,7 +438,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                             generated_content={},
                             workflow_completed=[],
                             quality_scores={},
-                            consistency_reports=[],
                             recommendations=[error_msg],
                             execution_summary=error_msg
                         )
@@ -463,7 +457,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     quality_scores={step_name: validation_result["quality_score"]}
                     if validation_result["quality_score"] is not None
                     else {},
-                    consistency_reports=validation_result.get("consistency_reports", []),
                     recommendations=validation_result.get("recommendations", []),
                     execution_summary=f"{_step_name_zh(step_name)}步骤已成功完成"
                 )
@@ -485,7 +478,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     generated_content={},
                     workflow_completed=[],
                     quality_scores={},
-                    consistency_reports=[],
                     recommendations=[error_msg],
                     execution_summary=f"执行{_step_name_zh(step_name)}步骤失败"
                 )
@@ -499,7 +491,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                 generated_content={},
                 workflow_completed=[],
                 quality_scores={},
-                consistency_reports=[],
                 recommendations=[f"执行错误：{str(e)}"],
                 execution_summary=f"执行{_step_name_zh(step_name)}步骤时出错：{str(e)}"
             )
@@ -989,7 +980,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             metrics={
                 "steps_completed": len(result.workflow_completed),
                 "overall_quality": sum(result.quality_scores.values()) / len(result.quality_scores) if result.quality_scores else 0,
-                "consistency_issues": sum(len(report.get("issues", [])) for report in result.consistency_reports)
             }
         )
     
@@ -999,7 +989,6 @@ class StoryGenerationOrchestrator(BaseAgent):
         generated_content = {}
         workflow_completed = []
         quality_scores = {}
-        consistency_reports = []
         all_recommendations = []
         
         for step in plan.workflow_steps:
@@ -1014,7 +1003,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     generated_content=generated_content,
                     workflow_completed=workflow_completed,
                     quality_scores=quality_scores,
-                    consistency_reports=consistency_reports,
                     recommendations=[error_msg],
                     execution_summary=f"工作流在{_step_name_zh(step)}步骤失败",
                     awaiting_user_approval=False
@@ -1040,7 +1028,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                             generated_content=generated_content,
                             workflow_completed=workflow_completed,
                             quality_scores=quality_scores,
-                            consistency_reports=consistency_reports,
                             recommendations=[
                                 f"{_step_name_zh(step)}步骤在尝试 {max_attempts} 次后仍生成失败。"
                                 f"原因：{last_step_error}"
@@ -1061,12 +1048,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     if validation_result["quality_score"]:
                         step_quality_score = validation_result["quality_score"]
                         quality_scores[step] = step_quality_score
-                    
-                    if validation_result["consistency_report"]:
-                        consistency_reports.append({
-                            "step": step,
-                            "report": validation_result["consistency_report"]
-                        })
                     
                     if validation_result["recommendations"]:
                         all_recommendations.extend(validation_result["recommendations"])
@@ -1107,7 +1088,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                             generated_content=generated_content,
                             workflow_completed=workflow_completed,
                             quality_scores=quality_scores,
-                            consistency_reports=consistency_reports,
                             recommendations=all_recommendations,
                             execution_summary=f"用户已在{_step_name_zh(step)}步骤取消工作流",
                             current_checkpoint=checkpoint,
@@ -1130,7 +1110,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             generated_content=generated_content,
             workflow_completed=workflow_completed,
             quality_scores=quality_scores,
-            consistency_reports=consistency_reports,
             recommendations=list(set(all_recommendations)),  # Remove duplicates
             execution_summary=summary
         )
@@ -1960,7 +1939,6 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         validation_result = {
             "quality_score": None,
-            "consistency_report": None,
             "recommendations": [],
             "needs_improvement": False
         }
@@ -1986,20 +1964,7 @@ class StoryGenerationOrchestrator(BaseAgent):
                 # Check if improvement is needed
                 if validation_result["quality_score"] < 0.75:
                     validation_result["needs_improvement"] = True
-            
-            # Consistency validation (for steps that have narrative content)
-            if step in ["scenes", "chapters"]:
-                consistency_result = self.consistency_agent.process_task({
-                    "content": content_text,
-                    "task_type": "validate",
-                    "context": {"workflow_step": step}
-                })
-                
-                if consistency_result.success:
-                    validation_result["consistency_report"] = consistency_result.data
-                    if "recommendations" in consistency_result.data:
-                        validation_result["recommendations"].extend(consistency_result.data["recommendations"])
-        
+
         except Exception as e:
             self.logger.warning(f"Validation failed for step {step}: {e}")
         
@@ -2134,7 +2099,6 @@ class StoryGenerationOrchestrator(BaseAgent):
         generated_content = existing_content.copy()
         workflow_completed = list(existing_content.keys())
         quality_scores = {}
-        consistency_reports = []
         all_recommendations = []
         
         for step in plan.workflow_steps:
@@ -2149,7 +2113,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     generated_content=generated_content,
                     workflow_completed=workflow_completed,
                     quality_scores=quality_scores,
-                    consistency_reports=consistency_reports,
                     recommendations=[error_msg],
                     execution_summary=f"工作流在{_step_name_zh(step)}步骤失败"
                 )
@@ -2164,7 +2127,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     generated_content=generated_content,
                     workflow_completed=workflow_completed,
                     quality_scores=quality_scores,
-                    consistency_reports=consistency_reports,
                     recommendations=[f"{_step_name_zh(step)}步骤生成失败"],
                     execution_summary=f"工作流在生成{_step_name_zh(step)}内容时失败"
                 )
@@ -2179,12 +2141,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                 
                 if validation_result["quality_score"]:
                     quality_scores[step] = validation_result["quality_score"]
-                
-                if validation_result["consistency_report"]:
-                    consistency_reports.append({
-                        "step": step,
-                        "report": validation_result["consistency_report"]
-                    })
                 
                 if validation_result["recommendations"]:
                     all_recommendations.extend(validation_result["recommendations"])
@@ -2202,7 +2158,6 @@ class StoryGenerationOrchestrator(BaseAgent):
             generated_content=generated_content,
             workflow_completed=new_steps,  # Only return newly completed steps
             quality_scores=quality_scores,
-            consistency_reports=consistency_reports,
             recommendations=list(set(all_recommendations)),
             execution_summary=summary
         )
