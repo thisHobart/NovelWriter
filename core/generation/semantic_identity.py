@@ -237,10 +237,21 @@ def resolve_contract_identities(
 ) -> SemanticResolution:
     """Return a copy whose references use prior canonical IDs when safe."""
     resolved = deepcopy(contract)
+    all_contracts = load_planning_contracts(output_dir)
     prior = [
-        item for item in load_planning_contracts(output_dir)
+        item for item in all_contracts
         if int(item.get("chapter", 0)) < int(chapter_number)
     ]
+    # Replanning a chapter that already has planned successors must not delete a
+    # thread they close, however duplicated it looks against earlier chapters.
+    protected_thread_ids = {
+        str(record.get("id", ""))
+        for item in all_contracts
+        if int(item.get("chapter", 0)) > int(chapter_number)
+        for record in item.get("plot_thread_updates", [])
+        if str(record.get("status", "")).lower() == "closed"
+        and record.get("opened_in_chapter") is not True
+    }
     decisions: List[Dict[str, Any]] = []
     warnings: List[str] = []
 
@@ -346,6 +357,19 @@ def resolve_contract_identities(
                 matched = threads_by_id.get(str(decision["matched_id"]))
         if matched is not None:
             if status == "open":
+                # Dropping a duplicate is only safe while some chapter still
+                # opens this exact ID.  When the model matched it to a
+                # *different* thread, removing it orphans the later close.
+                if (
+                    original_id in protected_thread_ids
+                    and str(matched.get("id", "")) != original_id
+                ):
+                    warnings.append(
+                        f"线索 {original_id} 与既有线索 {matched.get('id')} 相似，"
+                        "但后续章节要了结它，本章保留其开启记录"
+                    )
+                    kept_threads.append(record)
+                    continue
                 decisions.append({
                     "type": "plot_thread", "action": "duplicate_open_removed",
                     "original": original, "canonical_id": matched["id"],
@@ -358,6 +382,16 @@ def resolve_contract_identities(
                 "original": original, "canonical_id": matched["id"],
                 "model_decision": decision,
             })
+        elif (
+            status == "open"
+            and original_id in all_thread_ids
+            and original_id in protected_thread_ids
+        ):
+            # Renaming would leave the later chapter closing an ID nobody opens.
+            warnings.append(
+                f"线索 {original_id} 的 id 与既有线索重复，但后续章节按此 id 了结，"
+                "未自动改名，需要人工确认"
+            )
         elif status == "open" and original_id in all_thread_ids:
             new_id = _new_record_id("PT", chapter_number, used_thread_ids)
             used_thread_ids.add(new_id)

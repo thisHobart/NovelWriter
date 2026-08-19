@@ -6,7 +6,13 @@ import logging
 from core.gui import scene_plan as scene_plan_module
 from core.gui.scene_plan import ScenePlanning
 from core.gui.task_runner import snapshot_ui
-from core.generation.planning_contract import CONTRACT_END, CONTRACT_START
+import pytest
+
+from core.generation.planning_contract import (
+    CONTRACT_END,
+    CONTRACT_START,
+    PlanningContractError,
+)
 from core.generation.story_ledger import StoryLedgerManager
 
 
@@ -271,3 +277,149 @@ def test_repeated_open_is_repaired_without_rewriting_markdown_or_calling_model(
 
     assert manager.load_contract(2, markdown_by_chapter[2])["plot_thread_updates"] == []
     assert (plan_dir / "scenes_test_ch2.md").read_text(encoding="utf-8") == markdown_by_chapter[2]
+
+
+def _plan_project(tmp_path, updates):
+    """Write one scene plan plus contract per chapter and return the manager."""
+    plan_dir = tmp_path / "story" / "planning" / "detailed_scene_plans"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    manager = StoryLedgerManager(str(tmp_path))
+    for chapter, threads in updates.items():
+        markdown = f"### 场景 1：第{chapter}章\n规划正文"
+        (plan_dir / f"scenes_test_ch{chapter}.md").write_text(markdown, encoding="utf-8")
+        manager.save_contract(
+            chapter,
+            {
+                "chapter": chapter,
+                "origin": "scene_planning",
+                "schema_version": 2,
+                "facts_added": [],
+                "facts_confirmed": [],
+                "facts_contradicted": [],
+                "timeline_events": [],
+                "character_updates": [],
+                "plot_thread_updates": threads,
+            },
+            markdown,
+        )
+    return manager
+
+
+def test_dangling_close_repairs_the_chapter_that_should_open_the_thread(
+    monkeypatch, tmp_path
+):
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    manager = _plan_project(
+        tmp_path,
+        {
+            5: [
+                {
+                    "id": "PT-005-02",
+                    "thread": "证物袋编号对不上",
+                    "status": "open",
+                    "deadline_chapter": 8,
+                }
+            ],
+            8: [
+                {"id": "PT-005-01", "thread": "被调换的证物袋", "status": "closed"},
+                {"id": "PT-005-02", "thread": "证物袋编号对不上", "status": "closed"},
+            ],
+        },
+    )
+    repaired = {
+        "chapter": 5,
+        "facts_added": [],
+        "facts_confirmed": [],
+        "facts_contradicted": [],
+        "timeline_events": [],
+        "character_updates": [],
+        "plot_thread_updates": [
+            {
+                "id": "PT-005-01",
+                "thread": "被调换的证物袋",
+                "status": "open",
+                "deadline_chapter": 8,
+            },
+            {
+                "id": "PT-005-02",
+                "thread": "证物袋编号对不上",
+                "status": "open",
+                "deadline_chapter": 8,
+            },
+        ],
+    }
+    prompts = []
+
+    def fake_send(prompt, model=None):
+        prompts.append(prompt)
+        return (
+            "### 场景 1：第5章\n修好的规划"
+            + "\n"
+            + CONTRACT_START
+            + "\n"
+            + json.dumps(repaired, ensure_ascii=False)
+            + "\n"
+            + CONTRACT_END
+        )
+
+    monkeypatch.setattr(scene_plan_module, "send_prompt", fake_send)
+    planner._validate_sequence_with_retries(
+        str(tmp_path), None, "hosted-llm", "世界观", {}
+    )
+
+    assert "请修复第 5 章场景规划" in prompts[0]
+    assert manager.load_contract(8, "")["plot_thread_updates"][0]["id"] == "PT-005-01"
+
+
+def test_sequence_repair_stops_when_a_failure_survives_its_own_repair(
+    monkeypatch, tmp_path
+):
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    _plan_project(
+        tmp_path,
+        {
+            1: [
+                {
+                    "id": "PT-001-01",
+                    "thread": "失踪钥匙",
+                    "status": "open",
+                    "deadline_chapter": 2,
+                }
+            ],
+            2: [],
+        },
+    )
+    unchanged = {
+        "chapter": 2,
+        "facts_added": [],
+        "facts_confirmed": [],
+        "facts_contradicted": [],
+        "timeline_events": [],
+        "character_updates": [],
+        "plot_thread_updates": [],
+    }
+    calls = []
+
+    def fake_send(prompt, model=None):
+        calls.append(prompt)
+        return (
+            "### 场景 1：第2章\n没有修好"
+            + "\n"
+            + CONTRACT_START
+            + "\n"
+            + json.dumps(unchanged, ensure_ascii=False)
+            + "\n"
+            + CONTRACT_END
+        )
+
+    monkeypatch.setattr(scene_plan_module, "send_prompt", fake_send)
+    with pytest.raises(PlanningContractError) as excinfo:
+        planner._validate_sequence_with_retries(
+            str(tmp_path), 2, "hosted-llm", "世界观", {}
+        )
+
+    assert excinfo.value.code == "thread_missing_closure"
+    # One repair round, then the identical failure proves the loop cannot help.
+    assert len(calls) == 1

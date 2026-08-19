@@ -36,9 +36,14 @@ class PlanningContractError(ValueError):
         code: str = "planning_contract_invalid",
     ):
         super().__init__(message)
-        self.chapters = tuple(
-            sorted({int(chapter) for chapter in chapters if int(chapter) > 0})
-        )
+        # Order matters: callers list repair targets best-first, and the
+        # planning UI walks them in that order.
+        ordered: List[int] = []
+        for chapter in chapters:
+            number = int(chapter)
+            if number > 0 and number not in ordered:
+                ordered.append(number)
+        self.chapters = tuple(ordered)
         self.code = code
 
 
@@ -46,13 +51,61 @@ def contract_output_instructions(
     chapter_number: int,
     existing_index: Dict[str, Any] | None = None,
     domain_fields: Dict[str, str] | None = None,
+    obligations: Dict[str, Any] | None = None,
 ) -> str:
     """Instructions appended to the existing scene-planning request.
 
     This deliberately uses the same LLM response as the Markdown plan; it does
     not introduce another generation call.
     """
-    index_text = compact_json(existing_index or {}, 5000)
+    index = existing_index or {}
+    # The open-thread list is the part the model gets wrong most often, so it is
+    # spelled out rather than left to be inferred from a truncated index dump.
+    open_threads = index.get("open_plot_threads", [])
+    due_now = set(index.get("threads_due_this_chapter", []))
+    if open_threads:
+        thread_lines = "\n".join(
+            "- {id}｜{thread}｜第 {opened} 章提出｜{deadline}{due}".format(
+                id=state.get("id", ""),
+                thread=state.get("thread", ""),
+                opened=state.get("opened_at", "?"),
+                deadline=(
+                    f"计划第 {state['deadline_chapter']} 章了结"
+                    if state.get("deadline_chapter")
+                    else "未定截止章"
+                ),
+                due="（本章必须了结）" if state.get("id") in due_now else "",
+            )
+            for state in open_threads
+        )
+        thread_block = f"仍未了结的线索（只有这些 id 可以在本章 close）：\n{thread_lines}"
+    else:
+        thread_block = "仍未了结的线索：无。本章的所有 close 记录都必须是本章自提自结。"
+
+    obligation_block = ""
+    if obligations:
+        lines = [
+            f"- 线索 {info['id']}（{info.get('thread', '')}）：第 {info['closed_at']} 章要了结它，本章必须开启"
+            for info in obligations.get("threads_closed_later", {}).values()
+        ] + [
+            f"- 事实 {info['id']}（{info.get('fact', '')}）：第 {info['used_at']} 章要引用它，本章必须引入"
+            for info in obligations.get("facts_used_later", {}).values()
+        ]
+        if lines:
+            obligation_block = (
+                "\n后续章节已经规划完毕，并依赖本章提供以下内容，必须原样保留：\n"
+                + "\n".join(lines)
+                + "\n"
+            )
+
+    index_text = compact_json(
+        {
+            "facts": index.get("facts", []),
+            "timeline_events": index.get("timeline_events", []),
+            "closed_plot_threads": index.get("closed_plot_threads", []),
+        },
+        5000,
+    )
     domain_lines = "\n".join(
         f'  "{name}": {schema_hint},'
         for name, schema_hint in (domain_fields or {}).items()
@@ -81,7 +134,11 @@ def contract_output_instructions(
 }}
 {CONTRACT_END}
 
-契约只记录本章场景已经明确安排的内容，没有相应内容的数组留空。新开启线索必须给出不早于本章的 deadline_chapter；关闭线索必须沿用已有 id，并填 status 为 closed。同一章内提出并解决的线索只写一条 closed 记录，同时添加 "opened_in_chapter": true。既有规划索引如下，重复出现的事实、事件和线索必须沿用其中的 id：
+契约只记录本章场景已经明确安排的内容，没有相应内容的数组留空。新开启线索必须给出不早于本章的 deadline_chapter，且 id 不能与任何既有线索重复；关闭线索必须沿用下方“仍未了结的线索”中的 id，并填 status 为 closed。同一章内提出并解决的线索只写一条 closed 记录，同时添加 "opened_in_chapter": true。不要关闭已经了结的线索，也不要凭章号推测一个不在列表里的 id。
+
+{thread_block}
+{obligation_block}
+既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：
 {index_text}
 """.strip()
 
@@ -179,20 +236,241 @@ def load_planning_contracts(output_dir: str) -> List[Dict[str, Any]]:
     return sorted(contracts, key=lambda item: int(item["chapter"]))
 
 
+_ID_CHAPTER_PATTERN = re.compile(r"^[A-Za-z]+-(\d+)-")
+
+
+def _source_chapter_from_id(record_id: str) -> int | None:
+    """The chapter encoded in an ID such as ``PT-005-01``, if it has one."""
+    match = _ID_CHAPTER_PATTERN.match(str(record_id))
+    return int(match.group(1)) if match else None
+
+
+def thread_states(contracts: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Fold the per-chapter update stream into one state per thread.
+
+    Planning contracts record *updates*, not state.  Every consumer that needs
+    to know whether a thread is still waiting for its payoff has to replay the
+    stream; doing it in one place keeps the prompt, the acceptance gate and the
+    semantic resolver from disagreeing about what "open" means.
+    """
+    states: Dict[str, Dict[str, Any]] = {}
+    for contract in sorted(contracts, key=lambda item: int(item.get("chapter", 0))):
+        chapter = int(contract.get("chapter", 0))
+        for raw in contract.get("plot_thread_updates", []):
+            thread_id = str(raw.get("id", "")).strip()
+            if not thread_id:
+                continue
+            state = states.setdefault(
+                thread_id, {"id": thread_id, "opened_at": None, "closed_at": None}
+            )
+            if raw.get("thread"):
+                state["thread"] = raw.get("thread")
+            if str(raw.get("status", "")).lower() == "open":
+                if state["opened_at"] is None:
+                    state["opened_at"] = chapter
+                state["deadline_chapter"] = raw.get("deadline_chapter")
+            else:
+                if state["opened_at"] is None and raw.get("opened_in_chapter") is True:
+                    state["opened_at"] = chapter
+                    state.setdefault("deadline_chapter", chapter)
+                if state["closed_at"] is None:
+                    state["closed_at"] = chapter
+    return states
+
+
+def open_threads_before(contracts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Threads that have been raised and still owe the reader a payoff."""
+    return [
+        state
+        for state in thread_states(contracts).values()
+        if state["opened_at"] is not None and state["closed_at"] is None
+    ]
+
+
 def build_existing_planning_index(output_dir: str, before_chapter: int) -> Dict[str, Any]:
+    """The prior-planning view handed to the model for one chapter.
+
+    Threads are given as resolved *state* rather than as the raw update stream:
+    a model shown "PT-005-01 open, PT-005-01 closed" has to work out for itself
+    that the thread is spent, and it regularly gets that wrong by closing it a
+    second time.
+    """
+    before_chapter = int(before_chapter)
     contracts = [
         item for item in load_planning_contracts(output_dir)
-        if int(item["chapter"]) < int(before_chapter)
+        if int(item["chapter"]) < before_chapter
     ]
+    states = thread_states(contracts)
+    open_threads = [
+        state for state in states.values()
+        if state["opened_at"] is not None and state["closed_at"] is None
+    ]
+    open_threads.sort(
+        key=lambda state: (_deadline_or_last(state, before_chapter), state["id"])
+    )
     return {
         "facts": [record for item in contracts for record in item.get("facts_added", [])],
         "timeline_events": [
             record for item in contracts for record in item.get("timeline_events", [])
         ],
-        "plot_threads": [
-            record for item in contracts for record in item.get("plot_thread_updates", [])
+        "open_plot_threads": open_threads,
+        "closed_plot_threads": [
+            {"id": state["id"], "thread": state.get("thread", ""), "closed_at": state["closed_at"]}
+            for state in states.values()
+            if state["closed_at"] is not None
+        ],
+        "threads_due_this_chapter": [
+            state["id"] for state in open_threads
+            if _deadline_or_last(state, before_chapter) <= before_chapter
         ],
     }
+
+
+def _deadline_or_last(state: Dict[str, Any], fallback: int) -> int:
+    try:
+        return int(state.get("deadline_chapter"))
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, Any]:
+    """What already-planned later chapters depend on this chapter providing.
+
+    Replanning one chapter in the middle of a finished plan is the single most
+    common way a project acquires a dangling reference: the regenerated chapter
+    only ever sees chapters before it, so it can silently drop a thread that
+    chapter 8 is counting on opening.
+    """
+    chapter_number = int(chapter_number)
+    later = [
+        item for item in load_planning_contracts(output_dir)
+        if int(item["chapter"]) > chapter_number
+    ]
+    threads: Dict[str, Dict[str, Any]] = {}
+    for contract in later:
+        for record in contract.get("plot_thread_updates", []):
+            if str(record.get("status", "")).lower() != "closed":
+                continue
+            if record.get("opened_in_chapter") is True:
+                continue
+            threads.setdefault(
+                str(record.get("id", "")),
+                {
+                    "id": str(record.get("id", "")),
+                    "thread": record.get("thread", ""),
+                    "closed_at": int(contract["chapter"]),
+                },
+            )
+    facts: Dict[str, Dict[str, Any]] = {}
+    for contract in later:
+        for field in ("facts_confirmed", "facts_contradicted"):
+            for record in contract.get(field, []):
+                facts.setdefault(
+                    str(record.get("id", "")),
+                    {
+                        "id": str(record.get("id", "")),
+                        "fact": record.get("fact", ""),
+                        "used_at": int(contract["chapter"]),
+                    },
+                )
+    return {"threads_closed_later": threads, "facts_used_later": facts}
+
+
+def validate_contract_against_history(
+    contract: Dict[str, Any],
+    prior: Iterable[Dict[str, Any]],
+    chapter_number: int,
+    *,
+    obligations: Dict[str, Any] | None = None,
+) -> None:
+    """Check one chapter against its neighbours while the model can still fix it.
+
+    ``validate_contract_sequence`` catches the same errors, but only once every
+    chapter is on disk — by then the offending chapter has lost its generation
+    context and the only repair available is a blind regeneration.  Running the
+    cross-chapter rules here puts the failure back inside the retry loop, where
+    the exact message is fed to the model that produced it.
+    """
+    chapter_number = int(chapter_number)
+    prior = [item for item in prior if int(item.get("chapter", 0)) < chapter_number]
+    states = thread_states(prior)
+    open_ids = {
+        thread_id for thread_id, state in states.items()
+        if state["opened_at"] is not None and state["closed_at"] is None
+    }
+    known_facts = {
+        str(record.get("id", ""))
+        for item in prior
+        for record in item.get("facts_added", [])
+    }
+    known_facts |= {
+        str(record.get("id", "")) for record in contract.get("facts_added", [])
+    }
+
+    for record in contract.get("plot_thread_updates", []):
+        thread_id = str(record.get("id", ""))
+        if record.get("status") == "open":
+            if thread_id in states:
+                raise PlanningContractError(
+                    f"线索 {thread_id} 已在第 {states[thread_id]['opened_at']} 章开启，"
+                    "本章不能重复开启；如果是新线索请换一个 id",
+                    chapters=(chapter_number,),
+                    code="thread_reopened",
+                )
+            continue
+        if thread_id in open_ids or record.get("opened_in_chapter") is True:
+            continue
+        closed_at = states.get(thread_id, {}).get("closed_at")
+        if closed_at is not None:
+            raise PlanningContractError(
+                f"线索 {thread_id} 已在第 {closed_at} 章了结，本章不能再次关闭",
+                chapters=(chapter_number,),
+                code="thread_closed_twice",
+            )
+        raise PlanningContractError(
+            f"第 {chapter_number} 章关闭了尚未开启的线索 {thread_id}；"
+            "只能关闭“仍未了结的线索”中列出的 id，"
+            '本章自提自结的线索请加上 "opened_in_chapter": true',
+            chapters=(chapter_number,),
+            code="thread_closed_before_open",
+        )
+
+    for field in ("facts_confirmed", "facts_contradicted"):
+        for record in contract.get(field, []):
+            fact_id = str(record.get("id", ""))
+            if fact_id not in known_facts:
+                raise PlanningContractError(
+                    f"第 {chapter_number} 章的 {field} 引用了尚未引入的事实 {fact_id}",
+                    chapters=(chapter_number,),
+                    code="unknown_fact_reference",
+                )
+
+    if not obligations:
+        return
+    declared_threads = {
+        str(record.get("id", "")) for record in contract.get("plot_thread_updates", [])
+    }
+    for thread_id, info in obligations.get("threads_closed_later", {}).items():
+        if thread_id in declared_threads or thread_id in states:
+            continue
+        raise PlanningContractError(
+            f"第 {info['closed_at']} 章要了结线索 {thread_id}（{info.get('thread', '')}），"
+            f"本章必须保留它的开启记录，不能删掉",
+            chapters=(chapter_number,),
+            code="thread_opening_dropped",
+        )
+    declared_facts = {
+        str(record.get("id", "")) for record in contract.get("facts_added", [])
+    }
+    for fact_id, info in obligations.get("facts_used_later", {}).items():
+        if fact_id in declared_facts or fact_id in known_facts:
+            continue
+        raise PlanningContractError(
+            f"第 {info['used_at']} 章要引用事实 {fact_id}（{info.get('fact', '')}），"
+            f"本章必须保留它的引入记录",
+            chapters=(chapter_number,),
+            code="fact_introduction_dropped",
+        )
 
 
 def validate_contract_sequence(
@@ -256,9 +534,16 @@ def validate_contract_sequence(
                     if record.get("opened_in_chapter") is True:
                         opened[thread_id] = (chapter, chapter)
                     else:
+                        # Prefer repairing the chapter that was supposed to raise
+                        # the thread: rewriting the closing chapter instead would
+                        # throw away the payoff its outline was built around.
+                        source = _source_chapter_from_id(thread_id)
+                        targets = [chapter]
+                        if source is not None and source < chapter and source in by_chapter:
+                            targets.insert(0, source)
                         raise PlanningContractError(
                             f"第 {chapter} 章关闭了尚未开启的线索 {thread_id}",
-                            chapters=(chapter,),
+                            chapters=targets,
                             code="thread_closed_before_open",
                         )
                 closed[thread_id] = chapter

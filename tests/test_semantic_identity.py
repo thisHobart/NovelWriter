@@ -270,3 +270,31 @@ def test_fact_value_conflict_warning_names_both_values(tmp_path):
     assert "后巷近距离两枪" in warning
     assert "解剖台钢丝绞杀" in warning
     assert warning.count("F-001-01") == 1
+
+
+def test_replanned_chapter_keeps_a_thread_a_later_chapter_closes(tmp_path):
+    """A near-duplicate open must survive when a planned successor closes it."""
+    _save(tmp_path, _contract(1, threads=[{
+        "id": "PT-001-01", "thread": "失踪的钥匙",
+        "status": "open", "deadline_chapter": 8,
+    }]))
+    _save(tmp_path, _contract(5, threads=[{
+        "id": "PT-005-01", "thread": "被调换的证物袋",
+        "status": "open", "deadline_chapter": 8,
+    }]))
+    _save(tmp_path, _contract(8, threads=[
+        {"id": "PT-001-01", "thread": "失踪的钥匙", "status": "closed"},
+        {"id": "PT-005-01", "thread": "被调换的证物袋", "status": "closed"},
+    ]))
+
+    result = resolve_contract_identities(
+        _contract(5, threads=[{
+            "id": "PT-005-01", "thread": "被调换的证物袋",
+            "status": "open", "deadline_chapter": 8,
+        }]),
+        str(tmp_path), 5, "current-model", _decides("same", 0.95, "PT-001-01"),
+    )
+
+    kept = [item["id"] for item in result.contract["plot_thread_updates"]]
+    assert kept == ["PT-005-01"]
+    assert any("后续章节要了结" in warning for warning in result.warnings)

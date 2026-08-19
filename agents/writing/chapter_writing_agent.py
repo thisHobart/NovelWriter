@@ -531,10 +531,16 @@ class ChapterWritingAgent(BaseAgent):
                     total_chapters=plan.total_chapters,
                 )
             except PlanningContractError as exc:
+                targets = "、".join(str(number) for number in exc.chapters)
+                hint = (
+                    f"请回到“场景与章节规划”重新规划第 {targets} 章后再写作。"
+                    if targets
+                    else "请回到“场景与章节规划”重新规划后再写作。"
+                )
                 return AgentResult(
                     success=False,
-                    data={"chapters_written": []},
-                    messages=[f"场景规划契约前置检查未通过：{exc}"],
+                    data={"chapters_written": [], "blocking_chapters": list(exc.chapters)},
+                    messages=[f"场景规划契约前置检查未通过：{exc}。{hint}"],
                     metrics={},
                 )
             

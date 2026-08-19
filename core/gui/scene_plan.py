@@ -22,8 +22,10 @@ from core.generation.planning_contract import (
     PlanningContractError,
     build_existing_planning_index,
     contract_output_instructions,
+    downstream_obligations,
     extract_scene_plan_contract,
     load_planning_contracts,
+    validate_contract_against_history,
     validate_contract_sequence,
     validate_planning_contract,
 )
@@ -105,7 +107,10 @@ class ScenePlanning:
             field.name: field.schema_hint for field in profile.contract_fields
         }
         return contract_output_instructions(
-            chapter_number, index, domain_fields=domain_fields
+            chapter_number,
+            index,
+            domain_fields=domain_fields,
+            obligations=downstream_obligations(output_dir, chapter_number),
         )
 
     @staticmethod
@@ -175,6 +180,17 @@ class ScenePlanning:
                                 chapter_number,
                                 warning,
                             )
+                        # Cross-chapter rules run here, not only in the final
+                        # sequence gate, so a dangling reference is reported to
+                        # the model that made it while it can still be retried.
+                        validate_contract_against_history(
+                            contract,
+                            load_planning_contracts(project_dir),
+                            chapter_number,
+                            obligations=downstream_obligations(
+                                project_dir, chapter_number
+                            ),
+                        )
                     if require_complete_sequence:
                         validate_contract_sequence(
                             [contract], total_chapters=chapter_number
@@ -206,6 +222,38 @@ class ScenePlanning:
             code=getattr(last_error, "code", "planning_retry_exhausted"),
         )
 
+    def _plan_path_for_chapter(self, output_dir, chapter_number):
+        matches = glob(
+            os.path.join(
+                output_dir, "story", "planning", "**", f"*_ch{chapter_number}.md"
+            ),
+            recursive=True,
+        )
+        return matches[0] if matches else None
+
+    def _normalise_repeated_thread(self, output_dir, chapter_number, scene_markdown, selected_model):
+        """Repair a duplicated thread ID without touching the creative Markdown.
+
+        Older projects may already contain this structural error.  Identical
+        declarations are removed; a reused ID with a different meaning is judged
+        semantically and can receive a new program-assigned ID.
+        """
+        manager = StoryLedgerManager(output_dir)
+        current = manager.load_contract(chapter_number, scene_markdown)
+        if current is None:
+            return False
+        resolution = resolve_contract_identities(
+            current, output_dir, chapter_number, selected_model, send_prompt
+        )
+        if resolution.contract == current:
+            return False
+        manager.save_contract(chapter_number, resolution.contract, scene_markdown)
+        self.app.logger.info(
+            "Normalised repeated thread ID in Chapter %s without rewriting Markdown",
+            chapter_number,
+        )
+        return True
+
     def _validate_sequence_with_retries(
         self,
         output_dir,
@@ -214,8 +262,17 @@ class ScenePlanning:
         lore_content,
         story_params,
     ):
-        """Repair only chapters named by the cross-chapter contract gate."""
-        for attempt in range(self.planning_retry_limit + 1):
+        """Repair only chapters named by the cross-chapter contract gate.
+
+        The budget is per-defect rather than per-run: a long book can legitimately
+        need several unrelated repairs, and a single shared counter used to give
+        up while the plan was still improving.  Progress is tracked instead — the
+        same failure surviving its own repair means the loop cannot fix it, so it
+        stops rather than burning calls.
+        """
+        budget = self.planning_retry_limit + 1 + int(total_chapters or 0)
+        previous_signature = None
+        for _ in range(budget):
             try:
                 validate_contract_sequence(
                     load_planning_contracts(output_dir),
@@ -223,52 +280,33 @@ class ScenePlanning:
                 )
                 return
             except PlanningContractError as exc:
-                if attempt >= self.planning_retry_limit or not exc.chapters:
+                signature = (exc.code, str(exc))
+                if not exc.chapters or signature == previous_signature:
                     raise
-                chapter_number = exc.chapters[0]
-                matches = glob(
-                    os.path.join(
-                        output_dir,
-                        "story",
-                        "planning",
-                        "**",
-                        f"*_ch{chapter_number}.md",
-                    ),
-                    recursive=True,
+                previous_signature = signature
+                # Errors name repair targets best-first: for a dangling close the
+                # chapter that should have raised the thread comes before the one
+                # that closes it, so the payoff scene is not rewritten away.
+                candidates = [
+                    (number, self._plan_path_for_chapter(output_dir, number))
+                    for number in exc.chapters
+                ]
+                chapter_number, scene_plan_path = next(
+                    ((number, path) for number, path in candidates if path),
+                    (exc.chapters[0], None),
                 )
-                if not matches:
+                if scene_plan_path is None:
                     raise PlanningContractError(
                         f"{exc}；且找不到第 {chapter_number} 章场景规划，无法自动修复",
                         chapters=(chapter_number,),
                         code=exc.code,
                     ) from exc
-                scene_plan_path = matches[0]
                 scene_markdown = open_file(scene_plan_path)
-                if exc.code == "thread_reopened":
-                    # Older projects may already contain this structural error.
-                    # Normalise only the saved contract: identical declarations
-                    # are removed; a reused ID with different meaning is judged
-                    # semantically and can receive a new program-assigned ID.
-                    # The creative Markdown is never rewritten for this repair.
-                    manager = StoryLedgerManager(output_dir)
-                    current = manager.load_contract(chapter_number, scene_markdown)
-                    if current is not None:
-                        resolution = resolve_contract_identities(
-                            current,
-                            output_dir,
-                            chapter_number,
-                            selected_model,
-                            send_prompt,
-                        )
-                        if resolution.contract != current:
-                            manager.save_contract(
-                                chapter_number, resolution.contract, scene_markdown
-                            )
-                            self.app.logger.info(
-                                "Normalised repeated thread ID in Chapter %s without rewriting Markdown",
-                                chapter_number,
-                            )
-                            continue
+                if exc.code == "thread_reopened" and self._normalise_repeated_thread(
+                    output_dir, chapter_number, scene_markdown, selected_model
+                ):
+                    previous_signature = None
+                    continue
                 repair_prompt = f"""请修复第 {chapter_number} 章场景规划，使它通过跨章契约验收。只处理指出的问题，不改变章节大纲中的核心事件和场景数量。
 
 跨章验收错误：
@@ -296,12 +334,13 @@ class ScenePlanning:
                     contract=repaired_contract,
                 )
                 self.app.logger.info(
-                    "Repaired Chapter %s planning contract after sequence validation failure (%s/%s)",
+                    "Repaired Chapter %s planning contract after sequence failure (%s)",
                     chapter_number,
-                    attempt + 1,
-                    self.planning_retry_limit,
+                    exc.code,
                 )
-
+        validate_contract_sequence(
+            load_planning_contracts(output_dir), total_chapters=total_chapters
+        )
 
     def _update_ui_based_on_parameters(self):
         """Updates UI elements like button visibility based on current story parameters."""
@@ -532,167 +571,6 @@ class ScenePlanning:
             raise
 
 
-    # Generate an outline of the scenes within each chapter
-    # TODO: need to make sure character names are correct
-    # TODO: need to use reconciled_planets_arcs.md for locations and story structure
-    def scene_plan(self):
-        selected_model = self.app.get_selected_model() # Standardize model getting
-        output_dir = self.app.get_output_dir()
-        os.makedirs(output_dir, exist_ok=True)
-        dir_manager = self._get_directory_manager(output_dir)
-        chapter_outlines_dir = dir_manager.get_chapter_outlines_path()
-        scene_plans_dir = dir_manager.get_full_path("scene_plans_dir")
-        print(f"Generating scene plans with model: {selected_model}, output dir: {output_dir}")
-
-        # --- Read Parameters to get selected structure --- 
-        parameters_file_path = dir_manager.get_parameters_path()
-        selected_structure_name = "6-Act Structure" # Default
-        try:
-            params = {}
-            if not os.path.exists(parameters_file_path):
-                print(f"Warning: Parameters file not found at {parameters_file_path}. Using default structure for scene planning: {selected_structure_name}")
-            else:
-                with open(parameters_file_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if ":" in line:
-                            key, value = line.split(":", 1)
-                            params[key.strip()] = value.strip()
-                loaded_structure = params.get("Story Structure")
-                if loaded_structure and loaded_structure.strip():
-                    selected_structure_name = loaded_structure
-                else:
-                    print(f"Warning: 'Story Structure' not found or empty in {parameters_file_path}. Using default for scene planning: {selected_structure_name}")
-            print(f"Using selected story structure for scene planning: {selected_structure_name}")
-        except Exception as e:
-            print(f"Error reading parameters file ({parameters_file_path}): {e}. Using default structure for scene planning: {selected_structure_name}")
-        # --- End Reading Parameters ---
-        story_params = normalize_story_parameters(params)
-        genre_label = format_genre_label(story_params)
-        location_guidance = build_location_guidance(story_params)
-
-        # STRUCTURE_SECTIONS_MAP is imported from parameters.py
-        sections_to_process = STRUCTURE_SECTIONS_MAP.get(selected_structure_name)
-
-        if not sections_to_process:
-            show_error("错误", f"找不到故事结构“{zh_label(selected_structure_name)}”的阶段定义。")
-            print(f"Error (Scene Plan): No sections defined for structure '{selected_structure_name}'.")
-            return
-
-        try:
-            # Load the overall lore content once
-            lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
-            try:
-                lore_content = sanitize_lore_content(open_file(lore_content_path))
-            except FileNotFoundError:
-                show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
-                lore_content = "缺少整体世界观背景。"
-            
-            overall_chapter_number = 1 # Global chapter counter across all sections
-
-            for current_section_name in sections_to_process:
-                safe_selected_structure_name = selected_structure_name.lower().replace(' ', '_')
-                safe_section_name = current_section_name.lower().replace(' ', '_').replace(':','').replace('/','_')
-                
-                # Input filename from generate_chapter_outline
-                chapter_outline_input_base = f"chapter_outlines_{safe_selected_structure_name}_{safe_section_name}.md"
-                chapter_outline_input_filepath = os.path.join(chapter_outlines_dir, chapter_outline_input_base)
-
-                print(f"Scene Planning for section: {current_section_name} using file: {chapter_outline_input_filepath}")
-
-                try:
-                    section_chapter_outline_content = open_file(chapter_outline_input_filepath).strip()
-                except FileNotFoundError:
-                    show_warning("文件缺失", f"找不到“{zh_label(current_section_name)}”的章节大纲（文件：{chapter_outline_input_base}），将跳过该部分。")
-                    print(f"Warning: File {chapter_outline_input_filepath} not found. Skipping scene planning for '{current_section_name}'.")
-                    continue
-
-                if not section_chapter_outline_content:
-                    print(f"Warning: Chapter outline file {chapter_outline_input_filepath} is empty. Skipping scene planning for '{current_section_name}'.")
-                    continue
-
-                # Count chapters within this specific section's outline file
-                # Using a more robust regex that looks for "Chapter X" or "Chapter X: Title"
-                # This count is to iterate through the chapters *within this section file*
-                chapters_in_section_file = re.findall(
-                    r"^\s*(?:#{2,6}\s*|\*{2,}\s*)?(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:\s*[:：.\-]?\s*.*?)?\s*(?:\*{2,})?\s*$",
-                    section_chapter_outline_content,
-                    re.MULTILINE | re.IGNORECASE,
-                )
-                
-                if not chapters_in_section_file:
-                    print(f"Warning: No chapters detected in {chapter_outline_input_filepath}. Skipping scene planning for '{current_section_name}'.")
-                    continue
-                
-                print(f"Detected {len(chapters_in_section_file)} chapters in outline for section '{current_section_name}'. Starting global chapter number for this section: {overall_chapter_number}")
-
-                # Iterate for each chapter found in *this section's outline file*
-                # The actual chapter number for the prompt is overall_chapter_number
-                for i in range(len(chapters_in_section_file)):
-                    current_chapter_for_prompt = overall_chapter_number + i
-                    
-                    prompt = (
-                        f"请为{genre_label}小说第 {current_chapter_for_prompt} 章规划场景。\n"
-                        f"故事采用“{zh_label(selected_structure_name)}”框架，包含：{', '.join(zh_label(section) for section in sections_to_process)}。\n"
-                        f"当前正在设计 **{zh_label(current_section_name)}** 的场景。\n\n"
-                        f"以下是包含第 {current_chapter_for_prompt} 章的“{zh_label(current_section_name)}”逐章大纲：\n{section_chapter_outline_content}\n\n"
-                        f"请重点把上述大纲中的第 {current_chapter_for_prompt} 章扩展为详细场景。"
-                        "每个场景需说明：环境与具体地点、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。"
-                        f"请保持人物弧光、势力和地点与第 {current_chapter_for_prompt} 章大纲中的建议一致。\n"
-                        + "\n".join(f"- {line}" for line in location_guidance) + "\n"
-                        f"整体世界观如下，供参考：\n{lore_content}\n\n"
-                        "请使用结构清晰的 Markdown，每个场景设置标题。\n\n"
-                        + self._contract_instructions(
-                            output_dir, current_chapter_for_prompt, story_params
-                        )
-                    )
-
-                    current_backend = get_backend()
-                    backend_info = f"{current_backend}" if current_backend != "api" else f"api/{selected_model}"
-                    print(f"--- Scene Plan Prompt for Chapter {current_chapter_for_prompt} (Section: {current_section_name}, Backend: {backend_info}) ---")
-                    # print(prompt) # Uncomment for full prompt debugging
-                    print("-------------------------------------------------------------------")
-                    try:
-                        response, scene_markdown, contract = self._generate_valid_scene_response(
-                            prompt,
-                            selected_model,
-                            current_chapter_for_prompt,
-                            lore_content,
-                            story_params,
-                            output_dir=output_dir,
-                        )
-                    except PlanningContractError as exc:
-                        show_error(
-                            "场景规划契约无效",
-                            f"第 {current_chapter_for_prompt} 章未保存：{exc}",
-                        )
-                        continue
-
-                    output_scene_plan_base = f"scenes_{safe_selected_structure_name}_{safe_section_name}_ch{current_chapter_for_prompt}.md"
-                    os.makedirs(scene_plans_dir, exist_ok=True)
-                    output_scene_plan_filepath = os.path.join(scene_plans_dir, output_scene_plan_base)
-                    self._save_scene_plan_and_contract(
-                        output_dir,
-                        output_scene_plan_filepath,
-                        response,
-                        current_chapter_for_prompt,
-                        scene_markdown=scene_markdown,
-                        contract=contract,
-                    )
-                    print(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
-                
-                overall_chapter_number += len(chapters_in_section_file) # Increment global chapter counter by number of chapters processed in this section
-
-            # show_success("Success", f"Scene plans for '{selected_structure_name}' generated successfully.")
-
-        except FileNotFoundError as fnf_e:
-            show_error("错误", f"场景规划找不到必需文件：{fnf_e}")
-            print(f"Error (Scene Plan): File not found - {fnf_e}")
-        except Exception as e:
-            print(f"Failed to generate scene plans: {e}")
-            import traceback
-            traceback.print_exc()
-            show_error("错误", f"生成场景规划失败：{str(e)}")
-
     # Renamed from scene_plan to indicate its use for longer forms
     def _plan_long_form_scenes(self, ui):
         selected_model = ui.model 
@@ -749,6 +627,7 @@ class ScenePlanning:
             overall_chapter_number = 1 
             generated_chapters = []
             skipped_chapters = []
+            failed_chapters = []
 
             for current_section_name in sections_to_process:
                 safe_selected_structure_name = selected_structure_name.lower().replace(' ', '_')
@@ -851,9 +730,14 @@ class ScenePlanning:
                             output_dir=output_dir,
                         )
                     except PlanningContractError as exc:
-                        show_error(
-                            "场景规划契约无效",
-                            f"第 {current_chapter_for_prompt} 章未保存：{exc}",
+                        # Keep going so one bad chapter does not abandon the run,
+                        # but remember the hole: the cross-chapter gate below is
+                        # meaningless while chapters are missing.
+                        failed_chapters.append((current_chapter_for_prompt, str(exc)))
+                        self.app.logger.error(
+                            "Chapter %s scene planning failed: %s",
+                            current_chapter_for_prompt,
+                            exc,
                         )
                         continue
 
@@ -869,6 +753,16 @@ class ScenePlanning:
                     self.app.logger.info(f"Scene plan for Chapter {current_chapter_for_prompt} saved to {output_scene_plan_filepath}")
                 
                 overall_chapter_number += len(chapters_in_section_file) 
+
+            if failed_chapters:
+                detail = "\n".join(
+                    f"第 {number} 章：{reason}" for number, reason in failed_chapters
+                )
+                show_error(
+                    "场景规划未完成",
+                    "以下章节没有生成可用规划，未做跨章校验，请修复后重新规划：\n" + detail,
+                )
+                return
 
             self._validate_sequence_with_retries(
                 output_dir,
