@@ -14,6 +14,25 @@ from core.gui.notifications import init_notifications, show_success, show_info, 
 
 STEP_NAMES_ZH = {"lore": "设定", "structure": "结构", "scenes": "场景", "chapters": "章节"}
 
+
+def workflow_step_visual(status: str, has_files: bool) -> Dict[str, Any]:
+    """Return one consistent visual state for startup and manual refresh."""
+    status = str(status or "not_started")
+    if status == "completed":
+        return {"indicator": "✓", "text": "已完成", "color": "green", "can_view": has_files}
+    if status == "in_progress":
+        return {"indicator": "●", "text": "进行中", "color": "orange", "can_view": has_files}
+    if status == "failed":
+        return {"indicator": "✗", "text": "失败", "color": "red", "can_view": has_files}
+    if has_files:
+        return {
+            "indicator": "◌",
+            "text": "检测到已有文件",
+            "color": "#1976D2",
+            "can_view": True,
+        }
+    return {"indicator": "○", "text": "未开始", "color": "gray", "can_view": False}
+
 # Import agentic orchestrators
 try:
     from agents.orchestration.story_generation_orchestrator import StoryGenerationOrchestrator
@@ -739,19 +758,15 @@ class NovelWriterApp:
         try:
             for step_name, step_data in workflow_state.steps.items():
                 if step_name in self.step_indicators:
-                    # Update status indicator
-                    if step_data.status.value == "completed":
-                        self.step_indicators[step_name].config(text="✅", fg="green")
-                        self.step_labels[step_name].config(text="已完成", fg="green")
-                    elif step_data.status.value == "in_progress":
-                        self.step_indicators[step_name].config(text="🔄", fg="orange")
-                        self.step_labels[step_name].config(text="进行中", fg="orange")
-                    elif step_data.status.value == "failed":
-                        self.step_indicators[step_name].config(text="❌", fg="red")
-                        self.step_labels[step_name].config(text="失败", fg="red")
-                    else:
-                        self.step_indicators[step_name].config(text="○", fg="gray")
-                        self.step_labels[step_name].config(text="未开始", fg="gray")
+                    visual = workflow_step_visual(
+                        step_data.status.value, bool(step_data.output_files)
+                    )
+                    self.step_indicators[step_name].config(
+                        text=visual["indicator"], fg=visual["color"]
+                    )
+                    self.step_labels[step_name].config(
+                        text=visual["text"], fg=visual["color"]
+                    )
                     
                     # Update file count
                     file_count = len(step_data.output_files)
@@ -760,10 +775,9 @@ class NovelWriterApp:
                     
                     # Enable/disable details button
                     if step_name in self.step_buttons:
-                        if file_count > 0:
-                            self.step_buttons[step_name].config(state="normal")
-                        else:
-                            self.step_buttons[step_name].config(state="disabled")
+                        self.step_buttons[step_name].config(
+                            state="normal" if visual["can_view"] else "disabled"
+                        )
             
             # Update summary
             completed_steps = [name for name, step in workflow_state.steps.items() if step.status.value == "completed"]
@@ -817,6 +831,7 @@ class NovelWriterApp:
             )
             # Give orchestrator access to app instance for real function calls
             self.story_orchestrator.app_instance = self
+            self.story_orchestrator.progress_callback = self._on_workflow_progress
             
             # Initialize analysis orchestrator
             self.analysis_orchestrator = MultiAgentOrchestrator(
@@ -1060,6 +1075,7 @@ class NovelWriterApp:
         self.workflow_progress['value'] = self.workflow_progress['maximum']
         action = "继续并完成" if resumed else "完成"
         self.workflow_status.config(text=f"工作流已成功{action}！", fg="green")
+        self.refresh_progress_display()
         
         # Show results
         self.show_workflow_results(generation_result, resumed)
@@ -1074,6 +1090,7 @@ class NovelWriterApp:
         error_text = "\n".join(error_messages) if isinstance(error_messages, list) else str(error_messages)
         
         self.workflow_status.config(text="工作流失败", fg="red")
+        self.refresh_progress_display()
         
         show_error("工作流错误", f"工作流执行失败：\n\n{error_text}")
         
@@ -1369,23 +1386,14 @@ class NovelWriterApp:
                 file_count = self.file_counts[step_name]
                 details_btn = self.step_buttons[step_name]
                 
-                # Update indicator and status text based on status
-                if step.status.value == "completed":
-                    indicator.config(text="✓", fg="green")  # Checkmark
-                    status_label.config(text="已完成", fg="green")
-                    details_btn.config(state="normal")  # Enable file viewing
-                elif step.status.value == "in_progress":
-                    indicator.config(text="●", fg="orange")  # Filled circle
-                    status_label.config(text="进行中", fg="orange")
-                    details_btn.config(state="normal" if step.output_files else "disabled")
-                elif step.status.value == "failed":
-                    indicator.config(text="✗", fg="red")  # X mark
-                    status_label.config(text="失败", fg="red")
-                    details_btn.config(state="normal" if step.output_files else "disabled")
-                else:
-                    indicator.config(text="○", fg="gray")  # Empty circle
-                    status_label.config(text="未开始", fg="gray")
-                    details_btn.config(state="disabled")
+                visual = workflow_step_visual(
+                    step.status.value, bool(step.output_files)
+                )
+                indicator.config(text=visual["indicator"], fg=visual["color"])
+                status_label.config(text=visual["text"], fg=visual["color"])
+                details_btn.config(
+                    state="normal" if visual["can_view"] else "disabled"
+                )
                 
                 # Update file count with better formatting
                 file_count_text = f"📁 {len(step.output_files)} 个文件"
@@ -1662,6 +1670,10 @@ class NovelWriterApp:
     def update_progress_on_step_completion(self, step_name: str):
         """Update progress display when a step completes."""
         # This method can be called by workflow callbacks
+        self.root.after(0, self.refresh_progress_display)
+
+    def _on_workflow_progress(self, step_name, status):
+        """Schedule a right-panel refresh for a persisted workflow transition."""
         self.root.after(0, self.refresh_progress_display)
 
 if __name__ == "__main__":

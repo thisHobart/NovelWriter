@@ -132,6 +132,9 @@ class StoryGenerationOrchestrator(BaseAgent):
         # Checkpoint state manager for persistence
         self.state_manager = CheckpointStateManager(output_dir=output_dir, logger=logger)
         self.workflow_state: Optional[WorkflowState] = None
+        # GUI may subscribe to persisted step transitions.  The workflow core
+        # never touches Tk directly, which keeps tests and non-GUI use safe.
+        self.progress_callback: Optional[Callable[[str, CheckpointStatus], None]] = None
         
         # Checkpoint messages for each step
         self.checkpoint_messages = {
@@ -346,6 +349,17 @@ class StoryGenerationOrchestrator(BaseAgent):
         """Update progress for a specific step."""
         if self.workflow_state:
             self.state_manager.update_step_status(self.workflow_state, step_name, status, **kwargs)
+
+    def _publish_progress(self, step_name: str, status: CheckpointStatus) -> None:
+        """Notify the GUI after the durable checkpoint state has changed."""
+        callback = getattr(self, "progress_callback", None)
+        if callback is None:
+            return
+        try:
+            callback(step_name, status)
+        except Exception as exc:
+            # A display failure must never abort an expensive generation run.
+            self.logger.warning("Could not publish workflow progress: %s", exc)
     
     def scan_output_files(self):
         """Scan output directory and update file lists."""
@@ -872,6 +886,16 @@ class StoryGenerationOrchestrator(BaseAgent):
         self.logger.info("🚀 Starting complete agentic workflow")
         
         try:
+            # “启动完整工作流” represents a new run.  Keep existing files for
+            # display/reuse, but start a fresh durable status record so stale
+            # completed flags cannot masquerade as this run's progress.
+            workflow_id = f"workflow_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self.workflow_state = self.state_manager.initialize_workflow(
+                workflow_id, story_parameters
+            )
+            self.state_manager.scan_output_files(self.workflow_state)
+            self._publish_progress("lore", CheckpointStatus.NOT_STARTED)
+
             # Create a generation plan
             plan = StoryGenerationPlan(
                 workflow_steps=["lore", "structure", "scenes", "chapters"],
@@ -985,6 +1009,8 @@ class StoryGenerationOrchestrator(BaseAgent):
     
     def _execute_generation_workflow(self, plan: StoryGenerationPlan) -> StoryGenerationResult:
         """Execute the complete story generation workflow with checkpoint support."""
+        if getattr(self, "workflow_state", None) is None:
+            self.load_or_create_workflow_state(plan.parameters)
         
         generated_content = {}
         workflow_completed = []
@@ -993,11 +1019,22 @@ class StoryGenerationOrchestrator(BaseAgent):
         
         for step in plan.workflow_steps:
             self.logger.info(f"Executing workflow step: {step}")
+            self.update_step_progress(
+                step,
+                CheckpointStatus.IN_PROGRESS,
+                error_message=None,
+                retry_count=0,
+            )
+            self._publish_progress(step, CheckpointStatus.IN_PROGRESS)
             
             # Check dependencies
             if not self._check_step_dependencies(step, workflow_completed):
                 error_msg = f"尚未满足{_step_name_zh(step)}步骤的依赖条件"
                 self.logger.error(error_msg)
+                self.update_step_progress(
+                    step, CheckpointStatus.FAILED, error_message=error_msg
+                )
+                self._publish_progress(step, CheckpointStatus.FAILED)
                 return StoryGenerationResult(
                     success=False,
                     generated_content=generated_content,
@@ -1022,7 +1059,22 @@ class StoryGenerationOrchestrator(BaseAgent):
                     self.logger.error(f"Step {step} generation failed (attempt {retry_count + 1})")
                     last_step_error = step_result.get("error", last_step_error)
                     retry_count += 1
+                    self.update_step_progress(
+                        step,
+                        CheckpointStatus.IN_PROGRESS,
+                        retry_count=retry_count,
+                        error_message=last_step_error,
+                    )
+                    self._publish_progress(step, CheckpointStatus.IN_PROGRESS)
                     if retry_count >= max_attempts:
+                        self.scan_output_files()
+                        self.update_step_progress(
+                            step,
+                            CheckpointStatus.FAILED,
+                            retry_count=retry_count,
+                            error_message=last_step_error,
+                        )
+                        self._publish_progress(step, CheckpointStatus.FAILED)
                         return StoryGenerationResult(
                             success=False,
                             generated_content=generated_content,
@@ -1072,7 +1124,6 @@ class StoryGenerationOrchestrator(BaseAgent):
                     if checkpoint.user_approved:
                         # User approved, continue to next step
                         step_success = True
-                        workflow_completed.append(step)
                         self.current_checkpoint = None
                         self.logger.info(f"✅ Step {step} approved and completed")
                     elif checkpoint.retry_count > retry_count:
@@ -1083,6 +1134,13 @@ class StoryGenerationOrchestrator(BaseAgent):
                     else:
                         # User cancelled or timeout
                         self.logger.warning(f"❌ Step {step} cancelled by user")
+                        self.update_step_progress(
+                            step,
+                            CheckpointStatus.FAILED,
+                            retry_count=retry_count,
+                            error_message="用户取消或等待确认超时",
+                        )
+                        self._publish_progress(step, CheckpointStatus.FAILED)
                         return StoryGenerationResult(
                             success=False,
                             generated_content=generated_content,
@@ -1096,7 +1154,42 @@ class StoryGenerationOrchestrator(BaseAgent):
                 else:
                     # No checkpoint mode, proceed normally
                     step_success = True
+
+                if step_success:
+                    # File counts and status must be persisted together; the
+                    # right panel reads this state rather than the local result
+                    # list used by the orchestration loop.
+                    self.scan_output_files()
+                    current = self.workflow_state.steps.get(step)
+                    if current is None or not current.output_files:
+                        error_msg = (
+                            f"{_step_name_zh(step)}步骤执行成功，但没有检测到输出文件"
+                        )
+                        self.update_step_progress(
+                            step,
+                            CheckpointStatus.FAILED,
+                            retry_count=retry_count,
+                            error_message=error_msg,
+                        )
+                        self._publish_progress(step, CheckpointStatus.FAILED)
+                        return StoryGenerationResult(
+                            success=False,
+                            generated_content=generated_content,
+                            workflow_completed=workflow_completed,
+                            quality_scores=quality_scores,
+                            recommendations=[error_msg],
+                            execution_summary=f"工作流在{_step_name_zh(step)}步骤失败",
+                            awaiting_user_approval=False,
+                        )
+                    self.update_step_progress(
+                        step,
+                        CheckpointStatus.COMPLETED,
+                        retry_count=retry_count,
+                        error_message=None,
+                        quality_score=step_quality_score,
+                    )
                     workflow_completed.append(step)
+                    self._publish_progress(step, CheckpointStatus.COMPLETED)
         
         # Generate execution summary
         summary = f"已完成 {len(workflow_completed)}/{len(plan.workflow_steps)} 个工作流步骤。"
