@@ -11,17 +11,60 @@ from core.gui.scene_plan import ScenePlanning
 from core.gui.chapter_writing import ChapterWriting
 from core.generation.ai_helper import get_supported_models, set_backend, get_backend, check_cli_availability, get_available_backends, DEFAULT_API_MODEL
 from core.gui.notifications import init_notifications, show_success, show_info, show_warning, show_error
+from core.generation.workflow_status import (
+    BLOCKED,
+    COMPLETE,
+    PARTIAL,
+    StageStatus,
+    assess_workflow,
+)
 
 STEP_NAMES_ZH = {"lore": "设定", "structure": "结构", "scenes": "场景", "chapters": "章节"}
 
 
-def workflow_step_visual(status: str, has_files: bool) -> Dict[str, Any]:
-    """Return one consistent visual state for startup and manual refresh."""
+def workflow_step_visual(
+    status: str, has_files: bool, assessment: Optional[StageStatus] = None
+) -> Dict[str, Any]:
+    """Return one consistent visual state for startup and manual refresh.
+
+    The artifacts on disk are the authority.  A persisted flag only says what
+    the agentic runner did, so it cannot mark a stage complete that was later
+    edited, nor explain a stage that will be rejected at the next gate; it is
+    consulted only while a run is actually in progress, or when the artifacts
+    cannot be assessed at all.
+    """
     status = str(status or "not_started")
-    if status == "completed":
-        return {"indicator": "✓", "text": "已完成", "color": "green", "can_view": has_files}
     if status == "in_progress":
         return {"indicator": "●", "text": "进行中", "color": "orange", "can_view": has_files}
+
+    if assessment is not None:
+        progress = (
+            f"（{assessment.done}/{assessment.total}）"
+            if assessment.total and assessment.done < assessment.total
+            else ""
+        )
+        if assessment.state == COMPLETE:
+            return {
+                "indicator": "✓", "text": "已完成", "color": "green",
+                "can_view": True, "detail": assessment.detail,
+            }
+        if assessment.state == BLOCKED:
+            return {
+                "indicator": "!", "text": "待修复", "color": "#C62828",
+                "can_view": True, "detail": assessment.detail,
+            }
+        if assessment.state == PARTIAL:
+            return {
+                "indicator": "◑", "text": f"未完成{progress}", "color": "#EF6C00",
+                "can_view": True, "detail": assessment.detail,
+            }
+        return {
+            "indicator": "○", "text": "未开始", "color": "gray",
+            "can_view": False, "detail": assessment.detail,
+        }
+
+    if status == "completed":
+        return {"indicator": "✓", "text": "已完成", "color": "green", "can_view": has_files}
     if status == "failed":
         return {"indicator": "✗", "text": "失败", "color": "red", "can_view": has_files}
     if has_files:
@@ -586,6 +629,7 @@ class NovelWriterApp:
         # Create step indicators with better labels
         self.step_indicators = {}
         self.step_labels = {}
+        self.step_details = {}
         self.file_counts = {}
         self.step_buttons = {}  # For clickable step details
         
@@ -620,6 +664,12 @@ class NovelWriterApp:
             desc_label = tk.Label(step_frame, text=step_description, 
                                 font=("Arial", 8), fg="darkblue", wraplength=300)
             desc_label.pack(fill="x", pady=(2, 0))
+
+            # Why the stage is not done — the blocking reason belongs on the
+            # panel, not only in the dialog that appears once writing starts.
+            detail_label = tk.Label(step_frame, text="", font=("Arial", 8),
+                                    fg="gray", wraplength=300, justify="left")
+            self.step_details[step_name] = detail_label
             
             # File count with better formatting
             file_count = tk.Label(step_frame, text="📁 0 个文件",
@@ -709,6 +759,27 @@ class NovelWriterApp:
             # Set default state
             self.progress_summary.config(text="没有可用的工作流数据")
     
+    def _assess_stages(self) -> Dict[str, StageStatus]:
+        """Read the real state of every stage from the artifacts on disk."""
+        try:
+            return assess_workflow(self.get_output_dir())
+        except Exception as exc:
+            self.logger.warning(f"Could not assess workflow artifacts: {exc}")
+            return {}
+
+    def _set_step_detail(self, step_name: str, visual: Dict[str, Any]) -> None:
+        """Show the stage's blocking reason under its status line, if any."""
+        label = self.step_details.get(step_name)
+        if label is None:
+            return
+        detail = visual.get("detail", "")
+        show = bool(detail) and visual["text"] != "已完成"
+        label.config(text=detail if show else "", fg=visual["color"])
+        if show:
+            label.pack(fill="x", pady=(1, 0))
+        else:
+            label.pack_forget()
+
     def scan_existing_files_basic(self):
         """Basic file scanning when agentic features are not available."""
         try:
@@ -722,6 +793,8 @@ class NovelWriterApp:
                 "chapters": ["story/content/chapter_*.md"]
             }
             
+            assessments = self._assess_stages()
+
             # Check each step and update display
             for step_name, file_patterns in expected_files.items():
                 file_count = 0
@@ -739,12 +812,24 @@ class NovelWriterApp:
                 # Update display
                 if step_name in self.file_counts:
                     self.file_counts[step_name].config(text=f"📁 {file_count} 个文件")
-                    
-                if step_name in self.step_indicators and file_count > 0:
-                    self.step_indicators[step_name].config(text="✅", fg="green")
-                    self.step_labels[step_name].config(text="已找到文件", fg="green")
+
+                # Files existing is not the same as the stage being done, so the
+                # artifact assessment decides here too.
+                if step_name in self.step_indicators:
+                    visual = workflow_step_visual(
+                        "not_started", file_count > 0, assessments.get(step_name)
+                    )
+                    self.step_indicators[step_name].config(
+                        text=visual["indicator"], fg=visual["color"]
+                    )
+                    self.step_labels[step_name].config(
+                        text=visual["text"], fg=visual["color"]
+                    )
+                    self._set_step_detail(step_name, visual)
                     if step_name in self.step_buttons:
-                        self.step_buttons[step_name].config(state="normal")
+                        self.step_buttons[step_name].config(
+                            state="normal" if visual["can_view"] else "disabled"
+                        )
             
             # Update summary
             total_files = sum(int(label.cget("text").split()[1]) for label in self.file_counts.values() if label.cget("text").split()[1].isdigit())
@@ -756,10 +841,13 @@ class NovelWriterApp:
     def update_progress_display_from_state(self, workflow_state):
         """Update progress display from loaded workflow state."""
         try:
+            assessments = self._assess_stages()
             for step_name, step_data in workflow_state.steps.items():
                 if step_name in self.step_indicators:
                     visual = workflow_step_visual(
-                        step_data.status.value, bool(step_data.output_files)
+                        step_data.status.value,
+                        bool(step_data.output_files),
+                        assessments.get(step_name),
                     )
                     self.step_indicators[step_name].config(
                         text=visual["indicator"], fg=visual["color"]
@@ -767,6 +855,7 @@ class NovelWriterApp:
                     self.step_labels[step_name].config(
                         text=visual["text"], fg=visual["color"]
                     )
+                    self._set_step_detail(step_name, visual)
                     
                     # Update file count
                     file_count = len(step_data.output_files)
@@ -1376,6 +1465,7 @@ class NovelWriterApp:
                 return
             
             # Update step indicators
+            assessments = self._assess_stages()
             for step_name in ["lore", "structure", "scenes", "chapters"]:
                 step = workflow_state.steps.get(step_name)
                 if not step:
@@ -1387,8 +1477,11 @@ class NovelWriterApp:
                 details_btn = self.step_buttons[step_name]
                 
                 visual = workflow_step_visual(
-                    step.status.value, bool(step.output_files)
+                    step.status.value,
+                    bool(step.output_files),
+                    assessments.get(step_name),
                 )
+                self._set_step_detail(step_name, visual)
                 indicator.config(text=visual["indicator"], fg=visual["color"])
                 status_label.config(text=visual["text"], fg=visual["color"])
                 details_btn.config(

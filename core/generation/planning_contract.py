@@ -6,7 +6,7 @@ import json
 import os
 import re
 from glob import glob
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Tuple
 
 from core.generation.helper_fns import parse_scene_sections
 from core.generation.story_ledger import StoryLedgerManager, compact_json
@@ -78,14 +78,21 @@ def contract_output_instructions(
             )
             for state in open_threads
         )
-        thread_block = f"仍未了结的线索（只有这些 id 可以在本章 close）：\n{thread_lines}"
+        thread_block = (
+            "仍未了结的悬念（前面已经埋下、还欠读者一个答案；"
+            "只有这些 id 可以在本章 close）：\n"
+            f"{thread_lines}"
+        )
     else:
-        thread_block = "仍未了结的线索：无。本章的所有 close 记录都必须是本章自提自结。"
+        thread_block = (
+            "仍未了结的悬念：无。前面没有任何悬念在等答案，"
+            "所以本章的 close 记录只能是本章自己埋下又自己了结的。"
+        )
 
     obligation_block = ""
     if obligations:
         lines = [
-            f"- 线索 {info['id']}（{info.get('thread', '')}）：第 {info['closed_at']} 章要了结它，本章必须开启"
+            f"- 悬念 {info['id']}（{info.get('thread', '')}）：第 {info['closed_at']} 章要了结它，本章必须埋下"
             for info in obligations.get("threads_closed_later", {}).values()
         ] + [
             f"- 事实 {info['id']}（{info.get('fact', '')}）：第 {info['used_at']} 章要引用它，本章必须引入"
@@ -130,11 +137,17 @@ def contract_output_instructions(
   "facts_contradicted": [{{"id":"已有事实ID","reason":"推翻理由","new_value":"新取值"}}],
   "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点"}}],
   "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":true}}],
-  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","thread":"线索名称","status":"open","deadline_chapter":{chapter_number}}}]
+  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","thread":"悬念的一句话描述","status":"open","deadline_chapter":{chapter_number}}}]
 }}
 {CONTRACT_END}
 
-契约只记录本章场景已经明确安排的内容，没有相应内容的数组留空。新开启线索必须给出不早于本章的 deadline_chapter，且 id 不能与任何既有线索重复；关闭线索必须沿用下方“仍未了结的线索”中的 id，并填 status 为 closed。同一章内提出并解决的线索只写一条 closed 记录，同时添加 "opened_in_chapter": true。不要关闭已经了结的线索，也不要凭章号推测一个不在列表里的 id。
+契约只记录本章场景已经明确安排的内容，没有相应内容的数组留空。
+
+关于 plot_thread_updates：status 填 "open" 表示**本章埋下**这条悬念（读者开始好奇），填 "closed" 表示**本章了结**它（读者得到答案）。
+- 埋下：必须给出不早于本章的 deadline_chapter，说明最晚第几章揭晓；id 不能与任何既有悬念重复。
+- 了结：必须沿用下方“仍未了结的悬念”中的 id。不要了结已经了结过的，也不要凭章号规律推测一个不在列表里的 id——那会让本章为一个读者从未见过的谜面写揭晓戏。
+- 本章自己埋下又自己了结的悬念：只写一条 closed 记录，并加上 "opened_in_chapter": true。
+- 下方标注“本章必须了结”的悬念，本章必须处理：要么了结它，要么写一条 {{"id":"该悬念id","status":"open","extend":true,"deadline_chapter":新的章号}} 把揭晓明确推迟到后面某一章。不处理就等于让读者一直悬着却没人记账。
 
 {thread_block}
 {obligation_block}
@@ -209,15 +222,28 @@ def validate_planning_contract(
             raise PlanningContractError(f"本章线索 id 重复：{thread_id}")
         seen_ids.add(thread_id)
         if status not in {"open", "closed"}:
-            raise PlanningContractError(f"线索 {thread_id} 的 status 只能是 open 或 closed")
+            raise PlanningContractError(
+                f"悬念 {_thread_label(thread_id, record)} 的 status 只能填 open（本章埋下）"
+                "或 closed（本章了结）"
+            )
         record["status"] = status
         if status == "open":
+            if record.get("extend") and int(record.get("deadline_chapter", 0)) <= chapter_number:
+                raise PlanningContractError(
+                    f"悬念 {_thread_label(thread_id, record)} 延期后的 deadline_chapter "
+                    f"必须晚于本章第 {chapter_number} 章"
+                )
             try:
                 deadline = int(record.get("deadline_chapter"))
             except (TypeError, ValueError):
-                raise PlanningContractError(f"新开启线索 {thread_id} 缺少有效截止章") from None
+                raise PlanningContractError(
+                    f"本章埋下的悬念 {_thread_label(thread_id, record)} 缺少有效的 "
+                    "deadline_chapter，必须说明最晚在第几章了结"
+                ) from None
             if deadline < chapter_number:
-                raise PlanningContractError(f"线索 {thread_id} 的截止章早于开启章")
+                raise PlanningContractError(
+                    f"悬念 {_thread_label(thread_id, record)} 的截止章早于埋下它的本章"
+                )
             record["deadline_chapter"] = deadline
     return normalized
 
@@ -245,6 +271,18 @@ def _source_chapter_from_id(record_id: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _thread_label(thread_id: str, *sources: Dict[str, Any]) -> str:
+    """Name a thread the way a person reads it: ID plus what it actually is.
+
+    A bare ``PT-005-01`` tells the author nothing about which mystery broke.
+    """
+    for source in sources:
+        name = str((source or {}).get("thread", "")).strip()
+        if name:
+            return f"{thread_id}（{name}）"
+    return str(thread_id)
+
+
 def thread_states(contracts: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Fold the per-chapter update stream into one state per thread.
 
@@ -266,7 +304,9 @@ def thread_states(contracts: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, An
             if raw.get("thread"):
                 state["thread"] = raw.get("thread")
             if str(raw.get("status", "")).lower() == "open":
-                if state["opened_at"] is None:
+                # An "extend" record is not a second raising of the thread; it
+                # only restates when the payoff is now due.
+                if state["opened_at"] is None and not raw.get("extend"):
                     state["opened_at"] = chapter
                 state["deadline_chapter"] = raw.get("deadline_chapter")
             else:
@@ -410,10 +450,21 @@ def validate_contract_against_history(
     for record in contract.get("plot_thread_updates", []):
         thread_id = str(record.get("id", ""))
         if record.get("status") == "open":
+            if thread_id in states and record.get("extend"):
+                if thread_id not in open_ids:
+                    raise PlanningContractError(
+                        f"悬念 {_thread_label(thread_id, record, states[thread_id])}"
+                        f"已在第 {states[thread_id]['closed_at']} 章了结，无法延期",
+                        chapters=(chapter_number,),
+                        code="thread_closed_twice",
+                    )
+                continue
             if thread_id in states:
                 raise PlanningContractError(
-                    f"线索 {thread_id} 已在第 {states[thread_id]['opened_at']} 章开启，"
-                    "本章不能重复开启；如果是新线索请换一个 id",
+                    f"悬念 {_thread_label(thread_id, record, states[thread_id])}"
+                    f"已在第 {states[thread_id]['opened_at']} 章埋下，本章不能再埋一次；"
+                    "如果这是另一条悬念，请换一个 id；"
+                    '如果只是想推迟它的了结章，请加上 "extend": true 并给出新的 deadline_chapter',
                     chapters=(chapter_number,),
                     code="thread_reopened",
                 )
@@ -423,16 +474,43 @@ def validate_contract_against_history(
         closed_at = states.get(thread_id, {}).get("closed_at")
         if closed_at is not None:
             raise PlanningContractError(
-                f"线索 {thread_id} 已在第 {closed_at} 章了结，本章不能再次关闭",
+                f"悬念 {_thread_label(thread_id, record, states.get(thread_id, {}))} "
+                f"已在第 {closed_at} 章了结，本章不能再了结一次",
                 chapters=(chapter_number,),
                 code="thread_closed_twice",
             )
         raise PlanningContractError(
-            f"第 {chapter_number} 章关闭了尚未开启的线索 {thread_id}；"
-            "只能关闭“仍未了结的线索”中列出的 id，"
-            '本章自提自结的线索请加上 "opened_in_chapter": true',
+            f"第 {chapter_number} 章要了结悬念 {_thread_label(thread_id, record)}，"
+            "但前面没有任何一章埋下它。只能了结“仍未了结的悬念”中列出的 id；"
+            "如果这条悬念是本章自己提出、自己解决的，"
+            '请在该记录上加 "opened_in_chapter": true',
             chapters=(chapter_number,),
             code="thread_closed_before_open",
+        )
+
+    # A deadline the model set for itself is only worth something if someone
+    # checks it on the day.  Left to the final gate, a thread can drift twenty
+    # chapters past its payoff before anyone notices, and by then the chapter
+    # that could still have fixed it cheaply is long gone.
+    handled = {
+        str(record.get("id", "")) for record in contract.get("plot_thread_updates", [])
+    }
+    for thread_id in sorted(open_ids - handled):
+        state = states[thread_id]
+        try:
+            deadline = int(state.get("deadline_chapter"))
+        except (TypeError, ValueError):
+            continue
+        if deadline > chapter_number:
+            continue
+        raise PlanningContractError(
+            f"悬念 {_thread_label(thread_id, state)}在第 {state['opened_at']} 章埋下时"
+            f"承诺最晚第 {deadline} 章了结，本章已到期。"
+            "要么在本章了结它（status 填 closed），"
+            '要么写一条 {"id":"%s","status":"open","extend":true,"deadline_chapter":<新的章号>} '
+            "把了结章明确推迟" % thread_id,
+            chapters=(chapter_number, state["opened_at"]),
+            code="thread_overdue",
         )
 
     for field in ("facts_confirmed", "facts_contradicted"):
@@ -454,8 +532,8 @@ def validate_contract_against_history(
         if thread_id in declared_threads or thread_id in states:
             continue
         raise PlanningContractError(
-            f"第 {info['closed_at']} 章要了结线索 {thread_id}（{info.get('thread', '')}），"
-            f"本章必须保留它的开启记录，不能删掉",
+            f"第 {info['closed_at']} 章要了结悬念 {_thread_label(thread_id, info)}，"
+            "本章必须保留埋下它的那条记录，不能删掉",
             chapters=(chapter_number,),
             code="thread_opening_dropped",
         )
@@ -473,19 +551,24 @@ def validate_contract_against_history(
         )
 
 
-def validate_contract_sequence(
+def iter_contract_defects(
     contracts: Iterable[Dict[str, Any]],
     *,
     total_chapters: int | None = None,
-) -> None:
-    """Validate cross-chapter thread obligations before prose generation."""
+) -> Iterator[PlanningContractError]:
+    """Yield every cross-chapter defect instead of stopping at the first.
+
+    Deciding whether a half-finished project is worth repairing needs the whole
+    list: one dangling thread is a repair, forty is a re-plan.  The rules live
+    here once; the blocking gate below is just "the first thing this yields".
+    """
     ordered = sorted(contracts, key=lambda item: int(item.get("chapter", 0)))
     by_chapter = {int(item.get("chapter", 0)): item for item in ordered}
     if total_chapters is not None:
         missing = [number for number in range(1, total_chapters + 1) if number not in by_chapter]
         if missing:
             preview = "、".join(str(number) for number in missing[:10])
-            raise PlanningContractError(
+            yield PlanningContractError(
                 f"缺少第 {preview} 章的场景规划契约",
                 chapters=missing[:10],
                 code="missing_chapter_contract",
@@ -493,10 +576,19 @@ def validate_contract_sequence(
 
     opened: Dict[str, Tuple[int, int]] = {}
     closed: Dict[str, int] = {}
+    thread_names: Dict[str, Dict[str, Any]] = {}
     known_facts: Dict[str, Dict[str, Any]] = {}
     for contract in ordered:
         chapter = int(contract["chapter"])
-        validate_planning_contract(contract, chapter, require_origin=True)
+        try:
+            validate_planning_contract(contract, chapter, require_origin=True)
+        except PlanningContractError as exc:
+            yield PlanningContractError(
+                f"第 {chapter} 章的契约本身不合法：{exc}",
+                chapters=(chapter,),
+                code=getattr(exc, "code", "planning_contract_invalid"),
+            )
+            continue
         for record in contract.get("facts_added", []):
             fact_id = str(record["id"])
             previous = known_facts.get(fact_id)
@@ -504,17 +596,18 @@ def validate_contract_sequence(
                 previous.get("fact") != record.get("fact")
                 or previous.get("value") != record.get("value")
             ):
-                raise PlanningContractError(
+                yield PlanningContractError(
                     f"事实 {fact_id} 在规划阶段出现互相冲突的定义",
                     chapters=(chapter,),
                     code="fact_definition_conflict",
                 )
+                continue
             known_facts[fact_id] = record
         for field in ("facts_confirmed", "facts_contradicted"):
             for record in contract.get(field, []):
                 fact_id = str(record["id"])
                 if fact_id not in known_facts:
-                    raise PlanningContractError(
+                    yield PlanningContractError(
                         f"第 {chapter} 章的 {field} 引用了尚未引入的事实 {fact_id}",
                         chapters=(chapter,),
                         code="unknown_fact_reference",
@@ -522,17 +615,24 @@ def validate_contract_sequence(
         for record in contract.get("plot_thread_updates", []):
             thread_id = str(record["id"])
             if record["status"] == "open":
+                if thread_id in opened and record.get("extend"):
+                    opened_at, _ = opened[thread_id]
+                    opened[thread_id] = (opened_at, int(record["deadline_chapter"]))
+                    continue
                 if thread_id in opened:
-                    raise PlanningContractError(
-                        f"线索 {thread_id} 被重复开启",
+                    yield PlanningContractError(
+                        f"悬念 {_thread_label(thread_id, record)} 被重复埋下",
                         chapters=(chapter,),
                         code="thread_reopened",
                     )
+                    continue
                 opened[thread_id] = (chapter, int(record["deadline_chapter"]))
+                thread_names.setdefault(thread_id, record)
             else:
                 if thread_id not in opened:
                     if record.get("opened_in_chapter") is True:
                         opened[thread_id] = (chapter, chapter)
+                        thread_names.setdefault(thread_id, record)
                     else:
                         # Prefer repairing the chapter that was supposed to raise
                         # the thread: rewriting the closing chapter instead would
@@ -541,30 +641,70 @@ def validate_contract_sequence(
                         targets = [chapter]
                         if source is not None and source < chapter and source in by_chapter:
                             targets.insert(0, source)
-                        raise PlanningContractError(
-                            f"第 {chapter} 章关闭了尚未开启的线索 {thread_id}",
+                        yield PlanningContractError(
+                            f"第 {chapter} 章要了结悬念 {_thread_label(thread_id, record)}，"
+                            "但前面没有任何一章埋下它",
                             chapters=targets,
                             code="thread_closed_before_open",
                         )
+                        continue
                 closed[thread_id] = chapter
 
     for thread_id, (opened_at, deadline) in opened.items():
         closed_at = closed.get(thread_id)
+        label = _thread_label(thread_id, thread_names.get(thread_id, {}))
         if closed_at is not None and closed_at < opened_at:
-            raise PlanningContractError(
-                f"线索 {thread_id} 在开启前被关闭",
+            yield PlanningContractError(
+                f"悬念 {label}的了结章（第 {closed_at} 章）"
+                f"早于埋下章（第 {opened_at} 章）",
                 chapters=(opened_at, closed_at),
                 code="thread_closed_before_open",
             )
-        if closed_at is None and (total_chapters is not None or deadline in by_chapter):
-            raise PlanningContractError(
-                f"线索 {thread_id} 在第 {opened_at} 章开启，但截止第 {deadline} 章仍无关闭计划",
-                chapters=(deadline,),
+        elif closed_at is None and (total_chapters is not None or deadline in by_chapter):
+            # The deadline chapter is where the payoff was promised, so it gets
+            # first refusal; the opening chapter is the fallback, because moving
+            # its own deadline is also a legitimate fix.
+            yield PlanningContractError(
+                f"悬念 {label}在第 {opened_at} 章埋下，"
+                f"但直到截止的第 {deadline} 章都没有安排了结",
+                chapters=(deadline, opened_at),
                 code="thread_missing_closure",
             )
-        if closed_at is not None and closed_at > deadline:
-            raise PlanningContractError(
-                f"线索 {thread_id} 计划在第 {closed_at} 章关闭，晚于截止第 {deadline} 章",
-                chapters=(deadline, closed_at),
+        elif closed_at is not None and closed_at > deadline:
+            # The deadline chapter never mentions this thread, so regenerating
+            # it cannot help.  Only the chapter that set the deadline, or the
+            # one that closes it, can resolve the disagreement.
+            yield PlanningContractError(
+                f"悬念 {label}在第 {opened_at} 章埋下时"
+                f"承诺第 {deadline} 章了结，"
+                f"实际却排到第 {closed_at} 章。"
+                f"请把第 {opened_at} 章的 deadline_chapter 改为 {closed_at}，"
+                f"或把了结提前到第 {deadline} 章",
+                chapters=(opened_at, closed_at),
                 code="thread_closes_late",
             )
+
+
+def collect_contract_defects(
+    contracts: Iterable[Dict[str, Any]],
+    *,
+    total_chapters: int | None = None,
+    limit: int = 200,
+) -> List[PlanningContractError]:
+    """Every defect in one pass, so a project can be triaged before repair."""
+    found: List[PlanningContractError] = []
+    for defect in iter_contract_defects(contracts, total_chapters=total_chapters):
+        found.append(defect)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def validate_contract_sequence(
+    contracts: Iterable[Dict[str, Any]],
+    *,
+    total_chapters: int | None = None,
+) -> None:
+    """Raise on the first cross-chapter defect, before any prose is generated."""
+    for defect in iter_contract_defects(contracts, total_chapters=total_chapters):
+        raise defect

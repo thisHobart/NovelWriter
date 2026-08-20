@@ -420,6 +420,10 @@ def test_sequence_repair_stops_when_a_failure_survives_its_own_repair(
             str(tmp_path), 2, "hosted-llm", "世界观", {}
         )
 
-    assert excinfo.value.code == "thread_missing_closure"
-    # One repair round, then the identical failure proves the loop cannot help.
-    assert len(calls) == 1
+    # The repair round regenerates chapter 2; its replacement still ignores the
+    # thread that is due there, which the per-chapter gate now rejects outright
+    # rather than letting it drift to the final sequence check.
+    assert excinfo.value.code == "thread_overdue"
+    # One repair round (three in-round retries), then the loop gives up instead
+    # of spending calls on a failure that survives its own repair.
+    assert len(calls) == planner.planning_retry_limit + 1
