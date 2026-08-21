@@ -263,3 +263,85 @@ def archive_failed_generation(output_dir, chapter_number, scenes, label="chapter
     path = os.path.join(archive_dir, f"{label}_{chapter_number}_{timestamp}.md")
     write_file(path, content)
     return path
+
+
+# 章节大纲里的章标题。与 SCENE_HEADING_PATTERN 不同，这里**必须**出现明确的章标记
+# （"第 N 章" 或 "Chapter N"）。此前场景规划和章节写作用的是一个把 "章" 设为可选的
+# 宽松版本，于是 "### 第 2 幕"、"### 第 4 部分"、"### 第 6 节" 都被当成章节，
+# 章号随即整体错位。
+CHAPTER_HEADING_PATTERN = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*{1,3}[ \t]*)?"
+    r"(?:Chapter[ \t]*(?P<en>\d+)|第[ \t]*(?P<zh>\d+)[ \t]*章)"
+    r"(?:[ \t]*[:：.\-—][ \t]*.*?|[ \t]+\S.*?)?"
+    r"(?:[ \t]*\*{1,3})?[ \t]*$",
+    flags=re.MULTILINE | re.IGNORECASE,
+)
+
+
+def parse_chapter_numbers(markdown_text):
+    """Return the chapter numbers declared by an outline, in reading order.
+
+    Only headings that carry an explicit chapter marker count. Repeated headings
+    for the same chapter (models sometimes restate one) collapse to a single
+    entry so callers see one chapter per number.
+    """
+    numbers = []
+    for match in CHAPTER_HEADING_PATTERN.finditer(markdown_text or ""):
+        raw = match.group("en") or match.group("zh")
+        try:
+            number = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if number > 0 and number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
+def resolve_section_chapter_numbers(parsed_numbers, next_expected, claimed=()):
+    """Decide which chapter numbers one structure section owns.
+
+    The outline text is the source of truth: whatever chapter numbers it declares
+    are the numbers the scene plans, contracts and manuscript files must use.
+    Two situations force a fallback to sequential numbering, and both are
+    reported rather than applied silently:
+
+    * the outline declares no chapter numbers at all;
+    * the numbers collide with a section processed earlier, which happens when
+      the model restarts at chapter 1 in every section.
+
+    Returns (numbers, warning) where warning is None when the outline was used
+    as written.
+    """
+    claimed = set(claimed)
+    start = max(int(next_expected or 1), 1)
+
+    def sequential(count):
+        return list(range(start, start + count))
+
+    if not parsed_numbers:
+        return [], "大纲中没有可识别的章标题（需要“第 N 章”或“Chapter N”）"
+
+    overlap = sorted(number for number in parsed_numbers if number in claimed)
+    if overlap:
+        renumbered = sequential(len(parsed_numbers))
+        return (
+            renumbered,
+            "大纲中的章号 "
+            + "、".join(str(number) for number in overlap)
+            + " 与前面的部分重复，已按顺序改用第 "
+            + "、".join(str(number) for number in renumbered)
+            + " 章",
+        )
+
+    if parsed_numbers != sorted(parsed_numbers):
+        renumbered = sequential(len(parsed_numbers))
+        return (
+            renumbered,
+            "大纲中的章号不是递增的（"
+            + "、".join(str(number) for number in parsed_numbers)
+            + "），已按顺序改用第 "
+            + "、".join(str(number) for number in renumbered)
+            + " 章",
+        )
+
+    return list(parsed_numbers), None

@@ -19,6 +19,7 @@ import tempfile
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from core.generation.chapter_acceptance import values_conflict
+from core.generation.domain_profiles import GENERAL, DomainProfile
 from core.generation.planning_contract import load_planning_contracts
 
 
@@ -38,6 +39,7 @@ def _record_text(record: Dict[str, Any]) -> str:
     keys = (
         "fact", "value", "thread", "event", "time", "location_id",
         "character", "attribute", "reason", "new_value",
+        "surface_meaning", "true_meaning", "item", "origin", "type",
     )
     return " ".join(str(record.get(key, "")) for key in keys if record.get(key))
 
@@ -228,12 +230,175 @@ def _new_record_id(prefix: str, chapter_number: int, used_ids: set[str]) -> str:
         sequence += 1
 
 
+def _id_prefix(record_id: str, fallback: str) -> str:
+    match = re.match(r"([A-Za-z]+)", str(record_id or ""))
+    return (match.group(1) if match else fallback).upper()
+
+
+def has_domain_id_collision(
+    contract: Dict[str, Any],
+    output_dir: str,
+    chapter_number: int,
+    profile: Optional[DomainProfile] = None,
+) -> bool:
+    """Whether a tracked domain record reuses an ID from an earlier chapter."""
+    profile = profile or GENERAL
+    prior = [
+        item for item in load_planning_contracts(output_dir)
+        if int(item.get("chapter", 0)) < int(chapter_number)
+    ]
+    for spec in profile.contract_fields:
+        if spec.delta_slot not in {"clue_updates", "evidence_updates"} or not spec.is_list:
+            continue
+        prior_ids = {
+            str(item.get("id", ""))
+            for item in _prior_records(prior, spec.name)
+            if item.get("id")
+        }
+        if any(
+            str(item.get("id", "")) in prior_ids
+            for item in contract.get(spec.name, [])
+            if isinstance(item, dict) and item.get("id")
+        ):
+            return True
+    return False
+
+
+def _resolve_domain_fields(
+    resolved: Dict[str, Any],
+    prior: List[Dict[str, Any]],
+    chapter_number: int,
+    model: str,
+    send_prompt_fn: Callable[..., str],
+    profile: DomainProfile,
+    decisions: List[Dict[str, Any]],
+) -> None:
+    """Normalise stable IDs for profile-defined clue/evidence streams."""
+    for spec in profile.contract_fields:
+        if spec.delta_slot not in {"clue_updates", "evidence_updates"} or not spec.is_list:
+            continue
+        records = _prior_records(prior, spec.name)
+        if not records or not isinstance(resolved.get(spec.name, []), list):
+            continue
+        records_by_id = {str(item.get("id")): item for item in records if item.get("id")}
+        used_ids = set(records_by_id) | {
+            str(item.get("id", ""))
+            for item in resolved.get(spec.name, [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        identity_fields = spec.identity_fields or spec.immutable_fields[:1]
+        fallback_prefix = "C" if spec.delta_slot == "clue_updates" else "E"
+        normalised_records: List[Dict[str, Any]] = []
+
+        for record in resolved.get(spec.name, []):
+            if not isinstance(record, dict):
+                continue
+            original = deepcopy(record)
+            original_id = str(record.get("id", ""))
+            matched = records_by_id.get(original_id)
+            decision: Optional[Dict[str, Any]] = None
+            identity_changed = bool(
+                matched
+                and identity_fields
+                and any(
+                    not _same_text(record.get(name), matched.get(name))
+                    for name in identity_fields
+                )
+            )
+
+            if matched is None or identity_changed:
+                candidates = _limited_candidates(record, records)
+                if candidates:
+                    decision = _ask_model(
+                        f"领域记录 {spec.name}", record, candidates, model, send_prompt_fn
+                    )
+                    if (
+                        decision["relation"] == "same"
+                        and decision["similarity"] >= SAME_THRESHOLD
+                    ):
+                        matched = records_by_id.get(str(decision["matched_id"]))
+                    elif identity_changed:
+                        matched = None
+
+            if matched is not None:
+                record["id"] = matched["id"]
+                for name in dict.fromkeys((*identity_fields, *spec.immutable_fields)):
+                    if matched.get(name) not in (None, ""):
+                        record[name] = deepcopy(matched[name])
+                decisions.append(
+                    {
+                        "type": spec.delta_slot,
+                        "field": spec.name,
+                        "action": "canonicalized",
+                        "original": original,
+                        "canonical_id": matched["id"],
+                        "model_decision": decision,
+                    }
+                )
+            elif original_id in records_by_id:
+                prefix = _id_prefix(original_id, fallback_prefix)
+                new_id = _new_record_id(prefix, chapter_number, used_ids)
+                used_ids.add(new_id)
+                record["id"] = new_id
+                decisions.append(
+                    {
+                        "type": spec.delta_slot,
+                        "field": spec.name,
+                        "action": "colliding_id_reassigned",
+                        "original": original,
+                        "new_id": new_id,
+                        "model_decision": decision,
+                    }
+                )
+            elif decision:
+                decisions.append(
+                    {
+                        "type": spec.delta_slot,
+                        "field": spec.name,
+                        "action": "kept",
+                        "original": original,
+                        "model_decision": decision,
+                    }
+                )
+            normalised_records.append(record)
+        resolved[spec.name] = normalised_records
+
+
+def resolve_domain_identities(
+    contract: Dict[str, Any],
+    output_dir: str,
+    chapter_number: int,
+    model: str,
+    send_prompt_fn: Callable[..., str],
+    profile: Optional[DomainProfile] = None,
+) -> SemanticResolution:
+    """Resolve only domain-field collisions, avoiding unrelated model calls."""
+    resolved = deepcopy(contract)
+    prior = [
+        item for item in load_planning_contracts(output_dir)
+        if int(item.get("chapter", 0)) < int(chapter_number)
+    ]
+    decisions: List[Dict[str, Any]] = []
+    _resolve_domain_fields(
+        resolved,
+        prior,
+        chapter_number,
+        model,
+        send_prompt_fn,
+        profile or GENERAL,
+        decisions,
+    )
+    _audit(output_dir, chapter_number, decisions)
+    return SemanticResolution(resolved, decisions, [])
+
+
 def resolve_contract_identities(
     contract: Dict[str, Any],
     output_dir: str,
     chapter_number: int,
     model: str,
     send_prompt_fn: Callable[..., str],
+    profile: Optional[DomainProfile] = None,
 ) -> SemanticResolution:
     """Return a copy whose references use prior canonical IDs when safe."""
     resolved = deepcopy(contract)
@@ -254,6 +419,7 @@ def resolve_contract_identities(
     }
     decisions: List[Dict[str, Any]] = []
     warnings: List[str] = []
+    profile = profile or GENERAL
 
     facts = _prior_records(prior, "facts_added")
     facts_by_id = {str(item.get("id")): item for item in facts}
@@ -333,6 +499,16 @@ def resolve_contract_identities(
         original = deepcopy(record)
         status = str(record.get("status", "")).lower()
         original_id = str(record.get("id", ""))
+
+        # 延期（extend）是对同一条既有悬念的再次声明，不是新线索：ID 必须原样保留。
+        # 到期未了结时，校验器给模型的修复指令正是「写一条
+        # {"id":"PT-001-01","status":"open","extend":true,"deadline_chapter":N}」；
+        # 那条建议里没有 thread 字段，落到下面的语义比对就会被判成「撞了 ID 的新线索」
+        # 并改名，于是原悬念仍然到期未处理——模型照着提示改，却永远修不好。
+        if record.get("extend") and original_id in all_thread_ids:
+            kept_threads.append(record)
+            continue
+
         matched = threads_by_id.get(original_id)
         decision: Optional[Dict[str, Any]] = None
         if (
@@ -515,6 +691,16 @@ def resolve_contract_identities(
             })
         kept_attributes.append(record)
     resolved["character_updates"] = kept_attributes
+
+    _resolve_domain_fields(
+        resolved,
+        prior,
+        chapter_number,
+        model,
+        send_prompt_fn,
+        profile,
+        decisions,
+    )
 
     _audit(output_dir, chapter_number, decisions)
     return SemanticResolution(resolved, decisions, warnings)

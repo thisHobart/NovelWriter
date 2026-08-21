@@ -7,6 +7,7 @@ from core.generation.planning_contract import (
     CONTRACT_START,
     PlanningContractError,
     build_existing_planning_index,
+    collect_history_defects,
     contract_output_instructions,
     downstream_obligations,
     extract_scene_plan_contract,
@@ -50,6 +51,22 @@ def test_scene_response_is_split_into_markdown_and_contract():
     assert markdown == "### 场景 1：开端\n计划内容"
     assert contract["origin"] == "scene_planning"
     assert contract["schema_version"] == 2
+
+
+def test_domain_schema_examples_use_chapter_scoped_ids():
+    text = contract_output_instructions(
+        2,
+        domain_fields={
+            "fair_play_clues": '[{"id":"C001","surface_meaning":"表面"}]',
+            "evidence_updates": '[{"id":"E001","item":"证物"}]',
+            "suspect_states": '[{"id":"S001","suspect":"人物"}]',
+        },
+    )
+
+    assert '"id":"C-002-01"' in text
+    assert '"id":"E-002-01"' in text
+    assert '"id":"S-002-01"' in text
+    assert '"id":"C001"' not in text
 
 
 def test_open_thread_requires_a_real_deadline():
@@ -314,3 +331,234 @@ def test_a_clean_project_collects_nothing(tmp_path):
     )
 
     assert collect_contract_defects(load_planning_contracts(project), total_chapters=2) == []
+
+
+def test_history_check_reports_both_fact_definitions_for_repair():
+    canonical = {
+        **_contract(14),
+        "facts_added": [
+            {
+                "id": "F-014-01",
+                "fact": "海陵先驱号HL-0941集装箱用途",
+                "value": "用于转移NB-4神经制剂与活体受试者的绝密温控舱",
+            }
+        ],
+    }
+    proposed = {
+        **_contract(17),
+        "facts_added": [
+            {
+                "id": "F-014-01",
+                "fact": "海陵先驱号HL-0941集装箱用途",
+                "value": "用于向公海转运实验样本的深冷集装箱",
+            }
+        ],
+    }
+
+    defects = collect_history_defects(proposed, [canonical], 17)
+
+    assert [defect.code for defect in defects] == ["fact_definition_conflict"]
+    message = str(defects[0])
+    assert "第 14 章" in message and "第 17 章" in message
+    assert "NB-4神经制剂" in message
+    assert "向公海转运实验样本" in message
+    assert "facts_confirmed" in message
+
+
+def test_keeping_the_thread_is_not_enough_if_the_deadline_expires_first(tmp_path):
+    """The repair that used to loop forever: thread kept, deadline unchanged."""
+    project = _project(
+        tmp_path,
+        [
+            _contract(3, [_open("PT-003-01", 5, "失踪证人")]),
+            _contract(27, [_close("PT-003-01", "失踪证人")]),
+        ],
+    )
+    replanned = _contract(3, [_open("PT-003-01", 5, "失踪证人")])
+
+    with pytest.raises(PlanningContractError) as excinfo:
+        validate_contract_against_history(
+            replanned,
+            load_planning_contracts(project),
+            3,
+            obligations=downstream_obligations(project, 3),
+        )
+
+    assert excinfo.value.code == "deadline_before_payoff"
+    assert "请改成 27" in str(excinfo.value)
+
+
+def test_a_deadline_that_covers_the_payoff_is_accepted(tmp_path):
+    project = _project(
+        tmp_path,
+        [
+            _contract(3, [_open("PT-003-01", 5, "失踪证人")]),
+            _contract(27, [_close("PT-003-01", "失踪证人")]),
+        ],
+    )
+    repaired = _contract(3, [_open("PT-003-01", 27, "失踪证人")])
+
+    validate_contract_against_history(
+        repaired,
+        load_planning_contracts(project),
+        3,
+        obligations=downstream_obligations(project, 3),
+    )
+
+
+def test_the_prompt_states_the_deadline_the_payoff_requires(tmp_path):
+    project = _project(
+        tmp_path,
+        [
+            _contract(3, [_open("PT-003-01", 5, "失踪证人")]),
+            _contract(27, [_close("PT-003-01", "失踪证人")]),
+        ],
+    )
+
+    instructions = contract_output_instructions(
+        3,
+        build_existing_planning_index(project, 3),
+        obligations=downstream_obligations(project, 3),
+    )
+
+    assert "deadline_chapter 不得早于第 27 章" in instructions
+    # The JSON template must not suggest the current chapter as the deadline.
+    assert '"deadline_chapter":3}' not in instructions
+
+
+# --- 补洞：中途缺失的章节必须还能重新规划 -------------------------------------
+#
+# 一本已经规划到后面的书，中间某一章的规划失败留下空洞。重新规划那一章时，
+# downstream_obligations 曾经把**整本书**（含更后面章节自己提出的悬念）都算作
+# 这一章的义务，于是它被要求埋下一条属于第 14 章的悬念——永远无法满足，重试
+# 用尽即失败，空洞再也补不回来。
+
+
+def _holed_project(tmp_path):
+    """第 1-5 章与第 14、19 章已规划，第 6-13 章是空洞。"""
+    return _project(
+        tmp_path,
+        [
+            _contract(1, [_open("PT-001-01", 6, "梁浩能否自证清白")]),
+            _contract(5, [_open("PT-005-01", 6, "冷链车轨迹能否翻案")]),
+            _contract(
+                14,
+                [
+                    {"id": "PT-001-01", "thread": "梁浩能否自证清白", "status": "closed"},
+                    {"id": "PT-005-01", "thread": "冷链车轨迹能否翻案", "status": "closed"},
+                    _open("PT-014-01", 19, "双城雷霆行动能否奏效"),
+                ],
+            ),
+            _contract(
+                19,
+                [{"id": "PT-014-01", "thread": "双城雷霆行动能否奏效", "status": "closed"}],
+            ),
+        ],
+    )
+
+
+def test_obligations_exclude_threads_a_later_chapter_raised_itself(tmp_path):
+    project = _holed_project(tmp_path)
+
+    obligations = downstream_obligations(project, 6)
+
+    # 第 14 章自己提出、第 19 章了结的悬念与第 6 章无关。
+    assert "PT-014-01" not in obligations["threads_closed_later"]
+    # 第 1、5 章埋下、第 14 章了结的悬念仍然是第 6 章要保住的。
+    assert set(obligations["threads_closed_later"]) == {"PT-001-01", "PT-005-01"}
+
+
+def test_a_missing_middle_chapter_can_be_replanned(tmp_path):
+    project = _holed_project(tmp_path)
+    prior = load_planning_contracts(project)
+
+    # 第 6 章把两条到期的悬念推迟到第 14 章——作者能写出来的合理契约。
+    replanned = _contract(
+        6,
+        [
+            {"id": "PT-001-01", "status": "open", "extend": True, "deadline_chapter": 14},
+            {"id": "PT-005-01", "status": "open", "extend": True, "deadline_chapter": 14},
+        ],
+    )
+
+    validate_contract_against_history(
+        replanned, prior, 6, obligations=downstream_obligations(project, 6)
+    )
+
+
+def test_obligations_still_protect_a_thread_this_chapter_owns(tmp_path):
+    """过滤不能把真正的义务一起滤掉：第 6 章埋下、第 14 章了结的悬念必须保住。"""
+    project = _project(
+        tmp_path,
+        [
+            _contract(6, [_open("PT-006-01", 14, "第六章埋下的悬念")]),
+            _contract(
+                14,
+                [{"id": "PT-006-01", "thread": "第六章埋下的悬念", "status": "closed"}],
+            ),
+        ],
+    )
+    obligations = downstream_obligations(project, 6)
+    assert "PT-006-01" in obligations["threads_closed_later"]
+
+    # 重新规划第 6 章时把这条悬念删掉，必须被拦下。
+    dropped = _contract(6, [])
+    with pytest.raises(PlanningContractError, match="不能删掉") as excinfo:
+        validate_contract_against_history(dropped, [], 6, obligations=obligations)
+    assert excinfo.value.code == "thread_opening_dropped"
+
+
+def test_obligations_exclude_facts_introduced_by_later_chapters(tmp_path):
+    project = _project(
+        tmp_path,
+        [
+            {**_contract(3), "facts_added": [{"id": "F-003-01", "fact": "弹道匹配度"}]},
+            {
+                **_contract(14),
+                "facts_added": [{"id": "F-014-01", "fact": "集装箱用途"}],
+            },
+            {
+                **_contract(20),
+                "facts_confirmed": [
+                    {"id": "F-003-01", "fact": "弹道匹配度"},
+                    {"id": "F-014-01", "fact": "集装箱用途"},
+                ],
+            },
+        ],
+    )
+
+    obligations = downstream_obligations(project, 6)
+
+    assert "F-003-01" in obligations["facts_used_later"]
+    assert "F-014-01" not in obligations["facts_used_later"]
+
+
+def test_unknown_origin_is_kept_so_a_dropped_opening_is_still_caught(tmp_path):
+    """来源既查不到落盘记录、ID 也没编码章号时，保守地保留该义务。"""
+    project = _project(
+        tmp_path,
+        [
+            _contract(
+                14,
+                [{"id": "mystery-thread", "thread": "来源不明的悬念", "status": "closed"}],
+            )
+        ],
+    )
+
+    obligations = downstream_obligations(project, 6)
+
+    assert "mystery-thread" in obligations["threads_closed_later"]
+
+
+def test_contract_prompt_explains_which_attributes_stay_stable():
+    """stable 的含义必须写清楚。
+
+    模板此前只在 JSON 骨架里给了一个写死的 "stable":true 示例、没有任何说明，
+    模型于是把「心理状态」「行动目标」这类本该随剧情演进的属性也标成 stable，
+    后面章节人物正常成长就被验收判成前后矛盾，整轮写作停机。
+    """
+    prompt = contract_output_instructions(3)
+
+    assert '"stable":false' in prompt
+    assert "心理状态" in prompt
+    assert "拿不准就填 false" in prompt

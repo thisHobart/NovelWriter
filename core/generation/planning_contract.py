@@ -92,7 +92,8 @@ def contract_output_instructions(
     obligation_block = ""
     if obligations:
         lines = [
-            f"- 悬念 {info['id']}（{info.get('thread', '')}）：第 {info['closed_at']} 章要了结它，本章必须埋下"
+            f"- 悬念 {info['id']}（{info.get('thread', '')}）：第 {info['closed_at']} 章要了结它，"
+            f"本章必须埋下，且 deadline_chapter 不得早于第 {info['closed_at']} 章"
             for info in obligations.get("threads_closed_later", {}).values()
         ] + [
             f"- 事实 {info['id']}（{info.get('fact', '')}）：第 {info['used_at']} 章要引用它，本章必须引入"
@@ -113,8 +114,19 @@ def contract_output_instructions(
         },
         5000,
     )
+    def chapter_scoped_ids(schema_hint: str) -> str:
+        """Turn static examples such as C001 into chapter-unique sample IDs."""
+        return re.sub(
+            r'("id"\s*:\s*")([A-Za-z]+)001(")',
+            lambda match: (
+                f'{match.group(1)}{match.group(2).upper()}-'
+                f'{int(chapter_number):03d}-01{match.group(3)}'
+            ),
+            schema_hint,
+        )
+
     domain_lines = "\n".join(
-        f'  "{name}": {schema_hint},'
+        f'  "{name}": {chapter_scoped_ids(schema_hint)},'
         for name, schema_hint in (domain_fields or {}).items()
     )
     return f"""
@@ -136,8 +148,8 @@ def contract_output_instructions(
   "facts_confirmed": [{{"id":"已有事实ID","fact":"属性名","value":"既有取值"}}],
   "facts_contradicted": [{{"id":"已有事实ID","reason":"推翻理由","new_value":"新取值"}}],
   "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点"}}],
-  "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":true}}],
-  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","thread":"悬念的一句话描述","status":"open","deadline_chapter":{chapter_number}}}]
+  "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":false}}],
+  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","thread":"悬念的一句话描述","status":"open","deadline_chapter":最晚了结这条悬念的章号}}]
 }}
 {CONTRACT_END}
 
@@ -148,6 +160,10 @@ def contract_output_instructions(
 - 了结：必须沿用下方“仍未了结的悬念”中的 id。不要了结已经了结过的，也不要凭章号规律推测一个不在列表里的 id——那会让本章为一个读者从未见过的谜面写揭晓戏。
 - 本章自己埋下又自己了结的悬念：只写一条 closed 记录，并加上 "opened_in_chapter": true。
 - 下方标注“本章必须了结”的悬念，本章必须处理：要么了结它，要么写一条 {{"id":"该悬念id","status":"open","extend":true,"deadline_chapter":新的章号}} 把揭晓明确推迟到后面某一章。不处理就等于让读者一直悬着却没人记账。
+
+关于 character_updates 的 stable：填 true 表示这项属性一经确立、此后各章都必须复述同一取值。只有工龄、年龄、籍贯、亲属关系、血型这类一旦定下就不该再变的属性才填 true。
+- 心理状态、认知立场、行动目标、所在位置、伤势、掌握的情报等会随剧情推进变化的，一律填 false——人物弧光本来就要变，填 true 会让后面章节的正常成长被判成前后矛盾。
+- 拿不准就填 false。
 
 {thread_block}
 {obligation_block}
@@ -283,6 +299,42 @@ def _thread_label(thread_id: str, *sources: Dict[str, Any]) -> str:
     return str(thread_id)
 
 
+def _fact_definition_conflict(
+    fact_id: str,
+    existing: Dict[str, Any],
+    proposed: Dict[str, Any],
+    existing_chapter: int,
+    proposed_chapter: int,
+) -> PlanningContractError:
+    """Build feedback that gives a repair model enough information to act."""
+    canonical = json.dumps(
+        {
+            "id": fact_id,
+            "fact": existing.get("fact", ""),
+            "value": existing.get("value", ""),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    conflicting = json.dumps(
+        {
+            "id": fact_id,
+            "fact": proposed.get("fact", ""),
+            "value": proposed.get("value", ""),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return PlanningContractError(
+        f"事实 {fact_id} 已在第 {existing_chapter} 章定义为 {canonical}；"
+        f"第 {proposed_chapter} 章却在 facts_added 中再次定义为 {conflicting}。"
+        "如果本章只是沿用同一事实，请从 facts_added 删除它并放入 facts_confirmed，"
+        "沿用首次定义的 id、fact 和 value；如果确实是另一条事实，请使用新的 id",
+        chapters=(proposed_chapter,),
+        code="fact_definition_conflict",
+    )
+
+
 def thread_states(contracts: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Fold the per-chapter update stream into one state per thread.
 
@@ -382,10 +434,31 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
     chapter 8 is counting on opening.
     """
     chapter_number = int(chapter_number)
-    later = [
-        item for item in load_planning_contracts(output_dir)
-        if int(item["chapter"]) > chapter_number
-    ]
+    contracts = load_planning_contracts(output_dir)
+    later = [item for item in contracts if int(item["chapter"]) > chapter_number]
+
+    # 只有「本章或更早引入」的东西才是本章的义务。少了这一层过滤，一本已经规划到
+    # 第 23 章的书在补第 6 章时，会被要求埋下第 14 章才提出的悬念——一个永远无法
+    # 满足的条件，于是中间的空洞再也补不回来。
+    opened_at: Dict[str, int] = {}
+    introduced_at: Dict[str, int] = {}
+    for contract in contracts:
+        chapter = int(contract["chapter"])
+        for record in contract.get("plot_thread_updates", []):
+            if str(record.get("status", "")).lower() != "open" or record.get("extend"):
+                continue
+            opened_at.setdefault(str(record.get("id", "")), chapter)
+        for record in contract.get("facts_added", []):
+            introduced_at.setdefault(str(record.get("id", "")), chapter)
+
+    def belongs_to_a_later_chapter(record_id: str, known: Dict[str, int]) -> bool:
+        # 落盘的契约最准确；没有落盘时退回 ID 里编码的来源章（PT-014-01 → 14）。
+        # 两者都问不出来时保留该项：它可能正是本章漏掉的那条，宁可多问一次。
+        origin = known.get(record_id)
+        if origin is None:
+            origin = _source_chapter_from_id(record_id)
+        return origin is not None and origin > chapter_number
+
     threads: Dict[str, Dict[str, Any]] = {}
     for contract in later:
         for record in contract.get("plot_thread_updates", []):
@@ -393,10 +466,13 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
                 continue
             if record.get("opened_in_chapter") is True:
                 continue
+            thread_id = str(record.get("id", ""))
+            if belongs_to_a_later_chapter(thread_id, opened_at):
+                continue
             threads.setdefault(
-                str(record.get("id", "")),
+                thread_id,
                 {
-                    "id": str(record.get("id", "")),
+                    "id": thread_id,
                     "thread": record.get("thread", ""),
                     "closed_at": int(contract["chapter"]),
                 },
@@ -405,10 +481,13 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
     for contract in later:
         for field in ("facts_confirmed", "facts_contradicted"):
             for record in contract.get(field, []):
+                fact_id = str(record.get("id", ""))
+                if belongs_to_a_later_chapter(fact_id, introduced_at):
+                    continue
                 facts.setdefault(
-                    str(record.get("id", "")),
+                    fact_id,
                     {
-                        "id": str(record.get("id", "")),
+                        "id": fact_id,
                         "fact": record.get("fact", ""),
                         "used_at": int(contract["chapter"]),
                     },
@@ -416,14 +495,20 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
     return {"threads_closed_later": threads, "facts_used_later": facts}
 
 
-def validate_contract_against_history(
+def iter_history_defects(
     contract: Dict[str, Any],
     prior: Iterable[Dict[str, Any]],
     chapter_number: int,
     *,
     obligations: Dict[str, Any] | None = None,
-) -> None:
-    """Check one chapter against its neighbours while the model can still fix it.
+) -> Iterator[PlanningContractError]:
+    """Yield every neighbour-level defect in one chapter, best-first.
+
+    Reporting one defect per attempt costs a retry per defect and lets the model
+    reintroduce what it just fixed: it never sees the full list it has to satisfy
+    at once. The rules live here; `validate_contract_against_history` below is
+    just "raise the first thing this yields", matching how the cross-chapter
+    gate is built.
 
     ``validate_contract_sequence`` catches the same errors, but only once every
     chapter is on disk — by then the offending chapter has lost its generation
@@ -443,16 +528,38 @@ def validate_contract_against_history(
         for item in prior
         for record in item.get("facts_added", [])
     }
+    prior_facts: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+    for item in sorted(prior, key=lambda value: int(value.get("chapter", 0))):
+        source_chapter = int(item.get("chapter", 0))
+        for record in item.get("facts_added", []):
+            fact_id = str(record.get("id", ""))
+            if fact_id:
+                prior_facts.setdefault(fact_id, (source_chapter, record))
     known_facts |= {
         str(record.get("id", "")) for record in contract.get("facts_added", [])
     }
+
+    for record in contract.get("facts_added", []):
+        fact_id = str(record.get("id", ""))
+        previous = prior_facts.get(fact_id)
+        if previous is None:
+            continue
+        existing_chapter, existing = previous
+        if (
+            existing.get("fact") == record.get("fact")
+            and existing.get("value") == record.get("value")
+        ):
+            continue
+        yield _fact_definition_conflict(
+            fact_id, existing, record, existing_chapter, chapter_number
+        )
 
     for record in contract.get("plot_thread_updates", []):
         thread_id = str(record.get("id", ""))
         if record.get("status") == "open":
             if thread_id in states and record.get("extend"):
                 if thread_id not in open_ids:
-                    raise PlanningContractError(
+                    yield PlanningContractError(
                         f"悬念 {_thread_label(thread_id, record, states[thread_id])}"
                         f"已在第 {states[thread_id]['closed_at']} 章了结，无法延期",
                         chapters=(chapter_number,),
@@ -460,7 +567,7 @@ def validate_contract_against_history(
                     )
                 continue
             if thread_id in states:
-                raise PlanningContractError(
+                yield PlanningContractError(
                     f"悬念 {_thread_label(thread_id, record, states[thread_id])}"
                     f"已在第 {states[thread_id]['opened_at']} 章埋下，本章不能再埋一次；"
                     "如果这是另一条悬念，请换一个 id；"
@@ -473,13 +580,15 @@ def validate_contract_against_history(
             continue
         closed_at = states.get(thread_id, {}).get("closed_at")
         if closed_at is not None:
-            raise PlanningContractError(
+            # 「已经了结过」和「从未埋下」互相排斥，只能报其中一条。
+            yield PlanningContractError(
                 f"悬念 {_thread_label(thread_id, record, states.get(thread_id, {}))} "
                 f"已在第 {closed_at} 章了结，本章不能再了结一次",
                 chapters=(chapter_number,),
                 code="thread_closed_twice",
             )
-        raise PlanningContractError(
+            continue
+        yield PlanningContractError(
             f"第 {chapter_number} 章要了结悬念 {_thread_label(thread_id, record)}，"
             "但前面没有任何一章埋下它。只能了结“仍未了结的悬念”中列出的 id；"
             "如果这条悬念是本章自己提出、自己解决的，"
@@ -503,7 +612,7 @@ def validate_contract_against_history(
             continue
         if deadline > chapter_number:
             continue
-        raise PlanningContractError(
+        yield PlanningContractError(
             f"悬念 {_thread_label(thread_id, state)}在第 {state['opened_at']} 章埋下时"
             f"承诺最晚第 {deadline} 章了结，本章已到期。"
             "要么在本章了结它（status 填 closed），"
@@ -517,7 +626,7 @@ def validate_contract_against_history(
         for record in contract.get(field, []):
             fact_id = str(record.get("id", ""))
             if fact_id not in known_facts:
-                raise PlanningContractError(
+                yield PlanningContractError(
                     f"第 {chapter_number} 章的 {field} 引用了尚未引入的事实 {fact_id}",
                     chapters=(chapter_number,),
                     code="unknown_fact_reference",
@@ -528,27 +637,81 @@ def validate_contract_against_history(
     declared_threads = {
         str(record.get("id", "")) for record in contract.get("plot_thread_updates", [])
     }
+    declared_by_id = {
+        str(record.get("id", "")): record
+        for record in contract.get("plot_thread_updates", [])
+    }
     for thread_id, info in obligations.get("threads_closed_later", {}).items():
-        if thread_id in declared_threads or thread_id in states:
+        declared = declared_by_id.get(thread_id)
+        if declared is None and thread_id not in states:
+            yield PlanningContractError(
+                f"第 {info['closed_at']} 章要了结悬念 {_thread_label(thread_id, info)}，"
+                "本章必须保留埋下它的那条记录，不能删掉",
+                chapters=(chapter_number,),
+                code="thread_opening_dropped",
+            )
+        # Keeping the thread is not enough: a deadline that expires before the
+        # payoff chapter is the same contradiction, just written down.
+        if declared is None or str(declared.get("status", "")).lower() != "open":
             continue
-        raise PlanningContractError(
-            f"第 {info['closed_at']} 章要了结悬念 {_thread_label(thread_id, info)}，"
-            "本章必须保留埋下它的那条记录，不能删掉",
-            chapters=(chapter_number,),
-            code="thread_opening_dropped",
-        )
+        closed_at = int(info["closed_at"])
+        try:
+            deadline = int(declared.get("deadline_chapter"))
+        except (TypeError, ValueError):
+            continue
+        if deadline < closed_at:
+            yield PlanningContractError(
+                f"悬念 {_thread_label(thread_id, declared, info)}要到第 {closed_at} 章才了结，"
+                f"本章却把 deadline_chapter 写成第 {deadline} 章。"
+                f"请改成 {closed_at}",
+                chapters=(chapter_number,),
+                code="deadline_before_payoff",
+            )
     declared_facts = {
         str(record.get("id", "")) for record in contract.get("facts_added", [])
     }
     for fact_id, info in obligations.get("facts_used_later", {}).items():
         if fact_id in declared_facts or fact_id in known_facts:
             continue
-        raise PlanningContractError(
+        yield PlanningContractError(
             f"第 {info['used_at']} 章要引用事实 {fact_id}（{info.get('fact', '')}），"
             f"本章必须保留它的引入记录",
             chapters=(chapter_number,),
             code="fact_introduction_dropped",
         )
+
+
+def validate_contract_against_history(
+    contract: Dict[str, Any],
+    prior: Iterable[Dict[str, Any]],
+    chapter_number: int,
+    *,
+    obligations: Dict[str, Any] | None = None,
+) -> None:
+    """Raise on the first neighbour-level defect in one chapter."""
+    for defect in iter_history_defects(
+        contract, prior, chapter_number, obligations=obligations
+    ):
+        raise defect
+
+
+def collect_history_defects(
+    contract: Dict[str, Any],
+    prior: Iterable[Dict[str, Any]],
+    chapter_number: int,
+    *,
+    obligations: Dict[str, Any] | None = None,
+    limit: int = 20,
+) -> List[PlanningContractError]:
+    """Every neighbour-level defect at once, so one retry can fix them all."""
+    found: List[PlanningContractError] = []
+    for defect in iter_history_defects(
+        contract, prior, chapter_number, obligations=obligations
+    ):
+        found.append(defect)
+        if len(found) >= limit:
+            break
+    return found
 
 
 def iter_contract_defects(
@@ -577,7 +740,7 @@ def iter_contract_defects(
     opened: Dict[str, Tuple[int, int]] = {}
     closed: Dict[str, int] = {}
     thread_names: Dict[str, Dict[str, Any]] = {}
-    known_facts: Dict[str, Dict[str, Any]] = {}
+    known_facts: Dict[str, Tuple[int, Dict[str, Any]]] = {}
     for contract in ordered:
         chapter = int(contract["chapter"])
         try:
@@ -593,16 +756,19 @@ def iter_contract_defects(
             fact_id = str(record["id"])
             previous = known_facts.get(fact_id)
             if previous and (
-                previous.get("fact") != record.get("fact")
-                or previous.get("value") != record.get("value")
+                previous[1].get("fact") != record.get("fact")
+                or previous[1].get("value") != record.get("value")
             ):
-                yield PlanningContractError(
-                    f"事实 {fact_id} 在规划阶段出现互相冲突的定义",
-                    chapters=(chapter,),
-                    code="fact_definition_conflict",
+                yield _fact_definition_conflict(
+                    fact_id,
+                    previous[1],
+                    record,
+                    previous[0],
+                    chapter,
                 )
                 continue
-            known_facts[fact_id] = record
+            if previous is None:
+                known_facts[fact_id] = (chapter, record)
         for field in ("facts_confirmed", "facts_contradicted"):
             for record in contract.get(field, []):
                 fact_id = str(record["id"])

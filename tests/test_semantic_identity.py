@@ -1,6 +1,10 @@
 import json
 
-from core.generation.semantic_identity import resolve_contract_identities
+from core.generation.domain_profiles import LEGAL_SUSPENSE
+from core.generation.semantic_identity import (
+    resolve_contract_identities,
+    resolve_domain_identities,
+)
 from core.generation.story_ledger import StoryLedgerManager
 
 
@@ -186,6 +190,114 @@ def test_reused_fact_id_for_different_fact_gets_new_program_id(tmp_path):
     assert result.decisions[0]["action"] == "colliding_id_reassigned"
 
 
+def test_domain_clue_id_collision_gets_a_chapter_scoped_id(tmp_path):
+    first = _contract(1)
+    first["fair_play_clues"] = [{
+        "id": "C001",
+        "surface_meaning": "喉部的特殊缝合结",
+        "true_meaning": "凶手模仿旧案手法",
+    }]
+    _save(tmp_path, first)
+    second = _contract(2)
+    second["fair_play_clues"] = [{
+        "id": "C001",
+        "surface_meaning": "手背上的喷溅血迹",
+        "true_meaning": "血迹由高压设备喷涂伪造",
+    }]
+
+    result = resolve_contract_identities(
+        second,
+        str(tmp_path),
+        2,
+        "current-model",
+        _decides("different", 0.12),
+        profile=LEGAL_SUSPENSE,
+    )
+
+    assert result.contract["fair_play_clues"][0]["id"] == "C-002-01"
+    assert result.decisions[-1]["action"] == "colliding_id_reassigned"
+
+
+def test_semantically_same_clue_uses_the_canonical_id_and_meaning(tmp_path):
+    first = _contract(1)
+    first["fair_play_clues"] = [
+        {
+            "id": "C001",
+            "surface_meaning": "喉部的特殊缝合结",
+            "true_meaning": "凶手模仿旧案手法",
+        },
+        {
+            "id": "C002",
+            "surface_meaning": "手背上的喷溅血迹",
+            "true_meaning": "血迹由高压设备喷涂伪造",
+        },
+    ]
+    _save(tmp_path, first)
+    second = _contract(2)
+    second["fair_play_clues"] = [{
+        "id": "C001",
+        "surface_meaning": "梁浩手背的微量喷溅血迹",
+        "true_meaning": "推弹器和喷涂设备制造了虚假射击物证",
+    }]
+
+    result = resolve_contract_identities(
+        second,
+        str(tmp_path),
+        2,
+        "current-model",
+        _decides("same", 0.95, "C002"),
+        profile=LEGAL_SUSPENSE,
+    )
+
+    clue = result.contract["fair_play_clues"][0]
+    assert clue["id"] == "C002"
+    assert clue["surface_meaning"] == "手背上的喷溅血迹"
+    assert clue["true_meaning"] == "血迹由高压设备喷涂伪造"
+
+
+def test_domain_only_repair_does_not_call_model_for_unrelated_core_records(tmp_path):
+    first = _contract(1, facts=[{
+        "id": "F-001-01", "fact": "死亡方式", "value": "枪伤",
+    }])
+    first["fair_play_clues"] = [{
+        "id": "C001",
+        "surface_meaning": "喉部的特殊缝合结",
+        "true_meaning": "凶手模仿旧案手法",
+    }]
+    _save(tmp_path, first)
+    second = _contract(2, facts=[{
+        "id": "F-002-01", "fact": "逃亡路线", "value": "进入山林",
+    }])
+    second["fair_play_clues"] = [{
+        "id": "C001",
+        "surface_meaning": "手背上的喷溅血迹",
+        "true_meaning": "血迹由设备喷涂伪造",
+    }]
+    calls = []
+
+    def decide(prompt, model=None):
+        calls.append(prompt)
+        return json.dumps({
+            "relation": "different",
+            "similarity": 0.1,
+            "matched_id": None,
+            "reason": "不同线索",
+        }, ensure_ascii=False)
+
+    result = resolve_domain_identities(
+        second,
+        str(tmp_path),
+        2,
+        "current-model",
+        decide,
+        profile=LEGAL_SUSPENSE,
+    )
+
+    assert len(calls) == 1
+    assert result.contract["facts_added"] == second["facts_added"]
+    assert result.contract["fair_play_clues"][0]["id"] == "C-002-01"
+
+
 def test_character_attribute_written_two_ways_is_canonicalised(tmp_path):
     """「萨姆·金」和「山姆·金」写的是同一个人的同一项属性，必须并成一条。"""
     _save(tmp_path, _contract(1, attributes=[{
@@ -298,3 +410,84 @@ def test_replanned_chapter_keeps_a_thread_a_later_chapter_closes(tmp_path):
     kept = [item["id"] for item in result.contract["plot_thread_updates"]]
     assert kept == ["PT-005-01"]
     assert any("后续章节要了结" in warning for warning in result.warnings)
+
+
+def test_extension_keeps_its_thread_id_and_needs_no_model_call(tmp_path):
+    """延期是同一条悬念的再次声明，不是新线索。
+
+    到期未了结时，校验器给模型的修复指令就是写一条
+    {"id": <原 id>, "status": "open", "extend": true, "deadline_chapter": N}。
+    那条建议里没有 thread 字段，一旦落进语义比对就会被判成「撞了 ID 的新线索」
+    并改名——原悬念仍然到期未处理，模型照着提示改也永远修不好。
+    """
+    _save(tmp_path, _contract(1, threads=[{
+        "id": "PT-001-01", "thread": "证物袋被调换",
+        "status": "open", "deadline_chapter": 2,
+    }]))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("延期是结构性声明，不需要语义判定")
+
+    result = resolve_contract_identities(
+        _contract(2, threads=[{
+            "id": "PT-001-01", "status": "open",
+            "extend": True, "deadline_chapter": 5,
+        }]),
+        str(tmp_path), 2, "current-model", forbidden,
+    )
+
+    threads = result.contract["plot_thread_updates"]
+    assert len(threads) == 1
+    assert threads[0]["id"] == "PT-001-01"
+    assert threads[0]["deadline_chapter"] == 5
+    assert threads[0]["extend"] is True
+
+
+def test_the_repair_the_error_message_suggests_actually_passes(tmp_path):
+    """端到端：按错误提示写出的修复，必须真的能通过校验。"""
+    from core.generation.planning_contract import (
+        collect_history_defects,
+        downstream_obligations,
+        load_planning_contracts,
+        validate_planning_contract,
+    )
+
+    _save(tmp_path, _contract(1, threads=[{
+        "id": "PT-001-01", "thread": "证物袋被调换",
+        "status": "open", "deadline_chapter": 2,
+    }]))
+
+    resolution = resolve_contract_identities(
+        _contract(2, threads=[{
+            "id": "PT-001-01", "status": "open",
+            "extend": True, "deadline_chapter": 5,
+        }]),
+        str(tmp_path), 2, "current-model", _decides("unrelated", 0.0),
+    )
+    contract = validate_planning_contract(resolution.contract, 2)
+
+    defects = collect_history_defects(
+        contract,
+        load_planning_contracts(str(tmp_path)),
+        2,
+        obligations=downstream_obligations(str(tmp_path), 2),
+    )
+    assert defects == [], [str(defect) for defect in defects]
+
+
+def test_a_genuinely_new_thread_that_collides_is_still_renamed(tmp_path):
+    """过滤只放行 extend：没有 extend 的撞号仍然要改名。"""
+    _save(tmp_path, _contract(1, threads=[{
+        "id": "PT-001-01", "thread": "失踪的钥匙",
+        "status": "open", "deadline_chapter": 6,
+    }]))
+
+    result = resolve_contract_identities(
+        _contract(2, threads=[{
+            "id": "PT-001-01", "thread": "完全不同的另一条悬念",
+            "status": "open", "deadline_chapter": 8,
+        }]),
+        str(tmp_path), 2, "current-model", _decides("unrelated", 0.0),
+    )
+
+    assert result.contract["plot_thread_updates"][0]["id"] != "PT-001-01"

@@ -34,11 +34,53 @@ class DomainReview:
     repair_instructions: List[str] = field(default_factory=list)
     strengths: List[str] = field(default_factory=list)
     reviewer_warning: str = ""
+    pass_average: float = 0.0
+    blocking_dimensions: List[str] = field(default_factory=list)
+    waived: bool = False
 
     @property
     def average_score(self) -> float:
         values = [float(value) for value in self.scores.values() if isinstance(value, (int, float))]
         return sum(values) / len(values) if values else 0.0
+
+    @property
+    def soft_failure(self) -> bool:
+        """未过闸，且唯一的失败原因就是平均分没到门槛。
+
+        没有硬失败、必要维度也都达标，说明评审自己认定的是「合格但不出彩」，
+        不是有缺陷。这类稿子和真正的硬伤必须区别对待：前者不该让整轮写作停机。
+
+        门槛为 0 时判定不成立：那说明这份评审不是走 `_normalize_review` 算出来
+        的，平均分根本没参与判定，失败原因在别处，不能当成差分放过。
+        """
+        return (
+            not self.passed
+            and not self.hard_failures
+            and not self.blocking_dimensions
+            and self.pass_average > 0
+            and self.average_score < self.pass_average
+        )
+
+    @property
+    def shortfall(self) -> float:
+        """离门槛还差多少分；已达标时为 0。"""
+        return max(self.pass_average - self.average_score, 0.0)
+
+    @property
+    def has_actionable_repair(self) -> bool:
+        """评审是否给出了可据以重修的具体依据。"""
+        return bool(self.hard_failures or self.repair_instructions)
+
+    def waive(self, reason: str) -> "DomainReview":
+        """放行一份只差分数的稿子，并把放行理由写进记录。
+
+        返回副本而不是就地改写，原始判定仍以 passed=False 存档，便于事后复盘。
+        """
+        data = asdict(self)
+        data["passed"] = True
+        data["waived"] = True
+        data["reviewer_warning"] = reason
+        return DomainReview(**data)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -177,6 +219,46 @@ class DomainReviewAgent:
 """
             repaired_response = self.send_prompt(repair_prompt, model=self.model)
             return extract_json_object(repaired_response)
+
+    # --- canon conflicts --------------------------------------------------
+
+    def decide_fact_conflicts(
+        self,
+        chapter_number: int,
+        conflicts: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Make the model state whether a clashing value is a mistake or a reveal.
+
+        A stable attribute with two values is ambiguous on its face: it may be a
+        slip in this chapter's contract, or a deliberate reversal the story is
+        building to.  Silently rewriting either one destroys information, so the
+        model is asked to commit — and a reversal has to come with a reason,
+        which turns a vague clash into an auditable decision a person can rule on.
+        """
+        listing = "\n".join(
+            f"- 冲突 {index + 1}｜记录 {item.get('id')}｜字段 {item.get('field')}\n"
+            f"    账本已接受：{item.get('existing')}\n"
+            f"    本章声明：  {item.get('proposed')}"
+            for index, item in enumerate(conflicts)
+        )
+        prompt = f"""你在核对第 {chapter_number} 章的章节契约与故事账本。账本记录的是前面章节已经通过验收、写进正文的状态。
+
+以下取值互相冲突：
+{listing}
+
+对每一条冲突二选一：
+- "keep_existing"：本章契约写错了，应当沿用账本里的取值。
+- "contradict"：这是本章有意推翻既有设定的剧情转折，必须给出 reason 说明故事内的依据。
+
+不要为了省事一律选 contradict——只有当推翻既有事实本身就是本章要写的转折时才选它。
+
+只输出一个 JSON 对象，不要解释，不要代码围栏：
+{{"decisions":[{{"id":"记录ID","field":"字段名","decision":"keep_existing|contradict","reason":"选 contradict 时必填"}}]}}
+"""
+        payload = self._call_json(prompt)
+        decisions = payload.get("decisions")
+        return {"decisions": decisions if isinstance(decisions, list) else []}
+
 
     # --- story bible ------------------------------------------------------
 
@@ -500,10 +582,15 @@ timeline_events、character_updates、plot_thread_updates）：
                 hard_failures.append(failure)
 
         average = sum(scores.values()) / len(scores)
+        blocking_dimensions = [
+            dimension
+            for dimension in profile.required_dimensions
+            if scores.get(dimension, 0.0) < 3.0
+        ]
         passed = (
             not hard_failures
             and average >= profile.pass_average
-            and all(scores.get(dimension, 0.0) >= 3.0 for dimension in profile.required_dimensions)
+            and not blocking_dimensions
         )
         return DomainReview(
             stage=stage,
@@ -514,9 +601,39 @@ timeline_events、character_updates、plot_thread_updates）：
             repair_scope=str(raw.get("repair_scope", "")),
             repair_instructions=[str(item) for item in raw.get("repair_instructions", [])],
             strengths=[str(item) for item in raw.get("strengths", [])],
+            pass_average=profile.pass_average,
+            blocking_dimensions=blocking_dimensions,
         )
 
     # --- revisions --------------------------------------------------------
+
+    @staticmethod
+    def revision_focus(review: DomainReview) -> str:
+        """当评审判不通过却没给修改依据时，替它折算出重修方向。
+
+        评审经常一边判 passed=False、一边把 repair_instructions 留空并写
+        repair_scope="none"——它认为没有硬伤，只是分数没到门槛。把这种评审原样
+        回抛给模型，等于要求它「照旧再写一遍」，重修必然原地打转，重试次数白白
+        耗尽后整轮写作就被一份评审自己都说没问题的稿子卡停。这里改为点名最低分
+        维度和分差，让重修至少有一个可执行的着力点。
+        """
+        if review.has_actionable_repair or not review.scores or review.pass_average <= 0:
+            return ""
+        lowest = min(review.scores.values())
+        weakest = [name for name, score in review.scores.items() if score <= lowest + 0.01]
+        if len(weakest) == len(review.scores):
+            # 各维度全打成同一个分数时逐一列出等于没说，直接点明它是一份平庸的
+            # 稿子，把力气用在最能拉分的地方。
+            target = f"所有维度都停在 {lowest:.1f} 分，说明整场平庸而非某一处出错。"
+        else:
+            target = f"最低分维度是 {'、'.join(weakest[:4])}（各 {lowest:.1f} 分），请集中提升它们。"
+        return (
+            f"\n重修方向（评审未列出具体修复项，按分差给出）：\n"
+            f"上一稿平均 {review.average_score:.2f} 分，门槛 {review.pass_average:.2f} 分，"
+            f"还差 {review.shortfall:.2f} 分。没有硬伤，问题不在错误而在力度。{target}"
+            f"保持既定情节、人物关系和信息边界不变，靠更准确的动作、更具体可核实的"
+            f"细节和更锋利的对白加强，不要靠拉长篇幅或增加新信息充数。\n"
+        )
 
     def revise_plan(
         self,
@@ -531,7 +648,7 @@ timeline_events、character_updates、plot_thread_updates）：
 
 评审：
 {compact_json(review.to_dict(), 8000)}
-
+{self.revision_focus(review)}
 原场景规划：
 {scene_plan}
 
@@ -563,7 +680,7 @@ timeline_events、character_updates、plot_thread_updates）：
 
 评审意见：
 {compact_json(review.to_dict(), 8000)}
-
+{self.revision_focus(review)}
 原正文：
 {scene_content}
 """

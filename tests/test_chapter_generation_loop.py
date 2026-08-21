@@ -696,3 +696,132 @@ def test_project_without_design_context_is_not_blocked(tmp_path):
     )
 
     assert len(result.scenes) == 2
+
+
+# --- 差分放行 ---------------------------------------------------------------
+#
+# 闸门原本对两类失败一视同仁：有硬伤的稿子和只差零点几分的稿子都会在重试耗尽后
+# 中断整轮写作。真实运行里出现过评审自己在 evidence 里逐条写「通过」、
+# repair_scope 填 "none"、repair_instructions 留空，却因为平均分 3.0 差
+# 严格档门槛 3.2 而把 30 章的写作整个卡停。
+
+
+def soft_failed_review(stage, average=3.0, pass_average=3.2):
+    """只差平均分的评审：无硬失败、无必要维度不及格、无可执行修复项。"""
+    return DomainReview(
+        stage=stage,
+        passed=False,
+        scores={dimension: average for dimension in SCORE_DIMENSIONS},
+        repair_scope="none",
+        repair_instructions=[],
+        pass_average=pass_average,
+    )
+
+
+def hard_failed_review(stage, pass_average=3.2):
+    return DomainReview(
+        stage=stage,
+        passed=False,
+        scores={dimension: 3.0 for dimension in SCORE_DIMENSIONS},
+        hard_failures=[{"code": "CONTINUITY_DUPLICATION", "quote": "证人交出收据"}],
+        pass_average=pass_average,
+    )
+
+
+class SoftFailingSceneReviewer(PassingReviewer):
+    """场景永远差 0.2 分，且从不给出修复项。"""
+
+    review_factory = staticmethod(soft_failed_review)
+
+    def __init__(self):
+        super().__init__()
+        self.revisions = 0
+
+    def review_scene(self, scene_content, scene_plan, scene_number, *args):
+        return self.review_factory(f"scene_{scene_number}")
+
+    def revise_scene(self, scene_content, *args):
+        self.revisions += 1
+        return scene_content
+
+
+def _run_soft_failing_loop(tmp_path, reviewer, max_scene_retries=2):
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer,
+        max_scene_retries=max_scene_retries,
+    )
+    return loop.run(
+        chapter_number=1,
+        plan_content=PLAN,
+        parameters={},
+        lore="世界观",
+        generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文：证据状态已经改变。",
+    )
+
+
+def test_scene_short_of_threshold_is_waived_instead_of_stopping_the_run(tmp_path):
+    reviewer = SoftFailingSceneReviewer()
+
+    result = _run_soft_failing_loop(tmp_path, reviewer)
+
+    assert [review.waived for review in result.scene_reviews] == [True, True]
+    assert all(review.passed for review in result.scene_reviews)
+    assert len(result.gate_waivers) == 2
+    assert "差 0.20 分" in result.gate_waivers[0]
+    # 原始的 passed=False 判定和放行记录都要留档，便于事后复盘。
+    review_dir = tmp_path / "quality" / "legal_suspense_reviews" / "chapter_1"
+    assert list(review_dir.glob("scene_1_20*.json"))
+    assert list(review_dir.glob("scene_1_waived*.json"))
+
+
+def test_scene_with_a_hard_failure_still_stops_the_run(tmp_path):
+    class HardFailingSceneReviewer(SoftFailingSceneReviewer):
+        review_factory = staticmethod(hard_failed_review)
+
+    with pytest.raises(QualityGateError, match="仍未通过质量检查"):
+        _run_soft_failing_loop(tmp_path, HardFailingSceneReviewer())
+
+
+def test_scene_far_below_threshold_is_not_waived(tmp_path):
+    class WeakSceneReviewer(SoftFailingSceneReviewer):
+        review_factory = staticmethod(
+            lambda stage: soft_failed_review(stage, average=2.0)
+        )
+
+    with pytest.raises(QualityGateError, match="仍未通过质量检查"):
+        _run_soft_failing_loop(tmp_path, WeakSceneReviewer())
+
+
+def test_scene_stops_retrying_once_feedback_is_empty_and_scores_stall(tmp_path):
+    reviewer = SoftFailingSceneReviewer()
+
+    _run_soft_failing_loop(tmp_path, reviewer, max_scene_retries=3)
+
+    # 每个场景只该重修一次：第一次重修后分数没涨、评审又给不出依据，
+    # 继续重试只是把同一次调用重复三遍。
+    assert reviewer.revisions == 2
+
+
+def test_waived_chapter_can_still_be_accepted(tmp_path):
+    class SoftFailingChapterReviewer(PassingReviewer):
+        def review_chapter(self, *args):
+            return soft_failed_review("chapter")
+
+        def revise_scene(self, scene_content, *args):
+            return scene_content
+
+    result = _run_soft_failing_loop(tmp_path, SoftFailingChapterReviewer())
+
+    assert result.chapter_review.waived is True
+    chapter_path = tmp_path / "story" / "content" / "chapters" / "chapter_1.md"
+    chapter_path.parent.mkdir(parents=True)
+    chapter_path.write_text(result.chapter_content, encoding="utf-8")
+
+    acceptance = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=PassingReviewer(),
+    ).accept_result(1, result)
+    assert acceptance.committed_revision == 1

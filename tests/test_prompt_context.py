@@ -5,6 +5,7 @@ import inspect
 from core.generation.prompt_context import (
     CHINESE_PROSE_REQUIREMENTS,
     analyze_chinese_prose_style,
+    generate_prose_with_style_retry,
     build_location_guidance,
     find_scene_world_conflicts,
     format_faction_summary,
@@ -79,4 +80,123 @@ def test_style_analyzer_flags_repetition_and_long_sentences():
     prose = "冰冷。冰冷。冰冷。" + ("这是一个塞入了过多动作和解释、没有及时停顿的句子" * 5) + "。"
     warnings = analyze_chinese_prose_style(prose)
     assert any("冰冷×3" in warning for warning in warnings)
-    assert any("长句比例过高" in warning for warning in warnings)
+    assert any("长句过多" in warning for warning in warnings)
+
+
+def test_long_attributives_are_flagged_as_translationese():
+    """The marker the reader called 定语偏多: everything piled before 的."""
+    prose = "。".join(
+        [
+            "分明是使用高渗透性含氯特种去污溶剂定向清除物理接触面的典型特征",
+            "视网膜上烙印着不锈钢台面上被化学试剂大面积毁损的父亲遗体",
+            "那是胸腹部遭受强烈挤压引起的急性机械性窒息过程",
+            "他点头",
+            "她坐下",
+        ]
+    ) + "。"
+
+    warnings = analyze_chinese_prose_style(prose)
+
+    assert any("定语过长" in warning for warning in warnings)
+
+
+def test_short_natural_chinese_passes_every_check():
+    prose = (
+        "雨停了。"
+        "她把伞收起来，靠在门边。"
+        "楼道里没有灯，只有电表箱的红点一闪一闪。"
+        "他先开了口：“东西还在吗？”"
+        "她没有答话，把手伸进口袋。"
+    )
+
+    assert analyze_chinese_prose_style(prose) == []
+
+
+def test_latin_names_are_reported_but_common_acronyms_are_not():
+    prose = "Michelle Lee 把 DNA 比对结果交给了 Eric Snow。她没有说话。"
+
+    warnings = analyze_chinese_prose_style(prose)
+    foreign = [w for w in warnings if "出现外文" in w]
+
+    assert foreign, warnings
+    assert "Michelle Lee" in foreign[0]
+    assert "DNA" not in foreign[0]
+
+
+def test_style_retry_feeds_the_findings_back_and_stops_when_clean():
+    clean = "雨停了。她把伞收起来。他先开了口。"
+    dirty = "Michelle Lee 站在那里。" + "他用那种被反复擦拭过许多次的金属托盘端来证物。" * 6
+    seen = []
+
+    def send(prompt):
+        seen.append(prompt)
+        return dirty if len(seen) == 1 else clean
+
+    result = generate_prose_with_style_retry(send, "写一个场景")
+
+    assert result == clean
+    assert len(seen) == 2
+    assert "以上正文未通过中文文风检查" in seen[1]
+    assert "Michelle Lee" in seen[1]
+
+
+def test_style_retry_keeps_the_best_draft_rather_than_failing():
+    """Style is a degree, not a corrupt state: never lose a chapter over it."""
+    worse = "Michelle Lee 和 Eric Snow 冰冷。冰冷。冰冷。" + "他用那种被反复擦拭过很多次的金属托盘端来证物。" * 6
+    better = "Michelle Lee 说话了。"
+    replies = [worse, better, worse]
+
+    result = generate_prose_with_style_retry(lambda prompt: replies.pop(0), "写一个场景")
+
+    assert result == better
+
+
+# --- 世界观冲突检查 -----------------------------------------------------------
+
+
+def test_metaphor_prone_words_no_longer_trigger_a_conflict():
+    """「全息级显微投影」「弧光跃迁」在中文里是修辞，不是科幻设定。
+
+    这两个词曾在一部法律悬疑里误判三次，每次白烧一轮重试，还把文字改得更平。
+    """
+    params = {"Genre": "Mystery", "Subgenre": "Legal Thriller"}
+    lore = "世界观：滨海城市圣兰卡。"
+
+    assert find_scene_world_conflicts("他调出全息级高精度显微投影。", lore, params) == []
+    assert find_scene_world_conflicts("人物弧光完成了一次跃迁。", lore, params) == []
+
+
+def test_hard_science_fiction_nouns_are_still_caught():
+    params = {"Genre": "Mystery", "Subgenre": "Legal Thriller"}
+    lore = "世界观：滨海城市圣兰卡。"
+
+    assert find_scene_world_conflicts("梁浩乘悬浮车前往星际法庭。", lore, params) == [
+        "星际",
+        "悬浮车",
+    ]
+    assert find_scene_world_conflicts("顾阳波在行星轨道上取证。", lore, params) == ["行星"]
+
+
+def test_craft_annotations_are_skipped_but_content_lines_are_not():
+    params = {"Genre": "Mystery", "Subgenre": "Legal Thriller"}
+    lore = "世界观：滨海城市圣兰卡。"
+
+    # 纯写作批注谈的是写法，里面的术语不是设定。
+    assert find_scene_world_conflicts("* **叙事作用**：制造一次张力跃迁", lore, params) == []
+    # 但内容型标签后面跟的是故事，真窜进科幻设定就要拦下。
+    assert find_scene_world_conflicts(
+        "* **场景目标**：证人乘悬浮车抵达", lore, params
+    ) == ["悬浮车"]
+
+
+def test_a_scifi_story_is_never_flagged():
+    assert find_scene_world_conflicts(
+        "舰队跃迁至行星轨道。", "", {"Genre": "Sci-Fi", "Subgenre": "Space Opera"}
+    ) == []
+
+
+def test_markers_present_in_the_lore_are_allowed():
+    params = {"Genre": "Mystery", "Subgenre": "Legal Thriller"}
+    assert find_scene_world_conflicts(
+        "案发地点在行星站。", "世界观提到行星站是一座旧工业区的绰号。", params
+    ) == []

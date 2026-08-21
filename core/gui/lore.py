@@ -5,6 +5,12 @@ from core.gui.notifications import show_success, show_error, show_warning
 from core.gui.task_runner import run_in_background, snapshot_ui
 from core.generation.ai_helper import send_prompt, get_backend
 from core.generation.prompt_context import format_faction_summary
+from core.generation.chinese_names import (
+    load_namer,
+    localize_characters,
+    localize_factions,
+    save_namer,
+)
 import json
 import os
 import logging
@@ -258,6 +264,14 @@ class Lore:
                 subgenre=subgenre
             )
             
+            # The genre generators assemble names from English word lists, so
+            # the cast is renamed here — before the file is written and before
+            # any prompt is built from it.
+            output_dir = ui.output_dir
+            namer = load_namer(output_dir)
+            factions = localize_factions(factions, namer)
+            save_namer(namer, output_dir)
+
             # Print factions to console for debugging
             if factions:
                 first_name = factions[0].get('faction_name') or factions[0].get('name') or 'N/A'
@@ -272,9 +286,6 @@ class Lore:
             else:
                 self.app.logger.warning("Faction generation returned no factions.")
 
-            # Determine the output directory from the app settings
-            output_dir = ui.output_dir
-            
             # Use structured directory for factions file
             lore_dir = self.dir_manager.get_path('lore_dir')
             lore_full_path = os.path.join(output_dir, lore_dir)
@@ -353,8 +364,12 @@ class Lore:
                 show_error("错误", "生成人物失败。")
                 return
             
-            # Note: Characters are now generated with genre-appropriate attributes from the start
-            # No post-processing needed as each generator handles its own genre-specific attributes
+            # Names arrive already decided by the genre generator's English word
+            # lists, so they are replaced here, before backstories are written
+            # from them.  The mapping is shared with the faction pass.
+            namer = load_namer(ui.output_dir)
+            characters = localize_characters(characters, namer)
+            save_namer(namer, ui.output_dir)
             
             # Print to console for debugging
             # for char in characters:

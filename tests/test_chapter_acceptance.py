@@ -142,7 +142,10 @@ def test_acceptance_blocks_conflicting_stable_clue_fact(tmp_path):
         service.accept(2, second_content, conflicting_contract, _review(), 1, str(second_path))
 
     issue = next(issue for issue in exc_info.value.report.issues if issue.code == "clue_fact_conflict")
-    assert issue.repair_target == "human_decision"
+    # A clashing stable value goes back to the contract stage to be declared as
+    # either a slip or a deliberate reversal; only a declared reversal
+    # (fact_contradiction) is a question for the author.
+    assert issue.repair_target == "contract"
     assert issue.details["id"] == "C001"
     assert manager.current_revision() == 1
 

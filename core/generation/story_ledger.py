@@ -10,7 +10,7 @@ import tempfile
 from glob import glob
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from filelock import FileLock
 
@@ -285,6 +285,8 @@ class StoryLedgerManager:
                 "chapter_commits": [],
                 "unresolved_conflicts": [],
                 "resolved_conflicts": [],
+                "pending_regenerations": [],
+                "completed_regenerations": [],
                 "revision": 0,
                 "created_at": now,
                 "updated_at": now,
@@ -298,6 +300,8 @@ class StoryLedgerManager:
                 "chapter_commits": [],
                 "unresolved_conflicts": [],
                 "resolved_conflicts": [],
+                "pending_regenerations": [],
+                "completed_regenerations": [],
                 "revision": 0,
                 "facts": [],
                 "timeline_events": [],
@@ -620,6 +624,16 @@ class StoryLedgerManager:
         _atomic_write_json(self.chapter_contract_path(chapter_number), saved)
         return saved
 
+    def replace_saved_contract(
+        self, chapter_number: int, contract: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Persist a human ruling without changing the plan source identity."""
+        saved = deepcopy(contract)
+        saved["chapter"] = int(chapter_number)
+        saved["updated_at"] = datetime.now().isoformat()
+        _atomic_write_json(self.chapter_contract_path(chapter_number), saved)
+        return saved
+
     def save_review(self, chapter_number: int, stage: str, data: Dict[str, Any]) -> str:
         chapter_dir = os.path.join(self.review_dir, f"chapter_{chapter_number}")
         os.makedirs(chapter_dir, exist_ok=True)
@@ -672,6 +686,183 @@ class StoryLedgerManager:
             ledger["updated_at"] = datetime.now().isoformat()
             _atomic_write_json(self.suspense_ledger_path, ledger)
         return path
+
+    def approve_contradiction(
+        self, chapter_number: int, record_id: str, note: str = ""
+    ) -> None:
+        """Record that the author signed off on this chapter overturning a fact.
+
+        The gate blocks a declared reversal because only a person can say
+        whether overturning established canon is the story working or the story
+        breaking.  Once they have said so, the answer has to be durable — asking
+        again on every retry is how a chapter becomes unwritable.
+        """
+        with FileLock(self.suspense_ledger_lock_path):
+            ledger = self.load_suspense_ledger()
+            approvals = ledger.setdefault("approved_contradictions", [])
+            key = {"chapter": int(chapter_number), "id": str(record_id)}
+            if not any(
+                item.get("chapter") == key["chapter"] and str(item.get("id")) == key["id"]
+                for item in approvals
+                if isinstance(item, dict)
+            ):
+                approvals.append(
+                    {**key, "note": note, "approved_at": datetime.now().isoformat()}
+                )
+                ledger["updated_at"] = datetime.now().isoformat()
+                _atomic_write_json(self.suspense_ledger_path, ledger)
+
+    def approved_contradictions(self, chapter_number: int) -> Set[str]:
+        return {
+            str(item.get("id"))
+            for item in self.load_suspense_ledger().get("approved_contradictions", [])
+            if isinstance(item, dict) and item.get("chapter") == int(chapter_number)
+        }
+
+    def require_chapter_regeneration(
+        self,
+        chapter_number: int,
+        reason: str,
+        record_ids: Iterable[str] = (),
+    ) -> Dict[str, Any]:
+        """Persist that an author's ruling invalidated all previously generated prose."""
+        created_at = datetime.now().isoformat()
+        marker = {
+            "id": f"chapter_{int(chapter_number)}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}",
+            "chapter": int(chapter_number),
+            "reason": str(reason),
+            "record_ids": sorted({str(item) for item in record_ids if str(item)}),
+            "created_at": created_at,
+        }
+        with FileLock(self.suspense_ledger_lock_path):
+            ledger = self.load_suspense_ledger()
+            pending = ledger.setdefault("pending_regenerations", [])
+            pending[:] = [
+                item
+                for item in pending
+                if not (
+                    isinstance(item, dict)
+                    and item.get("chapter") == int(chapter_number)
+                )
+            ]
+            pending.append(marker)
+            ledger["updated_at"] = created_at
+            _atomic_write_json(self.suspense_ledger_path, ledger)
+        return deepcopy(marker)
+
+    def pending_chapter_regeneration(
+        self, chapter_number: int
+    ) -> Optional[Dict[str, Any]]:
+        return next(
+            (
+                deepcopy(item)
+                for item in self.load_suspense_ledger().get("pending_regenerations", [])
+                if isinstance(item, dict)
+                and item.get("chapter") == int(chapter_number)
+            ),
+            None,
+        )
+
+    def complete_chapter_regeneration(
+        self, chapter_number: int, marker_id: str
+    ) -> bool:
+        """Clear exactly the ruling marker satisfied by the accepted new prose."""
+        completed_at = datetime.now().isoformat()
+        with FileLock(self.suspense_ledger_lock_path):
+            ledger = self.load_suspense_ledger()
+            pending = ledger.setdefault("pending_regenerations", [])
+            marker = next(
+                (
+                    item
+                    for item in pending
+                    if isinstance(item, dict)
+                    and item.get("chapter") == int(chapter_number)
+                    and str(item.get("id", "")) == str(marker_id)
+                ),
+                None,
+            )
+            if marker is None:
+                return False
+            pending.remove(marker)
+            completed = deepcopy(marker)
+            completed["completed_at"] = completed_at
+            ledger.setdefault("completed_regenerations", []).append(completed)
+            ledger["updated_at"] = completed_at
+            _atomic_write_json(self.suspense_ledger_path, ledger)
+        return True
+
+    def open_conflicts(self) -> List[Dict[str, Any]]:
+        """Every conflict still waiting on a decision, newest first."""
+        conflicts = [
+            deepcopy(item)
+            for item in self.load_suspense_ledger().get("unresolved_conflicts", [])
+            if isinstance(item, dict)
+        ]
+        conflicts.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+        return conflicts
+
+    def load_conflict(self, conflict_id: str) -> Optional[Dict[str, Any]]:
+        """The full stored report for one conflict, or None if it is gone."""
+        path = os.path.join(self.conflict_dir, f"{conflict_id}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
+
+    def resolve_conflict(
+        self,
+        conflict_id: str,
+        resolution: str,
+        note: str = "",
+    ) -> bool:
+        """Close a conflict on a person's authority.
+
+        Until now the only way out of ``unresolved_conflicts`` was for the same
+        chapter to be accepted again.  A conflict the author decides to live
+        with therefore stayed open forever — and because the acceptance gate
+        refuses to commit while *any other* chapter has an open conflict, one
+        undecided clash quietly froze the whole project.
+        """
+        resolved_at = datetime.now().isoformat()
+        with FileLock(self.suspense_ledger_lock_path):
+            ledger = self.load_suspense_ledger()
+            unresolved = ledger.setdefault("unresolved_conflicts", [])
+            entry = next(
+                (item for item in unresolved if item.get("id") == conflict_id), None
+            )
+            if entry is None:
+                return False
+            unresolved.remove(entry)
+            closed = deepcopy(entry)
+            closed.update(
+                {
+                    "status": "resolved",
+                    "resolution": resolution,
+                    "note": note,
+                    "resolved_by": "human",
+                    "resolved_at": resolved_at,
+                }
+            )
+            ledger.setdefault("resolved_conflicts", []).append(closed)
+            ledger["updated_at"] = resolved_at
+            _atomic_write_json(self.suspense_ledger_path, ledger)
+
+        stored = self.load_conflict(conflict_id)
+        if stored is not None:
+            stored.update(
+                {
+                    "status": "resolved",
+                    "resolution": resolution,
+                    "note": note,
+                    "resolved_by": "human",
+                    "resolved_at": resolved_at,
+                }
+            )
+            _atomic_write_json(
+                os.path.join(self.conflict_dir, f"{conflict_id}.json"), stored
+            )
+        return True
 
     def accept_chapter(
         self,

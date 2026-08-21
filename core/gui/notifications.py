@@ -13,6 +13,11 @@ import time
 from typing import Optional, Callable
 
 
+WIDTH = 420
+# Past this the message belongs in the log, not on a toast.
+MAX_HEIGHT = 420
+
+
 class NotificationManager:
     """
     Manages non-blocking notifications that appear briefly and auto-dismiss.
@@ -22,26 +27,32 @@ class NotificationManager:
         self.parent = parent_window
         self.notifications = []
         self.notification_counter = 0
+        self._stack_offset = 0
     
     def show_success(self, title: str, message: str, duration: int = 3000, 
                     callback: Optional[Callable] = None):
         """Show a success notification that auto-dismisses."""
-        self._show_notification(title, message, "success", duration, callback)
+        return self._show_notification(title, message, "success", duration, callback)
     
     def show_info(self, title: str, message: str, duration: int = 3000,
                  callback: Optional[Callable] = None):
         """Show an info notification that auto-dismisses."""
-        self._show_notification(title, message, "info", duration, callback)
+        return self._show_notification(title, message, "info", duration, callback)
     
-    def show_warning(self, title: str, message: str, duration: int = 4000,
+    def show_warning(self, title: str, message: str, duration: int = 0,
                     callback: Optional[Callable] = None):
-        """Show a warning notification that auto-dismisses."""
-        self._show_notification(title, message, "warning", duration, callback)
+        """Show a warning notification that stays until dismissed."""
+        return self._show_notification(title, message, "warning", duration, callback)
     
-    def show_error(self, title: str, message: str, duration: int = 5000,
+    def show_error(self, title: str, message: str, duration: int = 0,
                   callback: Optional[Callable] = None):
-        """Show an error notification that auto-dismisses."""
-        self._show_notification(title, message, "error", duration, callback)
+        """Show an error notification that stays until dismissed.
+
+        An error usually asks the reader to do something.  Auto-dismissing it
+        after five seconds means the one message that needed acting on is the
+        one most likely to be missed — pass a positive duration to opt back in.
+        """
+        return self._show_notification(title, message, "error", duration, callback)
     
     def _show_notification(self, title: str, message: str, notification_type: str,
                           duration: int, callback: Optional[Callable] = None):
@@ -58,7 +69,7 @@ class NotificationManager:
         # Position window (stack notifications)
         self.notification_counter += 1
         x_offset = 20
-        y_offset = 20 + (self.notification_counter - 1) * 120
+        y_offset = 20 + self._stack_offset
         
         # Get parent window position
         self.parent.update_idletasks()
@@ -67,10 +78,10 @@ class NotificationManager:
         parent_width = self.parent.winfo_width()
         
         # Position notification in top-right of parent
-        notification_x = parent_x + parent_width - 350 - x_offset
+        notification_x = parent_x + parent_width - WIDTH - x_offset
         notification_y = parent_y + y_offset
         
-        notification.geometry(f"350x100+{notification_x}+{notification_y}")
+        # Height is set once the text is laid out; see below.
         
         # Configure colors based on type
         colors = {
@@ -132,7 +143,7 @@ class NotificationManager:
             font=("Arial", 9),
             bg=color_scheme["bg"],
             fg=color_scheme["fg"],
-            wraplength=320,
+            wraplength=WIDTH - 30,
             justify="left"
         )
         message_label.pack(fill="x", padx=10, pady=(0, 10))
@@ -151,23 +162,30 @@ class NotificationManager:
         )
         close_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=5)
         
+        # Let the window take the height its text actually needs; a fixed box
+        # silently cut long messages off in the middle of a sentence.
+        notification.update_idletasks()
+        height = min(max(notification.winfo_reqheight(), 90), MAX_HEIGHT)
+        notification.geometry(f"{WIDTH}x{height}+{notification_x}+{notification_y}")
+        self._stack_offset += height + 10
+
         # Store notification reference
         self.notifications.append(notification)
         
-        # Auto-close after duration
-        def auto_close():
-            time.sleep(duration / 1000.0)  # Convert ms to seconds
-            try:
-                if notification.winfo_exists():
-                    self.parent.after(0, lambda: self._close_notification(notification))
-                    if callback:
-                        self.parent.after(0, callback)
-            except tk.TclError:
-                pass  # Window already destroyed
-        
-        # Run auto-close in background thread
-        threading.Thread(target=auto_close, daemon=True).start()
-        
+        # A duration of zero means the reader dismisses it themselves.
+        if duration > 0:
+            def auto_close():
+                time.sleep(duration / 1000.0)  # Convert ms to seconds
+                try:
+                    if notification.winfo_exists():
+                        self.parent.after(0, lambda: self._close_notification(notification))
+                        if callback:
+                            self.parent.after(0, callback)
+                except tk.TclError:
+                    pass  # Window already destroyed
+
+            threading.Thread(target=auto_close, daemon=True).start()
+
         return notification
     
     def _close_notification(self, notification: tk.Toplevel):
@@ -177,6 +195,8 @@ class NotificationManager:
                 self.notifications.remove(notification)
             notification.destroy()
             self.notification_counter = max(0, self.notification_counter - 1)
+            if not self.notifications:
+                self._stack_offset = 0
         except tk.TclError:
             pass  # Window already destroyed
     
@@ -341,13 +361,20 @@ def show_info(title: str, message: str, duration: int = 3000):
     _notify("info", title, message, duration)
 
 
-def show_warning(title: str, message: str, duration: int = 4000):
-    """Show a non-blocking warning notification (safe from any thread)."""
+def show_warning(title: str, message: str, duration: int = 0):
+    """Show a non-blocking warning that stays until dismissed."""
     _notify("warning", title, message, duration)
 
 
-def show_error(title: str, message: str, duration: int = 5000):
-    """Show a non-blocking error notification (safe from any thread)."""
+def show_error(title: str, message: str, duration: int = 0):
+    """Show a non-blocking error that stays until the reader dismisses it.
+
+    These are the module-level entry points every caller actually uses; leaving
+    their defaults at 4-5 seconds silently overrode the manager's own defaults,
+    so the one message that asks the reader to do something was still the one
+    that disappeared before they could read it.  Pass a positive duration to
+    opt an individual call back into auto-dismissal.
+    """
     _notify("error", title, message, duration)
 
 

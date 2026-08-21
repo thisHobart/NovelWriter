@@ -16,6 +16,7 @@ venv/
 .idea/
 current_work/
 temp/
+/experiments/
 
 # Operating system files
 .DS_Store

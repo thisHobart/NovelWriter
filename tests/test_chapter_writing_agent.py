@@ -13,6 +13,7 @@ from agents.writing.chapter_writing_agent import (
     SceneReview,
 )
 from core.generation import ai_helper, helper_fns
+from core.generation.story_ledger import StoryLedgerManager
 from agents.writing.chapter_writing_agent import get_chapter_progress
 
 
@@ -185,6 +186,28 @@ def test_error_placeholder_is_not_a_completed_chapter(tmp_path):
 
     output_path.write_text("这是有效的章节正文。", encoding="utf-8")
     assert ChapterWritingAgent._is_valid_generated_output(str(output_path))
+
+
+def test_unaccepted_prose_file_is_not_treated_as_a_completed_chapter(tmp_path):
+    output_path = tmp_path / "story" / "content" / "chapters" / "chapter_15.md"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_text("第十五章尚未通过验收的正文。", encoding="utf-8")
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery"})
+
+    assert not _bare_agent(tmp_path)._is_completed_chapter(str(output_path), 15)
+
+    manager.accept_chapter(
+        15,
+        {},
+        {},
+        chapter_delta={"content_hash": "accepted", "contract_hash": "contract"},
+        expected_revision=0,
+    )
+    assert _bare_agent(tmp_path)._is_completed_chapter(str(output_path), 15)
+
+    manager.require_chapter_regeneration(15, "author_accepted_reversal", ["F-014-02"])
+    assert not _bare_agent(tmp_path)._is_completed_chapter(str(output_path), 15)
 
 
 def test_single_chapter_passes_review_arguments_by_name(tmp_path):
@@ -385,6 +408,46 @@ def test_batch_stops_after_first_rejected_chapter(tmp_path):
     assert result.success is False
 
 
+def test_batch_preserves_conflict_details_for_the_gui_buttons(tmp_path):
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+    conflict_issue = {
+        "code": "fact_contradiction",
+        "message": "需要作者裁定",
+        "severity": "blocking",
+        "repair_target": "human_decision",
+        "details": {"id": "F-014-02"},
+    }
+
+    agent._write_single_chapter = lambda chapter_info: AgentResult(
+        success=False,
+        data={
+            "chapter_number": chapter_info.chapter_number,
+            "needs_human_decision": True,
+            "adjudication": "awaiting_author",
+            "conflict_issues": [conflict_issue],
+            "conflicts": [{"id": "F-014-02"}],
+        },
+        messages=["等待作者裁定"],
+        metrics={},
+    )
+    chapter_infos = [ChapterInfo(15, "Climax", "scene_15.md", "chapter_15.md")]
+    plan = ChapterWritingPlan(
+        total_chapters=1,
+        chapters_to_write=[15],
+        chapters_completed=[],
+        batch_size=1,
+        enable_reviews=False,
+    )
+
+    result = agent.write_chapters_batch(chapter_infos, plan)
+
+    assert result.data["chapter_number"] == 15
+    assert result.data["needs_human_decision"] is True
+    assert result.data["adjudication"] == "awaiting_author"
+    assert result.data["conflict_issues"] == [conflict_issue]
+
+
 def test_batch_partial_write_is_not_reported_as_success(tmp_path):
     agent = _bare_agent(tmp_path)
     agent.review_agent = None
@@ -412,3 +475,44 @@ def test_batch_partial_write_is_not_reported_as_success(tmp_path):
     assert result.success is False
     assert result.data["chapters_written"] == [1]
     assert result.data["errors"] == ["第 2 章：验收失败"]
+
+
+def test_blocked_batch_reports_which_chapter_stopped_it(tmp_path):
+    """失败消息要自带章号和原因。
+
+    原来只报「已写完 1 章，发生 1 个错误」，真正的原因留在 data["errors"] 里，
+    界面上看不到，只能去翻日志才知道停在哪一章、为什么停。
+    """
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+
+    def write_first_then_reject(chapter_info):
+        if chapter_info.chapter_number == 1:
+            return AgentResult(success=True, data={}, messages=[], metrics={})
+        return AgentResult(
+            success=False,
+            data={},
+            messages=["第 2 章场景 1 在 2 次修订后仍未通过质量检查"],
+            metrics={},
+        )
+
+    agent._write_single_chapter = write_first_then_reject
+    chapter_infos = [
+        ChapterInfo(number, "Rising Action", f"scene_{number}.md", f"chapter_{number}.md")
+        for number in (1, 2, 3)
+    ]
+    plan = ChapterWritingPlan(
+        total_chapters=3,
+        chapters_to_write=[1, 2, 3],
+        chapters_completed=[],
+        batch_size=3,
+        enable_reviews=False,
+    )
+
+    result = agent.write_chapters_batch(chapter_infos, plan)
+
+    assert result.data["blocked_chapter"] == 2
+    message = result.messages[0]
+    assert "停在第 2 章" in message
+    assert "仍未通过质量检查" in message
+    assert "从第 2 章继续" in message

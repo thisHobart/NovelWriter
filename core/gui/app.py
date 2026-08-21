@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
+import os
 from typing import Dict, Any, Optional
 from core.config.logger_config import setup_app_logger
 from core.gui.parameters import Parameters
@@ -1586,7 +1587,6 @@ class NovelWriterApp:
             if step.output_files:
                 for file_path in sorted(step.output_files):
                     # Show relative path and file size if exists
-                    import os
                     full_path = os.path.join(self.get_output_dir(), file_path)
                     if os.path.exists(full_path):
                         size = os.path.getsize(full_path)
@@ -1644,7 +1644,6 @@ class NovelWriterApp:
                 step = state.steps[step_name]
                 if step.output_files:
                     for file_path in sorted(step.output_files):
-                        import os
                         full_path = os.path.join(self.get_output_dir(), file_path)
                         if os.path.exists(full_path):
                             size = os.path.getsize(full_path)
@@ -1665,7 +1664,6 @@ class NovelWriterApp:
         """Open the folder containing files for this step."""
         try:
             import subprocess
-            import os
             
             output_dir = self.get_output_dir()
             

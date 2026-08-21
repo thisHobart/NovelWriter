@@ -13,12 +13,24 @@ from core.generation.helper_fns import (
 )
 from core.generation.prompt_context import (
     analyze_chinese_prose_style,
+    generate_prose_with_style_retry,
     find_scene_world_conflicts,
     format_faction_summary,
     normalize_story_parameters,
     sanitize_lore_content,
 )
 from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from core.generation.chapter_acceptance import ChapterAcceptanceError, ValidationIssue
+from core.generation.story_ledger import StoryLedgerManager
+from core.gui.conflict_dialog import (
+    apply_decision,
+    ask_on_main_thread,
+    build_briefing,
+    conflict_record_path,
+    describe_briefing,
+    needs_author_decision,
+    show_conflict_dialog,
+)
 from core.generation.domain_profiles import resolve_domain_profile
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.generation.cancellation import CancelToken, GenerationCancelled
@@ -330,6 +342,67 @@ class ChapterWriting:
 
         def report(result):
             if not result.success:
+                conflict_issues = result.data.get("conflict_issues", [])
+                if conflict_issues:
+                    chapter_number = int(result.data.get("chapter_number", 0) or 0)
+                    issues = [
+                        ValidationIssue(
+                            code=str(item.get("code", "")),
+                            message=str(item.get("message", "")),
+                            severity=str(item.get("severity", "blocking")),
+                            repair_target=str(item.get("repair_target", "human_decision")),
+                            details=item.get("details") or {},
+                        )
+                        for item in conflict_issues
+                        if isinstance(item, dict)
+                    ]
+                    briefing = build_briefing(chapter_number, issues)
+                    manager = StoryLedgerManager(output_dir)
+                    conflict_path = conflict_record_path(manager, chapter_number)
+                    if needs_author_decision(
+                        briefing, result.data.get("adjudication", "")
+                    ):
+                        decision = show_conflict_dialog(
+                            self.app.root,
+                            briefing,
+                            lambda _value: None,
+                            conflict_path,
+                            result.data.get("adjudication", ""),
+                        )
+                        if decision:
+                            summary = apply_decision(
+                                manager, chapter_number, briefing, decision
+                            )
+                            self.app.logger.info(
+                                "Chapter %s batch conflict resolved by author: %s",
+                                chapter_number,
+                                summary,
+                            )
+                            show_info(
+                                "裁定已记录",
+                                f"第 {chapter_number} 章的契约已更新，正在自动重新生成全部场景。",
+                            )
+                            self.app.root.after(
+                                0,
+                                lambda: self._start_batch_write(
+                                    batch_size, busy_button, busy_text
+                                ),
+                            )
+                        else:
+                            show_warning(
+                                "冲突尚未裁定",
+                                f"第 {chapter_number} 章仍有未决冲突，在裁定之前其他章节也无法提交。",
+                            )
+                    else:
+                        show_error(
+                            "章节未通过验收",
+                            describe_briefing(
+                                briefing,
+                                conflict_path,
+                                result.data.get("adjudication", ""),
+                            ),
+                        )
+                    return
                 error_message = "; ".join(result.messages) if result.messages else "未知错误"
                 show_error("写作错误", f"撰写章节失败：{error_message}")
                 return
@@ -356,7 +429,9 @@ class ChapterWriting:
             on_success=report,
         )
 
-    def _write_short_story_prose(self, request: "WritingRequest"):
+    def _write_short_story_prose(
+        self, request: "WritingRequest", _decision_regeneration_attempt: int = 0
+    ):
         """Generate a short story through the same design-generation-review loop.
 
         Short stories are treated as chapter 1 so they share one code path with
@@ -459,17 +534,15 @@ class ChapterWriting:
                 self.app.logger.info(
                     f"Sending prompt for Scene {scene_number} {log_msg_source} to LLM ({backend_info})."
                 )
-                scene_prose = send_prompt(prompt, model=selected_model)
-                if not scene_prose or not scene_prose.strip():
-                    raise RuntimeError(f"大模型未返回第 {scene_number} 个场景的正文")
+                scene_prose = generate_prose_with_style_retry(
+                    lambda text: send_prompt(text, model=selected_model),
+                    prompt,
+                    logger=self.app.logger,
+                    label=f"第 {scene_number} 个场景",
+                )
                 self.app.logger.info(
                     f"Received prose for Scene {scene_number}. Length: {len(scene_prose)} chars."
                 )
-                style_warnings = analyze_chinese_prose_style(scene_prose)
-                if style_warnings:
-                    self.app.logger.warning(
-                        f"Scene {scene_number} Chinese style warnings: {'; '.join(style_warnings)}"
-                    )
                 return scene_prose
 
             def save_revised_plan(revised_plan):
@@ -505,21 +578,34 @@ class ChapterWriting:
                 show_error("质量检查未通过", f"{gate_error}{detail}")
                 return
 
+            for waiver in loop_result.gate_waivers:
+                self.app.logger.warning(f"Short story passed on a waiver: {waiver}")
+
             full_story_content = loop_result.chapter_content
             safe_title = (novel_title or "未命名短篇小说").lower().replace(' ', '_').replace(':', '').replace('/', '')
             output_story_filename = f"prose_short_story_{safe_title}.md"
             os.makedirs(os.path.join(output_dir, "story", "content"), exist_ok=True)
             output_story_filepath = os.path.join(output_dir, "story", "content", output_story_filename)
 
-            publish_chapter_with_acceptance(
-                output_dir,
-                1,
-                output_story_filepath,
-                full_story_content,
-                lambda saved_path: quality_loop.accept_result(
-                    1, loop_result, chapter_path=saved_path
-                ),
-            )
+            try:
+                publish_chapter_with_acceptance(
+                    output_dir,
+                    1,
+                    output_story_filepath,
+                    full_story_content,
+                    lambda saved_path: quality_loop.accept_result(
+                        1, loop_result, chapter_path=saved_path
+                    ),
+                )
+            except ChapterAcceptanceError as acceptance_error:
+                summary = self._handle_acceptance_conflict(
+                    1, acceptance_error, output_dir
+                )
+                if summary and _decision_regeneration_attempt < 1:
+                    return self._write_short_story_prose(
+                        request, _decision_regeneration_attempt + 1
+                    )
+                return
             self.app.logger.info(f"Short story prose successfully written to: {output_story_filepath}")
 
         except GenerationCancelled:
@@ -602,7 +688,9 @@ class ChapterWriting:
         normalized_scenes = re.sub(r"\*\*Scene (\d+): (.+?)\*\*", r"### Scene \1: \2", scenes)
         return normalized_scenes
 
-    def write_chapter(self, request: "WritingRequest"):
+    def write_chapter(
+        self, request: "WritingRequest", _decision_regeneration_attempt: int = 0
+    ):
         """Runs on a worker thread; UI values arrive via the request snapshot."""
         selected_model = request.model
         output_dir = request.output_dir
@@ -804,22 +892,16 @@ class ChapterWriting:
                     f"Sending prompt for Chapter {target_chapter_number_global}, Scene {scene_number} "
                     f"{log_msg_source} to LLM ({backend_info})."
                 )
-                scene_prose_text = send_prompt(prompt, model=selected_model)
-                if not scene_prose_text or not scene_prose_text.strip():
-                    raise RuntimeError(
-                        f"大模型未返回第 {target_chapter_number_global} 章第 {scene_number} 个场景的正文"
-                    )
-
+                scene_prose_text = generate_prose_with_style_retry(
+                    lambda text: send_prompt(text, model=selected_model),
+                    prompt,
+                    logger=self.app.logger,
+                    label=f"第 {target_chapter_number_global} 章第 {scene_number} 个场景",
+                )
                 self.app.logger.info(
                     f"Received prose for Chapter {target_chapter_number_global}, Scene {scene_number}. "
                     f"Length: {len(scene_prose_text)} chars."
                 )
-                style_warnings = analyze_chinese_prose_style(scene_prose_text)
-                if style_warnings:
-                    self.app.logger.warning(
-                        f"Chapter {target_chapter_number_global} Scene {scene_number} "
-                        f"Chinese style warnings: {'; '.join(style_warnings)}"
-                    )
                 return scene_prose_text
 
             def save_revised_plan(revised_plan):
@@ -856,6 +938,11 @@ class ChapterWriting:
                 show_error("质量检查未通过", f"{gate_error}{detail}")
                 return
 
+            for waiver in loop_result.gate_waivers:
+                self.app.logger.warning(
+                    f"Chapter {target_chapter_number_global} passed on a waiver: {waiver}"
+                )
+
             generated_scenes_for_chapter = loop_result.scenes
 
             # Combine all scenes for this chapter into one string
@@ -871,17 +958,27 @@ class ChapterWriting:
             chapter_filename_output = f"chapter_{target_chapter_number_global}.md"
             chapter_filepath_output = os.path.join(full_chapters_subdir_path, chapter_filename_output)
             
-            publish_chapter_with_acceptance(
-                output_dir,
-                target_chapter_number_global,
-                chapter_filepath_output,
-                chapter_content_full,
-                lambda saved_path: quality_loop.accept_result(
+            try:
+                publish_chapter_with_acceptance(
+                    output_dir,
                     target_chapter_number_global,
-                    loop_result,
-                    chapter_path=saved_path,
-                ),
-            )
+                    chapter_filepath_output,
+                    chapter_content_full,
+                    lambda saved_path: quality_loop.accept_result(
+                        target_chapter_number_global,
+                        loop_result,
+                        chapter_path=saved_path,
+                    ),
+                )
+            except ChapterAcceptanceError as acceptance_error:
+                summary = self._handle_acceptance_conflict(
+                    target_chapter_number_global, acceptance_error, output_dir
+                )
+                if summary and _decision_regeneration_attempt < 1:
+                    return self.write_chapter(
+                        request, _decision_regeneration_attempt + 1
+                    )
+                return
             self.app.logger.info(f"Chapter {target_chapter_number_global} successfully written to: {chapter_filepath_output}")
             # show_success("Success", f"Chapter {target_chapter_number_global} generated and saved to {chapter_filename_output}")
 
@@ -890,6 +987,55 @@ class ChapterWriting:
         except Exception as e_main:
             self.app.logger.error(f"Failed to write chapter {target_chapter_number_global if 'target_chapter_number_global' in locals() else 'UNKNOWN'}: {e_main}", exc_info=True)
             show_error("错误", f"撰写章节失败：{str(e_main)}")
+
+
+    def _handle_acceptance_conflict(self, chapter_number, error, output_dir):
+        """Let the author rule on a clash instead of just being told about one.
+
+        The report knows exactly which record disagrees and what each side
+        claims.  Flattening that into a generic error dialog is what left the
+        author with an unactionable "需要人工裁定"; here the ruling is recorded
+        so the next run of this chapter can get past it.
+        """
+        briefing = build_briefing(chapter_number, error.report.blocking_issues)
+        self.app.logger.error(
+            "Chapter %s acceptance blocked: %s",
+            chapter_number,
+            "; ".join(issue.message for issue in error.report.blocking_issues),
+        )
+        if not briefing.is_decidable:
+            show_error(
+                "章节未通过验收",
+                "\n".join(issue.message for issue in error.report.blocking_issues),
+            )
+            return
+
+        manager = StoryLedgerManager(output_dir)
+        conflict_path = conflict_record_path(manager, chapter_number)
+        if not needs_author_decision(briefing, error.adjudication):
+            show_error(
+                "契约自动修复失败",
+                describe_briefing(briefing, conflict_path, error.adjudication),
+            )
+            return
+        decision = ask_on_main_thread(
+            self.app.root, briefing, conflict_path, error.adjudication
+        )
+        if not decision:
+            show_warning(
+                "冲突尚未裁定",
+                f"第 {chapter_number} 章仍有未决冲突，在裁定之前其他章节也无法提交。",
+            )
+            return
+        summary = apply_decision(manager, chapter_number, briefing, decision)
+        self.app.logger.info(
+            "Chapter %s conflict resolved by author: %s", chapter_number, summary
+        )
+        show_info(
+            "裁定已记录",
+            f"第 {chapter_number} 章的契约已更新，正在自动重新生成全部场景。",
+        )
+        return summary
 
     def rewrite_chapter(self, request: "WritingRequest"):
         """Runs on a worker thread; UI values arrive via the request snapshot."""

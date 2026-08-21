@@ -2,6 +2,38 @@ import logging
 import os
 # from datetime import datetime # No longer needed for filename timestamp
 
+# 标记本模块安装的 handler，重复调用 setup_app_logger 时先摘掉旧的，避免同一条
+# 日志被写进文件多次。
+_OWNED_HANDLER_FLAG = '_novelwriter_owned_handler'
+
+# 这些第三方库在 INFO 档位会把每一次 HTTP 请求都记下来。接上 root 之后它们也会
+# 写进 application.log，把应用自己的记录淹掉，所以单独压到 WARNING。
+_NOISY_LIBRARIES = ('httpx', 'httpcore', 'urllib3', 'openai', 'anthropic', 'PIL', 'matplotlib')
+
+
+def _attach_to_root(handlers, level):
+    """把应用的 handler 也挂到 root logger 上。
+
+    模块级 logger（`ChapterWritingAgent`、`chapter-generation-loop` 等）自己没有
+    handler，也不是 'NovelWriterApp' 的子 logger。不接到 root 上，它们的 INFO 会被
+    直接丢弃、ERROR 只经 logging.lastResort 打到 stderr——撰写阶段真正的失败原因
+    就永远进不了 application.log，只能在控制台里找。
+
+    复用同一批 handler 对象，root 与具名 logger 共享同一个文件句柄和锁。
+    """
+    root_logger = logging.getLogger()
+    for existing in list(root_logger.handlers):
+        if getattr(existing, _OWNED_HANDLER_FLAG, False):
+            root_logger.removeHandler(existing)
+            existing.close()
+    root_logger.setLevel(level)
+    for handler in handlers:
+        setattr(handler, _OWNED_HANDLER_FLAG, True)
+        root_logger.addHandler(handler)
+    for library in _NOISY_LIBRARIES:
+        logging.getLogger(library).setLevel(logging.WARNING)
+
+
 def setup_app_logger(name='NovelWriterApp', output_dir='.', level=logging.INFO):
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -44,6 +76,8 @@ def setup_app_logger(name='NovelWriterApp', output_dir='.', level=logging.INFO):
     fh.setLevel(level) # Set the level for this handler.
     fh.setFormatter(formatter) # Use the same formatter as the console handler.
     logger.addHandler(fh) # Add the file handler to the logger.
+
+    _attach_to_root((ch, fh), level)
 
     # Log the initialization status.
     if is_new_file:

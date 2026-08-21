@@ -240,10 +240,17 @@ class ChapterAcceptanceResult:
 
 
 class ChapterAcceptanceError(RuntimeError):
-    """Raised when the final chapter artifact cannot be committed."""
+    """Raised when the final chapter artifact cannot be committed.
 
-    def __init__(self, report: ValidationReport):
+    ``adjudication`` says how the automatic contract repair ended, when one ran.
+    "Blocked" is not one situation: the model may have failed to answer, may
+    have claimed a reversal it could not justify, or may have justified one that
+    is genuinely the author's call — and each needs different advice.
+    """
+
+    def __init__(self, report: ValidationReport, adjudication: str = ""):
         self.report = report
+        self.adjudication = adjudication
         messages = "; ".join(issue.message for issue in report.blocking_issues)
         super().__init__(messages or f"Chapter acceptance failed during {report.stage}")
 
@@ -571,6 +578,7 @@ class CanonConsistencyGate:
         case_bible: Dict[str, Any],
         suspense_ledger: Dict[str, Any],
         profile: Optional[DomainProfile] = None,
+        approved_contradictions: Optional[Iterable[str]] = None,
     ) -> ValidationReport:
         profile = profile or GENERAL
         issues: List[ValidationIssue] = []
@@ -631,6 +639,11 @@ class CanonConsistencyGate:
                 )
             )
 
+        declared_contradictions = [
+            str(record.get("id"))
+            for record in delta.facts_contradicted
+            if record.get("id")
+        ]
         self._check_stable_record_conflicts(
             issues,
             delta.clue_updates,
@@ -638,6 +651,7 @@ class CanonConsistencyGate:
             record_type="clue",
             immutable_fields=profile.immutable_fields_for_slot("clue_updates"),
             identity_fields=profile.identity_fields_for_slot("clue_updates"),
+            declared_contradictions=declared_contradictions,
         )
         self._check_stable_record_conflicts(
             issues,
@@ -646,6 +660,7 @@ class CanonConsistencyGate:
             record_type="evidence",
             immutable_fields=profile.immutable_fields_for_slot("evidence_updates"),
             identity_fields=profile.identity_fields_for_slot("evidence_updates"),
+            declared_contradictions=declared_contradictions,
         )
         existing_facts = list(case_bible.get("truth", []))
         existing_facts.extend(suspense_ledger.get("facts", []))
@@ -656,6 +671,7 @@ class CanonConsistencyGate:
             record_type="fact",
             immutable_fields=("fact", "value"),
             identity_fields=("fact",),
+            declared_contradictions=declared_contradictions,
         )
         existing_timeline = list(case_bible.get("chronology", []))
         existing_timeline.extend(suspense_ledger.get("timeline_events", []))
@@ -666,9 +682,13 @@ class CanonConsistencyGate:
             record_type="timeline",
             immutable_fields=("event", "time", "time_start", "time_end", "location_id"),
             identity_fields=("event",),
+            declared_contradictions=declared_contradictions,
         )
 
+        approved = {str(item) for item in approved_contradictions or ()}
         for contradicted in delta.facts_contradicted:
+            if str(contradicted.get("id")) in approved:
+                continue
             issues.append(
                 ValidationIssue(
                     "fact_contradiction",
@@ -691,6 +711,7 @@ class CanonConsistencyGate:
             record_type="character_attribute",
             immutable_fields=("value",),
             identity_fields=CHARACTER_ATTRIBUTE_KEY,
+            declared_contradictions=declared_contradictions,
         )
 
         self._check_overdue_plot_threads(
@@ -790,7 +811,12 @@ class CanonConsistencyGate:
         record_type: str,
         immutable_fields: Iterable[str],
         identity_fields: Iterable[str] = (),
+        declared_contradictions: Iterable[str] = (),
     ) -> None:
+        # A record the chapter has openly declared it is overturning is already
+        # represented by a fact_contradiction issue.  Reporting the raw clash as
+        # well buries the question the author actually has to answer.
+        exempt = {str(item) for item in declared_contradictions}
         existing_records = [
             record for record in existing_records if isinstance(record, dict)
         ]
@@ -819,6 +845,8 @@ class CanonConsistencyGate:
                 matched_by_identity = existing is not None
 
             if not existing:
+                continue
+            if record_id in exempt or str(existing.get("id")) in exempt:
                 continue
 
             if matched_by_identity:
@@ -849,13 +877,23 @@ class CanonConsistencyGate:
                         f"{record_type}_fact_conflict",
                         f"{record_type} {existing.get('id') or record_id} 的 {field_name}"
                         f" 与已接受状态冲突",
-                        repair_target="human_decision",
+                        # Two values for one stable attribute is ambiguous, not
+                        # yet a question for the author: far more often this
+                        # chapter's contract slipped than the story meant to
+                        # overturn established canon.  The contract stage is
+                        # asked to commit one way or the other first, and only a
+                        # declared reversal (fact_contradiction) reaches a human.
+                        repair_target="contract",
                         details={
                             "id": existing.get("id") or record_id,
                             "proposed_id": record_id,
                             "field": field_name,
                             "existing": old_value,
                             "proposed": new_value,
+                            # A bare "F-014-01" tells the author nothing about
+                            # which fact broke; carry whatever names it.
+                            "label": cls._identity_key(existing, identity_fields)
+                            or cls._identity_key(proposed, identity_fields),
                         },
                     )
                 )
@@ -954,6 +992,7 @@ class ChapterAcceptanceService:
             self.ledger.load_case_bible(),
             self.ledger.load_suspense_ledger(),
             profile,
+            approved_contradictions=self.ledger.approved_contradictions(chapter_number),
         )
         consistency_report_path = self.ledger.save_review(
             chapter_number,

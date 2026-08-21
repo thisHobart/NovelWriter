@@ -10,7 +10,6 @@ This agent provides intelligent automation for chapter writing:
 """
 
 import os
-import re
 import logging
 import json
 from datetime import datetime
@@ -23,25 +22,40 @@ from core.generation.helper_fns import (
     open_file,
     write_file,
     read_json,
+    parse_chapter_numbers,
     parse_scene_sections,
     publish_chapter_with_acceptance,
+    resolve_section_chapter_numbers,
 )
 from core.generation.ai_helper import send_prompt, get_backend
 from core.generation.prompt_context import (
     analyze_chinese_prose_style,
+    generate_prose_with_style_retry,
     format_faction_summary,
     find_scene_world_conflicts,
     sanitize_lore_content,
 )
 from core.generation.cancellation import CancelToken, GenerationCancelled, raise_if_cancelled
 from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from core.generation.chapter_acceptance import ChapterAcceptanceError
+from core.generation.conflict_briefing import (
+    build_briefing,
+    conflict_record_path,
+    describe_briefing,
+    needs_author_decision,
+)
 from core.generation.planning_contract import (
     PlanningContractError,
     load_planning_contracts,
     validate_contract_sequence,
 )
 from core.generation.domain_profiles import DomainProfile, resolve_domain_profile
+from core.generation.semantic_identity import (
+    has_domain_id_collision,
+    resolve_domain_identities,
+)
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
+from core.generation.story_ledger import StoryLedgerManager
 from core.config.directory_config import get_directory_manager
 from core.gui.parameters import STRUCTURE_SECTIONS_MAP
 
@@ -342,14 +356,19 @@ class ChapterWritingAgent(BaseAgent):
             
         # 4. Analyze each section to find chapters
         chapter_info_list = []
-        chapter_counter = 1
-        
+        # 章号以章节大纲写明的为准，与 core/gui/scene_plan.py 用同一套解析规则；
+        # 两边必须一致，否则写作会去找一个编号不同的场景规划文件。
+        next_expected_chapter = 1
+        claimed_chapters = set()
+
         for section_name in sections:
             section_chapters = self._analyze_section_chapters(
-                structure_name, section_name, chapter_counter
+                structure_name, section_name, next_expected_chapter, claimed_chapters
             )
             chapter_info_list.extend(section_chapters)
-            chapter_counter += len(section_chapters)
+            for info in section_chapters:
+                claimed_chapters.add(info.chapter_number)
+                next_expected_chapter = max(next_expected_chapter, info.chapter_number + 1)
             
         self.logger.info(f"Found {len(chapter_info_list)} total chapters across {len(sections)} sections")
         return chapter_info_list, story_params
@@ -390,6 +409,51 @@ class ChapterWritingAgent(BaseAgent):
             "[Error: Could not import NovelWriter AI functions",
         )
         return not any(marker in content for marker in error_markers)
+
+    def _accepted_chapter_numbers(self) -> Optional[set]:
+        """Return the ledger's completion set, or None for a legacy project.
+
+        A prose file is only a draft until acceptance commits it.  Treating a
+        rejected file as completed skips the blocked chapter and makes the next
+        chapter report a predecessor error instead of surfacing the decision.
+        """
+        if hasattr(self, "_accepted_chapters_cache"):
+            return self._accepted_chapters_cache
+        ledger_path = StoryLedgerManager(self.output_dir).suspense_ledger_path
+        if not os.path.isfile(ledger_path):
+            self._accepted_chapters_cache = None
+            return None
+        try:
+            ledger = read_json(ledger_path)
+            accepted = ledger.get("accepted_chapters", [])
+            if not isinstance(accepted, list):
+                self._accepted_chapters_cache = None
+            else:
+                pending_chapters = {
+                    int(item.get("chapter"))
+                    for item in ledger.get("pending_regenerations", [])
+                    if isinstance(item, dict) and item.get("chapter") is not None
+                }
+                self._accepted_chapters_cache = {
+                    int(item.get("chapter"))
+                    for item in accepted
+                    if (
+                        isinstance(item, dict)
+                        and item.get("chapter") is not None
+                        and item.get("content_hash")
+                        and int(item.get("chapter")) not in pending_chapters
+                    )
+                }
+        except (OSError, TypeError, ValueError):
+            self._accepted_chapters_cache = None
+        return self._accepted_chapters_cache
+
+    def _is_completed_chapter(self, output_path: str, chapter_number: int) -> bool:
+        """A usable file counts as complete only when the ledger accepted it."""
+        if not self._is_valid_generated_output(output_path):
+            return False
+        accepted = self._accepted_chapter_numbers()
+        return True if accepted is None else int(chapter_number) in accepted
         
     def _analyze_short_story_structure(self, structure_name: str, story_params: Dict[str, str]) -> Tuple[List[ChapterInfo], Dict[str, Any]]:
         """Analyze short story structure - returns single 'chapter' representing the whole story."""
@@ -427,14 +491,20 @@ class ChapterWritingAgent(BaseAgent):
             section_name="Complete Short Story",
             scene_plan_file=scene_plan_file,
             output_file=output_file,
-            exists=self._is_valid_generated_output(output_path),
+            exists=self._is_completed_chapter(output_path, 1),
             plan_exists=os.path.isfile(scene_plan_path),
         )
         
         self.logger.info(f"Short story analysis: Scene plan = {scene_plan_file}, Output = {output_file}, Exists = {story_info.exists}")
         return [story_info], story_params
         
-    def _analyze_section_chapters(self, structure_name: str, section_name: str, start_chapter: int) -> List[ChapterInfo]:
+    def _analyze_section_chapters(
+        self,
+        structure_name: str,
+        section_name: str,
+        start_chapter: int,
+        claimed_chapters: Optional[set] = None,
+    ) -> List[ChapterInfo]:
         """Analyze a specific section to find its chapters."""
         safe_struct = structure_name.lower().replace(' ', '_').replace(':', '').replace('/', '_').replace('(', '').replace(')', '').replace('!', '').replace(',', '')
         safe_section = section_name.lower().replace(' ', '_').replace(':', '').replace('/', '_').replace('(', '').replace(')', '')
@@ -454,15 +524,17 @@ class ChapterWritingAgent(BaseAgent):
         try:
             if os.path.exists(outline_path):
                 content = open_file(outline_path)
-                # Find all chapter headings
-                chapter_matches = re.findall(
-                    r"^\s*(?:#{2,6}\s*|\*{2,}\s*)?(?:Chapter\s*|第\s*)(\d+)(?:\s*章)?(?:\s*[:：.\-]?\s*.*?)?\s*(?:\*{2,})?\s*$",
-                    content,
-                    re.MULTILINE | re.IGNORECASE,
+                chapter_numbers, numbering_warning = resolve_section_chapter_numbers(
+                    parse_chapter_numbers(content),
+                    start_chapter,
+                    claimed_chapters or (),
                 )
-                
-                for i, match in enumerate(chapter_matches):
-                    chapter_num = start_chapter + i
+                if numbering_warning:
+                    self.logger.warning(
+                        "Section '%s' chapter numbering: %s", section_name, numbering_warning
+                    )
+
+                for chapter_num in chapter_numbers:
                     
                     # Determine scene plan file using directory manager
                     scene_plans_dir = self.dir_manager.get_scene_plans_dir()
@@ -488,7 +560,7 @@ class ChapterWritingAgent(BaseAgent):
                         section_name=section_name,
                         scene_plan_file=scene_plan_file,
                         output_file=output_file,
-                        exists=self._is_valid_generated_output(output_path),
+                        exists=self._is_completed_chapter(output_path, chapter_num),
                         plan_exists=os.path.isfile(scene_plan_path),
                     )
                     chapters.append(chapter_info)
@@ -498,6 +570,46 @@ class ChapterWritingAgent(BaseAgent):
             
         return chapters
         
+    def _acceptance_conflict_result(
+        self, chapter_number: int, error: "ChapterAcceptanceError"
+    ) -> AgentResult:
+        """Report a blocked acceptance in the words the author needs to act on."""
+        briefing = build_briefing(chapter_number, error.report.blocking_issues)
+        ledger = StoryLedgerManager(self.output_dir)
+        message = describe_briefing(
+            briefing,
+            conflict_record_path(ledger, chapter_number),
+            error.adjudication,
+        )
+        self.logger.error("Chapter %s acceptance blocked: %s", chapter_number, message)
+        return AgentResult(
+            success=False,
+            data={
+                "chapter_number": chapter_number,
+                "needs_human_decision": needs_author_decision(
+                    briefing, error.adjudication
+                ),
+                "adjudication": error.adjudication,
+                # Keep the original report so the GUI batch callback can open
+                # the same decision dialog as the manual-writing path.
+                "conflict_issues": [
+                    issue.to_dict() for issue in error.report.blocking_issues
+                ],
+                "conflicts": [
+                    {
+                        "id": choice.record_id,
+                        "field": choice.field_name,
+                        "existing": choice.existing,
+                        "proposed": choice.proposed,
+                        "reason": choice.reason,
+                    }
+                    for choice in briefing.choices
+                ],
+            },
+            messages=[message],
+            metrics={},
+        )
+
     def create_writing_plan(self, chapter_info_list: List[ChapterInfo], batch_size: int = 1,
                           quality_thresholds: Optional[QualityThresholds] = None) -> ChapterWritingPlan:
         """Create a plan for writing chapters."""
@@ -550,6 +662,9 @@ class ChapterWritingAgent(BaseAgent):
         all_chapter_reviews = []  # Collect chapter reviews for batch analysis
         batch_number = 1
         cancellation_message = ""
+        blocked_chapter: Optional[int] = None
+        blocked_reason = ""
+        blocked_data: Dict[str, Any] = {}
         
         for i in range(0, len(plan.chapters_to_write), plan.batch_size):
             batch = plan.chapters_to_write[i:i + plan.batch_size]
@@ -578,10 +693,15 @@ class ChapterWritingAgent(BaseAgent):
                     else:
                         error_msg = result.messages[0] if result.messages else "未知错误"
                         errors.append(f"第 {chapter_num} 章：{error_msg}")
+                        blocked_chapter, blocked_reason = chapter_num, error_msg
+                        blocked_data = dict(result.data or {})
+                        self.logger.error(
+                            "Chapter %s blocked the run: %s", chapter_num, error_msg
+                        )
                         # 小说章节具有顺序依赖；上一章未验收时继续写后文只会
                         # 把错误扩散到更多章节。
                         break
-                        
+
                 except GenerationCancelled as cancelled:
                     # 已写完的章节保留，未开始的章节直接放弃。
                     cancellation_message = str(cancelled)
@@ -590,7 +710,10 @@ class ChapterWritingAgent(BaseAgent):
                 except Exception as e:
                     error_msg = f"第 {chapter_num} 章：{str(e)}"
                     errors.append(error_msg)
-                    self.logger.error(f"Error writing Chapter {chapter_num}: {e}")
+                    blocked_chapter, blocked_reason = chapter_num, str(e)
+                    self.logger.error(
+                        f"Error writing Chapter {chapter_num}: {e}", exc_info=True
+                    )
                     break
             
             # Perform batch-level review if we have chapter reviews
@@ -617,8 +740,13 @@ class ChapterWritingAgent(BaseAgent):
         if cancellation_message:
             message += "（已按请求停止）"
         if errors:
-            message += f"，发生 {len(errors)} 个错误"
-        
+            # 原来只报「发生 N 个错误」，真正的原因留在 data 里，界面上看不到，
+            # 得翻日志才知道停在哪一章、为什么停。这里把章号和原因写进消息本身。
+            message += (
+                f"，停在第 {blocked_chapter} 章：{blocked_reason}。"
+                f"已写完的章节都已保留，重新点击写作会从第 {blocked_chapter} 章继续。"
+            )
+
         # Add review summary to message
         if all_chapter_reviews:
             avg_quality = sum(review.overall_quality for review in all_chapter_reviews) / len(all_chapter_reviews)
@@ -628,9 +756,22 @@ class ChapterWritingAgent(BaseAgent):
         result_data = {
             "chapters_written": chapters_written,
             "errors": errors,
+            "blocked_chapter": blocked_chapter,
             "total_completed": len(plan.chapters_completed) + len(chapters_written),
             "reviews_generated": len(all_chapter_reviews)
         }
+        # Preserve structured acceptance details through the outer batch result;
+        # the GUI callback runs on the main thread and needs these to draw the
+        # actual decision buttons.
+        for key in (
+            "chapter_number",
+            "needs_human_decision",
+            "adjudication",
+            "conflict_issues",
+            "conflicts",
+        ):
+            if key in blocked_data:
+                result_data[key] = blocked_data[key]
         
         # Add review summary if available
         if all_chapter_reviews:
@@ -682,6 +823,48 @@ class ChapterWritingAgent(BaseAgent):
                     messages=[f"场景规划为空：{chapter_info.scene_plan_file}"],
                     metrics={}
                 )
+
+            # Legacy domain prompts demonstrated C001/E001 in every chapter.
+            # Repair a colliding contract before spending calls on prose; the
+            # creative scene Markdown remains unchanged.
+            manager = StoryLedgerManager(self.output_dir)
+            contract = manager.load_contract(chapter_info.chapter_number, scenes_content)
+            if contract is not None:
+                try:
+                    profile = manager.locked_profile()
+                except (FileNotFoundError, OSError, ValueError):
+                    profile = None
+                profile = profile or resolve_domain_profile(context.get("parameters", {}))
+                if has_domain_id_collision(
+                    contract,
+                    self.output_dir,
+                    chapter_info.chapter_number,
+                    profile=profile,
+                ):
+                    resolution = resolve_domain_identities(
+                        contract,
+                        self.output_dir,
+                        chapter_info.chapter_number,
+                        self._get_selected_model(),
+                        send_prompt,
+                        profile=profile,
+                    )
+                    for warning in resolution.warnings:
+                        self.logger.warning(
+                            "Chapter %s semantic contract warning: %s",
+                            chapter_info.chapter_number,
+                            warning,
+                        )
+                    if resolution.contract != contract:
+                        manager.save_contract(
+                            chapter_info.chapter_number,
+                            resolution.contract,
+                            scenes_content,
+                        )
+                        self.logger.info(
+                            "Normalised legacy domain IDs in Chapter %s before prose generation",
+                            chapter_info.chapter_number,
+                        )
                 
             # Parse scenes
             scenes = self._parse_scenes(scenes_content)
@@ -767,6 +950,13 @@ class ChapterWritingAgent(BaseAgent):
                     metrics={},
                 )
 
+            for waiver in domain_loop_result.gate_waivers:
+                self.logger.warning(
+                    "Chapter %s passed on a waiver: %s",
+                    chapter_info.chapter_number,
+                    waiver,
+                )
+
             generated_scenes = domain_loop_result.scenes
             scenes = self._parse_scenes(domain_loop_result.plan_content)
 
@@ -789,17 +979,25 @@ class ChapterWritingAgent(BaseAgent):
             if output_directory:
                 os.makedirs(output_directory, exist_ok=True)
             
-            acceptance_result = publish_chapter_with_acceptance(
-                self.output_dir,
-                chapter_info.chapter_number,
-                output_path,
-                final_content,
-                lambda saved_path: quality_loop.accept_result(
+            try:
+                acceptance_result = publish_chapter_with_acceptance(
+                    self.output_dir,
                     chapter_info.chapter_number,
-                    domain_loop_result,
-                    chapter_path=saved_path,
-                ),
-            )
+                    output_path,
+                    final_content,
+                    lambda saved_path: quality_loop.accept_result(
+                        chapter_info.chapter_number,
+                        domain_loop_result,
+                        chapter_path=saved_path,
+                    ),
+                )
+            except ChapterAcceptanceError as acceptance_error:
+                # Batch writing has nobody to ask, and one open conflict blocks
+                # every later chapter too — so carry the decision the author
+                # will have to make into the result rather than a bare repr.
+                return self._acceptance_conflict_result(
+                    chapter_info.chapter_number, acceptance_error
+                )
             final_content = domain_loop_result.chapter_content
             
             # Perform chapter-level review if enabled
@@ -1051,22 +1249,17 @@ class ChapterWritingAgent(BaseAgent):
             else:
                 self.logger.info(f"Generating prose for Chapter {chapter_num}, Scene {scene_num} using LLM ({backend_info})")
                 
-            response = send_prompt(prompt, model=model)
-            
-            if not response or not response.strip():
-                if is_short_story:
-                    raise RuntimeError(f"LLM returned empty response for Scene {scene_num} of short story")
-                else:
-                    raise RuntimeError(f"LLM returned empty response for Chapter {chapter_num}, Scene {scene_num}")
-
-            style_warnings = analyze_chinese_prose_style(response)
-            if style_warnings:
-                self.logger.warning(
-                    "Chapter %s Scene %s style warnings: %s",
-                    chapter_num,
-                    scene_num,
-                    "; ".join(style_warnings),
-                )
+            label = (
+                f"短篇第 {scene_num} 个场景"
+                if is_short_story
+                else f"第 {chapter_num} 章第 {scene_num} 个场景"
+            )
+            response = generate_prose_with_style_retry(
+                lambda text: send_prompt(text, model=model),
+                prompt,
+                logger=self.logger,
+                label=label,
+            )
             
             if is_short_story:
                 self.logger.info(f"Generated prose for Scene {scene_num} of short story. Length: {len(response)} chars")
