@@ -2,7 +2,7 @@
 
 _Status: active · updated 2026-07-14_
 
-> Python/Tkinter desktop app that helps authors write multi-genre novels and short stories with LLMs, managing parameters, lore, story structure, scene plans, and chapter prose, layered with an agentic multi-agent orchestration and multi-level review framework.
+> Python/PySide6 desktop app that helps authors write multi-genre novels and short stories with LLMs, managing parameters, lore, story structure, scene plans, and chapter prose, layered with an agentic multi-agent orchestration and multi-level review framework.
 >
 > Collated from docs/refactor_plan.md (the source of the refactor checklists) plus the shipped agents/ package and docs/agentic_*.md for the agentic milestone. Design/spec docs that carry no actionable task lists are otherwise excluded.
 

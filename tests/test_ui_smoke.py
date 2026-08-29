@@ -14,9 +14,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from ui import theme  # noqa: E402
-from ui.main_window import MainWindow  # noqa: E402
-from ui.pages import (  # noqa: E402
+from core.gui import theme  # noqa: E402
+from core.gui.main_window import MainWindow  # noqa: E402
+from core.gui.pages import (  # noqa: E402
     ChapterWritingPage,
     LorePage,
     ParametersPage,
@@ -24,6 +24,11 @@ from ui.pages import (  # noqa: E402
     StructurePage,
     WorkflowPage,
 )
+
+
+def test_theme_uses_readable_chinese_font_stacks():
+    assert theme.SANS_STACK == '"Microsoft YaHei UI"'
+    assert theme.SERIF_STACK == '"Microsoft YaHei UI"'
 
 
 @pytest.fixture(scope="module")

@@ -21,7 +21,7 @@ from core.generation.chapter_generation_loop import (
     QualityGateError,
 )
 from core.generation.story_ledger import StoryLedgerManager
-from core.gui.conflict_dialog import (
+from core.generation.conflict_briefing import (
     ACCEPT_REVERSAL,
     KEEP_EXISTING,
     apply_decision,

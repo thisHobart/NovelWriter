@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""新界面的参数读写必须与 tkinter 版共用同一份磁盘格式。
+"""界面参数读写必须保持既有工作区的磁盘格式。
 
 这组用例不依赖 PySide6，可在没装 Qt 的环境里跑。
 """
 import os
 
-from ui import params_store, story_options
+from core.gui import params_store, story_options
 
 
 def _sample(output_dir):

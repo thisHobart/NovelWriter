@@ -141,5 +141,5 @@ Remove duplicate file generation:
 ## Files to Modify
 1. `agents/orchestration/checkpoint_state.py` - Update expected file patterns
 2. `agents/writing/chapter_writing_agent.py` - Verify output paths
-3. `core/gui/chapter_writing.py` - Check GUI integration
+3. `core/generation/short_story_pipeline.py` - Check short-story generation integration
 4. Any remaining components using legacy paths

@@ -12,8 +12,8 @@ from core.generation.prompt_context import (
     format_genre_label,
     is_legal_suspense,
 )
-from core.gui.chapter_writing import ChapterWriting
-from core.gui.scene_plan import ScenePlanning
+from core.generation.scene_pipeline import ScenePipeline
+from core.generation.short_story_pipeline import ShortStoryPipeline
 
 
 MYSTERY_PARAMS = {"Genre": "Mystery", "Subgenre": "Legal Thriller"}
@@ -61,8 +61,8 @@ def test_current_faction_schema_formats_without_empty_names():
     assert "势力名称：无" not in summary
 
 
-def test_gui_generation_sources_have_no_scifi_prompt_literals():
-    source = inspect.getsource(ScenePlanning) + inspect.getsource(ChapterWriting)
+def test_generation_sources_have_no_scifi_prompt_literals():
+    source = inspect.getsource(ScenePipeline) + inspect.getsource(ShortStoryPipeline)
     assert "请为科幻小说" not in source
     assert "请撰写科幻" not in source
     assert "地点（包括行星）" not in source

@@ -92,7 +92,7 @@ worker 线程**禁止**触碰任何 QWidget。进度上报走 `progress(str, flo
 
 ## 4. 阶段 1 · 作品参数
 
-字段来源：`core/gui/parameters.py`。
+字段来源：`core/config/story_options.py` 与 `core/gui/pages/parameters_page.py`。
 
 | 控件 | 触发 | 结果 |
 |---|---|---|

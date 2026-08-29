@@ -1,6 +1,6 @@
 """The GUI dropdowns read their contents through ai_helper from llm-backends.
 
-core/gui/app.py builds:
+core/gui/main_window.py builds:
 - the model combobox from get_supported_models(),
 - the backend combobox from get_available_backends(),
 - the CLI status label from check_cli_availability().

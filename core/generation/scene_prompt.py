@@ -1,6 +1,6 @@
 """场景写作 prompt 的唯一构造点。
 
-GUI（core/gui/chapter_writing.py）和智能体（agents/writing/chapter_writing_agent.py）
+GUI 阶段管线和智能体（agents/writing/chapter_writing_agent.py）
 此前各自拼装了一份几乎相同、但已经开始漂移的场景 prompt。两条路径现在都调用
 这里，领域专属的写作约束由 `DomainProfile.scene_writing_rules` 注入。
 """

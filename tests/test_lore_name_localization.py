@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from core.gui import lore as lore_module
-from core.gui.lore import Lore
+from core.generation import lore_pipeline as lore_module
+from core.generation.lore_pipeline import LorePipeline as Lore
 from core.generation.chinese_names import has_latin
 
 

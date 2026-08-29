@@ -34,7 +34,7 @@ The diagram below shows how NovelWriter's agent system coordinates the novel wri
 
 ```
 ┌─────────────────────────────────────────┐
-│      GUI (Tkinter Interface)            │
+│       GUI (PySide6 Interface)            │
 │   Parameters | Lore | Structure | etc.  │
 └──────────────────┬──────────────────────┘
                    │

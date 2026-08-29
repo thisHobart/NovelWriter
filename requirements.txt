@@ -14,14 +14,13 @@ llm-backends @ git+https://github.com/EdwardAThomson/llm-backends@v0.2.0
 # .env 中的 API 密钥加载（core/generation/ai_helper.py）
 python-dotenv>=1.1.1
 
-# 参数与生成结果的 JSON Schema 校验（core/generation/helper_fns.py、core/gui/parameters.py）
+# 参数与生成结果的 JSON Schema 校验（core/generation/helper_fns.py）
 jsonschema>=4.25.1
 
 # 故事账本提交时的跨进程互斥锁（core/generation/story_ledger.py）
 filelock>=3.17.0
 
-# 旧版 GUI 使用标准库 tkinter，无需在此声明。
-# 新版 GUI（ui/，见 docs/UI_MIGRATION.md）使用 PySide6；仅跑旧界面时可不装。
+# GUI（core/gui/，见 docs/UI_MIGRATION.md）使用 PySide6。
 PySide6>=6.6
 
 # --- 开发依赖 ---

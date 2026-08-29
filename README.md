@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模型（LLM）帮助作者创作多种类型的长篇小说和短篇故事。应用使用 Tkinter 提供图形界面，用于管理作品参数、生成世界观设定、设计故事结构、规划场景以及撰写章节正文。
+NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模型（LLM）帮助作者创作多种类型的长篇小说和短篇故事。应用使用 PySide6 图形界面，用于管理作品参数、生成世界观设定、设计故事结构、规划场景以及撰写章节正文。
 
 项目还提供智能体框架，支持多代理协同、多级质量审阅，以及统一的多后端 LLM 接口，可以将请求路由到托管 API 或本地 CLI 工具。
 
@@ -196,31 +196,31 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 NovelWriter 提供两种互补的故事生成方式。
 
-### 传统 GUI 工作流
+### GUI 工作流
 
 通过界面标签页逐步完成创作：
 
-1. **作品参数（`core/gui/parameters.py`）：**
+1. **作品参数（`core/gui/pages/parameters_page.py`）：**
    * 选择题材、子题材、故事篇幅和结构
    * 配置人物性别比例和题材专属选项
    * 手动设置基础故事参数
 
-2. **生成世界观设定（`core/gui/lore.py`）：**
+2. **生成世界观设定（`core/gui/pages/lore_page.py`）：**
    * 使用专用生成器创建势力和组织
    * 创建带有详细背景、关系的人物
    * 构建完整的世界观元素
    * 根据题材生成具有叙事作用的人物背景
 
-3. **故事结构（`core/gui/story_structure.py`）：**
+3. **故事结构（`core/gui/pages/structure_page.py`）：**
    * 创建人物弧光和势力弧光
    * 使用选定的叙事框架生成高层故事结构
    * 为每一幕或每一部分设计详细情节大纲
 
-4. **场景规划（`core/gui/scene_plan.py`）：**
+4. **场景规划（`core/gui/pages/scene_plan_page.py`）：**
    * 根据故事结构生成章节大纲
    * 创建包含人物互动的详细场景计划
 
-5. **章节写作（`core/gui/chapter_writing.py`）：**
+5. **章节写作（`core/gui/pages/chapter_writing_page.py`）：**
    * 根据场景计划逐步生成章节正文
    * 单独审阅和改进每个章节
 

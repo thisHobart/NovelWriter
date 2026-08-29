@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """一次阶段生成所需的全部输入，与界面框架无关。
 
-原先叫 `UiSnapshot`，长在 `core/gui/task_runner.py` 里：Tk 变量只能在主线程读，
-所以后台任务开跑前先在主线程把值一次读齐，worker 只从快照取值。
-
-Qt 界面接手后这个约束没变（QWidget 同样不许跨线程碰），但"快照"已经不只是界面
-取值了——编排器无头运行时也要构造一个，所以改名 `StageContext` 并搬到
-`core/generation/` 下，成为生成层的入参类型。
+生成管线不能读取 QWidget，因此后台任务启动前把模型、参数与输出目录组成一个
+普通数据对象。编排器、测试和其他无界面调用方使用同一个类型。
 
 `report` 是可选的进度回调 `(text, fraction) -> None`，fraction 为负表示"不确定进度"。
 生成函数调用它来汇报子步骤；取消检查由回调实现方负责（Qt 的 TaskRunner 会在
@@ -40,10 +36,6 @@ class StageContext:
             self.report(text, fraction)
 
 
-# 迁移期的旧名字。新代码一律用 StageContext。
-UiSnapshot = StageContext
-
-
 def make_context(output_dir: str, model: str = "", parameters: Optional[Dict] = None,
                  report: Optional[ProgressReport] = None, **extras) -> StageContext:
     """构造一个阶段上下文。无头调用（编排器、测试）用这个入口。"""
@@ -53,4 +45,21 @@ def make_context(output_dir: str, model: str = "", parameters: Optional[Dict] = 
         parameters=dict(parameters or {}),
         extras=extras,
         report=report,
+    )
+
+
+def context_from_host(host, **extras) -> StageContext:
+    """Build a context from a lightweight host object; primarily useful in tests."""
+    parameters = {}
+    source = getattr(host, "param_ui", None)
+    if source is not None and hasattr(source, "get_current_parameters"):
+        try:
+            parameters = source.get_current_parameters()
+        except Exception:  # noqa: BLE001 - a broken optional source means no parameters
+            parameters = {}
+    return make_context(
+        host.get_output_dir() if host is not None else "current_work",
+        host.get_selected_model() if host is not None else "",
+        parameters,
+        **extras,
     )

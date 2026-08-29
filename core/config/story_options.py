@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """作品参数的选项表——与界面框架无关的唯一来源。
 
-这些常量原先长在 `core/gui/parameters.py`（tkinter 版）里，导入它就会连带拉起
-tkinter、jsonschema 与 ai_helper。智能体（`agents/writing/chapter_writing_agent.py`、
-编排器）和 Qt 界面都只是要几张表，不该为此付一个 GUI 框架的代价，所以搬到这里。
+智能体（`agents/writing/chapter_writing_agent.py`、编排器）和 Qt 界面都需要这些
+选项，因此统一放在配置层，避免生成层依赖任何 GUI 框架。
 
 只放数据与纯查询函数，不做任何 I/O。
 """

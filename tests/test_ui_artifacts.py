@@ -3,7 +3,7 @@
 import json
 import os
 
-from ui.services import artifacts
+from core.gui.services import artifacts
 
 
 def _write(path, text):
@@ -50,6 +50,40 @@ def test_chapters_sort_numerically_not_lexically(tmp_path):
                f"第 {number} 章正文" * 3)
     numbers = [c.number for c in artifacts.chapters(root)]
     assert numbers == [1, 2, 10, 11]
+
+
+def test_scene_plans_use_explicit_chapter_suffix_in_real_filenames(tmp_path):
+    root = str(tmp_path)
+    names = (
+        "scenes_6-act_structure_first_climax_ch11.md",
+        "scenes_6-act_structure_beginning_ch2.md",
+        "scenes_6-act_structure_rising_action_ch10.md",
+        "scenes_6-act_structure_beginning_ch1.md",
+    )
+    for name in names:
+        _write(os.path.join(root, artifacts.SCENE_PLANS_DIR, name), name)
+
+    plans = artifacts.scene_plans(root)
+
+    assert [plan.title for plan in plans] == [
+        "第 1 章场景",
+        "第 2 章场景",
+        "第 10 章场景",
+        "第 11 章场景",
+    ]
+    assert [plan.key for plan in plans] == [
+        "scenes_6-act_structure_beginning_ch1",
+        "scenes_6-act_structure_beginning_ch2",
+        "scenes_6-act_structure_rising_action_ch10",
+        "scenes_6-act_structure_first_climax_ch11",
+    ]
+
+
+def test_chapter_number_does_not_guess_structure_number():
+    assert artifacts._chapter_number("scenes_6-act_structure_beginning.md") == 0
+    assert artifacts._chapter_number("scenes_6-act_structure_beginning_ch30.md") == 30
+    assert artifacts._chapter_number("chapter_12.md") == 12
+    assert artifacts._chapter_number("第7章.md") == 7
 
 
 def test_word_count_counts_cjk_by_character(tmp_path):

@@ -14,7 +14,7 @@ from core.generation.design_contract import (
 
 def test_lore_stage_requests_and_enforces_its_contract():
     """世界观提示词必须带契约要求，且校验失败要重试而不是照单落盘。"""
-    import core.gui.lore as lore_module
+    import core.generation.lore_pipeline as lore_module
 
     source = open(lore_module.__file__, encoding="utf-8").read()
 
@@ -27,7 +27,7 @@ def test_lore_stage_requests_and_enforces_its_contract():
 
 
 def test_structure_stage_requests_and_enforces_its_contract():
-    import core.gui.story_structure as structure_module
+    import core.generation.structure_pipeline as structure_module
 
     source = open(structure_module.__file__, encoding="utf-8").read()
 

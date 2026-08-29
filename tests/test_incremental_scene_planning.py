@@ -4,9 +4,9 @@ import json
 import logging
 import re
 
-from core.gui import scene_plan as scene_plan_module
-from core.gui.scene_plan import ScenePlanning
-from core.gui.task_runner import snapshot_ui
+from core.generation import scene_pipeline as scene_plan_module
+from core.generation.scene_pipeline import ScenePipeline as ScenePlanning
+from core.generation.stage_context import context_from_host as snapshot_ui
 import pytest
 
 from core.generation.planning_contract import (

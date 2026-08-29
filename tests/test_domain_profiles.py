@@ -55,7 +55,7 @@ def test_legal_profile_matches_pre_refactor_constants():
     assert LEGAL_SUSPENSE.max_scene_retries == 2
 
 
-# core/gui/parameters.py 的 populate_subgenres() 全量子题材，逐项断言分派结果。
+# 参数选项表的全量子题材，逐项断言分派结果。
 SUBGENRE_MATRIX = [
     ("Sci-Fi", "Space Opera", "scifi"),
     ("Sci-Fi", "Hard Sci-Fi", "scifi"),

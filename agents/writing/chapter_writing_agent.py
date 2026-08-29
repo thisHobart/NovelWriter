@@ -356,7 +356,7 @@ class ChapterWritingAgent(BaseAgent):
             
         # 4. Analyze each section to find chapters
         chapter_info_list = []
-        # 章号以章节大纲写明的为准，与 core/gui/scene_plan.py 用同一套解析规则；
+        # 章号以章节大纲写明的为准，与 scene_pipeline 用同一套解析规则；
         # 两边必须一致，否则写作会去找一个编号不同的场景规划文件。
         next_expected_chapter = 1
         claimed_chapters = set()

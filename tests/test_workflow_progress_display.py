@@ -1,37 +1,14 @@
 import json
 import os
 
-from core.gui.app import workflow_step_visual
 from core.generation.story_ledger import StoryLedgerManager
 from core.generation.workflow_status import (
     BLOCKED,
     COMPLETE,
     EMPTY,
     PARTIAL,
-    StageStatus,
     assess_workflow,
 )
-
-
-def test_not_started_step_with_existing_files_is_not_shown_as_empty():
-    visual = workflow_step_visual("not_started", True)
-
-    assert visual["text"] == "检测到已有文件"
-    assert visual["indicator"] == "◌"
-    assert visual["can_view"] is True
-
-
-def test_not_started_step_without_files_stays_not_started():
-    visual = workflow_step_visual("not_started", False)
-
-    assert visual["text"] == "未开始"
-    assert visual["can_view"] is False
-
-
-def test_persisted_status_takes_priority_over_file_presence():
-    assert workflow_step_visual("in_progress", False)["text"] == "进行中"
-    assert workflow_step_visual("completed", True)["text"] == "已完成"
-    assert workflow_step_visual("failed", True)["text"] == "失败"
 
 
 def _write(root, relative, text):
@@ -151,26 +128,3 @@ def test_lore_without_its_contract_is_not_complete(tmp_path):
     _write(tmp_path, "story/lore/generated_lore.md", "圣兰卡是一座海港城市。")
 
     assert assess_workflow(str(tmp_path))["lore"].state == PARTIAL
-
-
-def test_the_artifacts_override_a_stale_completed_flag():
-    blocked = StageStatus(BLOCKED, "第 8 章要了结悬念 PT-005-01（被调换的证物袋），但前面没有任何一章埋下它")
-
-    visual = workflow_step_visual("completed", True, blocked)
-
-    assert visual["indicator"] == "!"
-    assert visual["text"] == "待修复"
-    assert visual["detail"] == blocked.detail
-
-
-def test_a_running_stage_still_reports_progress_over_the_artifacts():
-    visual = workflow_step_visual("in_progress", True, StageStatus(EMPTY, "尚未规划场景"))
-
-    assert visual["text"] == "进行中"
-
-
-def test_partial_progress_is_shown_as_a_fraction():
-    visual = workflow_step_visual("not_started", True, StageStatus(PARTIAL, "还缺第 3、4 章", 2, 4))
-
-    assert visual["indicator"] == "◑"
-    assert visual["text"] == "未完成（2/4）"
