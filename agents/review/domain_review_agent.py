@@ -166,6 +166,7 @@ UNIVERSAL_CONTRACT_LISTS = (
 )
 
 UNIVERSAL_CONTRACT_TEXTS = (
+    "chapter_function",
     "core_question",
     "concrete_anchor",
     "apparent_answer",
@@ -175,6 +176,7 @@ UNIVERSAL_CONTRACT_TEXTS = (
     "personal_cost",
     "cost_character",
     "irreversible_change",
+    "ending_effect",
 )
 
 
@@ -261,6 +263,7 @@ class DomainReviewAgent:
 
     def _contract_schema_block(self) -> str:
         lines = [
+            '  "chapter_function": "advance|reveal|relationship|aftermath|transition|breather",',
             '  "core_question": "本章唯一核心问题",',
             '  "concrete_anchor": "贯穿本章的具体细节或事物",',
             '  "reader_knows_before": [],',
@@ -271,9 +274,10 @@ class DomainReviewAgent:
             '  "reversal": "如何改变对已有信息的理解",',
             '  "attack_move": "一方本章行动",',
             '  "defense_move": "另一方回应",',
-            '  "personal_cost": "本章不可逆个人代价",',
+            '  "personal_cost": "本章个人代价；没有则留空",',
             '  "cost_character": "承担代价的人物",',
-            '  "irreversible_change": "本章结束后的不可逆变化",',
+            '  "irreversible_change": "确有不可逆变化时填写；过渡、余波、关系或沉淀章可留空",',
+            '  "ending_effect": "推进、代价、认知变化、关系位移或有意留白中的实际收束效果",',
             # 以下四组构成长程状态的单一事实源。字段名与 CanonConsistencyGate
             # 比对的 immutable_fields 一一对应，改动时两边必须同步。
             '  "facts_added": [{"id":"F001","fact":"事实名称（属性，不是整句）",'
@@ -523,6 +527,10 @@ timeline_events、character_updates、plot_thread_updates）：
         normalized = dict(contract)
         normalized["chapter"] = chapter_number
         normalized["domain_profile"] = self.profile.key
+        normalized.setdefault("chapter_function", "advance")
+        normalized.setdefault(
+            "ending_effect", str(normalized.get("irreversible_change", ""))
+        )
 
         list_fields = list(UNIVERSAL_CONTRACT_LISTS)
         mapping_fields = ["character_knowledge_after"]

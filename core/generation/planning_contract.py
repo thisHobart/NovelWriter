@@ -135,14 +135,16 @@ def contract_output_instructions(
 {CONTRACT_START}
 {{
   "chapter": {chapter_number},
+  "chapter_function": "advance|reveal|relationship|aftermath|transition|breather",
   "core_question": "本章集中追问的问题",
   "reader_knows_before": [],
   "reader_knows_after": [],
   "reader_must_not_know_yet": [],
   "scene_boundaries": [],
-  "personal_cost": "本章不可逆个人代价；没有则留空",
+  "personal_cost": "本章个人代价；没有则留空",
   "cost_character": "承担代价的人物；没有则留空",
-  "irreversible_change": "本章结束后的不可逆变化",
+  "irreversible_change": "确有不可逆变化时填写；过渡、余波、关系或沉淀章可留空",
+  "ending_effect": "推进、代价、认知变化、关系位移或有意留白中的实际收束效果",
 {domain_lines}
   "facts_added": [{{"id":"F-{chapter_number:03d}-01","fact":"属性名","value":"取值","first_stated_at":"scene_1"}}],
   "facts_confirmed": [{{"id":"已有事实ID","fact":"属性名","value":"既有取值"}}],
@@ -219,6 +221,10 @@ def validate_planning_contract(
         raise PlanningContractError("章节契约不是由场景规划阶段生成的")
 
     normalized = dict(contract)
+    normalized.setdefault("chapter_function", "advance")
+    normalized.setdefault(
+        "ending_effect", str(normalized.get("irreversible_change", ""))
+    )
     for field in STATE_LIST_FIELDS:
         value = normalized.setdefault(field, [])
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):

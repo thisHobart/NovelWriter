@@ -64,6 +64,33 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 - **多后端 LLM 接口**：统一支持 API 后端和本地 CLI 工具（Codex、Gemini、Claude）
 - **后端与模型选择器**：在 GUI 顶部切换 API/CLI 后端，并在运行时选择具体的 API 模型
 
+### 独立质量闸与真人盲测
+
+章节总评现在由三个互不替代的判断组成：章节契约合规、只看正文与上一章结尾的中文读者盲读、
+以及不把“符合大纲”当作现实依据的程序/证据/技术合理性审阅。结构诊断还会记录主题说破、
+因果解释、身体化情绪套语、时间切换、价值冲突、支线和旧信息重释等信号；这些信号用于发现
+整本书的重复习惯，不会单独把某一章判为失败。
+
+改进前后稿件可以用配对盲测验证。下面的命令会为 30 名读者生成 A/B 位置均衡的匿名材料、
+私有映射表和 CSV 录入模板：
+
+```powershell
+python -m core.evaluation.reader_blind_test create `
+  --baseline-dir <旧版章节目录> `
+  --candidate-dir <改进版章节目录> `
+  --output-dir <盲测目录> `
+  --participants 30
+```
+
+收齐 `responses.csv` 后汇总：
+
+```powershell
+python -m core.evaluation.reader_blind_test summarize --test-dir <盲测目录>
+```
+
+主要指标是续读意愿；可信度、人物真实感和中文舒适度是护栏，AI 感是诊断指标。不要把
+`manifest.private.json` 发给读者，也不要在收齐预注册样本前根据中途结果停止试验。
+
 ## 快速开始
 
 如果你刚开始使用 NovelWriter，可以先阅读[用户指南](./docs/user_guide.md)，其中包含从零开始创建第一部小说的完整步骤。

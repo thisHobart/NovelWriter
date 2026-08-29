@@ -562,3 +562,26 @@ def test_contract_prompt_explains_which_attributes_stay_stable():
     assert '"stable":false' in prompt
     assert "心理状态" in prompt
     assert "拿不准就填 false" in prompt
+
+
+def test_contract_allows_breather_chapter_without_irreversible_change():
+    contract = _contract(3)
+    contract["chapter_function"] = "breather"
+    contract["irreversible_change"] = ""
+    contract["ending_effect"] = "两人暂时停止争论，但没有和解"
+
+    normalized = validate_planning_contract(contract, 3)
+
+    assert normalized["chapter_function"] == "breather"
+    assert normalized["irreversible_change"] == ""
+    assert normalized["ending_effect"] == "两人暂时停止争论，但没有和解"
+
+
+def test_old_contracts_get_compatible_chapter_function_defaults():
+    contract = _contract(4)
+    contract["irreversible_change"] = "证人撤回证词"
+
+    normalized = validate_planning_contract(contract, 4)
+
+    assert normalized["chapter_function"] == "advance"
+    assert normalized["ending_effect"] == "证人撤回证词"
