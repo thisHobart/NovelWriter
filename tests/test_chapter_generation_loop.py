@@ -58,7 +58,7 @@ class PassingReviewer:
             "scene_boundaries": [],
         }
 
-    def review_plan(self, *args):
+    def review_plan(self, *args, **kwargs):
         return passed_review("plan")
 
     def review_scene(
@@ -69,17 +69,18 @@ class PassingReviewer:
         previous_scene_tail,
         next_scene_plan,
         *args,
+        **kwargs,
     ):
         self.scene_inputs.append((scene_number, previous_scene_tail, next_scene_plan))
         return passed_review(f"scene_{scene_number}")
 
-    def review_chapter(self, *args):
+    def review_chapter(self, *args, **kwargs):
         return passed_review("chapter")
 
-    def revise_plan(self, *args):
+    def revise_plan(self, *args, **kwargs):
         raise AssertionError("passing plan must not be revised")
 
-    def revise_scene(self, *args):
+    def revise_scene(self, *args, **kwargs):
         raise AssertionError("passing scene must not be revised")
 
 
@@ -154,16 +155,64 @@ class AlwaysFailingPlanReviewer(PassingReviewer):
         super().__init__()
         self.revision_count = 0
 
-    def review_plan(self, *args):
+    def review_plan(self, *args, **kwargs):
         return failed_review("plan")
 
-    def revise_plan(self, scene_plan, *args):
+    def revise_plan(self, scene_plan, *args, **kwargs):
         self.revision_count += 1
         return scene_plan
 
 
-def test_plan_retry_is_bounded(tmp_path):
+def test_plan_retry_stops_once_the_same_repair_survives_itself(tmp_path):
+    """同一条修复意见原样退回来，就没有必要再要求第三遍。
+
+    重试预算是拿来换新结果的。评审把上一轮提过的同一条要求原封不动再提一次，说明
+    那条要求已经被照做过而问题依旧；用同样的说法再问一次模型，得到的还是同一稿。
+    """
     reviewer = AlwaysFailingPlanReviewer()
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer,
+        max_plan_retries=2,
+    )
+
+    with pytest.raises(QualityGateError, match="2 次修订后仍未通过"):
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: pytest.fail("failed plans must not generate prose"),
+        )
+
+    assert reviewer.revision_count == 1
+
+
+def test_plan_retry_spends_the_full_budget_while_feedback_keeps_changing(tmp_path):
+    """反过来，评审每轮指出不同问题时，预算要照常花完。
+
+    「无进展」判的是重复，不是失败本身；换了新问题就是新的一次机会，不能因为上
+    一轮没过就提前收手。
+    """
+
+    class ShiftingPlanReviewer(PassingReviewer):
+        def __init__(self):
+            super().__init__()
+            self.revision_count = 0
+            self.round = 0
+
+        def review_plan(self, *args, **kwargs):
+            self.round += 1
+            review = failed_review("plan")
+            review.repair_instructions = [f"第 {self.round} 轮才发现的问题"]
+            return review
+
+        def revise_plan(self, scene_plan, *args, **kwargs):
+            self.revision_count += 1
+            return scene_plan
+
+    reviewer = ShiftingPlanReviewer()
     loop = ChapterGenerationLoop(
         output_dir=str(tmp_path),
         model="hosted-llm",
@@ -190,11 +239,11 @@ def test_strict_planning_contract_retries_plan_without_rebuilding_contract(tmp_p
             self.plan_reviews = 0
             self.revision_count = 0
 
-        def review_plan(self, *args):
+        def review_plan(self, *args, **kwargs):
             self.plan_reviews += 1
             return failed_review("plan") if self.plan_reviews == 1 else passed_review("plan")
 
-        def revise_plan(self, scene_plan, *args):
+        def revise_plan(self, scene_plan, *args, **kwargs):
             self.revision_count += 1
             return scene_plan.replace("证人交出收据", "证人当面交出收据")
 
@@ -244,14 +293,14 @@ class OneRetryReviewer(PassingReviewer):
         self.first_scene_review = True
         self.revision_count = 0
 
-    def review_scene(self, *args):
+    def review_scene(self, *args, **kwargs):
         scene_number = args[2]
         if scene_number == 1 and self.first_scene_review:
             self.first_scene_review = False
             return failed_review("scene_1")
         return passed_review(f"scene_{scene_number}")
 
-    def revise_scene(self, scene_content, *args):
+    def revise_scene(self, scene_content, *args, **kwargs):
         self.revision_count += 1
         return scene_content + " 已删除重复动作。"
 
@@ -275,6 +324,56 @@ def test_scene_failure_triggers_targeted_retry(tmp_path):
     assert reviewer.revision_count == 1
     assert result.retry_count == 1
     assert "已删除重复动作" in result.scenes[0]
+
+
+def test_a_regressed_revision_is_not_used_as_the_next_starting_point(tmp_path):
+    """重修不保证变好，接着变差的那一稿改，退步会一路累积。
+
+    原先只在收尾时挑最好的一稿交出去，中间每一轮却始终接着最新的一稿往下改：第一轮
+    改差了，第二轮就是在这份更差的稿子上改，等于把上一轮的退步当成新起点。
+    """
+
+    class RegressingReviewer(PassingReviewer):
+        def __init__(self):
+            super().__init__()
+            self.round = 0
+            self.revised_from = []
+
+        def review_scene(self, *args, **kwargs):
+            scene_number = args[2]
+            if scene_number != 1:
+                return passed_review(f"scene_{scene_number}")
+            self.round += 1
+            review = failed_review("scene_1")
+            # 第一稿 2.0，重修后掉到 1.0：这一轮把稿子改差了。
+            score = {1: 2.0, 2: 1.0}.get(self.round, 1.0)
+            review.scores = {dimension: score for dimension in SCORE_DIMENSIONS}
+            review.repair_instructions = [f"第 {self.round} 轮的意见"]
+            return review
+
+        def revise_scene(self, scene_content, *args, **kwargs):
+            self.revised_from.append(scene_content)
+            return scene_content + f" 改动{len(self.revised_from)}。"
+
+    reviewer = RegressingReviewer()
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer,
+        max_scene_retries=2,
+    )
+
+    with pytest.raises(QualityGateError):
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    # 第二轮应当退回第一稿重来，而不是接着那份被改差的 1.0 稿。
+    assert reviewer.revised_from == ["第1场正文。", "第1场正文。"]
 
 
 def test_final_acceptance_retries_prose_and_reruns_quality_reviews(tmp_path):
@@ -397,13 +496,13 @@ class ChapterRepairReviewer(PassingReviewer):
         self.chapter_review_count = 0
         self.revise_tails = []
 
-    def review_chapter(self, *args):
+    def review_chapter(self, *args, **kwargs):
         self.chapter_review_count += 1
         if self.chapter_review_count == 1:
             return failed_review("chapter", scope="scene_1")
         return passed_review("chapter")
 
-    def revise_scene(self, scene_content, review, scene_plan, previous_scene_tail, *args):
+    def revise_scene(self, scene_content, review, scene_plan, previous_scene_tail, *args, **kwargs):
         self.revise_tails.append(previous_scene_tail)
         return scene_content + " 已按章节评审修订。"
 
@@ -444,13 +543,13 @@ class ExplodingReviewer(PassingReviewer):
     def deterministic_contract(self, chapter_number, parameters, scene_plan):
         return {"chapter": chapter_number, "core_question": "", "scene_boundaries": []}
 
-    def review_plan(self, *args):
+    def review_plan(self, *args, **kwargs):
         raise AssertionError("quality loop off must not review the plan")
 
-    def review_scene(self, *args):
+    def review_scene(self, *args, **kwargs):
         raise AssertionError("quality loop off must not review scenes")
 
-    def review_chapter(self, *args):
+    def review_chapter(self, *args, **kwargs):
         raise AssertionError("quality loop off must not review the chapter")
 
 
@@ -737,10 +836,10 @@ class SoftFailingSceneReviewer(PassingReviewer):
         super().__init__()
         self.revisions = 0
 
-    def review_scene(self, scene_content, scene_plan, scene_number, *args):
+    def review_scene(self, scene_content, scene_plan, scene_number, *args, **kwargs):
         return self.review_factory(f"scene_{scene_number}")
 
-    def revise_scene(self, scene_content, *args):
+    def revise_scene(self, scene_content, *args, **kwargs):
         self.revisions += 1
         return scene_content
 
@@ -806,10 +905,10 @@ def test_scene_stops_retrying_once_feedback_is_empty_and_scores_stall(tmp_path):
 
 def test_waived_chapter_can_still_be_accepted(tmp_path):
     class SoftFailingChapterReviewer(PassingReviewer):
-        def review_chapter(self, *args):
+        def review_chapter(self, *args, **kwargs):
             return soft_failed_review("chapter")
 
-        def revise_scene(self, scene_content, *args):
+        def revise_scene(self, scene_content, *args, **kwargs):
             return scene_content
 
     result = _run_soft_failing_loop(tmp_path, SoftFailingChapterReviewer())

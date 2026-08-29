@@ -610,7 +610,7 @@ class StoryGenerationOrchestrator(BaseAgent):
             return bool(self.dir_manager.glob_files("story/structure/plot_short_story_*.md"))
 
         try:
-            from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+            from core.config.story_options import STRUCTURE_SECTIONS_MAP
             sections = STRUCTURE_SECTIONS_MAP.get(structure_name, ())
         except Exception as exc:
             self.logger.warning(f"Could not load structure section definitions: {exc}")
@@ -1827,7 +1827,7 @@ class StoryGenerationOrchestrator(BaseAgent):
         """Intelligently determine the output filename for a given step based on current parameters."""
         try:
             # Import here to avoid circular imports
-            from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+            from core.config.story_options import STRUCTURE_SECTIONS_MAP
             
             # Get current parameters if available
             story_structure = "6-Act Structure"  # Default
@@ -1912,7 +1912,7 @@ class StoryGenerationOrchestrator(BaseAgent):
     def _get_expected_scene_planning_files(self, story_params: Dict, output_dir: str) -> List[str]:
         """Get list of expected scene planning files based on current story parameters."""
         try:
-            from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+            from core.config.story_options import STRUCTURE_SECTIONS_MAP
             
             story_structure = story_params.get("story_structure", "6-Act Structure")
             story_length = story_params.get("story_length", "Novel (Standard)")

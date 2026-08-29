@@ -26,6 +26,7 @@ from core.generation.domain_profiles import (
     resolve_quality_loop_mode,
 )
 from core.generation.helper_fns import parse_scene_sections, write_file
+from core.generation.narrative_quality import analyze_narrative_quality
 from core.generation.planning_contract import (
     PlanningContractError,
     validate_planning_contract,
@@ -107,6 +108,7 @@ class ChapterLoopResult:
     profile_key: str = ""
     gate_waivers: List[str] = field(default_factory=list)
     regeneration_marker: str = ""
+    narrative_report: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def chapter_content(self) -> str:
@@ -149,6 +151,52 @@ class ChapterGenerationLoop:
 
     def _check_cancelled(self) -> None:
         raise_if_cancelled(self.cancel_token)
+
+    def _review_complete_chapter(
+        self,
+        chapter_content: str,
+        contract: Dict[str, Any],
+        case_bible: Dict[str, Any],
+        suspense_ledger: Dict[str, Any],
+        previous_chapter_tail: str,
+        repairs_requested: Optional[List[str]] = None,
+    ) -> DomainReview:
+        """Use independent contract/reader/plausibility gates when available.
+
+        The fallback keeps injected test reviewers and third-party reviewer
+        implementations source-compatible.
+        """
+
+        bundle = getattr(self.reviewer, "review_chapter_bundle", None)
+        if callable(bundle):
+            return bundle(
+                chapter_content,
+                contract,
+                case_bible,
+                suspense_ledger,
+                previous_chapter_tail=previous_chapter_tail,
+                repairs_requested=repairs_requested,
+            )
+        return self.reviewer.review_chapter(
+            chapter_content,
+            contract,
+            case_bible,
+            suspense_ledger,
+            repairs_requested=repairs_requested,
+        )
+
+    @staticmethod
+    def _retry_is_stuck(review: DomainReview, requested: List[str]) -> bool:
+        """这一轮重修有没有可能带来新结果。
+
+        两种情况不可能：评审判不通过却开不出任何修复项，重修只能瞎猜；以及评审
+        原样退回上一轮提过的同一批修复项——那批要求已经被照做过一次而问题依旧，
+        再用同样的说法要求第三次，得到的还是同一稿。场景规划那边早就按「同一个
+        错误挺过自己的修复就停」收手，这里补齐，把省下的调用留给真正能改的问题。
+        """
+        if not review.has_actionable_repair:
+            return True
+        return bool(requested) and set(review.asks) == set(requested)
 
     def _bind_profile(self, parameters: Dict[str, Any], mode: str) -> DomainProfile:
         """Settle which domain profile governs this chapter, then build the reviewer.
@@ -288,17 +336,22 @@ class ChapterGenerationLoop:
             )
             self.ledger.save_review(chapter_number, "plan", plan_review.to_dict())
 
+            unmet_asks: List[str] = []
             for attempt in range(self.max_plan_retries):
                 if plan_review.passed:
                     break
                 retry_count += 1
+                requested = plan_review.asks
+                previous_average = plan_review.average_score
                 self.logger.warning(
                     "Chapter %s plan failed domain gate (attempt %s): %s",
                     chapter_number,
                     attempt + 1,
-                    "; ".join(plan_review.repair_instructions),
+                    "; ".join(requested) or "评审未给出具体修复项",
                 )
-                revised_plan = self.reviewer.revise_plan(current_plan, plan_review, contract)
+                revised_plan = self.reviewer.revise_plan(
+                    current_plan, plan_review, contract, unmet_asks=unmet_asks
+                )
                 if not parse_scene_sections(revised_plan):
                     raise QualityGateError(
                         "场景规划修订结果没有可解析的场景标题", chapter_number=chapter_number
@@ -315,11 +368,24 @@ class ChapterGenerationLoop:
                         suspense_ledger,
                     )
                 plan_review = self.reviewer.review_plan(
-                    current_plan, contract, case_bible, suspense_ledger
+                    current_plan,
+                    contract,
+                    case_bible,
+                    suspense_ledger,
+                    repairs_requested=requested,
                 )
                 self.ledger.save_review(
                     chapter_number, f"plan_retry_{attempt + 1}", plan_review.to_dict()
                 )
+                unmet_asks = plan_review.unmet_asks_from(requested)
+                improved = plan_review.average_score > previous_average
+                if not improved and self._retry_is_stuck(plan_review, requested):
+                    self.logger.warning(
+                        "Chapter %s plan stopped retrying: the same repairs survived "
+                        "their own revision",
+                        chapter_number,
+                    )
+                    break
 
             if not plan_review.passed:
                 stage_label = f"第 {chapter_number} 章场景规划"
@@ -391,10 +457,17 @@ class ChapterGenerationLoop:
             # 保留历次重修中最好的一稿：重修不保证单调变好，放弃时该交出最好的
             # 结果，而不是碰巧最后生成的那一稿。
             best_prose, best_review = prose, review
+            unmet_asks = []
             for attempt in range(self.max_scene_retries):
                 if review.passed:
                     break
                 retry_count += 1
+                if best_review.average_score > review.average_score:
+                    # 上一轮改差了。接着这一稿往下改，退步会一路累积；退回目前
+                    # 最好的一稿重来，每轮至少从同一个高度出发。评审必须跟着一起
+                    # 回退，否则它引用的原文根本不在待修订的稿子里。
+                    prose, review = best_prose, best_review
+                requested = review.asks
                 self.logger.warning(
                     "Chapter %s Scene %s failed domain gate (attempt %s, avg %.2f/%.2f): %s",
                     chapter_number,
@@ -402,7 +475,7 @@ class ChapterGenerationLoop:
                     attempt + 1,
                     review.average_score,
                     review.pass_average,
-                    "; ".join(review.repair_instructions) or "评审未给出具体修复项",
+                    "; ".join(requested) or "评审未给出具体修复项",
                 )
                 prose = self.reviewer.revise_scene(
                     prose,
@@ -411,6 +484,7 @@ class ChapterGenerationLoop:
                     previous_tail,
                     next_scene_plan,
                     contract,
+                    unmet_asks=unmet_asks,
                 )
                 if not prose or not prose.strip():
                     raise QualityGateError(
@@ -427,6 +501,7 @@ class ChapterGenerationLoop:
                     contract,
                     case_bible,
                     suspense_ledger,
+                    repairs_requested=requested,
                 )
                 self.ledger.save_review(
                     chapter_number,
@@ -436,13 +511,15 @@ class ChapterGenerationLoop:
                 improved = review.average_score > best_review.average_score
                 if review.passed or improved:
                     best_prose, best_review = prose, review
-                if not review.passed and not improved and not review.has_actionable_repair:
-                    # 评审既没给出修改依据，这一稿也没比之前好：再重修只是把同一次
-                    # 调用重复一遍。提前收手，把判定交给下面的放行逻辑。
+                unmet_asks = review.unmet_asks_from(requested)
+                if not review.passed and not improved and self._retry_is_stuck(review, requested):
                     self.logger.warning(
-                        "Chapter %s Scene %s stopped retrying: no actionable feedback, no gain",
+                        "Chapter %s Scene %s stopped retrying: %s",
                         chapter_number,
                         index,
+                        "the same repairs survived their own revision"
+                        if unmet_asks
+                        else "no actionable feedback, no gain",
                     )
                     break
 
@@ -470,6 +547,8 @@ class ChapterGenerationLoop:
         # 这里不再检查取消：所有场景都已生成，收尾（评审与验收）应当走完，
         # 否则取消等于丢掉一整章的成果。下一章开始前才是下一个安全点。
         chapter_content = "\n\n---\n\n".join(generated_scenes)
+        narrative_report = analyze_narrative_quality(chapter_content).to_dict()
+        self.ledger.save_review(chapter_number, "narrative_signals", narrative_report)
         if not reviews_enabled:
             return ChapterLoopResult(
                 scenes=generated_scenes,
@@ -484,13 +563,15 @@ class ChapterGenerationLoop:
                 profile_key=profile.key,
                 gate_waivers=gate_waivers,
                 regeneration_marker=regeneration_marker,
+                narrative_report=narrative_report,
             )
 
-        chapter_review = self.reviewer.review_chapter(
+        chapter_review = self._review_complete_chapter(
             chapter_content,
             contract,
             case_bible,
             suspense_ledger,
+            previous_chapter_tail,
         )
         self.ledger.save_review(chapter_number, "chapter", chapter_review.to_dict())
 
@@ -503,11 +584,13 @@ class ChapterGenerationLoop:
         best_scenes = list(generated_scenes)
         best_scene_reviews = list(scene_reviews)
         best_chapter_review = chapter_review
+        unmet_asks = []
         for attempt in range(self.max_scene_retries):
             if chapter_review.passed and repaired_scene_passed:
                 break
             target = self._target_scene(repair_review.repair_scope, len(generated_scenes))
             retry_count += 1
+            requested = repair_review.asks
             # 修第一场时同样要带上一章结尾，否则重写出来的开头会与上一章脱节。
             previous_tail = (
                 generated_scenes[target - 2][-2500:] if target > 1 else previous_chapter_tail
@@ -520,6 +603,7 @@ class ChapterGenerationLoop:
                 previous_tail,
                 next_scene_plan,
                 contract,
+                unmet_asks=unmet_asks,
             )
             if not generated_scenes[target - 1].strip():
                 raise QualityGateError(
@@ -535,6 +619,7 @@ class ChapterGenerationLoop:
                 contract,
                 case_bible,
                 suspense_ledger,
+                repairs_requested=requested,
             )
             repaired_scene_passed = repaired_scene_review.passed
             scene_reviews[target - 1] = repaired_scene_review
@@ -544,11 +629,13 @@ class ChapterGenerationLoop:
                 repaired_scene_review.to_dict(),
             )
             chapter_content = "\n\n---\n\n".join(generated_scenes)
-            chapter_review = self.reviewer.review_chapter(
+            chapter_review = self._review_complete_chapter(
                 chapter_content,
                 contract,
                 case_bible,
                 suspense_ledger,
+                previous_chapter_tail,
+                repairs_requested=requested,
             )
             self.ledger.save_review(
                 chapter_number,
@@ -563,22 +650,29 @@ class ChapterGenerationLoop:
                 best_scenes = list(generated_scenes)
                 best_scene_reviews = list(scene_reviews)
                 best_chapter_review = chapter_review
+            unmet_asks = repair_review.unmet_asks_from(requested)
             if (
                 repaired_scene_passed
                 and not chapter_review.passed
                 and not improved
-                and not chapter_review.has_actionable_repair
+                and self._retry_is_stuck(chapter_review, requested)
             ):
                 # 同上：没有可执行依据又没有进步，继续重修只是重复同一次调用。
                 self.logger.warning(
-                    "Chapter %s stopped chapter-level retrying: no actionable feedback, no gain",
+                    "Chapter %s stopped chapter-level retrying: %s",
                     chapter_number,
+                    "the same repairs survived their own revision"
+                    if unmet_asks
+                    else "no actionable feedback, no gain",
                 )
                 break
 
         generated_scenes = best_scenes
         scene_reviews = best_scene_reviews
         chapter_review = best_chapter_review
+        narrative_report = analyze_narrative_quality(
+            "\n\n---\n\n".join(generated_scenes)
+        ).to_dict()
 
         blocked = [
             review for review in (chapter_review, *scene_reviews) if not review.passed
@@ -620,6 +714,7 @@ class ChapterGenerationLoop:
             profile_key=profile.key,
             gate_waivers=gate_waivers,
             regeneration_marker=regeneration_marker,
+            narrative_report=narrative_report,
         )
 
     # Repair routes, most authoritative first.  A human ruling outranks every
@@ -714,6 +809,10 @@ class ChapterGenerationLoop:
             )
             if route == "human_decision":
                 raise ChapterAcceptanceError(report, self.adjudication)
+            # 只有正文重修值得再来一次：它每次调用都会拿到一份不同的稿子。
+            # rebase 和 contract 报告「什么都没动」时，输入与上一轮完全相同，
+            # 再走一遍必然得到同一个结果，只是把剩下的预算烧掉。
+            retryable = route == "prose"
             if route == "rebase":
                 changed = self._repair_rebase(result)
             elif route == "contract":
@@ -731,6 +830,8 @@ class ChapterGenerationLoop:
                 )
             if not changed:
                 # Nothing moved, so re-running acceptance would fail identically.
+                if not retryable:
+                    break
                 continue
             try:
                 return accept_current()
@@ -1022,6 +1123,10 @@ class ChapterGenerationLoop:
             else self._load_previous_chapter_tail(chapter_number)
         )
         next_plan = scene_plans[target + 1] if target + 1 < len(scene_plans) else ""
+        # 验收报告列的是确定性校验挑出来的硬问题，比评分意见具体得多。带着它去
+        # 复评，评审先核对这几条有没有落实，而不是把重修稿当成一份新稿从头挑毛病
+        # ——后者会让每一轮的判定标准都不一样，重修永远追不上。
+        requested = [issue.message for issue in report.blocking_issues]
         scene_review = self.reviewer.review_scene(
             revised_scene,
             scene_plans[target],
@@ -1031,6 +1136,7 @@ class ChapterGenerationLoop:
             result.contract,
             self.ledger.load_case_bible(),
             self.ledger.load_suspense_ledger(),
+            repairs_requested=requested,
         )
         self.ledger.save_review(
             chapter_number,
@@ -1042,11 +1148,13 @@ class ChapterGenerationLoop:
 
         candidate_scenes = list(result.scenes)
         candidate_scenes[target] = revised_scene
-        chapter_review = self.reviewer.review_chapter(
+        chapter_review = self._review_complete_chapter(
             "\n\n---\n\n".join(candidate_scenes),
             result.contract,
             self.ledger.load_case_bible(),
             self.ledger.load_suspense_ledger(),
+            self._load_previous_chapter_tail(chapter_number),
+            repairs_requested=requested,
         )
         self.ledger.save_review(
             chapter_number,
@@ -1059,6 +1167,7 @@ class ChapterGenerationLoop:
         result.scenes = candidate_scenes
         result.scene_reviews[target] = scene_review
         result.chapter_review = chapter_review
+        result.narrative_report = analyze_narrative_quality(result.chapter_content).to_dict()
         result.retry_count += 1
         write_file(resolved_path, result.chapter_content)
         return True

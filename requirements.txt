@@ -20,7 +20,9 @@ jsonschema>=4.25.1
 # 故事账本提交时的跨进程互斥锁（core/generation/story_ledger.py）
 filelock>=3.17.0
 
-# GUI 使用标准库 tkinter，无需在此声明。
+# 旧版 GUI 使用标准库 tkinter，无需在此声明。
+# 新版 GUI（ui/，见 docs/UI_MIGRATION.md）使用 PySide6；仅跑旧界面时可不装。
+PySide6>=6.6
 
 # --- 开发依赖 ---
 # pip install -r requirements.txt 会一并安装；仅运行应用可不装。

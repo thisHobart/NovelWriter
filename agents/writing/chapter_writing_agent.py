@@ -57,7 +57,7 @@ from core.generation.semantic_identity import (
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.generation.story_ledger import StoryLedgerManager
 from core.config.directory_config import get_directory_manager
-from core.gui.parameters import STRUCTURE_SECTIONS_MAP
+from core.config.story_options import STRUCTURE_SECTIONS_MAP
 
 # Import review system (with fallback if not available)
 try:

@@ -31,62 +31,15 @@ from core.localization import (
     zh_label,
 )
 
-# --- Define Length and Structure Options ---
-# Simplified for initial implementation
-LENGTH_OPTIONS = ["Short Story", "Novella", "Novel (Standard)", "Novel (Epic)"]
-
-STRUCTURE_MAP = {
-    "Short Story": ["3-Act Structure", "Fichtean Curve", "Freytag's Pyramid"],
-    "Novella": ["3-Act Structure", "Seven-Point Structure", "Hero's Journey (Simplified)"],
-    "Novel (Standard)": ["3-Act Structure", "6-Act Structure", "Save the Cat!", "Hero's Journey"],
-    "Novel (Epic)": ["6-Act Structure", "Hero's Journey", "Save the Cat!", "Episodic Structure"]
-}
-
-# Define default structures for each length
-DEFAULT_STRUCTURE = {
-    "Short Story": "3-Act Structure",
-    "Novella": "3-Act Structure",
-    "Novel (Standard)": "6-Act Structure", # Default to existing one
-    "Novel (Epic)": "6-Act Structure",
-}
-
-# --- Define Sections/Parts for each Story Structure ---
-# This map is used by story_structure.py (improve_structure) and scene_plan.py (generate_chapter_outline)
-STRUCTURE_SECTIONS_MAP = {
-    "3-Act Structure": ("Act 1: Setup", "Act 2: Confrontation", "Act 3: Resolution"),
-    "6-Act Structure": ("Beginning", "Rising Action", "First Climax", "Solution Finding", "Second Climax", "Resolution"),
-    "Fichtean Curve": ("Inciting Incident", "Rising Action", "Climax", "Falling Action", "Denouement"),
-    "Seven-Point Structure": ("Hook", "Plot Point 1", "Pinch Point 1", "Midpoint", "Pinch Point 2", "Plot Point 2", "Resolution"),
-    "Hero's Journey": (
-        "The Ordinary World", "The Call to Adventure", "Refusal of the Call", "Meeting the Mentor", 
-        "Crossing the Threshold", "Tests, Allies, and Enemies", "Approach to the Inmost Cave", 
-        "The Ordeal", "Reward (Seizing the Sword)", "The Road Back", "The Resurrection", "Return with the Elixir"
-    ),
-    "Hero's Journey (Simplified)": ("Departure", "Initiation", "Return"),
-    "Save the Cat!": (
-        "Opening Image", "Theme Stated", "Set-up", "Catalyst", "Debate", "Break into Two", "B Story", 
-        "Fun and Games", "Midpoint", "Bad Guys Close In", "All Is Lost", "Dark Night of the Soul", 
-        "Break into Three", "Finale", "Final Image"
-    ),
-    "Episodic Structure": (
-        "Episode 1: Introduction", "Episode 2: Rising Action", "Episode 3: Midpoint/Turning Point", 
-        "Episode 4: Climax Actions", "Episode 5: Resolution/Lead to Next"
-    ) # Example for a 5-episode arc; this might need to be more dynamic if num_episodes is user-defined
-}
-# ---------------------------------------------------------
-
-# Add GENDER_BIAS_MAP at the class level or near the top
-GENDER_BIAS_MAP = {
-    "Balanced (50F/50M)": (50, 50),     # (female_%, male_%) - Note: Storing as (female, male) to match original Combobox order of F/M
-    "Slightly Female (60F/40M)": (60, 40),
-    "Mostly Female (75F/25M)": (75, 25),
-    "Primarily Female (90F/10M)": (90, 10),
-    "Slightly Male (40F/60M)": (40, 60),
-    "Mostly Male (25F/75M)": (25, 75),
-    "Primarily Male (10F/90M)": (10, 90),
-    "Exclusively Female (100F/0M)": (100, 0), # Optional: Add if needed
-    "Exclusively Male (0F/100M)": (0, 100)   # Optional: Add if needed
-}
+# 选项表的唯一来源是 core/config/story_options.py（不依赖 tkinter）。
+# 这里只做转发，保证旧界面与新界面读到的是同一份表。
+from core.config.story_options import (  # noqa: E402
+    DEFAULT_STRUCTURE,
+    GENDER_BIAS_MAP,
+    LENGTH_OPTIONS,
+    STRUCTURE_MAP,
+    STRUCTURE_SECTIONS_MAP,
+)
 
 class Parameters:
     def __init__(self, parent, app=None): # Added app parameter

@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.generation.ai_helper import send_prompt
 from core.generation.domain_profiles import DomainProfile, get_domain_profile
+from core.generation.narrative_quality import analyze_narrative_quality
 from core.generation.prompt_context import analyze_chinese_prose_style
 from core.generation.story_ledger import build_ledger_prompt_view, compact_json
 
@@ -32,10 +33,16 @@ class DomainReview:
     evidence: List[Dict[str, Any]] = field(default_factory=list)
     repair_scope: str = ""
     repair_instructions: List[str] = field(default_factory=list)
+    # 每条形如 {"dimension","quote","missing","change"}：这一维扣的分具体扣在
+    # 哪一句上，以及改成什么才能拿满分。评审给不出它，就说明它其实没找到问题。
+    upgrades: List[Dict[str, Any]] = field(default_factory=list)
     strengths: List[str] = field(default_factory=list)
     reviewer_warning: str = ""
     pass_average: float = 0.0
     blocking_dimensions: List[str] = field(default_factory=list)
+    # 章节总评可由契约、盲读、现实合理性三个彼此独立的评审合成。保留原始分评审，
+    # 事后才能看出究竟是“没按计划写”还是“计划写到了但读起来仍不成立”。
+    component_reviews: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     waived: bool = False
 
     @property
@@ -69,7 +76,41 @@ class DomainReview:
     @property
     def has_actionable_repair(self) -> bool:
         """评审是否给出了可据以重修的具体依据。"""
-        return bool(self.hard_failures or self.repair_instructions)
+        return bool(self.hard_failures or self.repair_instructions or self.upgrades)
+
+    @property
+    def asks(self) -> List[str]:
+        """把这份评审要求的改动摊平成一份可逐条核对的清单。
+
+        重修提示词原先直接塞整份评审 JSON，其中 scores、strengths、判「通过」的
+        evidence 占了大半篇幅，真正要改的那两句反而淹没在里面；模型据此重写，命中
+        率自然低。这里只留「要改什么」，并且顺序固定：硬伤在前，加分项在后。
+        """
+        items: List[str] = []
+        for failure in self.hard_failures:
+            quote = str(failure.get("quote", "")).strip()
+            items.append(
+                f"【硬伤·{failure.get('code', '')}】{failure.get('problem', '')}"
+                + (f"（原文：「{quote}」）" if quote else "")
+            )
+        items.extend(str(item) for item in self.repair_instructions if str(item).strip())
+        for upgrade in self.upgrades:
+            quote = str(upgrade.get("quote", "")).strip()
+            items.append(
+                f"【{upgrade.get('dimension', '')}】原文「{quote}」缺少"
+                f"{upgrade.get('missing', '')}；改为：{upgrade.get('change', '')}"
+            )
+        return items
+
+    def unmet_asks_from(self, requested: List[str]) -> List[str]:
+        """上一轮提过、这一轮还原样提着的改动。
+
+        同一处问题挺过它自己的修复，说明那句话没被模型听懂，再原样重复一遍不会有
+        新结果。把它单独拎出来，既能在提示词里换一种说法强调，也能让重试循环据此
+        判断这一轮到底有没有进展。
+        """
+        current = set(self.asks)
+        return [ask for ask in requested if ask in current]
 
     def waive(self, reason: str) -> "DomainReview":
         """放行一份只差分数的稿子，并把放行理由写进记录。
@@ -164,6 +205,59 @@ class DomainReviewAgent:
 
     def _score_template(self) -> str:
         return ", ".join(f'"{dimension}": 0' for dimension in self.profile.score_dimensions)
+
+    # 0-4 分只给维度名不给标尺时，模型会把几乎所有维度都打成 3 分——「还行」是
+    # 最安全的答案。而 3 分整份稿子的平均分正好卡在门槛下方，于是评审一边在
+    # evidence 里逐条写「通过」，一边判不通过，还给不出任何修复项，重修只能原地
+    # 打转。把 3 分明确定义为「可以替换成同题材任何一章」，模型就有了判断依据，
+    # 4 分也有了可执行的目标。
+    _SCORE_RUBRIC = """评分标尺（每个维度都按这把尺子打分，不要默认给 3 分）：
+0＝该维度在本稿中完全缺席，或写成了相反的东西。
+1＝有痕迹但不成立，读者无法据此得到该维度应有的效果。
+2＝靠概述交代过去，没有落到具体的人、物、动作上。
+3＝达标但可替换：把这一段搬到同题材任何一章都能成立，没有只属于本章的东西。
+4＝不可替换：用了本章契约里的具体细节，换一章就不成立。"""
+
+    _BLIND_SCORE_RUBRIC = """评分标尺（按真实阅读感受，不按作者意图）：
+0＝该问题使正文无法成立或无法读懂。
+1＝读者能猜到作者想写什么，但人物、信息或语言明显失真。
+2＝能读懂，仍有明显说明书感、模板感或行为跳步。
+3＝中国类型小说读者可以顺畅读下去，但表达或推进较常规。
+4＝自然、具体、可信；效果来自正文自身，不依赖大纲解释。"""
+
+    _BLIND_DIMENSIONS = (
+        "opening_pull",
+        "reader_orientation",
+        "character_credibility",
+        "scene_dynamics",
+        "subtext",
+        "narrative_restraint",
+        "chinese_readability",
+    )
+    _BLIND_REQUIRED = ("reader_orientation", "character_credibility", "chinese_readability")
+    _BLIND_HARD_FAILURES = frozenset(
+        {"READER_CONFUSION", "CHARACTER_LOGIC_BREAK", "AI_TEMPLATE_SATURATION"}
+    )
+    _PLAUSIBILITY_DIMENSIONS = (
+        "behavioral_logic",
+        "evidence_handling",
+        "procedural_plausibility",
+        "technical_plausibility",
+        "claim_calibration",
+    )
+    _PLAUSIBILITY_REQUIRED = (
+        "behavioral_logic",
+        "evidence_handling",
+        "technical_plausibility",
+    )
+    _PLAUSIBILITY_HARD_FAILURES = frozenset(
+        {
+            "IMPOSSIBLE_MECHANISM",
+            "EVIDENCE_SELF_DESTRUCTION",
+            "PROCEDURAL_IMPOSSIBILITY",
+            "UNSUPPORTED_PRECISION",
+        }
+    )
 
     def _contract_schema_block(self) -> str:
         lines = [
@@ -456,6 +550,7 @@ timeline_events、character_updates、plot_thread_updates）：
         contract: Dict[str, Any],
         case_bible: Dict[str, Any],
         suspense_ledger: Dict[str, Any],
+        repairs_requested: Optional[List[str]] = None,
     ) -> DomainReview:
         return self._review(
             stage="plan",
@@ -464,6 +559,7 @@ timeline_events、character_updates、plot_thread_updates）：
             case_bible=case_bible,
             suspense_ledger=suspense_ledger,
             extra_context=self.profile.review_focus.get("plan", ""),
+            repairs_requested=repairs_requested,
         )
 
     def review_scene(
@@ -476,6 +572,7 @@ timeline_events、character_updates、plot_thread_updates）：
         contract: Dict[str, Any],
         case_bible: Dict[str, Any],
         suspense_ledger: Dict[str, Any],
+        repairs_requested: Optional[List[str]] = None,
     ) -> DomainReview:
         style_warnings = analyze_chinese_prose_style(scene_content)
         extra = f"""当前场景编号：{scene_number}
@@ -491,6 +588,7 @@ timeline_events、character_updates、plot_thread_updates）：
             case_bible=case_bible,
             suspense_ledger=suspense_ledger,
             extra_context=extra,
+            repairs_requested=repairs_requested,
         )
 
     def review_chapter(
@@ -499,6 +597,7 @@ timeline_events、character_updates、plot_thread_updates）：
         contract: Dict[str, Any],
         case_bible: Dict[str, Any],
         suspense_ledger: Dict[str, Any],
+        repairs_requested: Optional[List[str]] = None,
     ) -> DomainReview:
         return self._review(
             stage="chapter",
@@ -507,7 +606,235 @@ timeline_events、character_updates、plot_thread_updates）：
             case_bible=case_bible,
             suspense_ledger=suspense_ledger,
             extra_context=self.profile.review_focus.get("chapter", ""),
+            repairs_requested=repairs_requested,
         )
+
+    def review_reader_blind(
+        self,
+        chapter_content: str,
+        previous_chapter_tail: str = "",
+        repairs_requested: Optional[List[str]] = None,
+    ) -> DomainReview:
+        """Judge the reading experience without seeing the chapter contract.
+
+        The ordinary reviewer knows every promised beat, so it can mistake intent
+        for effect.  This reviewer receives only what an actual serial-fiction
+        reader has: the previous ending and the new prose.
+        """
+
+        diagnostics = analyze_narrative_quality(chapter_content)
+        context = f"""你没有章节大纲、章节契约、作者解释或标准答案，也不得猜测它们。
+你是一位长期阅读中文类型小说的普通读者，只判断正文实际产生的效果。
+
+上一章结尾（仅用于衔接判断，第一章可能为空）：
+{previous_chapter_tail[-2500:]}
+
+{diagnostics.prompt_block()}
+
+特别检查：
+- 中国读者是否能自然理解人物为什么这样说、这样做，而不是靠旁白替人物解释。
+- 主题是否由情节和选择浮现，还是被总结句反复说破。
+- 情绪是否总靠喉咙、胸口、冷汗等可替换的身体反应。
+- 情节是否像单轨任务清单，每个冲突都立刻得到整齐答案。
+- 对话、叙述和场景转换是否符合自然中文阅读节奏。
+统计信号为零不等于缺陷；只有你能引用正文并说明真实阅读后果时才能扣分。"""
+        return self._specialized_review(
+            stage="reader_blind",
+            role="中文类型小说盲读审稿人",
+            content=chapter_content,
+            context=context,
+            score_dimensions=self._BLIND_DIMENSIONS,
+            required_dimensions=self._BLIND_REQUIRED,
+            hard_failure_codes=self._BLIND_HARD_FAILURES,
+            pass_average=max(3.2, min(3.4, self.profile.pass_average)),
+            repairs_requested=repairs_requested,
+        )
+
+    def review_plausibility(
+        self,
+        chapter_content: str,
+        case_bible: Dict[str, Any],
+        repairs_requested: Optional[List[str]] = None,
+    ) -> DomainReview:
+        """Review real-world mechanisms independently from contract compliance."""
+
+        context = f"""你看不到章节契约，因此不能用“符合计划”替代现实合理性判断。
+你只检查人物行为、证据保全、法律/组织程序和技术机制是否足以支撑正文中的结论。
+
+作品已经明确声明的虚构体系规则（只有这里写明的规则才可覆盖现实常识）：
+{compact_json(case_bible.get('domain_rules', {}), 7000)}
+
+判定原则：
+- 角色可以犯错，但正文必须把错误当作角色错误，而不是可靠方法。
+- 精确到设备、算法、法条、鉴定能力或程序结果的说法，若既无正文依据也未在虚构规则中声明，
+  不得因为听起来专业就放行；会误导核心推理时使用 UNSUPPORTED_PRECISION。
+- 销毁、污染或改变唯一证物后仍从中得出原本需要该证物才能支持的结论，使用
+  EVIDENCE_SELF_DESTRUCTION。
+- 只报告会改变情节可信度的机制问题，不纠缠无关紧要的行业措辞。"""
+        return self._specialized_review(
+            stage="plausibility",
+            role="现实合理性与专业机制审稿人",
+            content=chapter_content,
+            context=context,
+            score_dimensions=self._PLAUSIBILITY_DIMENSIONS,
+            required_dimensions=self._PLAUSIBILITY_REQUIRED,
+            hard_failure_codes=self._PLAUSIBILITY_HARD_FAILURES,
+            pass_average=max(3.2, min(3.4, self.profile.pass_average)),
+            repairs_requested=repairs_requested,
+        )
+
+    def review_chapter_bundle(
+        self,
+        chapter_content: str,
+        contract: Dict[str, Any],
+        case_bible: Dict[str, Any],
+        suspense_ledger: Dict[str, Any],
+        previous_chapter_tail: str = "",
+        repairs_requested: Optional[List[str]] = None,
+    ) -> DomainReview:
+        """Run three independent chapter gates and retain each verdict."""
+
+        reviews = {
+            "contract": self.review_chapter(
+                chapter_content,
+                contract,
+                case_bible,
+                suspense_ledger,
+                repairs_requested=repairs_requested,
+            ),
+            "reader_blind": self.review_reader_blind(
+                chapter_content,
+                previous_chapter_tail,
+                repairs_requested=repairs_requested,
+            ),
+            "plausibility": self.review_plausibility(
+                chapter_content,
+                case_bible,
+                repairs_requested=repairs_requested,
+            ),
+        }
+        return self._merge_reviews("chapter", reviews)
+
+    def _specialized_review(
+        self,
+        *,
+        stage: str,
+        role: str,
+        content: str,
+        context: str,
+        score_dimensions: tuple[str, ...],
+        required_dimensions: tuple[str, ...],
+        hard_failure_codes: frozenset[str],
+        pass_average: float,
+        repairs_requested: Optional[List[str]] = None,
+    ) -> DomainReview:
+        template = ", ".join(f'"{dimension}": 0' for dimension in score_dimensions)
+        prompt = f"""你是{role}。请独立评审下面这一章，只判断正文中可证实的问题。
+
+{context}
+
+待评审正文：
+{content[:18000]}
+{self._repair_check_block(list(repairs_requested or []))}
+硬失败代码仅可使用：{', '.join(sorted(hard_failure_codes))}。
+评分维度为0到4分：{', '.join(score_dimensions)}。
+{self._BLIND_SCORE_RUBRIC}
+
+任何批评必须附正文中的短引文。每个 3 分或更低的维度必须在 upgrades 中指出原句、
+缺失效果和最小改法；无法引用原文就不要报告。repair_scope 请写 scene_1、scene_2 等可路由位置，
+无法判断场次时写最接近问题的段落描述。
+
+只输出 JSON：
+{{
+  "scores": {{{template}}},
+  "hard_failures": [{{"code":"允许的代码","quote":"正文短引文","problem":"阅读或机制后果"}}],
+  "evidence": [{{"dimension":"维度","quote":"正文短引文","assessment":"判断依据"}}],
+  "upgrades": [{{"dimension":"维度","quote":"正文短引文","missing":"缺少的效果","change":"最小改法"}}],
+  "repair_scope": "scene_1 或具体段落",
+  "repair_instructions": ["可执行的最小修复"],
+  "strengths": ["正文中真实成立的优点"]
+}}"""
+        try:
+            raw = self._call_json(prompt)
+            return self._normalize_review(
+                stage,
+                raw,
+                content,
+                score_dimensions=score_dimensions,
+                required_dimensions=required_dimensions,
+                hard_failure_codes=hard_failure_codes,
+                pass_average=pass_average,
+            )
+        except Exception as exc:
+            self.logger.error("Specialized review unavailable for %s: %s", stage, exc)
+            raise DomainReviewError(f"{stage} 质量检查未能返回有效结果：{exc}") from exc
+
+    @staticmethod
+    def _merge_reviews(stage: str, reviews: Dict[str, DomainReview]) -> DomainReview:
+        scores: Dict[str, float] = {}
+        failures: List[Dict[str, Any]] = []
+        evidence: List[Dict[str, Any]] = []
+        upgrades: List[Dict[str, Any]] = []
+        repairs: List[str] = []
+        strengths: List[str] = []
+        blocking: List[str] = []
+        repair_scope = ""
+        weighted_threshold = 0.0
+        score_count = 0
+        for name, review in reviews.items():
+            scores.update({f"{name}.{key}": value for key, value in review.scores.items()})
+            weighted_threshold += review.pass_average * len(review.scores)
+            score_count += len(review.scores)
+            for item in review.hard_failures:
+                failures.append({**item, "review": name})
+            for item in review.evidence:
+                copied = dict(item)
+                if copied.get("dimension"):
+                    copied["dimension"] = f"{name}.{copied['dimension']}"
+                evidence.append(copied)
+            for item in review.upgrades:
+                copied = dict(item)
+                copied["dimension"] = f"{name}.{copied.get('dimension', '')}"
+                upgrades.append(copied)
+            repairs.extend(f"【{name}】{item}" for item in review.repair_instructions)
+            strengths.extend(f"【{name}】{item}" for item in review.strengths)
+            blocking.extend(f"{name}.{item}" for item in review.blocking_dimensions)
+            if not review.passed and not repair_scope:
+                repair_scope = review.repair_scope
+        return DomainReview(
+            stage=stage,
+            passed=all(review.passed for review in reviews.values()),
+            scores=scores,
+            hard_failures=failures,
+            evidence=evidence,
+            repair_scope=repair_scope,
+            repair_instructions=repairs,
+            upgrades=upgrades,
+            strengths=strengths,
+            pass_average=weighted_threshold / score_count if score_count else 0.0,
+            blocking_dimensions=blocking,
+            component_reviews={name: review.to_dict() for name, review in reviews.items()},
+        )
+
+    @staticmethod
+    def _repair_check_block(repairs_requested: List[str]) -> str:
+        """让评审先核对上一轮要求的改动，再去找新问题。
+
+        每一轮都从零开始重评，等于让模型每次抽一组不同的缺陷：上一轮要求改的地方
+        改好了也没人确认，这一轮新挑的毛病下一轮又换一批。重修因此永远在追一个移动
+        的靶子，两次重试用完也收敛不了。
+        """
+        if not repairs_requested:
+            return ""
+        listed = "\n".join(f"{index}. {item}" for index, item in enumerate(repairs_requested, 1))
+        return f"""
+上一轮评审要求的改动（本稿是照此修订后的结果）：
+{listed}
+
+先逐条判断上面每一项是否已经落实，把结论写进 evidence。已落实的不要再作为问题重复
+提出；确实没落实的必须原样保留在 repair_instructions 里，并说明它为什么还不成立。
+不要因为已经改过一轮就去挑新的、与上述条目无关的毛病。
+"""
 
     def _review(
         self,
@@ -517,6 +844,7 @@ timeline_events、character_updates、plot_thread_updates）：
         case_bible: Dict[str, Any],
         suspense_ledger: Dict[str, Any],
         extra_context: str,
+        repairs_requested: Optional[List[str]] = None,
     ) -> DomainReview:
         profile = self.profile
         prompt = f"""你是{profile.reviewer_role}。评审 {stage}，只判断可证实的问题，不要为了显得严格而虚构缺陷。
@@ -535,16 +863,22 @@ timeline_events、character_updates、plot_thread_updates）：
 
 待评审内容：
 {content[:18000]}
-
+{self._repair_check_block(list(repairs_requested or []))}
 硬失败代码仅可使用：{', '.join(sorted(profile.hard_failure_codes))}。
 评分维度为0到4分：{', '.join(profile.score_dimensions)}。
+{self._SCORE_RUBRIC}
+
 任何批评必须附待评审内容中的短引文；没有引文的缺陷不要报告。修复建议必须限定范围，避免无关全文重写。
+**每一个打了 3 分或更低的维度，都必须在 upgrades 里出现一条**，指出扣分扣在哪一句上、
+缺的是什么、改成什么才能到 4 分。给不出这一条就说明该维度并没有问题，请改打 4 分。
+判不通过却一条修复项都开不出来，是这份评审自己没做完，不是稿子没毛病。
 
 只输出 JSON：
 {{
   "scores": {{{self._score_template()}}},
   "hard_failures": [{{"code":"CONTINUITY_DUPLICATION","quote":"原文短引文","problem":"具体问题"}}],
   "evidence": [{{"dimension":"continuity","quote":"原文短引文","assessment":"为什么通过或失败"}}],
+  "upgrades": [{{"dimension":"reversal","quote":"原文短引文","missing":"这一句缺什么","change":"改成什么才算 4 分"}}],
   "repair_scope": "scene_2_opening 或具体段落",
   "repair_instructions": ["可执行的最小修复"],
   "strengths": ["具体优点"]
@@ -561,11 +895,20 @@ timeline_events、character_updates、plot_thread_updates）：
         stage: str,
         raw: Dict[str, Any],
         content: str = "",
+        *,
+        score_dimensions: Optional[tuple[str, ...]] = None,
+        required_dimensions: Optional[tuple[str, ...]] = None,
+        hard_failure_codes: Optional[frozenset[str]] = None,
+        pass_average: Optional[float] = None,
     ) -> DomainReview:
         profile = self.profile
+        dimensions = score_dimensions or profile.score_dimensions
+        required = required_dimensions or profile.required_dimensions
+        allowed_failures = hard_failure_codes or profile.hard_failure_codes
+        threshold = profile.pass_average if pass_average is None else pass_average
         scores = {}
         raw_scores = raw.get("scores", {}) if isinstance(raw.get("scores"), dict) else {}
-        for dimension in profile.score_dimensions:
+        for dimension in dimensions:
             try:
                 score = float(raw_scores.get(dimension, 3.0))
             except (TypeError, ValueError):
@@ -578,18 +921,40 @@ timeline_events、character_updates、plot_thread_updates）：
                 continue
             code = str(failure.get("code", ""))
             quote = str(failure.get("quote", "")).strip()
-            if code in profile.hard_failure_codes and (not content or (quote and quote in content)):
+            if code in allowed_failures and (not content or (quote and quote in content)):
                 hard_failures.append(failure)
+
+        # 只认对得上维度、带真引文的加分项：没有引文就无法定位要改哪里，
+        # 留着它只会让重修凭空发挥，和没给一样。
+        upgrades = []
+        for upgrade in raw.get("upgrades", []):
+            if not isinstance(upgrade, dict):
+                continue
+            dimension = str(upgrade.get("dimension", ""))
+            quote = str(upgrade.get("quote", "")).strip()
+            change = str(upgrade.get("change", "")).strip()
+            if dimension not in scores or not change:
+                continue
+            if content and quote and quote not in content:
+                continue
+            upgrades.append(
+                {
+                    "dimension": dimension,
+                    "quote": quote,
+                    "missing": str(upgrade.get("missing", "")).strip(),
+                    "change": change,
+                }
+            )
 
         average = sum(scores.values()) / len(scores)
         blocking_dimensions = [
             dimension
-            for dimension in profile.required_dimensions
+            for dimension in required
             if scores.get(dimension, 0.0) < 3.0
         ]
         passed = (
             not hard_failures
-            and average >= profile.pass_average
+            and average >= threshold
             and not blocking_dimensions
         )
         return DomainReview(
@@ -600,8 +965,9 @@ timeline_events、character_updates、plot_thread_updates）：
             evidence=[item for item in raw.get("evidence", []) if isinstance(item, dict)],
             repair_scope=str(raw.get("repair_scope", "")),
             repair_instructions=[str(item) for item in raw.get("repair_instructions", [])],
+            upgrades=upgrades,
             strengths=[str(item) for item in raw.get("strengths", [])],
-            pass_average=profile.pass_average,
+            pass_average=threshold,
             blocking_dimensions=blocking_dimensions,
         )
 
@@ -635,20 +1001,50 @@ timeline_events、character_updates、plot_thread_updates）：
             f"细节和更锋利的对白加强，不要靠拉长篇幅或增加新信息充数。\n"
         )
 
+    def revision_brief(
+        self,
+        review: DomainReview,
+        unmet_asks: Optional[List[str]] = None,
+    ) -> str:
+        """把这一轮要改的东西写成编号清单，重复出现的单独点名。
+
+        原先的做法是把整份评审 to_dict 后塞进提示词。里面 scores、strengths 和判
+        「通过」的 evidence 占了绝大部分篇幅，真正要动的那一两句混在中间，模型很
+        容易照着「哪里都还行」的整体印象重写一遍，改动落不到点上。
+        """
+        asks = review.asks
+        if not asks:
+            return self.revision_focus(review)
+        repeated = set(unmet_asks or [])
+        lines = []
+        for index, ask in enumerate(asks, 1):
+            mark = "（上一轮已提出，仍未解决）" if ask in repeated else ""
+            lines.append(f"{index}. {ask}{mark}")
+        brief = "必须修复的问题（逐条对应，不要遗漏，也不要改动未列出的部分）：\n" + "\n".join(lines)
+        if repeated:
+            brief += (
+                "\n\n注意：标注「仍未解决」的条目，上一轮已经按同样的说法要求过一次而没有"
+                "改动到位。这一次请直接改写被引用的那句原文本身，不要只在周围补充内容。"
+            )
+        if review.strengths:
+            kept = "；".join(str(item) for item in review.strengths[:3])
+            brief += f"\n\n下列已经写好的地方保持不变，不要在修复过程中削弱它们：{kept}"
+        return brief
+
     def revise_plan(
         self,
         scene_plan: str,
         review: DomainReview,
         contract: Dict[str, Any],
+        unmet_asks: Optional[List[str]] = None,
     ) -> str:
         prompt = f"""请只修复下面场景规划中已被评审指出的问题，保持章节核心事件、人物和场景数量不变。不得增加新的决定性信息或支线。
 
 章节契约：
 {compact_json(contract, 8000)}
 
-评审：
-{compact_json(review.to_dict(), 8000)}
-{self.revision_focus(review)}
+{self.revision_brief(review, unmet_asks)}
+
 原场景规划：
 {scene_plan}
 
@@ -663,6 +1059,7 @@ timeline_events、character_updates、plot_thread_updates）：
         previous_scene_tail: str,
         next_scene_plan: str,
         contract: Dict[str, Any],
+        unmet_asks: Optional[List[str]] = None,
     ) -> str:
         prompt = f"""请对场景正文进行最小范围修订，只处理评审指出的问题。不要改变已经通过的情节，不要增加新的决定性信息，不要提前完成下一场任务，只输出修订后的场景正文。
 
@@ -678,9 +1075,8 @@ timeline_events、character_updates、plot_thread_updates）：
 下一场规划边界：
 {next_scene_plan[:5000]}
 
-评审意见：
-{compact_json(review.to_dict(), 8000)}
-{self.revision_focus(review)}
+{self.revision_brief(review, unmet_asks)}
+
 原正文：
 {scene_content}
 """
