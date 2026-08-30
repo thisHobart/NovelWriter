@@ -28,6 +28,7 @@ from core.generation.prompt_context import (
     sanitize_lore_content,
 )
 from core.generation.planning_contract import (
+    CONTRACT_SCHEMA_VERSION,
     PlanningContractError,
     build_existing_planning_index,
     collect_history_defects,
@@ -38,6 +39,7 @@ from core.generation.planning_contract import (
     validate_contract_sequence,
     validate_planning_contract,
 )
+from core.generation.narrative_graph import NarrativeGraphManager
 from core.generation.story_ledger import StoryLedgerManager
 from core.generation.semantic_identity import (
     has_domain_id_collision,
@@ -113,6 +115,12 @@ class ScenePipeline:
     @staticmethod
     def _contract_instructions(output_dir, chapter_number, story_params):
         index = build_existing_planning_index(output_dir, chapter_number)
+        graph_manager = NarrativeGraphManager(output_dir)
+        ledger_manager = StoryLedgerManager(output_dir)
+        ledger_manager.initialize(story_params)
+        narrative_context = graph_manager.planning_context(
+            chapter_number, ledger_manager.load_suspense_ledger()
+        )
         profile = resolve_domain_profile(story_params)
         domain_fields = {
             field.name: field.schema_hint for field in profile.contract_fields
@@ -122,6 +130,7 @@ class ScenePipeline:
             index,
             domain_fields=domain_fields,
             obligations=downstream_obligations(output_dir, chapter_number),
+            narrative_context=narrative_context,
         )
 
     @staticmethod
@@ -185,7 +194,7 @@ class ScenePipeline:
                 contract = validate_planning_contract(resolution.contract, chapter_number)
             except PlanningContractError as exc:
                 return None, [exc]
-            contract["schema_version"] = 2
+            contract["schema_version"] = CONTRACT_SCHEMA_VERSION
             contract["origin"] = "scene_planning"
             for warning in resolution.warnings:
                 self.app.logger.warning(
@@ -201,6 +210,24 @@ class ScenePipeline:
                     chapter_number,
                     obligations=downstream_obligations(project_dir, chapter_number),
                 )
+            )
+            graph_manager = NarrativeGraphManager(project_dir)
+            ledger_manager = StoryLedgerManager(project_dir)
+            ledger_manager.initialize(story_params)
+            contract["narrative_graph_revision"] = graph_manager.current_revision()
+            graph_issues = graph_manager.validate_contract(
+                contract,
+                ledger_manager.load_suspense_ledger(),
+                ignore_revision=True,
+            )
+            defects.extend(
+                PlanningContractError(
+                    str(issue.get("message", "叙事图契约校验失败")),
+                    chapters=(chapter_number,),
+                    code=str(issue.get("code", "narrative_graph_contract_invalid")).lower(),
+                )
+                for issue in graph_issues
+                if issue.get("severity") == "error"
             )
 
         if require_complete_sequence:

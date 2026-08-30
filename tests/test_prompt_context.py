@@ -2,6 +2,8 @@
 
 import inspect
 
+from core.generation import prompt_context
+
 from core.generation.prompt_context import (
     CHINESE_PROSE_REQUIREMENTS,
     analyze_chinese_prose_style,
@@ -149,6 +151,25 @@ def test_style_retry_keeps_the_best_draft_rather_than_failing():
     result = generate_prose_with_style_retry(lambda prompt: replies.pop(0), "写一个场景")
 
     assert result == better
+
+
+def test_style_retry_compares_occurrence_counts_within_the_same_category(monkeypatch):
+    drafts = ["十五处版本", "十三处版本", "十一处版本"]
+    counts = {"十五处版本": 15, "十三处版本": 13, "十一处版本": 11}
+
+    monkeypatch.setattr(
+        prompt_context,
+        "analyze_chinese_prose_style",
+        lambda text: [
+            f"定语过长：{counts[text]} 处小句在‘的’之前堆了 12 字以上的修饰语"
+        ],
+    )
+
+    result = generate_prose_with_style_retry(
+        lambda prompt: drafts.pop(0), "写一个场景", retries=2
+    )
+
+    assert result == "十一处版本"
 
 
 # --- 世界观冲突检查 -----------------------------------------------------------

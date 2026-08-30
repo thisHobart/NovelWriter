@@ -281,6 +281,9 @@ class StoryLedgerManager:
                 "timeline_events": [],
                 "character_updates": [],
                 "plot_threads": [],
+                "narrative_node_states": {},
+                "pending_narrative_suggestions": [],
+                "applied_chapter_deltas": [],
                 "accepted_chapters": [],
                 "chapter_commits": [],
                 "unresolved_conflicts": [],
@@ -307,6 +310,9 @@ class StoryLedgerManager:
                 "timeline_events": [],
                 "character_updates": [],
                 "plot_threads": [],
+                "narrative_node_states": {},
+                "pending_narrative_suggestions": [],
+                "applied_chapter_deltas": [],
             }
             for key, value in defaults.items():
                 if key not in suspense_ledger:
@@ -619,7 +625,18 @@ class StoryLedgerManager:
         contract = read_json(path)
         if plan_content and contract.get("source_hash") != source_hash(plan_content):
             return None
-        return contract
+        # A graph revision mismatch may be harmless (an unrelated node changed)
+        # or may invalidate this exact plan.  Reconcile explicitly and persist
+        # the audit result; never let generation silently ignore the mismatch.
+        from core.generation.narrative_graph import NarrativeGraphManager
+
+        graph_manager = NarrativeGraphManager(self.output_dir)
+        reconciled, _ = graph_manager.reconcile_contract(
+            contract, self.load_suspense_ledger()
+        )
+        if reconciled != contract:
+            _atomic_write_json(path, reconciled)
+        return reconciled
 
     def save_contract(
         self,
@@ -627,10 +644,33 @@ class StoryLedgerManager:
         contract: Dict[str, Any],
         plan_content: str,
     ) -> Dict[str, Any]:
+        from core.generation.narrative_graph import NarrativeGraphError, NarrativeGraphManager
+
+        self.initialize()
         saved = deepcopy(contract)
         saved["chapter"] = chapter_number
         saved["source_hash"] = source_hash(plan_content)
         saved["updated_at"] = datetime.now().isoformat()
+        graph_manager = NarrativeGraphManager(self.output_dir)
+        current_graph_revision = graph_manager.current_revision()
+        if (
+            "narrative_graph_revision" in saved
+            and int(saved.get("narrative_graph_revision", 0) or 0)
+            != current_graph_revision
+        ):
+            saved, revision_issues = graph_manager.reconcile_contract(
+                saved, self.load_suspense_ledger()
+            )
+            if any(issue.get("severity") == "error" for issue in revision_issues):
+                raise NarrativeGraphError(revision_issues)
+        saved["narrative_graph_revision"] = current_graph_revision
+        saved["stale"] = False
+        issues = graph_manager.validate_contract(
+            saved, self.load_suspense_ledger(), ignore_revision=True
+        )
+        if any(issue.get("severity") == "error" for issue in issues):
+            raise NarrativeGraphError(issues)
+        saved["narrative_graph_validation"] = issues
         _atomic_write_json(self.chapter_contract_path(chapter_number), saved)
         return saved
 
@@ -638,9 +678,44 @@ class StoryLedgerManager:
         self, chapter_number: int, contract: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Persist a human ruling without changing the plan source identity."""
+        existing = self.load_contract(int(chapter_number)) or {}
+        saved = deepcopy(contract)
+        saved.setdefault("source_hash", existing.get("source_hash", ""))
+        return self.save_contract(
+            int(chapter_number), saved, ""
+        ) if not saved.get("source_hash") else self._replace_contract_with_graph_validation(
+            int(chapter_number), saved
+        )
+
+    def _replace_contract_with_graph_validation(
+        self, chapter_number: int, contract: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Validate a replacement while preserving its original plan hash."""
+        from core.generation.narrative_graph import NarrativeGraphError, NarrativeGraphManager
+
         saved = deepcopy(contract)
         saved["chapter"] = int(chapter_number)
         saved["updated_at"] = datetime.now().isoformat()
+        graph_manager = NarrativeGraphManager(self.output_dir)
+        current_graph_revision = graph_manager.current_revision()
+        if (
+            "narrative_graph_revision" in saved
+            and int(saved.get("narrative_graph_revision", 0) or 0)
+            != current_graph_revision
+        ):
+            saved, revision_issues = graph_manager.reconcile_contract(
+                saved, self.load_suspense_ledger()
+            )
+            if any(issue.get("severity") == "error" for issue in revision_issues):
+                raise NarrativeGraphError(revision_issues)
+        saved["narrative_graph_revision"] = current_graph_revision
+        saved["stale"] = False
+        issues = graph_manager.validate_contract(
+            saved, self.load_suspense_ledger(), ignore_revision=True
+        )
+        if any(issue.get("severity") == "error" for issue in issues):
+            raise NarrativeGraphError(issues)
+        saved["narrative_graph_validation"] = issues
         _atomic_write_json(self.chapter_contract_path(chapter_number), saved)
         return saved
 
@@ -661,6 +736,55 @@ class StoryLedgerManager:
         )
         _atomic_write_json(path, chapter_delta)
         return path
+
+    def accept_chapter_with_delta(
+        self,
+        chapter_number: int,
+        contract: Dict[str, Any],
+        chapter_review: Dict[str, Any],
+        chapter_delta: Dict[str, Any],
+        expected_revision: int,
+    ) -> Tuple[int, str]:
+        """Atomically coordinate Delta persistence with the locked Ledger commit.
+
+        A failed commit removes a newly prepared Delta, so callers never observe
+        a durable Delta that was not applied to the StoryLedger.  Repeating the
+        same content/contract pair reuses its deterministic path and remains
+        idempotent.
+        """
+        from core.generation.narrative_graph import NarrativeGraphError, NarrativeGraphManager
+
+        graph_manager = NarrativeGraphManager(self.output_dir)
+        ledger_snapshot = self.load_suspense_ledger()
+        issues = graph_manager.validate_delta(chapter_delta, ledger_snapshot)
+        if any(issue.get("severity") == "error" for issue in issues):
+            raise NarrativeGraphError(issues)
+        graph = graph_manager.load()
+        path = self.chapter_delta_path(
+            chapter_number,
+            base_revision=int(chapter_delta.get("base_revision", 0) or 0),
+            content_hash=str(chapter_delta.get("content_hash", "")),
+            contract_hash=str(chapter_delta.get("contract_hash", "")),
+        )
+        existed = os.path.exists(path)
+        with FileLock(self.suspense_ledger_lock_path):
+            try:
+                _atomic_write_json(path, chapter_delta)
+                revision = self._accept_chapter_locked(
+                    chapter_number,
+                    contract,
+                    chapter_review,
+                    chapter_delta=chapter_delta,
+                    expected_revision=expected_revision,
+                    delta_path=path,
+                    narrative_graph=graph,
+                    narrative_graph_manager=graph_manager,
+                )
+            except Exception:
+                if not existed and os.path.exists(path):
+                    os.remove(path)
+                raise
+        return revision, path
 
     def record_conflicts(
         self,
@@ -901,6 +1025,8 @@ class StoryLedgerManager:
         chapter_delta: Optional[Dict[str, Any]] = None,
         expected_revision: Optional[int] = None,
         delta_path: str = "",
+        narrative_graph: Optional[Dict[str, Any]] = None,
+        narrative_graph_manager: Any = None,
     ) -> int:
         ledger = self.load_suspense_ledger()
         current_revision = int(ledger.get("revision", 0) or 0)
@@ -1012,6 +1138,39 @@ class StoryLedgerManager:
                 ),
             )
 
+            if narrative_graph_manager is None:
+                from core.generation.narrative_graph import NarrativeGraphManager
+
+                narrative_graph_manager = NarrativeGraphManager(self.output_dir)
+            if narrative_graph is None:
+                narrative_graph = narrative_graph_manager.load()
+            narrative_graph_manager.apply_transitions_to_ledger(
+                narrative_graph, ledger, chapter_delta
+            )
+            suggestions = ledger.setdefault("pending_narrative_suggestions", [])
+            for suggestion in chapter_delta.get("unregistered_narrative_elements", []):
+                if not isinstance(suggestion, dict):
+                    continue
+                item = deepcopy(suggestion)
+                item.setdefault("type", "unregistered_narrative_element")
+                item.setdefault("chapter", chapter_number)
+                identity = (
+                    item.get("type"),
+                    int(item.get("chapter", chapter_number) or chapter_number),
+                    str(item.get("description", "")),
+                )
+                if not any(
+                    isinstance(existing, dict)
+                    and (
+                        existing.get("type"),
+                        int(existing.get("chapter", 0) or 0),
+                        str(existing.get("description", "")),
+                    )
+                    == identity
+                    for existing in suggestions
+                ):
+                    suggestions.append(item)
+
         personal_cost_updates = (chapter_delta or {}).get("personal_cost_updates", [])
         if personal_cost_updates:
             for update in personal_cost_updates:
@@ -1046,6 +1205,24 @@ class StoryLedgerManager:
             ledger.setdefault("chapter_commits", []).append(deepcopy(accepted_entry))
         self._resolve_chapter_conflicts(ledger, chapter_number, committed_revision)
         ledger["revision"] = committed_revision
+        if chapter_delta:
+            delta_receipt = {
+                "chapter": chapter_number,
+                "content_hash": content_hash,
+                "contract_hash": contract_hash,
+                "committed_revision": committed_revision,
+            }
+            receipts = ledger.setdefault("applied_chapter_deltas", [])
+            if not any(
+                isinstance(item, dict)
+                and item.get("content_hash") == content_hash
+                and item.get("contract_hash") == contract_hash
+                for item in receipts
+            ):
+                receipts.append(delta_receipt)
+            cache = ledger.get("narrative_derived_cache")
+            if isinstance(cache, dict):
+                cache["ledger_revision"] = committed_revision
         ledger["version"] = LEDGER_VERSION
         ledger["updated_at"] = datetime.now().isoformat()
         _atomic_write_json(self.suspense_ledger_path, ledger)
@@ -1131,6 +1308,10 @@ def build_ledger_prompt_view(
         "timeline_events": by_relevance("timeline_events"),
         "character_updates": by_relevance("character_updates"),
         "open_plot_threads": threads,
+        "narrative_node_states": deepcopy(ledger.get("narrative_node_states", {})),
+        "pending_narrative_suggestions": deepcopy(
+            ledger.get("pending_narrative_suggestions", [])
+        ),
         "unresolved_conflicts": conflicts,
         "_context_meta": {
             "chapter": chapter_number,

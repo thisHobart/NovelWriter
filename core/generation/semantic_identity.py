@@ -498,6 +498,9 @@ def resolve_contract_identities(
     for record in resolved.get("plot_thread_updates", []):
         original = deepcopy(record)
         status = str(record.get("status", "")).lower()
+        operation = str(record.get("action") or status).lower()
+        if operation == "closed":
+            operation = "close"
         original_id = str(record.get("id", ""))
 
         # 延期（extend）是对同一条既有悬念的再次声明，不是新线索：ID 必须原样保留。
@@ -513,7 +516,7 @@ def resolve_contract_identities(
         decision: Optional[Dict[str, Any]] = None
         if (
             matched is not None
-            and status == "open"
+            and operation == "open"
             and not _same_text(record.get("thread"), matched.get("thread"))
         ):
             # An LLM can accidentally reuse an old ID for a different but
@@ -532,7 +535,7 @@ def resolve_contract_identities(
             if decision["relation"] == "same" and decision["similarity"] >= SAME_THRESHOLD:
                 matched = threads_by_id.get(str(decision["matched_id"]))
         if matched is not None:
-            if status == "open":
+            if operation == "open":
                 # Dropping a duplicate is only safe while some chapter still
                 # opens this exact ID.  When the model matched it to a
                 # *different* thread, removing it orphans the later close.
@@ -554,12 +557,17 @@ def resolve_contract_identities(
                 continue
             record["id"] = matched["id"]
             decisions.append({
-                "type": "plot_thread", "action": "close_id_canonicalized",
+                "type": "plot_thread",
+                "action": (
+                    "close_id_canonicalized"
+                    if operation == "close"
+                    else "continuation_id_canonicalized"
+                ),
                 "original": original, "canonical_id": matched["id"],
                 "model_decision": decision,
             })
         elif (
-            status == "open"
+            operation == "open"
             and original_id in all_thread_ids
             and original_id in protected_thread_ids
         ):
@@ -568,7 +576,7 @@ def resolve_contract_identities(
                 f"线索 {original_id} 的 id 与既有线索重复，但后续章节按此 id 了结，"
                 "未自动改名，需要人工确认"
             )
-        elif status == "open" and original_id in all_thread_ids:
+        elif operation == "open" and original_id in all_thread_ids:
             new_id = _new_record_id("PT", chapter_number, used_thread_ids)
             used_thread_ids.add(new_id)
             record["id"] = new_id

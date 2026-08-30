@@ -1332,12 +1332,19 @@ class ChapterWritingAgent(BaseAgent):
             # Use review agent if available
             if self.review_agent:
                 try:
-                    review_result = self.review_agent.analyze_content(scene_content)
+                    review_result = self.review_agent.review_step_output(
+                        "scene",
+                        scene_content,
+                        context={
+                            "chapter_number": chapter_number,
+                            "scene_number": scene_number,
+                        },
+                    )
                     if review_result:
                         quality_score = review_result.quality_score
-                        issues = review_result.issues
-                        strengths = review_result.strengths
-                        suggestions = review_result.suggestions
+                        issues = review_result.issues_found
+                        strengths = review_result.strengths_found
+                        suggestions = review_result.improvement_suggestions
                         confidence = review_result.confidence
                 except Exception as e:
                     self.logger.warning(f"Error using review agent: {e}")
@@ -1421,10 +1428,10 @@ class ChapterWritingAgent(BaseAgent):
             coherence_score = self._analyze_chapter_coherence(scene_reviews)
             
             # Analyze chapter pacing
-            pacing_score = self._analyze_chapter_pacing(scene_reviews)
+            pacing_score = self._analyze_chapter_pacing(chapter_content, scene_reviews)
             
             # Analyze character development
-            character_development_score = self._analyze_character_development(scene_reviews)
+            character_development_score = self._analyze_character_development(chapter_content)
             
             # Aggregate issues and suggestions
             all_issues = []

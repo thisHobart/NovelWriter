@@ -35,7 +35,18 @@ NUMBER_PATTERN = re.compile(
     r"(?:秒|分钟|分|小时|天|周|月|年|岁|人|件|起|次|米|毫米|公里|元|万|份|页|条|章|%)"
     r"|(?<![A-Za-z0-9_])\d+(?:\.\d+)?"
 )
-VOLATILE_CONTRACT_FIELDS = {"created_at", "updated_at", "generated_at", "accepted_at"}
+VOLATILE_CONTRACT_FIELDS = {
+    "created_at",
+    "updated_at",
+    "generated_at",
+    "accepted_at",
+    "narrative_graph_validation",
+    "graph_revalidated_at",
+    "stale",
+    "stale_reason",
+    "stale_at_graph_revision",
+    "stale_node_ids",
+}
 
 _CN_NUMERALS = {
     "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
@@ -216,6 +227,8 @@ class ChapterDelta:
     clue_updates: List[Dict[str, Any]] = field(default_factory=list)
     evidence_updates: List[Dict[str, Any]] = field(default_factory=list)
     plot_thread_updates: List[Dict[str, Any]] = field(default_factory=list)
+    narrative_transitions: List[Dict[str, Any]] = field(default_factory=list)
+    unregistered_narrative_elements: List[Dict[str, Any]] = field(default_factory=list)
     knowledge_updates: List[Dict[str, Any]] = field(default_factory=list)
     personal_cost_updates: List[Dict[str, Any]] = field(default_factory=list)
     text_signals: Dict[str, List[str]] = field(default_factory=dict)
@@ -385,6 +398,10 @@ class DefaultChapterDeltaExtractor:
             clue_updates=_slot_records(contract, profile, "clue_updates"),
             evidence_updates=_slot_records(contract, profile, "evidence_updates"),
             plot_thread_updates=plot_updates,
+            narrative_transitions=_records(contract.get("narrative_transitions")),
+            unregistered_narrative_elements=_records(
+                contract.get("unregistered_narrative_elements")
+            ),
             knowledge_updates=knowledge_updates,
             personal_cost_updates=personal_cost_updates,
             text_signals={
@@ -972,6 +989,14 @@ class ChapterAcceptanceService:
         delta = self.extractor.extract(
             chapter_number, final_content, contract, base_revision, profile
         )
+        for suggestion in chapter_review.get("unregistered_narrative_elements", []):
+            if not isinstance(suggestion, dict):
+                continue
+            item = deepcopy(suggestion)
+            item.setdefault("type", "unregistered_narrative_element")
+            item.setdefault("chapter", chapter_number)
+            if item not in delta.unregistered_narrative_elements:
+                delta.unregistered_narrative_elements.append(item)
         artifact_report = self.artifact_validator.validate(
             delta,
             final_content,
@@ -1003,16 +1028,40 @@ class ChapterAcceptanceService:
             self.ledger.record_conflicts(chapter_number, base_revision, consistency_report.to_dict())
             raise ChapterAcceptanceError(consistency_report)
 
-        delta_path = self.ledger.save_chapter_delta(chapter_number, delta.to_dict())
         try:
-            committed_revision = self.ledger.accept_chapter(
+            committed_revision, delta_path = self.ledger.accept_chapter_with_delta(
                 chapter_number,
                 contract,
                 chapter_review,
-                chapter_delta=delta.to_dict(),
-                expected_revision=base_revision,
-                delta_path=delta_path,
+                delta.to_dict(),
+                base_revision,
             )
+        except ValueError as exc:
+            # NarrativeGraphError deliberately remains a ValueError-compatible
+            # validation failure.  Convert its structured issues into the
+            # acceptance vocabulary so the existing repair router can act.
+            graph_issues = getattr(exc, "issues", None)
+            if not graph_issues:
+                raise
+            commit_report = ValidationReport(
+                stage="narrative_graph_delta",
+                issues=[
+                    ValidationIssue(
+                        str(issue.get("code", "narrative_graph_invalid")).lower(),
+                        str(issue.get("message", "叙事图增量校验失败")),
+                        severity=(
+                            "blocking" if issue.get("severity") == "error" else "warning"
+                        ),
+                        repair_target="contract",
+                        details=deepcopy(issue.get("details", {})),
+                    )
+                    for issue in graph_issues
+                ],
+            )
+            self.ledger.record_conflicts(
+                chapter_number, base_revision, commit_report.to_dict()
+            )
+            raise ChapterAcceptanceError(commit_report) from exc
         except RevisionConflictError as exc:
             commit_report = ValidationReport(
                 stage="canon_commit",

@@ -319,6 +319,28 @@ def test_a_repeated_ask_is_called_out_as_repeated():
     assert "直接改写被引用的那句原文本身" in body
 
 
+def test_scene_revision_drops_an_echoed_old_scene_before_the_separator():
+    review = DomainReview(
+        stage="scene_1",
+        passed=False,
+        scores=flat_scores(),
+        repair_instructions=["修复不可能的电气机制"],
+        pass_average=3.2,
+    )
+    response = "旧稿：高压电流打入接地线。\n\n---\n\n新稿：金属链造成相间短路。"
+
+    revised = reviewer(lambda prompt, model=None: response).revise_scene(
+        "旧稿：高压电流打入接地线。",
+        review,
+        "### 场景 1：追逐",
+        "",
+        "",
+        {},
+    )
+
+    assert revised == "新稿：金属链造成相间短路。"
+
+
 def test_the_brief_falls_back_to_the_shortfall_when_nothing_was_listed():
     """评审什么都没说时仍要给个着力点，否则重修只能原样再写一遍。"""
     review = DomainReview(

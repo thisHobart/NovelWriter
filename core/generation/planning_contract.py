@@ -22,6 +22,7 @@ STATE_LIST_FIELDS = (
     "timeline_events",
     "character_updates",
     "plot_thread_updates",
+    "narrative_transitions",
 )
 
 
@@ -52,6 +53,7 @@ def contract_output_instructions(
     existing_index: Dict[str, Any] | None = None,
     domain_fields: Dict[str, str] | None = None,
     obligations: Dict[str, Any] | None = None,
+    narrative_context: Dict[str, Any] | None = None,
 ) -> str:
     """Instructions appended to the existing scene-planning request.
 
@@ -114,6 +116,7 @@ def contract_output_instructions(
         },
         5000,
     )
+    narrative_text = compact_json(narrative_context or {}, 8000)
     def chapter_scoped_ids(schema_hint: str) -> str:
         """Turn static examples such as C001 into chapter-unique sample IDs."""
         return re.sub(
@@ -145,13 +148,23 @@ def contract_output_instructions(
   "cost_character": "承担代价的人物；没有则留空",
   "irreversible_change": "确有不可逆变化时填写；过渡、余波、关系或沉淀章可留空",
   "ending_effect": "推进、代价、认知变化、关系位移或有意留白中的实际收束效果",
+  "narrative_graph_revision": {(narrative_context or {}).get("graph_revision", 0)},
+  "primary_thread": "从 active_threads 选择；首次开启时可从 available_threads 选择",
+  "secondary_thread": "允许为空",
+  "primary_action": "open|touch|advance|complicate|cross|close",
+  "secondary_action": "允许为空",
+  "crossover": "允许为空",
+  "allowed_reveals": [],
+  "forbidden_reveals": [],
+  "intentionally_silent_threads": [],
 {domain_lines}
   "facts_added": [{{"id":"F-{chapter_number:03d}-01","fact":"属性名","value":"取值","first_stated_at":"scene_1"}}],
   "facts_confirmed": [{{"id":"已有事实ID","fact":"属性名","value":"既有取值"}}],
   "facts_contradicted": [{{"id":"已有事实ID","reason":"推翻理由","new_value":"新取值"}}],
   "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点"}}],
   "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":false}}],
-  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","thread":"悬念的一句话描述","status":"open","deadline_chapter":最晚了结这条悬念的章号}}]
+  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","action":"advance","via_node_ids":["图节点ID"],"progress_note":"实际推进"}}],
+  "narrative_transitions": [{{"node_id":"图节点ID","transition":"introduce_to_reader|make_inferable|reveal|execute|deprecate","scene":"scene_1"}}]
 }}
 {CONTRACT_END}
 
@@ -169,6 +182,10 @@ def contract_output_instructions(
 
 {thread_block}
 {obligation_block}
+本章规划前叙事图上下文如下。blocked_reveals 和 forbidden_nodes 绝对不能选择；
+plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进节点：
+{narrative_text}
+
 既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：
 {index_text}
 """.strip()
@@ -219,6 +236,12 @@ def validate_planning_contract(
         )
     if require_origin and contract.get("origin") != "scene_planning":
         raise PlanningContractError("章节契约不是由场景规划阶段生成的")
+    if contract.get("stale"):
+        raise PlanningContractError(
+            "章节契约引用的叙事图已经变化，必须重新规划",
+            chapters=(chapter_number,),
+            code="narrative_graph_contract_stale",
+        )
 
     normalized = dict(contract)
     normalized.setdefault("chapter_function", "advance")
@@ -237,19 +260,40 @@ def validate_planning_contract(
                 raise PlanningContractError(f"章节契约字段 {field} 中的记录缺少 id")
     for record in normalized["plot_thread_updates"]:
         thread_id = str(record.get("id", "")).strip()
-        status = str(record.get("status", "")).strip().lower()
+        graph_managed = (
+            bool(record.get("narrative_graph_managed"))
+            if "narrative_graph_managed" in record
+            else ("action" in record or bool(record.get("via_node_ids")))
+        )
+        action = str(record.get("action") or record.get("status") or "").strip().lower()
+        if action == "closed":
+            action = "close"
+        if action not in {"open", "touch", "advance", "complicate", "cross", "close"}:
+            raise PlanningContractError(
+                f"情节线 {_thread_label(thread_id, record)} 的 action 不受支持"
+            )
+        record["action"] = action
+        record["narrative_graph_managed"] = graph_managed
+        # Preserve the v2 state-stream fields for old consumers.  Non-terminal
+        # actions keep the thread open but are explicitly marked continuation.
+        status = "closed" if action == "close" else "open"
+        if action not in {"open", "close"}:
+            record["continuation"] = True
         if not thread_id:
             raise PlanningContractError("每条线索更新都必须提供 id")
         if thread_id in seen_ids:
             raise PlanningContractError(f"本章线索 id 重复：{thread_id}")
         seen_ids.add(thread_id)
-        if status not in {"open", "closed"}:
-            raise PlanningContractError(
-                f"悬念 {_thread_label(thread_id, record)} 的 status 只能填 open（本章埋下）"
-                "或 closed（本章了结）"
-            )
         record["status"] = status
-        if status == "open":
+        if action == "advance" and not [
+            item for item in record.get("via_node_ids", []) if str(item).strip()
+        ]:
+            raise PlanningContractError(
+                f"情节线 {_thread_label(thread_id, record)} 声明 advance 时必须提供 via_node_ids",
+                chapters=(chapter_number,),
+                code="thread_advance_without_node",
+            )
+        if action == "open":
             if record.get("extend") and int(record.get("deadline_chapter", 0)) <= chapter_number:
                 raise PlanningContractError(
                     f"悬念 {_thread_label(thread_id, record)} 延期后的 deadline_chapter "
@@ -267,6 +311,20 @@ def validate_planning_contract(
                     f"悬念 {_thread_label(thread_id, record)} 的截止章早于埋下它的本章"
                 )
             record["deadline_chapter"] = deadline
+    transitions = normalized.setdefault("narrative_transitions", [])
+    for transition in transitions:
+        node_id = str(transition.get("node_id", "")).strip()
+        name = str(transition.get("transition", "")).strip()
+        if not node_id:
+            raise PlanningContractError("narrative_transitions 中的记录缺少 node_id")
+        if name not in {
+            "introduce_to_reader",
+            "make_inferable",
+            "reveal",
+            "execute",
+            "deprecate",
+        }:
+            raise PlanningContractError(f"不支持的叙事状态转换：{name}")
     return normalized
 
 
@@ -361,12 +419,14 @@ def thread_states(contracts: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, An
             )
             if raw.get("thread"):
                 state["thread"] = raw.get("thread")
-            if str(raw.get("status", "")).lower() == "open":
+            action = str(raw.get("action") or raw.get("status") or "").lower()
+            if action not in {"close", "closed"}:
                 # An "extend" record is not a second raising of the thread; it
                 # only restates when the payoff is now due.
                 if state["opened_at"] is None and not raw.get("extend"):
                     state["opened_at"] = chapter
-                state["deadline_chapter"] = raw.get("deadline_chapter")
+                if raw.get("deadline_chapter") not in (None, ""):
+                    state["deadline_chapter"] = raw.get("deadline_chapter")
             else:
                 if state["opened_at"] is None and raw.get("opened_in_chapter") is True:
                     state["opened_at"] = chapter
@@ -451,7 +511,10 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
     for contract in contracts:
         chapter = int(contract["chapter"])
         for record in contract.get("plot_thread_updates", []):
-            if str(record.get("status", "")).lower() != "open" or record.get("extend"):
+            if (
+                str(record.get("action") or record.get("status") or "").lower() != "open"
+                or record.get("extend")
+            ):
                 continue
             opened_at.setdefault(str(record.get("id", "")), chapter)
         for record in contract.get("facts_added", []):
@@ -468,7 +531,10 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
     threads: Dict[str, Dict[str, Any]] = {}
     for contract in later:
         for record in contract.get("plot_thread_updates", []):
-            if str(record.get("status", "")).lower() != "closed":
+            if str(record.get("action") or record.get("status") or "").lower() not in {
+                "close",
+                "closed",
+            }:
                 continue
             if record.get("opened_in_chapter") is True:
                 continue
@@ -562,7 +628,16 @@ def iter_history_defects(
 
     for record in contract.get("plot_thread_updates", []):
         thread_id = str(record.get("id", ""))
-        if record.get("status") == "open":
+        action = str(record.get("action") or record.get("status") or "").lower()
+        if action not in {"close", "closed"}:
+            if action in {"touch", "advance", "complicate", "cross"}:
+                if thread_id not in open_ids:
+                    yield PlanningContractError(
+                        f"情节线 {_thread_label(thread_id, record)} 尚未打开，不能执行 {action}",
+                        chapters=(chapter_number,),
+                        code="thread_action_before_open",
+                    )
+                continue
             if thread_id in states and record.get("extend"):
                 if thread_id not in open_ids:
                     yield PlanningContractError(
@@ -786,7 +861,16 @@ def iter_contract_defects(
                     )
         for record in contract.get("plot_thread_updates", []):
             thread_id = str(record["id"])
-            if record["status"] == "open":
+            action = str(record.get("action") or record.get("status") or "").lower()
+            if action not in {"close", "closed"}:
+                if action in {"touch", "advance", "complicate", "cross"}:
+                    if thread_id not in opened or thread_id in closed:
+                        yield PlanningContractError(
+                            f"第 {chapter} 章在情节线 {thread_id} 打开前执行 {action}",
+                            chapters=(chapter,),
+                            code="thread_action_before_open",
+                        )
+                    continue
                 if thread_id in opened and record.get("extend"):
                     opened_at, _ = opened[thread_id]
                     opened[thread_id] = (opened_at, int(record["deadline_chapter"]))

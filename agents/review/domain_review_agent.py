@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -43,6 +44,7 @@ class DomainReview:
     # 章节总评可由契约、盲读、现实合理性三个彼此独立的评审合成。保留原始分评审，
     # 事后才能看出究竟是“没按计划写”还是“计划写到了但读起来仍不成立”。
     component_reviews: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    unregistered_narrative_elements: List[Dict[str, Any]] = field(default_factory=list)
     waived: bool = False
 
     @property
@@ -192,6 +194,11 @@ UNIVERSAL_CONTRACT_LISTS = (
     "timeline_events",
     "character_updates",
     "plot_thread_updates",
+    "narrative_transitions",
+    "allowed_reveals",
+    "forbidden_reveals",
+    "intentionally_silent_threads",
+    "unregistered_narrative_elements",
 )
 
 UNIVERSAL_CONTRACT_TEXTS = (
@@ -206,6 +213,12 @@ UNIVERSAL_CONTRACT_TEXTS = (
     "cost_character",
     "irreversible_change",
     "ending_effect",
+    "primary_thread",
+    "secondary_thread",
+    "primary_action",
+    "secondary_action",
+    "crossover",
+    "same_chapter_resolution_exception_reason",
 )
 
 
@@ -308,6 +321,14 @@ class DomainReviewAgent:
             '  "cost_character": "承担代价的人物",',
             '  "irreversible_change": "确有不可逆变化时填写；过渡、余波、关系或沉淀章可留空",',
             '  "ending_effect": "推进、代价、认知变化、关系位移或有意留白中的实际收束效果",',
+            '  "primary_thread": "主要情节线图节点 id；没有则留空",',
+            '  "secondary_thread": "次要情节线图节点 id；允许为空",',
+            '  "primary_action": "open|touch|advance|complicate|cross|close",',
+            '  "secondary_action": "允许为空",',
+            '  "crossover": "两条线如何交叉；允许为空",',
+            '  "allowed_reveals": [],',
+            '  "forbidden_reveals": [],',
+            '  "intentionally_silent_threads": [],',
             # 以下四组构成长程状态的单一事实源。字段名与 CanonConsistencyGate
             # 比对的 immutable_fields 一一对应，改动时两边必须同步。
             '  "facts_added": [{"id":"F001","fact":"事实名称（属性，不是整句）",'
@@ -318,8 +339,14 @@ class DomainReviewAgent:
             '"location_id":"地点"}],',
             '  "character_updates": [{"id":"CU001","character":"人物规范名",'
             '"attribute":"属性名","value":"取值","stable":true}],',
-            '  "plot_thread_updates": [{"id":"PT001","thread":"线索名称",'
-            '"status":"open 或 closed","deadline_chapter":0}],',
+            '  "plot_thread_updates": [{"id":"PT001","action":"advance",'
+            '"via_node_ids":["图节点ID"],"progress_note":"实际推进"}],',
+            '  "narrative_transitions": [{"node_id":"图节点ID",'
+            '"transition":"introduce_to_reader|make_inferable|reveal|execute|deprecate",'
+            '"scene":"scene_1"}],',
+            '  "unregistered_narrative_elements": [{"type":"unregistered_narrative_element",'
+            '"description":"正文出现但图中未注册的重要叙事元素",'
+            '"suggested_node_type":"clue|fact|reveal|thread"}],',
         ]
         lines.extend(
             f'  "{item.name}": {item.schema_hint},' for item in self.profile.contract_fields
@@ -371,11 +398,19 @@ class DomainReviewAgent:
             except (TypeError, ValueError) as exc:
                 last_error = exc
                 if attempt:
-                    if fallback_normalize is not None and "upgrades 缺少低分维度" in str(exc):
+                    recoverable_grounding_error = any(
+                        marker in str(exc)
+                        for marker in (
+                            "upgrades 缺少低分维度",
+                            "hard_failures 中每条允许代码",
+                        )
+                    )
+                    if fallback_normalize is not None and recoverable_grounding_error:
                         # The repair attempt may contain a perfectly grounded hard
-                        # failure alongside unrelated low scores that still lack
-                        # quotes.  Preserve the hard failure; only the ungrounded
-                        # scores lose the right to block.
+                        # failure alongside unrelated low scores, or useful
+                        # scored feedback beside a composite/non-verbatim hard
+                        # failure quote.  Preserve grounded items; ungrounded
+                        # claims lose the right to block after bounded repair.
                         return fallback_normalize(raw)
                     break
                 current_prompt = f"""你上一次返回的评审 JSON 不符合 schema，不能据此放行或阻断正文。
@@ -383,6 +418,8 @@ class DomainReviewAgent:
 
 请重新执行原任务，补齐所有字段，只输出一个合法 JSON 对象，不要解释，不要使用代码围栏。
 每条 hard_failures 必须包含正文真引文 quote、具体影响 problem 和最小改法 change。
+quote 必须是正文中一段连续、逐字可检索的原文；不得用省略号拼接多处文字，
+不得改写或概括。若问题跨越多处，只引用一处有代表性的连续原文，其余范围写进 problem。
 
 原任务：
 {prompt}
@@ -819,7 +856,8 @@ timeline_events、character_updates、plot_thread_updates）：
 评分维度为0到4分：{', '.join(score_dimensions)}。
 {self._BLIND_SCORE_RUBRIC}
 
-任何批评必须附正文中的短引文。每个 3 分或更低的维度必须在 upgrades 中指出原句、
+任何批评必须附正文中一段连续、逐字可检索的短引文；quote 不得用省略号拼接多处文字，
+也不得改写或概括。每个 3 分或更低的维度必须在 upgrades 中指出原句、
 缺失效果和最小改法；无法引用原文就不要报告。repair_scope 请写 scene_1、scene_2 等可路由位置，
 无法判断场次时写最接近问题的段落描述。
 
@@ -854,6 +892,7 @@ timeline_events、character_updates、plot_thread_updates）：
                     hard_failure_codes=hard_failure_codes,
                     pass_average=pass_average,
                     tolerate_ungrounded_low_scores=True,
+                    tolerate_ungrounded_hard_failures=True,
                 ),
             )
         except Exception as exc:
@@ -869,6 +908,7 @@ timeline_events、character_updates、plot_thread_updates）：
         repairs: List[str] = []
         strengths: List[str] = []
         blocking: List[str] = []
+        unregistered: List[Dict[str, Any]] = []
         repair_scope = ""
         weighted_threshold = 0.0
         score_count = 0
@@ -890,6 +930,9 @@ timeline_events、character_updates、plot_thread_updates）：
             repairs.extend(f"【{name}】{item}" for item in review.repair_instructions)
             strengths.extend(f"【{name}】{item}" for item in review.strengths)
             blocking.extend(f"{name}.{item}" for item in review.blocking_dimensions)
+            for item in review.unregistered_narrative_elements:
+                if item not in unregistered:
+                    unregistered.append(deepcopy(item) if isinstance(item, dict) else item)
             if not review.passed and not repair_scope:
                 repair_scope = review.repair_scope
         return DomainReview(
@@ -904,6 +947,7 @@ timeline_events、character_updates、plot_thread_updates）：
             strengths=strengths,
             pass_average=weighted_threshold / score_count if score_count else 0.0,
             blocking_dimensions=blocking,
+            unregistered_narrative_elements=unregistered,
             component_reviews={name: review.to_dict() for name, review in reviews.items()},
         )
 
@@ -959,7 +1003,8 @@ timeline_events、character_updates、plot_thread_updates）：
 评分维度为0到4分：{', '.join(profile.score_dimensions)}。
 {self._SCORE_RUBRIC}
 
-任何批评必须附待评审内容中的短引文；没有引文的缺陷不要报告。修复建议必须限定范围，避免无关全文重写。
+任何批评必须附待评审内容中一段连续、逐字可检索的短引文；不得用省略号拼接多处文字，
+也不得改写或概括。没有这种引文的缺陷不要报告。修复建议必须限定范围，避免无关全文重写。
 **每一个打了 3 分或更低的维度，都必须在 upgrades 里出现一条**，指出扣分扣在哪一句上、
 缺的是什么、改成什么才能到 4 分。给不出这一条就说明该维度并没有问题，请改打 4 分。
 判不通过却一条修复项都开不出来，是这份评审自己没做完，不是稿子没毛病。
@@ -972,6 +1017,7 @@ timeline_events、character_updates、plot_thread_updates）：
   "upgrades": [{{"dimension":"reversal","quote":"原文短引文","missing":"这一句缺什么","change":"改成什么才算 4 分"}}],
   "repair_scope": "scene_2_opening 或具体段落",
   "repair_instructions": ["可执行的最小修复"],
+  "unregistered_narrative_elements": [{{"type":"unregistered_narrative_element","quote":"正文短引文","description":"图中未注册的重要线索、事实、揭示或情节线","suggested_node_type":"clue|fact|reveal|thread"}}],
   "strengths": ["具体优点"]
 }}"""
         try:
@@ -990,6 +1036,7 @@ timeline_events、character_updates、plot_thread_updates）：
                     content,
                     ignored_dimensions=ignored_dimensions,
                     tolerate_ungrounded_low_scores=True,
+                    tolerate_ungrounded_hard_failures=True,
                 ),
             )
         except Exception as exc:
@@ -1036,6 +1083,7 @@ timeline_events、character_updates、plot_thread_updates）：
         pass_average: Optional[float] = None,
         ignored_dimensions: Optional[frozenset[str]] = None,
         tolerate_ungrounded_low_scores: bool = False,
+        tolerate_ungrounded_hard_failures: bool = False,
     ) -> DomainReview:
         profile = self.profile
         dimensions = score_dimensions or profile.score_dimensions
@@ -1072,6 +1120,7 @@ timeline_events、character_updates、plot_thread_updates）：
         required = tuple(dimension for dimension in required if dimension not in ignored)
 
         hard_failures = []
+        ignored_hard_failure_count = 0
         for failure in raw.get("hard_failures", []):
             if not isinstance(failure, dict):
                 continue
@@ -1082,6 +1131,9 @@ timeline_events、character_updates、plot_thread_updates）：
             problem = str(failure.get("problem", "")).strip()
             change = str(failure.get("change", "")).strip()
             if not quote or (content and quote not in content) or not problem or not change:
+                if tolerate_ungrounded_hard_failures:
+                    ignored_hard_failure_count += 1
+                    continue
                 raise ValueError(
                     "hard_failures 中每条允许代码都必须带正文真引文 quote、"
                     "具体影响 problem 和最小改法 change"
@@ -1167,11 +1219,35 @@ timeline_events、character_updates、plot_thread_updates）：
                         if missing_upgrades and tolerate_ungrounded_low_scores
                         else ""
                     ),
+                    (
+                        "ungrounded_hard_failures_ignored: "
+                        + str(ignored_hard_failure_count)
+                        if ignored_hard_failure_count
+                        else ""
+                    ),
                 )
                 if part
             ),
             pass_average=threshold,
             blocking_dimensions=blocking_dimensions,
+            unregistered_narrative_elements=[
+                {
+                    "type": "unregistered_narrative_element",
+                    "quote": str(item.get("quote", "")),
+                    "description": str(item.get("description", "")),
+                    "suggested_node_type": str(item.get("suggested_node_type", "")),
+                }
+                for item in raw.get("unregistered_narrative_elements", [])
+                if isinstance(item, dict)
+                and str(item.get("description", "")).strip()
+                and str(item.get("suggested_node_type", ""))
+                in {"clue", "fact", "reveal", "thread"}
+                and (
+                    not content
+                    or not str(item.get("quote", "")).strip()
+                    or str(item.get("quote", "")) in content
+                )
+            ],
         )
 
     # --- revisions --------------------------------------------------------
@@ -1283,7 +1359,19 @@ timeline_events、character_updates、plot_thread_updates）：
 原正文：
 {scene_content}
 """
-        return self.send_prompt(prompt, model=self.model).strip()
+        revised = self.send_prompt(prompt, model=self.model).strip()
+        # A single-scene repair must never contain the chapter assembler's
+        # scene separator. Some models echo the whole old scene, add ``---``,
+        # then append the actual revision; accepting that response duplicates
+        # the scene and can preserve the very mechanism the repair removed.
+        parts = [part.strip() for part in re.split(r"\n\s*---\s*\n", revised) if part.strip()]
+        if len(parts) > 1:
+            self.logger.warning(
+                "Scene revision returned %s chapter-separated blocks; keeping the final block",
+                len(parts),
+            )
+            revised = parts[-1]
+        return revised
 
     def revise_chapter_style(
         self,

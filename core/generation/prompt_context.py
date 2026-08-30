@@ -353,6 +353,24 @@ def style_repair_instruction(warnings: List[str]) -> str:
     )
 
 
+def _style_warning_score(warnings: List[str]) -> tuple[int, int]:
+    """Rank failed style drafts by category count, then issue occurrences."""
+    occurrences = 0
+    for warning in warnings:
+        if warning.startswith(("长句过多：", "定语过长：")):
+            match = re.search(r"：(\d+)", warning)
+            occurrences += int(match.group(1)) if match else 1
+        elif warning.startswith("高频套语过多："):
+            counts = [int(value) for value in re.findall(r"×(\d+)", warning)]
+            occurrences += sum(counts) if counts else 1
+        elif warning.startswith("正文中出现外文："):
+            listing = warning.split("：", 1)[1].split("。", 1)[0]
+            occurrences += len([item for item in listing.split("、") if item])
+        else:
+            occurrences += 1
+    return len(warnings), occurrences
+
+
 def generate_prose_with_style_retry(
     send, prompt: str, *, retries: int = 2, logger=None, label: str = ""
 ) -> str:
@@ -365,6 +383,7 @@ def generate_prose_with_style_retry(
     """
     best_text = ""
     best_warnings: List[str] = []
+    best_score: tuple[int, int] | None = None
     current = prompt
     for attempt in range(retries + 1):
         text = send(current)
@@ -373,8 +392,10 @@ def generate_prose_with_style_retry(
         warnings = analyze_chinese_prose_style(text)
         if not warnings:
             return text
-        if not best_text or len(warnings) < len(best_warnings):
+        score = _style_warning_score(warnings)
+        if not best_text or best_score is None or score < best_score:
             best_text, best_warnings = text, warnings
+            best_score = score
         if logger:
             logger.warning(
                 "%s 中文文风检查未通过（第 %s 次）：%s",

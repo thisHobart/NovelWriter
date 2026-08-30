@@ -2,6 +2,7 @@
 
 import json
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -254,6 +255,78 @@ def test_single_chapter_passes_review_arguments_by_name(tmp_path):
     assert review_call["section_name"] == "Rising Action"
     assert review_call["scene_reviews"] == [scene_review]
     assert (tmp_path / "chapters" / "chapter_7.md").read_text(encoding="utf-8") == "生成的场景正文"
+
+
+def test_scene_review_uses_review_agent_public_contract(tmp_path):
+    agent = _bare_agent(tmp_path)
+    calls = {}
+
+    class ReviewAgent:
+        @staticmethod
+        def review_step_output(step_name, content, context=None):
+            calls.update(step_name=step_name, content=content, context=context)
+            return SimpleNamespace(
+                quality_score=0.82,
+                issues_found=["问题"],
+                strengths_found=["优点"],
+                improvement_suggestions=["建议"],
+                confidence=0.91,
+            )
+
+    agent.review_agent = ReviewAgent()
+    agent.quality_thresholds = SimpleNamespace(minimum_scene_quality=0.6)
+    agent.record_quality_trend = lambda **kwargs: None
+    agent.should_retry_based_on_thresholds = lambda **kwargs: False
+
+    review = agent._review_scene("场景正文", 2, 3)
+
+    assert calls == {
+        "step_name": "scene",
+        "content": "场景正文",
+        "context": {"chapter_number": 3, "scene_number": 2},
+    }
+    assert review.quality_score == 0.82
+    assert review.issues == ["问题"]
+    assert review.strengths == ["优点"]
+    assert review.suggestions == ["建议"]
+
+
+def test_chapter_review_passes_content_to_content_analyzers(tmp_path):
+    agent = _bare_agent(tmp_path)
+    agent.quality_thresholds = SimpleNamespace(
+        coherence_threshold=0.0,
+        pacing_threshold=0.0,
+        character_development_threshold=0.0,
+        minimum_chapter_quality=0.0,
+    )
+    agent.record_quality_trend = lambda **kwargs: None
+    agent.should_retry_based_on_thresholds = lambda **kwargs: False
+    agent._analyze_chapter_coherence = lambda reviews: 0.8
+    calls = {}
+    agent._analyze_chapter_pacing = lambda content, reviews: calls.setdefault(
+        "pacing", (content, reviews)
+    ) and 0.8
+    agent._analyze_character_development = lambda content: calls.setdefault(
+        "character", content
+    ) and 0.8
+    scene_review = SceneReview(
+        scene_number=1,
+        chapter_number=4,
+        quality_score=0.8,
+        word_count=100,
+        issues=[],
+        strengths=[],
+        suggestions=[],
+        timestamp="2026-08-30T00:00:00",
+        confidence=0.9,
+    )
+
+    review = agent._review_chapter("章节正文", [scene_review], 4, "Act II")
+
+    assert review.pacing_score == 0.8
+    assert review.character_development_score == 0.8
+    assert calls["pacing"] == ("章节正文", [scene_review])
+    assert calls["character"] == "章节正文"
 
 
 def test_automatic_progress_detects_structured_workspace(tmp_path):

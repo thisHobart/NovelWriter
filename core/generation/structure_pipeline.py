@@ -19,6 +19,9 @@ from core.generation.design_contract import (
     structure_contract_instructions,
     validate_structure_sequence,
 )
+
+STRUCTURE_CONTRACT_RETRY_LIMIT = 2
+
 from core.generation.prompt_context import format_faction_summary
 from core.generation.domain_profiles import resolve_domain_profile
 import os

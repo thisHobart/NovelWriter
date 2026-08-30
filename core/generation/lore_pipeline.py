@@ -26,6 +26,9 @@ from core.generation.design_contract import (
     generate_with_contract_retry,
     lore_contract_instructions,
 )
+
+LORE_CONTRACT_RETRY_LIMIT = 2
+
 from Generators.GenreHandlers import get_genre_handler
 from core.localization import zh_field, zh_label
 import random

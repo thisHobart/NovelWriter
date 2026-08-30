@@ -60,6 +60,31 @@ def test_exact_repeated_open_is_removed_without_model_call(tmp_path):
     assert result.decisions[0]["action"] == "duplicate_open_removed"
 
 
+def test_graph_managed_advance_is_not_removed_as_a_duplicate_open(tmp_path):
+    """Legacy status=open must not erase an explicit continuation action."""
+    _save(tmp_path, _contract(1, threads=[{
+        "id": "T-01", "thread": "主案", "status": "open",
+        "deadline_chapter": 10,
+    }]))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("same-ID graph continuation does not need semantic matching")
+
+    result = resolve_contract_identities(
+        _contract(2, threads=[{
+            "id": "T-01", "status": "open", "action": "advance",
+            "via_node_ids": ["C-03"], "narrative_graph_managed": True,
+        }]),
+        str(tmp_path), 2, "current-model", forbidden,
+    )
+
+    assert result.contract["plot_thread_updates"] == [{
+        "id": "T-01", "status": "open", "action": "advance",
+        "via_node_ids": ["C-03"], "narrative_graph_managed": True,
+    }]
+    assert result.decisions[0]["action"] == "continuation_id_canonicalized"
+
+
 def test_reused_id_for_related_thread_gets_new_program_id(tmp_path):
     _save(tmp_path, _contract(1, threads=[{
         "id": "PT-001-01", "thread": "失踪的钥匙",

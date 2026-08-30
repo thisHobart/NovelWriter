@@ -139,6 +139,36 @@ def test_review_retries_ungrounded_low_scores_then_removes_their_blocking_power(
     assert "ungrounded_low_scores_ignored" in review.reviewer_warning
 
 
+def test_main_domain_review_ignores_only_an_ungrounded_hard_failure_after_repair():
+    calls = []
+
+    def response(prompt, model=None):
+        calls.append(prompt)
+        return json.dumps(
+            {
+                "scores": {dimension: 4 for dimension in SCORE_DIMENSIONS},
+                "hard_failures": [
+                    {
+                        "code": "CONTINUITY_DUPLICATION",
+                        "quote": "第一处……第二处",
+                        "problem": "声称重复",
+                        "change": "删除一处",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    review = LegalSuspenseReviewAgent(
+        model="hosted-llm", send_prompt_fn=response
+    ).review_plan("第一处在这里，第二处在后面。", {}, {}, {})
+
+    assert len(calls) == 2
+    assert review.passed
+    assert review.hard_failures == []
+    assert "ungrounded_hard_failures_ignored: 1" in review.reviewer_warning
+
+
 def test_blocking_hard_failure_requires_quote_impact_and_minimal_change():
     content = "她把唯一的硬盘砸碎，随后从碎片里恢复了完整录像。"
     reviewer = LegalSuspenseReviewAgent(model="hosted-llm", send_prompt_fn=lambda *a, **k: "{}")
@@ -173,6 +203,44 @@ def test_blocking_hard_failure_requires_quote_impact_and_minimal_change():
     )
     assert not valid.passed
     assert "独立备份" in valid.asks[0]
+
+
+def test_review_schema_repair_requires_one_contiguous_verbatim_quote():
+    calls = []
+
+    def invalid_review(prompt, model=None):
+        calls.append(prompt)
+        return json.dumps(
+            {
+                "scores": {
+                    dimension: 4
+                    for dimension in LegalSuspenseReviewAgent._BLIND_DIMENSIONS
+                },
+                "hard_failures": [
+                    {
+                        "code": "READER_CONFUSION",
+                        "quote": "第一处……第二处",
+                        "problem": "指代冲突",
+                        "change": "统一指代",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    reviewer = LegalSuspenseReviewAgent(
+        model="hosted-llm",
+        send_prompt_fn=invalid_review,
+    )
+
+    review = reviewer.review_reader_blind("第一处在这里，第二处在后面。")
+
+    assert len(calls) == 2
+    assert "连续、逐字可检索" in calls[1]
+    assert "不得用省略号拼接" in calls[1]
+    assert review.passed
+    assert review.hard_failures == []
+    assert "ungrounded_hard_failures_ignored: 1" in review.reviewer_warning
 
 
 # --- 重修方向 ---------------------------------------------------------------
