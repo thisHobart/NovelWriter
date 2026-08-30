@@ -541,6 +541,30 @@ def test_declared_spine_merges_lists_without_losing_model_extraction(tmp_path):
     assert any(item["event"] == "第二章大纲补充的真实事件" for item in merged["chronology"])
 
 
+def test_declared_spine_blank_reveal_boundary_does_not_erase_bible_deadline(tmp_path):
+    sections = _declared_sections()
+    sections[0]["truths_introduced"][0].pop("reveal_at_section")
+    _write_structure_contract(tmp_path, sections)
+    manager = StoryLedgerManager(str(tmp_path))
+    manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
+
+    merged = manager.merge_declared_story_spine(
+        {
+            "truth": [
+                {
+                    "id": "T011",
+                    "fact": "旧表述",
+                    "must_not_reveal_before": "chapter_2",
+                }
+            ]
+        }
+    )
+
+    truth = next(item for item in merged["truth"] if item["id"] == "T011")
+    assert truth["fact"] == "门禁时钟被调慢"
+    assert truth["must_not_reveal_before"] == "chapter_2"
+
+
 def test_project_without_a_structure_contract_still_works(tmp_path):
     manager = StoryLedgerManager(str(tmp_path))
     manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -320,6 +321,14 @@ class ChapterGenerationLoop:
                 )
             )
 
+        # Reveal deadlines belong to the story-wide source of truth, while scene
+        # generation consumes the chapter contract.  Bridge the two here so a
+        # legacy or hand-authored contract cannot accidentally expose a truth
+        # before the chapter declared by the case bible.
+        contract = self._apply_case_bible_knowledge_boundaries(
+            contract, case_bible, chapter_number
+        )
+
         if self.require_planning_contract:
             try:
                 contract = validate_planning_contract(
@@ -366,6 +375,9 @@ class ChapterGenerationLoop:
                         lore,
                         case_bible,
                         suspense_ledger,
+                    )
+                    contract = self._apply_case_bible_knowledge_boundaries(
+                        contract, case_bible, chapter_number
                     )
                 plan_review = self.reviewer.review_plan(
                     current_plan,
@@ -1267,6 +1279,56 @@ class ChapterGenerationLoop:
             "请先补全全书结构与章节大纲，再重新生成本章。",
             chapter_number=chapter_number,
         )
+
+    @staticmethod
+    def _apply_case_bible_knowledge_boundaries(
+        contract: Dict[str, Any],
+        case_bible: Dict[str, Any],
+        chapter_number: int,
+    ) -> Dict[str, Any]:
+        """Copy story-wide reveal deadlines into a chapter's generation boundary.
+
+        Older contracts do not have ``withheld_truth_ids`` and are deliberately
+        accepted.  The returned copy gains that audit field plus the human-readable
+        facts used by existing prompts and reviewers; caller-owned data is never
+        mutated.
+        """
+
+        enriched = deepcopy(contract)
+        withheld_ids = list(enriched.get("withheld_truth_ids") or [])
+        withheld_facts = list(enriched.get("reader_must_not_know_yet") or [])
+
+        def reveal_chapter(value: Any) -> Optional[int]:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if not isinstance(value, str):
+                return None
+            text = value.strip()
+            for pattern in (r"^chapter[_\s-]*(\d+)$", r"^第\s*(\d+)\s*章$"):
+                match = re.match(pattern, text, flags=re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+            return None
+
+        truths = case_bible.get("truth", []) if isinstance(case_bible, dict) else []
+        for truth in truths if isinstance(truths, list) else []:
+            if not isinstance(truth, dict):
+                continue
+            boundary = reveal_chapter(truth.get("must_not_reveal_before"))
+            if boundary is None or chapter_number >= boundary:
+                continue
+            truth_id = str(truth.get("id", "")).strip()
+            fact = str(truth.get("fact", "")).strip()
+            if truth_id and truth_id not in withheld_ids:
+                withheld_ids.append(truth_id)
+            if fact and fact not in withheld_facts:
+                withheld_facts.append(fact)
+
+        enriched["withheld_truth_ids"] = withheld_ids
+        enriched["reader_must_not_know_yet"] = withheld_facts
+        return enriched
 
     def _load_previous_chapter_tail(self, chapter_number: int) -> str:
         if chapter_number <= 1:

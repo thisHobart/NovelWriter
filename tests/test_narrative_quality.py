@@ -28,3 +28,14 @@ def test_corpus_summary_exposes_repeated_shape_across_chapters():
     assert "thematic_explicitness" in summary["averages"]
     assert len(summary["chapters"]) == 2
 
+
+def test_variant_embodied_emotion_templates_are_counted():
+    prose = (
+        "方屿的喉头动了一下，呼吸微微发紧，额头冒出虚汗。"
+        "他的嘴唇抽动，手指颤抖，指尖又痉挛了一下。"
+    )
+
+    report = analyze_narrative_quality(prose)
+
+    assert report.embodied_emotion.count >= 5
+    assert any("身体化情绪套语" in warning for warning in report.warnings)

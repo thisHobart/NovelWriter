@@ -797,6 +797,81 @@ def test_project_without_design_context_is_not_blocked(tmp_path):
     assert len(result.scenes) == 2
 
 
+def test_case_bible_reveal_deadlines_are_added_to_contract_information_boundaries():
+    contract = {
+        "chapter": 1,
+        "reader_must_not_know_yet": [],
+        "withheld_truth_ids": [],
+    }
+    case_bible = {
+        "truth": [
+            {
+                "id": "T003",
+                "fact": "门禁内侧离开按钮不生成持卡人记录",
+                "must_not_reveal_before": "chapter_2",
+            },
+            {
+                "id": "T004",
+                "fact": "第一章允许公开的门禁卡号",
+                "must_not_reveal_before": "chapter_1",
+            },
+        ]
+    }
+
+    enriched = ChapterGenerationLoop._apply_case_bible_knowledge_boundaries(
+        contract, case_bible, chapter_number=1
+    )
+
+    assert enriched["withheld_truth_ids"] == ["T003"]
+    assert enriched["reader_must_not_know_yet"] == [
+        "门禁内侧离开按钮不生成持卡人记录"
+    ]
+    assert contract["withheld_truth_ids"] == []  # caller-owned legacy contract is not mutated
+
+
+def test_generation_receives_case_bible_reveal_boundaries_from_legacy_contract(tmp_path):
+    manager = StoryLedgerManager(str(tmp_path))
+    parameters = {"Quality Loop": "off"}
+    manager.initialize(parameters)
+    manager.save_case_bible(
+        {
+            "truth": [
+                {
+                    "id": "T003",
+                    "fact": "门禁内侧离开按钮不生成持卡人记录",
+                    "must_not_reveal_before": "第2章",
+                }
+            ]
+        },
+        "",
+    )
+    # Simulate an existing project written before withheld_truth_ids was added.
+    manager.save_contract(
+        1,
+        {"chapter": 1, "reader_must_not_know_yet": []},
+        PLAN,
+    )
+    generation_calls = []
+
+    ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=PassingReviewer(),
+    ).run(
+        chapter_number=1,
+        plan_content=PLAN,
+        parameters=parameters,
+        lore="世界观",
+        generate_scene=lambda **kwargs: generation_calls.append(kwargs) or "正文。",
+    )
+
+    assert generation_calls
+    assert generation_calls[0]["contract"]["withheld_truth_ids"] == ["T003"]
+    assert generation_calls[0]["contract"]["reader_must_not_know_yet"] == [
+        "门禁内侧离开按钮不生成持卡人记录"
+    ]
+
+
 # --- 差分放行 ---------------------------------------------------------------
 #
 # 闸门原本对两类失败一视同仁：有硬伤的稿子和只差零点几分的稿子都会在重试耗尽后

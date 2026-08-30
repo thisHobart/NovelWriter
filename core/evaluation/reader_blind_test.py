@@ -13,6 +13,7 @@ import json
 import math
 import random
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, stdev
@@ -33,6 +34,11 @@ RESPONSE_COLUMNS = (
     *(f"{metric}_{variant}" for metric in RATING_METRICS for variant in ("a", "b")),
     "notes",
 )
+
+
+def _print_json(value: Any) -> None:
+    encoding = str(getattr(sys.stdout, "encoding", "") or "utf-8").lower()
+    print(json.dumps(value, ensure_ascii="utf" not in encoding, indent=2))
 
 
 @dataclass(frozen=True)
@@ -336,9 +342,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             excerpt_chars=args.excerpt_chars,
             seed=args.seed,
         )
-        print(json.dumps({"items": len(result["items"]), "readers": result["target_readers"]}, ensure_ascii=False))
+        _print_json({"items": len(result["items"]), "readers": result["target_readers"]})
     else:
-        print(json.dumps(summarize_blind_test(args.test_dir), ensure_ascii=False, indent=2))
+        _print_json(summarize_blind_test(args.test_dir))
     return 0
 
 

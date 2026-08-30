@@ -60,6 +60,21 @@ class DomainReview:
         门槛为 0 时判定不成立：那说明这份评审不是走 `_normalize_review` 算出来
         的，平均分根本没参与判定，失败原因在别处，不能当成差分放过。
         """
+        if self.component_reviews:
+            failed = [
+                review
+                for review in self.component_reviews.values()
+                if not bool(review.get("passed"))
+            ]
+            if failed:
+                return all(
+                    not review.get("hard_failures")
+                    and not review.get("blocking_dimensions")
+                    and float(review.get("pass_average", 0) or 0) > 0
+                    and float(review.get("average_score", 0) or 0)
+                    < float(review.get("pass_average", 0) or 0)
+                    for review in failed
+                )
         return (
             not self.passed
             and not self.hard_failures
@@ -71,6 +86,18 @@ class DomainReview:
     @property
     def shortfall(self) -> float:
         """离门槛还差多少分；已达标时为 0。"""
+        if self.component_reviews:
+            component_shortfalls = [
+                max(
+                    float(review.get("pass_average", 0) or 0)
+                    - float(review.get("average_score", 0) or 0),
+                    0.0,
+                )
+                for review in self.component_reviews.values()
+                if not bool(review.get("passed"))
+            ]
+            if component_shortfalls:
+                return max(component_shortfalls)
         return max(self.pass_average - self.average_score, 0.0)
 
     @property
@@ -92,6 +119,7 @@ class DomainReview:
             items.append(
                 f"【硬伤·{failure.get('code', '')}】{failure.get('problem', '')}"
                 + (f"（原文：「{quote}」）" if quote else "")
+                + (f"；最小改法：{failure.get('change')}" if failure.get("change") else "")
             )
         items.extend(str(item) for item in self.repair_instructions if str(item).strip())
         for upgrade in self.upgrades:
@@ -156,6 +184,7 @@ UNIVERSAL_CONTRACT_LISTS = (
     "reader_knows_before",
     "reader_knows_after",
     "reader_must_not_know_yet",
+    "withheld_truth_ids",
     "scene_boundaries",
     "facts_added",
     "facts_confirmed",
@@ -269,6 +298,7 @@ class DomainReviewAgent:
             '  "reader_knows_before": [],',
             '  "reader_knows_after": [],',
             '  "reader_must_not_know_yet": [],',
+            '  "withheld_truth_ids": ["故事圣经中本章仍须保密的 truth id"],',
             '  "character_knowledge_after": {"人物名":["本章结束时新知道的事实"]},',
             '  "apparent_answer": "表面答案",',
             '  "reversal": "如何改变对已有信息的理解",',
@@ -317,6 +347,47 @@ class DomainReviewAgent:
 """
             repaired_response = self.send_prompt(repair_prompt, model=self.model)
             return extract_json_object(repaired_response)
+
+    def _call_review(
+        self,
+        prompt: str,
+        normalize: Callable[[Dict[str, Any]], DomainReview],
+        fallback_normalize: Optional[Callable[[Dict[str, Any]], DomainReview]] = None,
+    ) -> DomainReview:
+        """Parse and validate a review, with one bounded schema-repair attempt.
+
+        Valid JSON is not necessarily a valid verdict.  In particular, silently
+        defaulting omitted score dimensions to 3.0 turns a truncated response
+        into a real gate decision.  Review schema errors therefore receive the
+        same single repair opportunity as malformed JSON, then fail closed.
+        """
+        current_prompt = prompt
+        last_error: Optional[Exception] = None
+        for attempt in range(2):
+            response = self.send_prompt(current_prompt, model=self.model)
+            try:
+                raw = extract_json_object(response)
+                return normalize(raw)
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+                if attempt:
+                    if fallback_normalize is not None and "upgrades 缺少低分维度" in str(exc):
+                        # The repair attempt may contain a perfectly grounded hard
+                        # failure alongside unrelated low scores that still lack
+                        # quotes.  Preserve the hard failure; only the ungrounded
+                        # scores lose the right to block.
+                        return fallback_normalize(raw)
+                    break
+                current_prompt = f"""你上一次返回的评审 JSON 不符合 schema，不能据此放行或阻断正文。
+错误：{exc}
+
+请重新执行原任务，补齐所有字段，只输出一个合法 JSON 对象，不要解释，不要使用代码围栏。
+每条 hard_failures 必须包含正文真引文 quote、具体影响 problem 和最小改法 change。
+
+原任务：
+{prompt}
+"""
+        raise ValueError(f"评审 JSON schema 校验失败：{last_error}") from last_error
 
     # --- canon conflicts --------------------------------------------------
 
@@ -755,7 +826,7 @@ timeline_events、character_updates、plot_thread_updates）：
 只输出 JSON：
 {{
   "scores": {{{template}}},
-  "hard_failures": [{{"code":"允许的代码","quote":"正文短引文","problem":"阅读或机制后果"}}],
+  "hard_failures": [{{"code":"允许的代码","quote":"正文短引文","problem":"阅读或机制后果","change":"不扩写情节的最小改法"}}],
   "evidence": [{{"dimension":"维度","quote":"正文短引文","assessment":"判断依据"}}],
   "upgrades": [{{"dimension":"维度","quote":"正文短引文","missing":"缺少的效果","change":"最小改法"}}],
   "repair_scope": "scene_1 或具体段落",
@@ -763,15 +834,27 @@ timeline_events、character_updates、plot_thread_updates）：
   "strengths": ["正文中真实成立的优点"]
 }}"""
         try:
-            raw = self._call_json(prompt)
-            return self._normalize_review(
-                stage,
-                raw,
-                content,
-                score_dimensions=score_dimensions,
-                required_dimensions=required_dimensions,
-                hard_failure_codes=hard_failure_codes,
-                pass_average=pass_average,
+            return self._call_review(
+                prompt,
+                lambda raw: self._normalize_review(
+                    stage,
+                    raw,
+                    content,
+                    score_dimensions=score_dimensions,
+                    required_dimensions=required_dimensions,
+                    hard_failure_codes=hard_failure_codes,
+                    pass_average=pass_average,
+                ),
+                fallback_normalize=lambda raw: self._normalize_review(
+                    stage,
+                    raw,
+                    content,
+                    score_dimensions=score_dimensions,
+                    required_dimensions=required_dimensions,
+                    hard_failure_codes=hard_failure_codes,
+                    pass_average=pass_average,
+                    tolerate_ungrounded_low_scores=True,
+                ),
             )
         except Exception as exc:
             self.logger.error("Specialized review unavailable for %s: %s", stage, exc)
@@ -884,7 +967,7 @@ timeline_events、character_updates、plot_thread_updates）：
 只输出 JSON：
 {{
   "scores": {{{self._score_template()}}},
-  "hard_failures": [{{"code":"CONTINUITY_DUPLICATION","quote":"原文短引文","problem":"具体问题"}}],
+  "hard_failures": [{{"code":"CONTINUITY_DUPLICATION","quote":"原文短引文","problem":"对阅读或推理的具体影响","change":"不扩写情节的最小改法"}}],
   "evidence": [{{"dimension":"continuity","quote":"原文短引文","assessment":"为什么通过或失败"}}],
   "upgrades": [{{"dimension":"reversal","quote":"原文短引文","missing":"这一句缺什么","change":"改成什么才算 4 分"}}],
   "repair_scope": "scene_2_opening 或具体段落",
@@ -892,11 +975,54 @@ timeline_events、character_updates、plot_thread_updates）：
   "strengths": ["具体优点"]
 }}"""
         try:
-            raw = self._call_json(prompt)
-            return self._normalize_review(stage, raw, content)
+            ignored_dimensions = self._non_applicable_contract_dimensions(contract)
+            return self._call_review(
+                prompt,
+                lambda raw: self._normalize_review(
+                    stage,
+                    raw,
+                    content,
+                    ignored_dimensions=ignored_dimensions,
+                ),
+                fallback_normalize=lambda raw: self._normalize_review(
+                    stage,
+                    raw,
+                    content,
+                    ignored_dimensions=ignored_dimensions,
+                    tolerate_ungrounded_low_scores=True,
+                ),
+            )
         except Exception as exc:
             self.logger.error("Domain review unavailable for %s: %s", stage, exc)
             raise DomainReviewError(f"{stage} 质量检查未能返回有效结果：{exc}") from exc
+
+    @staticmethod
+    def _non_applicable_contract_dimensions(contract: Dict[str, Any]) -> frozenset[str]:
+        """Return structural dimensions this chapter explicitly leaves unused.
+
+        The model still has to return the complete profile score schema, which
+        keeps parsing stable.  These dimensions are then excluded from the gate:
+        an aftermath or setup chapter must not invent a reversal, moral dilemma,
+        attack/defense exchange, or personal cost solely to satisfy an average.
+        """
+
+        ignored = set()
+        if not str(contract.get("reversal", "")).strip():
+            ignored.add("reversal")
+        if not (
+            str(contract.get("attack_move", "")).strip()
+            or str(contract.get("defense_move", "")).strip()
+        ):
+            ignored.add("attack_defense")
+        if not str(contract.get("personal_cost", "")).strip():
+            ignored.add("personal_cost")
+        if not (
+            str(contract.get("moral_gray", "")).strip()
+            or str(contract.get("moral_conflict", "")).strip()
+            or str(contract.get("personal_cost", "")).strip()
+        ):
+            ignored.add("moral_gray")
+        return frozenset(ignored)
 
     def _normalize_review(
         self,
@@ -908,6 +1034,8 @@ timeline_events、character_updates、plot_thread_updates）：
         required_dimensions: Optional[tuple[str, ...]] = None,
         hard_failure_codes: Optional[frozenset[str]] = None,
         pass_average: Optional[float] = None,
+        ignored_dimensions: Optional[frozenset[str]] = None,
+        tolerate_ungrounded_low_scores: bool = False,
     ) -> DomainReview:
         profile = self.profile
         dimensions = score_dimensions or profile.score_dimensions
@@ -915,22 +1043,52 @@ timeline_events、character_updates、plot_thread_updates）：
         allowed_failures = hard_failure_codes or profile.hard_failure_codes
         threshold = profile.pass_average if pass_average is None else pass_average
         scores = {}
-        raw_scores = raw.get("scores", {}) if isinstance(raw.get("scores"), dict) else {}
+        ignored = frozenset(ignored_dimensions or ())
+        raw_scores = raw.get("scores")
+        if not isinstance(raw_scores, dict):
+            raise ValueError("scores 必须是对象")
+        missing_dimensions = [dimension for dimension in dimensions if dimension not in raw_scores]
+        if missing_dimensions:
+            raise ValueError(f"scores 缺少维度：{', '.join(missing_dimensions)}")
         for dimension in dimensions:
+            value = raw_scores.get(dimension)
+            if isinstance(value, bool):
+                raise ValueError(f"scores.{dimension} 必须是 0 到 4 的数字")
             try:
-                score = float(raw_scores.get(dimension, 3.0))
+                score = float(value)
             except (TypeError, ValueError):
-                score = 3.0
-            scores[dimension] = max(0.0, min(4.0, score))
+                raise ValueError(f"scores.{dimension} 必须是 0 到 4 的数字") from None
+            if not 0.0 <= score <= 4.0:
+                raise ValueError(f"scores.{dimension} 超出 0 到 4：{score}")
+            scores[dimension] = score
+
+        # Validate the full schema first, then remove contract-declared
+        # non-applicable dimensions from scoring and grounded-upgrade demands.
+        scores = {
+            dimension: score
+            for dimension, score in scores.items()
+            if dimension not in ignored
+        }
+        required = tuple(dimension for dimension in required if dimension not in ignored)
 
         hard_failures = []
         for failure in raw.get("hard_failures", []):
             if not isinstance(failure, dict):
                 continue
             code = str(failure.get("code", ""))
+            if code not in allowed_failures:
+                continue
             quote = str(failure.get("quote", "")).strip()
-            if code in allowed_failures and (not content or (quote and quote in content)):
-                hard_failures.append(failure)
+            problem = str(failure.get("problem", "")).strip()
+            change = str(failure.get("change", "")).strip()
+            if not quote or (content and quote not in content) or not problem or not change:
+                raise ValueError(
+                    "hard_failures 中每条允许代码都必须带正文真引文 quote、"
+                    "具体影响 problem 和最小改法 change"
+                )
+            hard_failures.append(
+                {**failure, "code": code, "quote": quote, "problem": problem, "change": change}
+            )
 
         # 只认对得上维度、带真引文的加分项：没有引文就无法定位要改哪里，
         # 留着它只会让重修凭空发挥，和没给一样。
@@ -943,7 +1101,7 @@ timeline_events、character_updates、plot_thread_updates）：
             change = str(upgrade.get("change", "")).strip()
             if dimension not in scores or not change:
                 continue
-            if content and quote and quote not in content:
+            if content and (not quote or quote not in content):
                 continue
             upgrades.append(
                 {
@@ -953,6 +1111,26 @@ timeline_events、character_updates、plot_thread_updates）：
                     "change": change,
                 }
             )
+
+        low_dimensions = {
+            dimension for dimension, score in scores.items() if score <= 3.0
+        }
+        grounded_upgrade_dimensions = {
+            str(upgrade.get("dimension", "")) for upgrade in upgrades
+        }
+        missing_upgrades = sorted(low_dimensions - grounded_upgrade_dimensions)
+        if missing_upgrades:
+            if not tolerate_ungrounded_low_scores:
+                raise ValueError(
+                    "upgrades 缺少低分维度的正文真引文和最小改法："
+                    + ", ".join(missing_upgrades)
+                )
+            # A score without grounded evidence is only an opinion.  It may not
+            # lower an average or become a blocking dimension.  Keep the raw
+            # response in the trace and make the deterministic recovery explicit
+            # in reviewer_warning.
+            for dimension in missing_upgrades:
+                scores[dimension] = 4.0
 
         average = sum(scores.values()) / len(scores)
         blocking_dimensions = [
@@ -975,6 +1153,23 @@ timeline_events、character_updates、plot_thread_updates）：
             repair_instructions=[str(item) for item in raw.get("repair_instructions", [])],
             upgrades=upgrades,
             strengths=[str(item) for item in raw.get("strengths", [])],
+            reviewer_warning="; ".join(
+                part
+                for part in (
+                    (
+                        "not_applicable_dimensions: " + ", ".join(sorted(ignored))
+                        if ignored
+                        else ""
+                    ),
+                    (
+                        "ungrounded_low_scores_ignored: "
+                        + ", ".join(missing_upgrades)
+                        if missing_upgrades and tolerate_ungrounded_low_scores
+                        else ""
+                    ),
+                )
+                if part
+            ),
             pass_average=threshold,
             blocking_dimensions=blocking_dimensions,
         )
@@ -1087,6 +1282,38 @@ timeline_events、character_updates、plot_thread_updates）：
 
 原正文：
 {scene_content}
+"""
+        return self.send_prompt(prompt, model=self.model).strip()
+
+    def revise_chapter_style(
+        self,
+        chapter_content: str,
+        contract: Dict[str, Any],
+        style_warnings: List[str],
+        embodied_examples: List[str],
+    ) -> str:
+        """Polish prose rhythm without reopening accepted story decisions."""
+
+        prompt = f"""请对整章中文正文做一次最小范围的语言修订，只处理句子过长、定语堆叠和可替换的身体反应套语。
+
+不可修改的章节契约：
+{compact_json(contract, 9000)}
+
+确定性文风诊断：
+{json.dumps(style_warnings, ensure_ascii=False)}
+
+已检测到的身体反应套语示例：
+{json.dumps(embodied_examples, ensure_ascii=False)}
+
+硬约束：
+- 不得增加、删除或改变事实、时间、地点、人物知识、线索、证据状态、程序结论和嫌疑结论。
+- 不得提前揭露章节契约禁止公开的信息，也不得增加新人物、新支线、新反转或新技术。
+- 保留原有两个场景及中间的 `---` 分隔线；只拆短句、缩短前置定语，并把成串的喉头、呼吸、冷汗、指节、嘴唇、颤抖等生理反应改为少量与当前行动有关的可观察选择。
+- 不要把原有克制结尾改成旁白总结，不要扩写篇幅。
+- 只输出修订后的完整章节正文，不要标题、解释或代码围栏。
+
+原正文：
+{chapter_content}
 """
         return self.send_prompt(prompt, model=self.model).strip()
 

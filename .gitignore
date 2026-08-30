@@ -17,6 +17,7 @@ venv/
 current_work/
 temp/
 /experiments/
+/quality_runs/
 
 # Operating system files
 .DS_Store

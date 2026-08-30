@@ -546,7 +546,17 @@ class StoryLedgerManager:
                 if existing is None:
                     result.append(deepcopy(record))
                 else:
-                    existing.update(deepcopy(record))
+                    # Authored structure wins when it actually says something,
+                    # but schema placeholders such as an empty reveal deadline
+                    # must not erase a concrete deadline already extracted into
+                    # the case bible.
+                    meaningful = {
+                        key: deepcopy(value)
+                        for key, value in record.items()
+                        if value is not None
+                        and not (isinstance(value, str) and not value.strip())
+                    }
+                    existing.update(meaningful)
             return result
 
         merged["truth"] = merge_records(

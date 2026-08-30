@@ -1,6 +1,7 @@
 import csv
 import json
 
+from core.evaluation import reader_blind_test
 from core.evaluation.reader_blind_test import create_blind_test, summarize_blind_test
 
 
@@ -72,3 +73,25 @@ def test_blind_test_summary_unmasks_candidate_and_uses_paired_differences(tmp_pa
     assert summary["paired_effects"]["ai_likeness_score"]["mean_difference"] == 2
     assert summary["warnings"]
 
+
+def test_cli_json_prints_on_non_utf_windows_stdout(monkeypatch):
+    class Cp1252Sink:
+        encoding = "cp1252"
+
+        def __init__(self):
+            self.parts = []
+
+        def write(self, value):
+            value.encode(self.encoding)
+            self.parts.append(value)
+            return len(value)
+
+        def flush(self):
+            return None
+
+    sink = Cp1252Sink()
+    monkeypatch.setattr(reader_blind_test.sys, "stdout", sink)
+
+    reader_blind_test._print_json({"warning": "尚未收齐读者"})
+
+    assert "\\u5c1a\\u672a" in "".join(sink.parts)

@@ -63,6 +63,7 @@ def test_review_gate_uses_scores_and_hard_failures():
                     "code": "UNSEEDED_SOLUTION",
                     "quote": "一份此前没有出现的报告",
                     "problem": "决定性证据没有伏笔",
+                    "change": "删去这份报告，改用前文已经展示的门禁记录完成推理",
                 },
                 {"code": "UNKNOWN_CODE", "quote": "忽略", "problem": "忽略"},
             ],
@@ -90,6 +91,88 @@ def test_review_retries_invalid_json_then_fails_closed():
         reviewer.review_plan("### 场景 1：开始", {}, {}, {})
 
     assert len(calls) == 2
+
+
+def test_review_retries_incomplete_score_schema_then_fails_closed():
+    calls = []
+    incomplete_scores = {
+        dimension: 4 for dimension in SCORE_DIMENSIONS if dimension != "continuity"
+    }
+
+    def incomplete_response(prompt, model=None):
+        calls.append(prompt)
+        return json.dumps({"scores": incomplete_scores}, ensure_ascii=False)
+
+    reviewer = LegalSuspenseReviewAgent(
+        model="hosted-llm",
+        send_prompt_fn=incomplete_response,
+    )
+
+    with pytest.raises(DomainReviewError, match="质量检查未能返回有效结果"):
+        reviewer.review_plan("### 场景 1：开始", {}, {}, {})
+
+    assert len(calls) == 2
+    assert "continuity" in calls[1]
+    assert "schema" in calls[1].lower()
+
+
+def test_review_retries_ungrounded_low_scores_then_removes_their_blocking_power():
+    calls = []
+
+    def ungrounded_response(prompt, model=None):
+        calls.append(prompt)
+        return json.dumps(
+            {"scores": {dimension: 2 for dimension in SCORE_DIMENSIONS}},
+            ensure_ascii=False,
+        )
+
+    reviewer = LegalSuspenseReviewAgent(
+        model="hosted-llm",
+        send_prompt_fn=ungrounded_response,
+    )
+
+    review = reviewer.review_plan("### 场景 1：开始", {}, {}, {})
+
+    assert len(calls) == 2
+    assert "upgrades" in calls[1]
+    assert review.passed
+    assert "ungrounded_low_scores_ignored" in review.reviewer_warning
+
+
+def test_blocking_hard_failure_requires_quote_impact_and_minimal_change():
+    content = "她把唯一的硬盘砸碎，随后从碎片里恢复了完整录像。"
+    reviewer = LegalSuspenseReviewAgent(model="hosted-llm", send_prompt_fn=lambda *a, **k: "{}")
+    base = {"scores": {dimension: 4 for dimension in SCORE_DIMENSIONS}}
+
+    for incomplete in (
+        {"code": "LEGAL_IMPOSSIBILITY", "quote": "不在正文中的话", "problem": "证物已毁", "change": "改用备份"},
+        {"code": "LEGAL_IMPOSSIBILITY", "quote": "唯一的硬盘砸碎", "problem": "", "change": "改用备份"},
+        {"code": "LEGAL_IMPOSSIBILITY", "quote": "唯一的硬盘砸碎", "problem": "证物已毁", "change": ""},
+    ):
+        with pytest.raises(ValueError, match="hard_failures"):
+            reviewer._normalize_review(
+                "chapter",
+                {**base, "hard_failures": [incomplete]},
+                content=content,
+            )
+
+    valid = reviewer._normalize_review(
+        "chapter",
+        {
+            **base,
+            "hard_failures": [
+                {
+                    "code": "LEGAL_IMPOSSIBILITY",
+                    "quote": "唯一的硬盘砸碎",
+                    "problem": "唯一原件被毁后，正文仍把恢复结果当作核心证明",
+                    "change": "改用销毁前已封存且可校验的独立备份",
+                }
+            ],
+        },
+        content=content,
+    )
+    assert not valid.passed
+    assert "独立备份" in valid.asks[0]
 
 
 # --- 重修方向 ---------------------------------------------------------------

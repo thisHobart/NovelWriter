@@ -46,6 +46,7 @@ from .llm_interface import (
     is_initialized,
     send_prompt as llm_send_prompt,
 )
+from .llm_trace import trace_model_call
 
 
 load_dotenv()  # Load API keys from .env into the environment (app-owned; the package only reads os.environ)
@@ -121,7 +122,12 @@ def send_prompt(prompt, model=None):
         if not is_initialized():
             initialize_llm(backend=current_backend)
         print(f"Using CLI backend: {current_backend}")
-        return llm_send_prompt(prompt)
+        return trace_model_call(
+            prompt=prompt,
+            backend=current_backend,
+            model=model or _current_model,
+            invoke=lambda: llm_send_prompt(prompt),
+        )
 
     # Use current model if none provided
     if model is None:
@@ -135,7 +141,14 @@ def send_prompt(prompt, model=None):
     _current_model = model
 
     try:
-        return _mp.send_prompt(prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS)
+        return trace_model_call(
+            prompt=prompt,
+            backend=current_backend,
+            model=model,
+            invoke=lambda: _mp.send_prompt(
+                prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS
+            ),
+        )
     except Exception as e:
         print(f"Error calling model '{model}': {e}")
         raise

@@ -88,6 +88,46 @@ python -m core.evaluation.reader_blind_test create `
 python -m core.evaluation.reader_blind_test summarize --test-dir <盲测目录>
 ```
 
+仓库还提供固定随机种子、固定参数和固定三章案件骨架的低成本离线质量回归。它使用
+明确标记为 `scripted_offline` 的脚本模型，不会冒充真实模型测试：
+
+```powershell
+python -m core.evaluation.fixed_story_quality --output-dir quality_runs\fixed_mystery_3ch
+```
+
+输出包括逐调用 prompt/响应/耗时追踪、14 个阶段的输入与解析结果、改造前后章节、
+故事账本、独立质量闸和 30 人 A/B 材料。真实后端必须先通过单阶段成本闸：
+
+```powershell
+python -m core.evaluation.live_quality_probe --output-dir quality_runs\fixed_mystery_3ch
+```
+
+探针会先检查当前配置端点；不可达时不发起模型调用，并保存阻塞原因与恢复命令。
+只有探针确实识别“销毁唯一证物后仍依赖它推理”的硬伤时，才应继续单章和三章真实测试。
+
+真实模型按成本递增运行；每一步失败都会停止后续调用：
+
+```powershell
+python -m core.evaluation.live_chapter_probe --output-dir quality_runs\live_single_chapter
+python -m core.evaluation.live_story_quality --output-dir quality_runs\live_fixed_mystery_3ch
+```
+
+三章运行器初次最多调用 24 次；若预算恰好用在第三章生成结束，可重复同一命令，程序会
+从已验收 ledger 和真实 trace 继续，只补缺失审阅，绝不重生成已存在的场景。若最终正文
+触发身体反应套语饱和，可在不改变事实、时间、人物知识或证据状态的前提下做语言收敛：
+
+```powershell
+python -m core.evaluation.live_style_polish --output-dir quality_runs\live_fixed_mystery_3ch --chapter 3
+```
+
+最后可同时核验离线 14 阶段记录和真实三章产物：
+
+```powershell
+python -m core.evaluation.completion_audit `
+  --real-dir quality_runs\live_fixed_mystery_3ch `
+  --offline-dir quality_runs\fixed_mystery_3ch
+```
+
 主要指标是续读意愿；可信度、人物真实感和中文舒适度是护栏，AI 感是诊断指标。不要把
 `manifest.private.json` 发给读者，也不要在收齐预注册样本前根据中途结果停止试验。
 
