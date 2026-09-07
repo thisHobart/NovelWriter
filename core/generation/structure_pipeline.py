@@ -419,12 +419,9 @@ class StructurePipeline:
         output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
         
-        # Get current genre to determine location type
-        from Generators.GenreHandlers import get_genre_handler
         params = ui.parameters
         current_genre = params.get("genre", "Sci-Fi")
-        genre_handler = get_genre_handler(current_genre)
-        location_type_name = genre_handler.get_location_type_name()
+        location_type_name = "地点"
         
         self.app.logger.info(f"Adding {location_type_name} to Arcs. Model: {selected_model}, Output Dir: {output_dir}")
         
@@ -447,35 +444,33 @@ class StructurePipeline:
             with open(factions_json_file_path, 'r', encoding='utf-8') as f:
                 factions_data = json.load(f)
             
-            if genre_handler:
-                # Use genre-specific location extraction
-                locations = genre_handler.get_location_info_from_factions(factions_data)
-                for location in locations:
-                    location_faction_info.append(f"- {location['description']}")
-            else:
-                # Fallback for unknown genres - try to extract basic info
-                for faction in factions_data:
-                    faction_name = faction.get("faction_name", faction.get("name", "未知势力"))
-                    # Try different possible location fields
-                    location_name = None
-                    if "systems" in faction:  # Sci-fi style
-                        for system in faction.get("systems", []):
-                            planets = system.get("habitable_planets", [])
-                            if planets:
-                                location_name = f"{planets[0].get('name', '未知地点')}，位于{system.get('name', '未知星系')}"
+            for faction in factions_data if isinstance(factions_data, list) else []:
+                if not isinstance(faction, dict):
+                    continue
+                faction_name = faction.get("faction_name") or faction.get("name") or "未知势力"
+                # 势力卡统一 schema 之后，地点就在 territory 这一栏；旧项目里
+                # 科幻的 systems、奇幻的 regions 仍然照顾到。
+                location_name = faction.get("territory")
+                if isinstance(location_name, dict):
+                    location_name = location_name.get("name")
+                if not location_name:
+                    for key, inner, label in (
+                        ("systems", "habitable_planets", "星系"),
+                        ("regions", "cities", "区域"),
+                    ):
+                        for group in faction.get(key, []) or []:
+                            items = group.get(inner, []) if isinstance(group, dict) else []
+                            if items:
+                                location_name = (
+                                    f"{items[0].get('name', '未知地点')}，"
+                                    f"位于{group.get('name', '未知' + label)}"
+                                )
                                 break
-                    elif "regions" in faction:  # Fantasy style
-                        for region in faction.get("regions", []):
-                            cities = region.get("cities", [])
-                            if cities:
-                                location_name = f"{cities[0].get('name', '未知地点')}，位于{region.get('name', '未知区域')}"
-                                break
-                    elif "territory" in faction:  # Western/other styles
-                        location_name = faction.get("territory", "未知领地")
-                    
-                    if location_name:
-                        location_faction_info.append(f"- {location_name}（由 {faction_name} 控制）")
-                        
+                        if location_name:
+                            break
+                if location_name:
+                    location_faction_info.append(f"- {location_name}（由 {faction_name} 控制）")
+
         except FileNotFoundError:
              show_error("错误", f"找不到势力文件：{factions_json_file_path}，无法提取地点信息。")
              return

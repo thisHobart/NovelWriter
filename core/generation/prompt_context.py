@@ -275,6 +275,53 @@ def format_faction_summary(factions_data: Any, limit: int = 5) -> str:
     return "主要势力概览：\n\n" + "\n\n".join(summaries) if summaries else "没有可用的势力信息。"
 
 
+#: 写进世界观提示词的人物字段。以前这份清单由各题材的 genre handler 各给一份
+#: （科幻要 homeworld、悬疑要 agency），而人物卡本身是英文词表随机拼的。现在
+#: 卡片是统一 schema，所以清单也只需要一份。复数字段名保留，旧项目的
+#: characters.json 里 goals/motivations/flaws/strengths 仍是数组。
+CHARACTER_PROMPT_KEYS = (
+    "gender", "age", "faction", "profession", "title",
+    "goal", "goals", "motivation", "motivations", "flaw", "flaws",
+    "strength", "strengths", "arc", "background", "description",
+)
+
+
+def format_faction_section(factions: Any) -> str:
+    """世界观提示词里的势力段落。
+
+    以前这一段由 genre handler 的 get_faction_capitals_info 产出，每个题材读各自
+    的字段名。势力卡改成统一 schema 之后，那些分支要么读到同样的字段、要么读到
+    空——一份格式化就够了。
+    """
+    if isinstance(factions, dict):
+        factions = factions.get("factions", [])
+    if not isinstance(factions, list) or not factions:
+        return ""
+
+    lines = ["\n## 势力：\n"]
+    for faction in factions:
+        if not isinstance(faction, dict):
+            continue
+        name = faction.get("faction_name") or faction.get("name") or "未知势力"
+        lines.append(f"- {name}")
+        for label, key in (("性质", "nature"), ("类型", "type"), ("活动地点", "territory")):
+            value = faction.get(key)
+            if isinstance(value, dict):
+                value = value.get("name", "")
+            if value:
+                lines.append(f"  - {label}：{value}")
+        description = faction.get("faction_profile") or faction.get("description")
+        if description:
+            lines.append(f"  - 描述：{description}")
+        goals = _as_list(faction.get("goal") or faction.get("goals"))
+        if goals:
+            lines.append(f"  - 目标：{'；'.join(goals[:3])}")
+        for conflict in faction.get("conflicts", []) or []:
+            if isinstance(conflict, dict) and conflict.get("with"):
+                lines.append(f"  - 与「{conflict['with']}」冲突：{conflict.get('over', '')}")
+    return "\n".join(lines) + "\n"
+
+
 # 硬科幻专名：这些词在一部现实题材小说里几乎不可能是比喻。
 # 曾经还收了「全息」「跃迁」，但它们在中文里同样是日常修辞——
 # 「全息级高精度显微投影」说的是法医显微镜，「弧光跃迁」说的是人物弧光的转折。

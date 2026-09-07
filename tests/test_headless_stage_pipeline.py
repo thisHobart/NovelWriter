@@ -353,7 +353,7 @@ def test_pipeline_error_message_is_not_swallowed_or_rewritten():
 def test_stage_entry_methods_have_no_terminal_catch_all_wrapper():
     targets = {
         "core/generation/lore_pipeline.py": {
-            "_generate_factions", "_generate_characters", "_add_genre_specific_attributes",
+            "_generate_factions", "_generate_characters",
             "_generate_lore", "_suggest_titles", "_main_character_enhancement",
         },
         "core/generation/structure_pipeline.py": {

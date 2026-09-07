@@ -9,12 +9,17 @@ from __future__ import annotations
 
 from core.generation.errors import fail
 from core.generation.ai_helper import send_prompt, get_backend
-from core.generation.prompt_context import format_faction_summary
-from core.generation.chinese_names import (
-    load_namer,
-    localize_characters,
-    localize_factions,
-    save_namer,
+from core.generation.prompt_context import (
+    CHARACTER_PROMPT_KEYS,
+    format_faction_section,
+    format_faction_summary,
+)
+from core.generation.lore_cast import (
+    CAST_RETRY_LIMIT,
+    CastError,
+    generate_cast,
+    generate_factions,
+    storage_factions,
 )
 import json
 import os
@@ -29,7 +34,6 @@ from core.generation.design_contract import (
 
 LORE_CONTRACT_RETRY_LIMIT = 2
 
-from Generators.GenreHandlers import get_genre_handler
 from core.localization import zh_field, zh_label
 import random
 from datetime import datetime
@@ -64,271 +68,133 @@ class LorePipeline:
         self.dir_manager = get_directory_manager(app.get_output_dir(), use_new_structure=True)
 
     def _generate_factions(self, ui):
+        """势力卡由模型按故事前提直接用中文写，落盘前做确定性校验。
+
+        以前这里调的是 `Generators/` 里按题材写死的英文模板：名字、目标、领地都是
+        从十来条英文短语里随机抽的，抽完再把名字换成中文。结果是名字与类型对不上
+        （「海陵岸线风险咨询」的 type 写着 Police Department），领地那一栏抽到的
+        「Court and legal systems」还被当成地名转成了城市。
+        """
         num_factions = ui.get("num_factions")
-        
-        # Get the selected gender bias percentages from ParametersUI
         params = ui.parameters
-        female_percentage = params.get("female_percentage", 50) # Default to 50 if not found
-        male_percentage = params.get("male_percentage", 50)   # Default to 50 if not found
-        genre = params.get("genre", "Sci-Fi")  # Get current genre
-        subgenre = params.get("subgenre", "")  # Get current subgenre
-        
-        self.app.logger.info(f"Generating {genre} factions (using gender bias: Female {female_percentage}%, Male {male_percentage}%)")
-        
-        # Get the appropriate genre handler
-        try:
-            genre_handler = get_genre_handler(genre)
-        except ValueError as e:
-            self.app.logger.error(f"Unsupported genre: {genre}. Error: {e}")
-            show_error("错误", f"不支持的类型：{genre}")
-            return
-        
-        # Generate factions using the genre handler
-        factions = genre_handler.generate_factions(
-            num_factions=num_factions,
-            female_percentage=female_percentage,
-            male_percentage=male_percentage,
-            subgenre=subgenre
+        selected_model = ui.model
+        output_dir = ui.output_dir
+
+        self.app.logger.info(
+            "Generating %s factions for %s / %s",
+            num_factions,
+            params.get("genre", ""),
+            params.get("subgenre", ""),
         )
-        
-        # The genre generators assemble names from English word lists, so
-        # the cast is renamed here — before the file is written and before
-        # any prompt is built from it.
-        output_dir = ui.output_dir
-        namer = load_namer(output_dir)
-        factions = localize_factions(factions, namer)
-        save_namer(namer, output_dir)
 
-        # Print factions to console for debugging
-        if factions:
-            first_name = factions[0].get('faction_name') or factions[0].get('name') or 'N/A'
-            self.app.logger.info(f"Generated {len(factions)} factions. First faction example: {first_name}")
-            for i, faction_data in enumerate(factions):
-                self.app.logger.debug(f"Faction {i+1} Summary:")
-                faction_name = faction_data.get('faction_name') or faction_data.get('name') or 'N/A'
-                faction_profile = faction_data.get('faction_profile') or faction_data.get('description') or 'N/A'
-                self.app.logger.debug(f"  Name: {faction_name}")
-                self.app.logger.debug(f"  Profile: {faction_profile}")
-                self.app.logger.debug(f"  Systems: {len(faction_data.get('systems', []))}")
-        else:
-            self.app.logger.warning("Faction generation returned no factions.")
-
-        # Use structured directory for factions file
-        lore_dir = self.dir_manager.get_path('lore_dir')
-        lore_full_path = os.path.join(output_dir, lore_dir)
-        os.makedirs(lore_full_path, exist_ok=True) # Ensure the lore directory exists
-        
-        # Construct the full filepath for factions.json in structured directory
-        factions_filepath = os.path.join(lore_full_path, "factions.json")
-        
-        # Save factions to file using the genre handler
-        genre_handler.save_factions(factions, factions_filepath)
-
-        self.app.logger.info(f"Generated {genre} factions and saved to {factions_filepath}")
-
-    def _generate_characters(self, ui):
-        num_chars = ui.get("num_chars")
-        self.app.logger.info(f"Attempting to generate {num_chars} characters.")
-        
-        # Get the selected gender bias percentages and genre from Parameters.py
-        params = ui.parameters
-        female_percentage = params.get("female_percentage", 50)
-        male_percentage = params.get("male_percentage", 50)
-        genre = params.get("genre", "Sci-Fi")
-        
-        self.app.logger.info(f"Using gender bias for character generation: Female {female_percentage}%, Male {male_percentage}%")
-        self.app.logger.info(f"Generating characters for genre: {genre}")
-        
-        # Generate characters using the genre handler system
-        try:
-            genre_handler = get_genre_handler(genre)
-            characters = genre_handler.generate_characters(
-                num_characters=num_chars,
-                female_percentage=female_percentage,
-                male_percentage=male_percentage,
-                include_races=True  # This will be ignored by sci-fi handler, used by fantasy handler
+        def _log_retry(attempt, error):
+            self.app.logger.warning(
+                "Faction cards failed validation; retry %s/%s: %s",
+                attempt, CAST_RETRY_LIMIT, error,
             )
-        except ValueError as e:
-            self.app.logger.error(f"Unsupported genre for character generation: {genre}. Error: {e}")
-            show_error("错误", f"该类型不支持生成人物：{genre}")
+
+        try:
+            factions = generate_factions(
+                lambda request: send_prompt(request, model=selected_model),
+                params,
+                num_factions,
+                on_retry=_log_retry,
+            )
+        except CastError as error:
+            self.app.logger.error("Faction generation failed: %s", error, exc_info=True)
+            show_error("错误", f"生成势力失败：{error}")
             return
-        
-        if not characters:
-            self.app.logger.error("Failed to generate characters. generate_main_characters returned empty.")
-            show_error("错误", "生成人物失败。")
-            return
-        
-        # Names arrive already decided by the genre generator's English word
-        # lists, so they are replaced here, before backstories are written
-        # from them.  The mapping is shared with the faction pass.
-        namer = load_namer(ui.output_dir)
-        characters = localize_characters(characters, namer)
-        save_namer(namer, ui.output_dir)
-        
-        # Print to console for debugging
-        # for char in characters:
-        #     print_character(char) # Replaced by logger below
-        self.app.logger.info(f"Successfully generated {len(characters)} characters.")
-        for i, char_data in enumerate(characters):
-            # char_data is a Character object, not a dict. Access attributes directly or use getattr.
-            char_name = getattr(char_data, 'name', 'N/A')
-            char_role = getattr(char_data, 'role', 'N/A')
-            self.app.logger.debug(f"Character {i+1}: {char_name} ({char_role})")
-        
-        # --- Add Gender Count for Main Characters ---
-        female_main_char_count = 0
-        male_main_char_count = 0
-        for char_obj in characters:
-            if hasattr(char_obj, 'gender'):
-                if char_obj.gender == "Female":
-                    female_main_char_count += 1
-                elif char_obj.gender == "Male":
-                    male_main_char_count += 1
-        
-        total_main_chars = len(characters)
-        if total_main_chars > 0:
-            female_actual_percentage = (female_main_char_count / total_main_chars) * 100
-            male_actual_percentage = (male_main_char_count / total_main_chars) * 100
-            self.app.logger.info(f"MAIN CHARACTER GENDER SUMMARY: Total={total_main_chars}, Females={female_main_char_count} ({female_actual_percentage:.2f}%), Males={male_main_char_count} ({male_actual_percentage:.2f}%)")
-            self.app.logger.info(f"  (Expected based on input: Female {female_percentage}%, Male {male_percentage}%)")
-        else:
-            self.app.logger.info("MAIN CHARACTER GENDER SUMMARY: No main characters generated to summarize.")
-        # --- End Gender Count ---
-        
-        # Save to file
-        output_dir = ui.output_dir
-        
-        # Use structured directory for characters file
+
+        stored = storage_factions(factions)
+        self.app.logger.info(
+            "Generated %s factions: %s",
+            len(stored),
+            "、".join(str(item.get("name", "")) for item in stored),
+        )
+
         lore_dir = self.dir_manager.get_path('lore_dir')
         lore_full_path = os.path.join(output_dir, lore_dir)
         os.makedirs(lore_full_path, exist_ok=True)
-        characters_filepath = os.path.join(lore_full_path, "characters.json")
-        
-        # Save using the genre handler's save function
-        genre_handler.save_characters(characters, filename=characters_filepath)
-        
-        self.app.logger.info(f"Generated main characters and saved to {characters_filepath}")
+        factions_filepath = os.path.join(lore_full_path, "factions.json")
+        write_json(factions_filepath, stored)
+        self.app.logger.info(f"Saved factions to {factions_filepath}")
 
-    def _add_genre_specific_attributes(self, characters, genre_handler):
-        """Add genre-specific attributes to characters based on the genre handler."""
-        genre_name = genre_handler.get_genre_name()
-        
-        # Check if this genre uses factions/organizations
-        if not genre_handler.uses_factions():
-            self.app.logger.info(f"{genre_name} doesn't use traditional factions - skipping faction assignment")
-            return
-        
-        # Load faction data to assign characters to factions/organizations
-        output_dir = self.app.get_output_dir()
-        
-        # Use structured directory for factions file
+    def _generate_characters(self, ui):
+        """人物卡与人物关系同样由模型按故事前提用中文写，落盘前做确定性校验。
+
+        以前反派的目标是从一张英文短语表里抽的，抽到过「Help solve the case」——
+        他和主角想要的是同一件事。现在反派必须显式写明他挡的是哪位主角的哪个目标，
+        写不出来就退回重写。
+        """
+        num_chars = ui.get("num_chars")
+        params = ui.parameters
+        selected_model = ui.model
+        output_dir = ui.output_dir
+        female_percentage = params.get("female_percentage", 50)
+
         lore_dir = self.dir_manager.get_path('lore_dir')
         lore_full_path = os.path.join(output_dir, lore_dir)
+        os.makedirs(lore_full_path, exist_ok=True)
+
+        # 人物要落在已有的势力里，所以先把势力读回来当上下文。
+        factions = []
         factions_filepath = os.path.join(lore_full_path, "factions.json")
-        
-        factions_data = None
+        if os.path.exists(factions_filepath):
+            try:
+                loaded = read_json(factions_filepath)
+                factions = loaded if isinstance(loaded, list) else loaded.get("factions", [])
+            except (ValueError, IOError) as error:
+                self.app.logger.warning("Could not read factions for character context: %s", error)
+
+        self.app.logger.info(
+            "Generating %s characters (female %s%%) for %s",
+            num_chars, female_percentage, params.get("genre", ""),
+        )
+
+        def _log_retry(attempt, error):
+            self.app.logger.warning(
+                "Character cards failed validation; retry %s/%s: %s",
+                attempt, CAST_RETRY_LIMIT, error,
+            )
+
         try:
-            factions_data = read_json(factions_filepath)
-            organization_type = genre_handler.get_organization_type()
-            self.app.logger.info(f"Loaded {len(factions_data)} {organization_type} for character assignment")
-        except FileNotFoundError:
-            self.app.logger.warning(f"No {genre_handler.get_organization_type()} file found - characters will be generated without organizational affiliations")
+            cast = generate_cast(
+                lambda request: send_prompt(request, model=selected_model),
+                params,
+                num_chars,
+                female_percentage=female_percentage,
+                factions=factions,
+                on_retry=_log_retry,
+            )
+        except CastError as error:
+            self.app.logger.error("Character generation failed: %s", error, exc_info=True)
+            show_error("错误", f"生成人物失败：{error}")
             return
-        
-        if not factions_data:
-            return
-        
-        if genre_name == "Sci-Fi":
-            self._assign_scifi_attributes(characters, factions_data)
-        elif genre_name == "Fantasy":
-            self._assign_fantasy_attributes(characters, factions_data)
-        else:
-            # For other genres that use factions, assign basic faction affiliation
-            self._assign_basic_faction_attributes(characters, factions_data, genre_handler)
 
-    def _assign_scifi_attributes(self, characters, factions_data):
-        """Assign sci-fi specific attributes like homeworld and home_system."""
-        # Get list of all habitable planets
-        habitable_planets = []
-        for faction in factions_data:
-            for system in faction.get("systems", []):
-                for planet in system.get("habitable_planets", []):
-                    habitable_planets.append({
-                        "name": planet.get("name", "Unknown"),
-                        "system": system.get("name", "Unknown"),
-                        "faction": faction.get("faction_name", "Unknown")
-                    })
-        
-        if not habitable_planets:
-            self.app.logger.warning("No habitable planets found in factions data")
-            return
-            
-        # Assign homeworld and faction to each character
-        for char in characters:
-            homeworld = random.choice(habitable_planets)
-            char.homeworld = homeworld["name"]
-            char.home_system = homeworld["system"]
-            char.faction = homeworld["faction"]
+        characters = cast["characters"]
+        payload = {
+            "characters": characters,
+            "relationships": cast.get("relationships", []),
+            "metadata": {
+                "generation_date": datetime.now().isoformat(),
+                "total_characters": len(characters),
+                "genre": params.get("genre", ""),
+                "subgenre": params.get("subgenre", ""),
+            },
+        }
 
-    def _assign_fantasy_attributes(self, characters, factions_data):
-        """Assign fantasy specific attributes like homeland, home_region, and race."""
-        # Get list of all cities and their regions
-        cities_and_regions = []
-        for faction in factions_data:
-            faction_race = faction.get("race", "Human")  # Get faction's race
-            for region in faction.get("regions", []):
-                for city in region.get("cities", []):
-                    cities_and_regions.append({
-                        "name": city.get("name", "Unknown"),
-                        "region": region.get("name", "Unknown"),
-                        "faction": faction.get("faction_name", "Unknown"),
-                        "race": faction_race
-                    })
-        
-        if not cities_and_regions:
-            self.app.logger.warning("No cities found in factions data")
-            return
-            
-        # Assign homeland, region, race, and faction to each character
-        for char in characters:
-            homeland_info = random.choice(cities_and_regions)
-            char.homeland = homeland_info["name"]
-            char.home_region = homeland_info["region"]
-            char.race = homeland_info["race"]
-            char.faction = homeland_info["faction"]
-            
-            # Add fantasy-specific attributes if they don't exist
-            if not hasattr(char, 'homeland'):
-                char.homeland = None
-            if not hasattr(char, 'home_region'):
-                char.home_region = None
-            if not hasattr(char, 'race'):
-                char.race = None
+        women = sum(1 for c in characters if str(c.get("gender", "")).strip() == "女")
+        self.app.logger.info(
+            "Generated %s characters (%s female, %.0f%%; asked for %s%%): %s",
+            len(characters), women,
+            (women / len(characters) * 100) if characters else 0.0,
+            female_percentage,
+            "、".join(str(c.get("name", "")) for c in characters),
+        )
 
-    def _assign_basic_faction_attributes(self, characters, factions_data, genre_handler):
-        """Assign basic faction/organization affiliation for genres that use them."""
-        organization_type = genre_handler.get_organization_type()
-        
-        # Extract organization names from the factions data
-        organizations = []
-        for faction in factions_data:
-            organizations.append({
-                "name": faction.get("name", "Unknown Organization"),
-                "type": faction.get("type", "Unknown Type")
-            })
-        
-        if not organizations:
-            self.app.logger.warning(f"No {organization_type} found in data")
-            return
-            
-        # Assign organization affiliation to each character
-        for char in characters:
-            org_info = random.choice(organizations)
-            char.faction = org_info["name"]
-            
-            # Add organization type as an attribute for some genres
-            if hasattr(char, 'organization_type') or organization_type in ['agencies', 'cults']:
-                char.organization_type = org_info["type"]
+        characters_filepath = os.path.join(lore_full_path, "characters.json")
+        write_json(characters_filepath, payload)
+        self.app.logger.info(f"Saved characters to {characters_filepath}")
 
     def _generate_lore(self, ui):
         """Generate lore using an internally constructed prompt and LLM"""
@@ -442,18 +308,7 @@ class LorePipeline:
             params = ui.parameters
             current_genre = params.get("genre", "Sci-Fi")
             
-            try:
-                genre_handler = get_genre_handler(current_genre)
-                faction_section = genre_handler.get_faction_capitals_info(factions)
-                prompt += faction_section
-            except ValueError as e:
-                self.app.logger.warning(f"Could not get genre handler for {current_genre}: {e}. Skipping faction capitals.")
-                # Fallback: add basic faction names only
-                faction_section = "\n## 势力名称：\n"
-                for faction in factions:
-                    faction_name = faction.get("faction_name") or faction.get("name") or "未知势力"
-                    faction_section += f"- {faction_name}\n"
-                prompt += faction_section
+            prompt += format_faction_section(factions)
 
         if characters:
             # Add a detailed character section to the prompt
@@ -471,15 +326,7 @@ class LorePipeline:
                 
                 # Add basic information
                 basic_info = []
-                # Get character attributes from genre handler
-                try:
-                    genre_handler = get_genre_handler(current_genre)
-                    basic_keys = genre_handler.get_character_attributes()
-                except ValueError:
-                    # Fallback to basic attributes if genre handler not found
-                    basic_keys = ['gender', 'age', 'title', 'occupation', 'faction', 'faction_role', 
-                                'goals', 'motivations', 'flaws', 'strengths', 'arc']
-                
+                basic_keys = CHARACTER_PROMPT_KEYS
                 for key in basic_keys:
                     value = char_dict.get(key)
                     if value:
@@ -768,15 +615,7 @@ class LorePipeline:
             prompt_lines.append(f"\n## {char_name}（{zh_label(char_role.capitalize())}）的详细信息：")
             
             # Add basic character information using dict.get()
-            # Get character attributes from genre handler
-            try:
-                genre_handler = get_genre_handler(current_genre)
-                character_keys = genre_handler.get_character_attributes()
-            except ValueError:
-                # Fallback to basic attributes if genre handler not found
-                character_keys = ['age', 'gender', 'title', 'occupation', 'faction', 'faction_role', 
-                                'goals', 'motivations', 'flaws', 'strengths', 'arc']
-            
+            character_keys = CHARACTER_PROMPT_KEYS
             for key in character_keys:
                 value = char_data_item.get(key)
                 if value:

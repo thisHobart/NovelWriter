@@ -84,15 +84,11 @@ DEFAULT_GENRES = tuple(SUBGENRES.keys())
 
 
 def supported_genres() -> tuple[str, ...]:
-    """题材列表以 Generators 里注册的处理器为准，取不到时用本地表兜底。"""
-    try:
-        from Generators.GenreHandlers import get_supported_genres  # type: ignore
+    """支持的题材列表。
 
-        genres = tuple(get_supported_genres())
-        if genres:
-            return genres
-    except Exception:  # noqa: BLE001 - Generators 不可用时界面仍要能开
-        pass
+    这份表曾经以 Generators 里注册的处理器为准、本地表只作兜底。那批处理器随
+    英文随机词库一起删除之后，本地表就是唯一来源——两边的内容与顺序当时是一致的。
+    """
     return DEFAULT_GENRES
 
 

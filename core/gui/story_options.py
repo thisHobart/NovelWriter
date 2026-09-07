@@ -11,15 +11,15 @@ from core.config.story_options import (
     LENGTH_OPTIONS,
     STRUCTURE_MAP,
     SUBGENRES,
+    supported_genres,
 )
-from Generators.GenreHandlers import get_supported_genres
 
-
-def supported_genres() -> tuple[str, ...]:
-    genres = tuple(get_supported_genres())
-    if not genres:
-        raise RuntimeError("题材处理器没有返回任何支持的题材")
-    return genres
+__all__ = [
+    "default_structure_for",
+    "structures_for",
+    "subgenres_for",
+    "supported_genres",
+]
 
 
 def subgenres_for(genre: str) -> tuple[str, ...]:
