@@ -29,7 +29,7 @@ def test_live_chapter_probe_uses_isolated_reviews_and_accepts(monkeypatch, tmp_p
                 return _passing(DomainReviewAgent._BLIND_DIMENSIONS)
             if "现实合理性与专业机制审稿人" in prompt:
                 return _passing(DomainReviewAgent._PLAUSIBILITY_DIMENSIONS)
-            if "评审 chapter" in prompt:
+            if "本次评审对象：chapter" in prompt:
                 return _passing(live_chapter_probe.get_domain_profile("legal_suspense").score_dimensions)
             return (
                 "雨落在扫描室窗外。程砚看着21:17的门禁记录，没有急着下结论。"
@@ -70,7 +70,7 @@ def test_live_chapter_probe_revises_once_and_keeps_an_improvement(monkeypatch, t
                 return _passing(DomainReviewAgent._BLIND_DIMENSIONS)
             if "现实合理性与专业机制审稿人" in prompt:
                 return _passing(DomainReviewAgent._PLAUSIBILITY_DIMENSIONS)
-            if "评审 chapter" in prompt:
+            if "本次评审对象：chapter" in prompt:
                 chapter_review_count += 1
                 if chapter_review_count == 1:
                     dimensions = live_chapter_probe.get_domain_profile(

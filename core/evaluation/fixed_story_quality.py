@@ -272,7 +272,7 @@ class ScriptedModel:
             return "reader_blind_review"
         if "现实合理性与专业机制审稿人" in prompt:
             return "plausibility_review"
-        if "评审 " in prompt:
+        if "本次评审对象：" in prompt:
             return "contract_compliance_review"
         if prompt.startswith("请撰写"):
             return "scene_prose_generation"
@@ -299,8 +299,8 @@ class ScriptedModel:
             if stage == "contract_compliance_review":
                 reviewed_content = prompt.split("待评审内容：", 1)[-1]
                 reviewed_content = reviewed_content.split("上一轮评审要求", 1)[0]
-                reviewed_content = reviewed_content.split("硬失败代码", 1)[0]
-                if "评审 scene_1" in prompt and "恢复了完整录像" in reviewed_content:
+                reviewed_content = reviewed_content.split("只输出 JSON", 1)[0]
+                if "本次评审对象：scene_1" in prompt and "恢复了完整录像" in reviewed_content:
                     failed = _scores(self.profile.score_dimensions)
                     failed["hard_failures"] = [
                         {

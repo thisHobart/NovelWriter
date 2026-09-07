@@ -30,7 +30,7 @@ def test_real_three_chapter_runner_accepts_and_exports_ab(monkeypatch, tmp_path)
                 return _passing(DomainReviewAgent._BLIND_DIMENSIONS)
             if "现实合理性与专业机制审稿人" in prompt:
                 return _passing(DomainReviewAgent._PLAUSIBILITY_DIMENSIONS)
-            if "评审 chapter" in prompt:
+            if "本次评审对象：chapter" in prompt:
                 return _passing(
                     live_story_quality.get_domain_profile(
                         "legal_suspense"
@@ -78,7 +78,7 @@ def test_real_three_chapter_runner_stops_after_first_unimproved_failure(
                 return _passing(DomainReviewAgent._BLIND_DIMENSIONS)
             if "现实合理性与专业机制审稿人" in prompt:
                 return _passing(DomainReviewAgent._PLAUSIBILITY_DIMENSIONS)
-            if "评审 chapter" in prompt:
+            if "本次评审对象：chapter" in prompt:
                 dimensions = live_story_quality.get_domain_profile(
                     "legal_suspense"
                 ).score_dimensions
@@ -136,7 +136,7 @@ def test_real_three_chapter_runner_resumes_cached_scenes_after_budget_stop(
                 return _passing(DomainReviewAgent._BLIND_DIMENSIONS)
             if "现实合理性与专业机制审稿人" in prompt:
                 return _passing(DomainReviewAgent._PLAUSIBILITY_DIMENSIONS)
-            if "评审 chapter" in prompt:
+            if "本次评审对象：chapter" in prompt:
                 return _passing(
                     live_story_quality.get_domain_profile(
                         "legal_suspense"

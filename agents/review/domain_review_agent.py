@@ -1441,23 +1441,14 @@ repair_scope 请写 scene_1、scene_2 等可路由位置，无法判断场次时
         repairs_requested: Optional[List[str]] = None,
     ) -> DomainReview:
         profile = self.profile
-        prompt = f"""你是{profile.reviewer_role}。评审 {stage}，只判断可证实的问题，不要为了显得严格而虚构缺陷。
+        # 块的顺序按「多久变一次」排，最稳定的在最前面：自建端点的前缀缓存只认
+        # 逐字相同的开头，一个字对不上，后面再多相同内容也全部重算。实测同一章的
+        # 25～32 次调用里 89% 的内容是重复的，而公共前缀是 0 个字符——首行那句
+        # 「评审 scene_1」就足以把每一次调用岔开。
+        # 稳定度：档案规则（整本书）＞案件圣经（整本书，偶尔刷新）＞章节契约与
+        # 账本（本章之内）＞本次评审对象与待评审正文（每次都变）。
+        stable_prefix = f"""你是{profile.reviewer_role}。你只判断可证实的问题，不要为了显得严格而虚构缺陷。
 
-章节契约：
-{compact_json(contract, 10000)}
-
-{profile.bible_noun}与体系规则：
-{compact_json(case_bible, 7000)}
-
-故事账本：
-{compact_json(build_ledger_prompt_view(suspense_ledger, int(contract.get("chapter", 0) or 0)), 7000)}
-
-额外上下文：
-{extra_context}
-
-待评审内容：
-{content[:18000]}
-{self._repair_check_block(list(repairs_requested or []))}
 硬失败代码仅可使用：{', '.join(sorted(profile.hard_failure_codes))}。
 评分维度为0到4分：{', '.join(profile.score_dimensions)}。
 {self._SCORE_RUBRIC}
@@ -1468,6 +1459,23 @@ repair_scope 请写 scene_1、scene_2 等可路由位置，无法判断场次时
 缺的是什么、改成什么才能到 4 分。给不出这一条就说明该维度并没有问题，请改打 4 分。
 判不通过却一条修复项都开不出来，是这份评审自己没做完，不是稿子没毛病。
 
+{profile.bible_noun}与体系规则：
+{compact_json(case_bible, 7000)}
+
+章节契约：
+{compact_json(contract, 10000)}
+
+故事账本：
+{compact_json(build_ledger_prompt_view(suspense_ledger, int(contract.get("chapter", 0) or 0)), 7000)}"""
+
+        variable_suffix = f"""本次评审对象：{stage}
+
+额外上下文：
+{extra_context}
+
+待评审内容：
+{content[:18000]}
+{self._repair_check_block(list(repairs_requested or []))}
 只输出 JSON：
 {{
   "scores": {{{self._score_template()}}},
@@ -1479,6 +1487,7 @@ repair_scope 请写 scene_1、scene_2 等可路由位置，无法判断场次时
   "unregistered_narrative_elements": [{{"type":"unregistered_narrative_element","quote":"正文短引文","description":"图中未注册的重要线索、事实、揭示或情节线","suggested_node_type":"clue|fact|reveal|thread"}}],
   "strengths": ["具体优点"]
 }}"""
+        prompt = f"{stable_prefix}\n\n{variable_suffix}"
         try:
             ignored_dimensions = self._non_applicable_contract_dimensions(contract)
             return self._call_review(
