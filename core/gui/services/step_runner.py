@@ -83,8 +83,9 @@ def full_workflow_work(output_dir: str, model: str = "",
                        steps: Optional[list] = None) -> Callable[[Callable], Dict[str, Any]]:
     """依次跑完四个阶段，进度按阶段等分。
 
-    刻意不调用编排器的 execute_complete_workflow：逐阶段跑可以在任一阶段失败时
-    保留前面的产物，也让状态栏的进度落在真实的阶段边界上。
+    逐阶段跑，而不是一次性交给一个总编排：任一阶段失败时前面的产物都留在磁盘上，
+    状态栏的进度也落在真实的阶段边界上。曾经那个 StoryGenerationOrchestrator 就是
+    因此没有被界面接上，已随本次清理删除。
     """
     plan = steps or ORDERED_STEPS
 

@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -122,8 +121,6 @@ class StageCard(QWidget):
 class WorkflowPage(StagePage):
     stage_key = "workflow"
 
-    reset_requested = Signal()
-
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("工作流总览", "四个生成阶段的实时状态以磁盘产物为准")
 
@@ -184,14 +181,12 @@ class WorkflowPage(StagePage):
         automation = Card("自动化")
         self.resume_button = secondary_button("从断点继续")
         self.analyze_button = secondary_button("分析当前内容")
-        self.reset_button = secondary_button("重置工作流状态")
         self.resume_button.clicked.connect(self._resume)
         self.analyze_button.clicked.connect(self._analyze)
-        self.reset_button.clicked.connect(self._reset)
-        for button in (self.resume_button, self.analyze_button, self.reset_button):
+        for button in (self.resume_button, self.analyze_button):
             automation.body.addWidget(button)
         automation.body.addWidget(hint_label(
-            "重置只清空运行记录，不删除任何已生成的文件。"))
+            "「从断点继续」按磁盘上已有的产物判断还差哪几个阶段。"))
         self.add_card(automation)
 
         self.finish_inspector()
@@ -235,15 +230,6 @@ class WorkflowPage(StagePage):
             "设定 {lore} · 结构 {structure} · 场景 {scenes} · 章节 {chapters} 个文件，"
             "正文累计 {words:,} 字".format(words=words, **counts),
         )
-
-    def _reset(self) -> None:
-        answer = QMessageBox.question(
-            self, "重置工作流状态",
-            "只清空运行记录（system 下的 checkpoint 状态），不会删除任何已生成的文件。继续吗？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if answer == QMessageBox.Yes:
-            self.reset_requested.emit()
 
     # ---------------------------------------------------------------- 刷新
     def set_states(self, states: Dict[str, StepState]) -> None:

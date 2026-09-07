@@ -144,7 +144,6 @@ class MainWindow(QMainWindow):
             stage.status_message.connect(self._on_status_message)
             stage.artifacts_changed.connect(self.refresh_all)
 
-        self.workflow_page.reset_requested.connect(self._reset_workflow_state)
 
     def _populate_backends(self) -> None:
         backends = list(get_available_backends()) or ["api"]
@@ -320,23 +319,6 @@ class MainWindow(QMainWindow):
             return
         self.refresh_all()
         self.status.set_done("参数已保存", path)
-
-    def _reset_workflow_state(self) -> None:
-        """只清运行记录，不动任何产物文件。"""
-        try:
-            from agents.orchestration.checkpoint_state import CheckpointStateManager
-
-            manager = CheckpointStateManager(output_dir=self.output_dir(), logger=logger)
-            state = manager.load_state()
-            if state is not None:
-                manager.reset_workflow(state)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("重置工作流状态失败：%s", exc, exc_info=True)
-            self.refresh_all()
-            self.status.set_error("重置失败", str(exc))
-            return
-        self.refresh_all()
-        self.status.set_done("工作流状态已重置", "已生成的文件都保留在磁盘上。")
 
     # ================================================== 关闭
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名

@@ -1,5 +1,24 @@
 # NovelWriter Agentic Integration Guide
 
+> ## ⚠️ 这是设计史料，不是现行架构
+>
+> 本文描述的多智能体编排层（`StoryGenerationOrchestrator`、`MultiAgentOrchestrator`、
+> `QualityControlAgent`、`ConsistencyAgent`、checkpoint 断点续跑）**设计出来了，但从未
+> 接到界面上**，已于 2026-09-07 删除。文中的导入路径和代码示例现在都跑不通。
+>
+> 实际在跑的是：
+>
+> | 做什么 | 在哪 |
+> |---|---|
+> | 四个阶段（设定/结构/场景/章节）依次执行 | `core/generation/stage_pipeline.py` |
+> | 章节生成、质量闸门、定向重修 | `core/generation/chapter_generation_loop.py` |
+> | 四份独立评审的合议 | `agents/review/domain_review_agent.py` |
+> | 章节写作 | `agents/writing/chapter_writing_agent.py` |
+> | 状态判断 | 一律以磁盘上的产物为准，不读任何断点记录 |
+>
+> 界面为什么逐阶段跑而不是交给一个总编排，见 `core/gui/services/step_runner.py`
+> 中 `full_workflow_work` 的说明。端到端的现行流程见 `docs/workflow.md`。
+
 This guide explains how to integrate and use the agentic AI capabilities in NovelWriter.
 
 ## Overview

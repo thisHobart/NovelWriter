@@ -179,11 +179,6 @@ def test_workflow_cards_resume_and_analysis(qapp, window, monkeypatch):
 
     monkeypatch.setattr(workflow_module, "step_work", fake_step_work)
     monkeypatch.setattr(workflow_module, "full_workflow_work", fake_full_work)
-    monkeypatch.setattr(
-        workflow_module.QMessageBox,
-        "question",
-        lambda *args, **kwargs: QMessageBox.Yes,
-    )
     window._navigate("workflow")
 
     _click_and_wait(qapp, window, window.workflow_page.run_all_button)
@@ -208,9 +203,9 @@ def test_workflow_cards_resume_and_analysis(qapp, window, monkeypatch):
     QTest.mouseClick(window.workflow_page.analyze_button, Qt.LeftButton)
     assert "正文累计" in _status_context(window)
 
-    QTest.mouseClick(window.workflow_page.reset_button, Qt.LeftButton)
-    qapp.processEvents()
-    assert _status_text(window) == "工作流状态已重置"
+    # 「重置工作流状态」已随 checkpoint 层一起删除：断点判断本来就只看磁盘产物，
+    # 那个按钮清的是一份没有任何代码再写入的记录。
+    assert not hasattr(window.workflow_page, "reset_button")
 
 
 def test_missing_output_folder_actions_report_warning(qapp, window):
