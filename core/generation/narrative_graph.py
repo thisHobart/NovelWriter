@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from glob import glob
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from filelock import FileLock
+from core.generation.locks import project_lock
 
 from core.generation.story_ledger import (
     RevisionConflictError,
@@ -241,7 +241,7 @@ class NarrativeGraphManager:
         os.makedirs(self.ledger_dir, exist_ok=True)
         if os.path.exists(self.graph_path):
             return
-        with FileLock(self.lock_path):
+        with project_lock(self.lock_path):
             if not os.path.exists(self.graph_path):
                 _atomic_write_json(self.graph_path, self.empty_graph())
 
@@ -266,7 +266,7 @@ class NarrativeGraphManager:
 
     def _migrate_legacy_dynamic_fields(self) -> None:
         """Move old node runtime fields to the StoryLedger without losing them."""
-        with FileLock(self.lock_path):
+        with project_lock(self.lock_path):
             graph = self._read_graph()
             migrated_states: Dict[str, Dict[str, Any]] = {}
             changed = False
@@ -298,7 +298,7 @@ class NarrativeGraphManager:
 
             ledger_manager = StoryLedgerManager(self.output_dir)
             ledger_manager.initialize()
-            with FileLock(ledger_manager.suspense_ledger_lock_path):
+            with project_lock(ledger_manager.suspense_ledger_lock_path):
                 ledger = ledger_manager.load_suspense_ledger()
                 states = ledger.setdefault("narrative_node_states", {})
                 for node_id, dynamic in migrated_states.items():
@@ -1002,7 +1002,7 @@ class NarrativeGraphManager:
         """Refresh graph-dependent runtime states after a structural revision."""
         ledger_manager = StoryLedgerManager(self.output_dir)
         ledger_manager.initialize()
-        with FileLock(ledger_manager.suspense_ledger_lock_path):
+        with project_lock(ledger_manager.suspense_ledger_lock_path):
             ledger = ledger_manager.load_suspense_ledger()
             self.apply_transitions_to_ledger(
                 graph,
@@ -1037,7 +1037,7 @@ class NarrativeGraphManager:
         if initial_impact["historical_conflicts"]:
             raise NarrativeGraphError(initial_impact["historical_conflicts"])
 
-        with FileLock(self.lock_path):
+        with project_lock(self.lock_path):
             graph = self._read_graph()
             base_revision = int(graph.get("revision", 0) or 0)
             if base_revision != int(expected_revision):

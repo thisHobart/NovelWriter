@@ -12,7 +12,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from filelock import FileLock
+from core.generation.locks import project_lock
 
 from core.generation.domain_profiles import DomainProfile, get_domain_profile, resolve_domain_profile
 from core.generation.helper_fns import read_json
@@ -767,7 +767,7 @@ class StoryLedgerManager:
             contract_hash=str(chapter_delta.get("contract_hash", "")),
         )
         existed = os.path.exists(path)
-        with FileLock(self.suspense_ledger_lock_path):
+        with project_lock(self.suspense_ledger_lock_path):
             try:
                 _atomic_write_json(path, chapter_delta)
                 revision = self._accept_chapter_locked(
@@ -805,7 +805,7 @@ class StoryLedgerManager:
         path = os.path.join(self.conflict_dir, f"{conflict_id}.json")
         _atomic_write_json(path, conflict)
 
-        with FileLock(self.suspense_ledger_lock_path):
+        with project_lock(self.suspense_ledger_lock_path):
             ledger = self.load_suspense_ledger()
             ledger.setdefault("unresolved_conflicts", []).append(
                 {
@@ -831,7 +831,7 @@ class StoryLedgerManager:
         breaking.  Once they have said so, the answer has to be durable — asking
         again on every retry is how a chapter becomes unwritable.
         """
-        with FileLock(self.suspense_ledger_lock_path):
+        with project_lock(self.suspense_ledger_lock_path):
             ledger = self.load_suspense_ledger()
             approvals = ledger.setdefault("approved_contradictions", [])
             key = {"chapter": int(chapter_number), "id": str(record_id)}
@@ -868,7 +868,7 @@ class StoryLedgerManager:
             "record_ids": sorted({str(item) for item in record_ids if str(item)}),
             "created_at": created_at,
         }
-        with FileLock(self.suspense_ledger_lock_path):
+        with project_lock(self.suspense_ledger_lock_path):
             ledger = self.load_suspense_ledger()
             pending = ledger.setdefault("pending_regenerations", [])
             pending[:] = [
@@ -902,7 +902,7 @@ class StoryLedgerManager:
     ) -> bool:
         """Clear exactly the ruling marker satisfied by the accepted new prose."""
         completed_at = datetime.now().isoformat()
-        with FileLock(self.suspense_ledger_lock_path):
+        with project_lock(self.suspense_ledger_lock_path):
             ledger = self.load_suspense_ledger()
             pending = ledger.setdefault("pending_regenerations", [])
             marker = next(
@@ -959,7 +959,7 @@ class StoryLedgerManager:
         undecided clash quietly froze the whole project.
         """
         resolved_at = datetime.now().isoformat()
-        with FileLock(self.suspense_ledger_lock_path):
+        with project_lock(self.suspense_ledger_lock_path):
             ledger = self.load_suspense_ledger()
             unresolved = ledger.setdefault("unresolved_conflicts", [])
             entry = next(
@@ -1007,7 +1007,13 @@ class StoryLedgerManager:
         expected_revision: Optional[int] = None,
         delta_path: str = "",
     ) -> int:
-        with FileLock(self.suspense_ledger_lock_path):
+        # 叙事图管理器在锁外构造：它的构造过程会做一次旧格式迁移，而迁移自己要
+        # 先拿叙事图锁、再拿账本锁。在账本锁里面构造就把顺序倒过来了。锁虽然已经
+        # 可重入，但顺序仍按「先图后账本」摆正，跨线程时才不会真冲突。
+        from core.generation.narrative_graph import NarrativeGraphManager
+
+        graph_manager = NarrativeGraphManager(self.output_dir)
+        with project_lock(self.suspense_ledger_lock_path):
             return self._accept_chapter_locked(
                 chapter_number,
                 contract,
@@ -1015,6 +1021,7 @@ class StoryLedgerManager:
                 chapter_delta=chapter_delta,
                 expected_revision=expected_revision,
                 delta_path=delta_path,
+                narrative_graph_manager=graph_manager,
             )
 
     def _accept_chapter_locked(
