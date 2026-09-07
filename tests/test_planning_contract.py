@@ -8,6 +8,7 @@ from core.generation.planning_contract import (
     PlanningContractError,
     build_existing_planning_index,
     collect_history_defects,
+    contract_for_scene,
     contract_output_instructions,
     downstream_obligations,
     extract_scene_plan_contract,
@@ -21,17 +22,32 @@ from core.generation.planning_contract import (
 from core.generation.story_ledger import StoryLedgerManager
 
 
-def _contract(chapter, threads=None):
+def _continuity(chapter):
+    """第二章起必须交代的衔接块；第一章没有上一章可接。"""
+    if int(chapter) <= 1:
+        return {}
+    return {
+        "continuity": {
+            "picks_up_from": f"第 {chapter - 1} 章结尾程砚把封存单推回桌面那一刻",
+            "time_gap": "紧接上一章结尾",
+            "opening_positions": [{"character": "程砚", "location": "讯问室"}],
+        }
+    }
+
+
+def _contract(chapter, threads=None, function="advance"):
     return {
         "chapter": chapter,
         "origin": "scene_planning",
         "schema_version": 2,
+        "chapter_function": function,
         "facts_added": [],
         "facts_confirmed": [],
         "facts_contradicted": [],
         "timeline_events": [],
         "character_updates": [],
         "plot_thread_updates": threads or [],
+        **_continuity(chapter),
     }
 
 
@@ -585,3 +601,81 @@ def test_old_contracts_get_compatible_chapter_function_defaults():
 
     assert normalized["chapter_function"] == "advance"
     assert normalized["ending_effect"] == "证人撤回证词"
+
+
+def _staged_contract():
+    return {
+        "chapter": 4,
+        "scene_boundaries": [
+            "scene_1: 蒋静登庭指认",
+            "scene_2: 郑娜敏签发逮捕令",
+            "scene_3: 法官当庭裁决梁浩无罪",
+        ],
+        "facts_added": [
+            {"id": "F1", "first_stated_at": "scene_1"},
+            {"id": "F3", "first_stated_at": "scene_3"},
+        ],
+        "fair_play_clues": [
+            {"id": "C1", "introduced_at": "scene_1", "payoff_at": "scene_3"},
+            {"id": "C3", "introduced_at": "scene_3"},
+        ],
+        "narrative_transitions": [
+            {"node_id": "N1", "scene": "scene_2"},
+            {"node_id": "N3", "scene": "scene_3"},
+        ],
+        "timeline_events": [{"id": "TL1", "event": "没有场次标记"}],
+        "reader_must_not_know_yet": ["母本位置"],
+        "forbidden_reveals": ["清道夫身份"],
+    }
+
+
+def test_a_scene_only_sees_the_contract_up_to_itself():
+    """整份契约写着后面几场要做什么，原样发给写作等于先剧透再要求别写。"""
+    scoped = contract_for_scene(_staged_contract(), 2)
+
+    assert scoped["scene_boundaries"] == ["scene_1: 蒋静登庭指认", "scene_2: 郑娜敏签发逮捕令"]
+    assert [item["id"] for item in scoped["facts_added"]] == ["F1"]
+    assert [item["id"] for item in scoped["fair_play_clues"]] == ["C1"]
+    assert [item["node_id"] for item in scoped["narrative_transitions"]] == ["N1"]
+
+
+def test_a_clue_that_pays_off_later_still_reaches_the_scene_that_plants_it():
+    """按埋下的场次过滤，不按兑现的场次——否则第一场就看不到自己要埋的线索。"""
+    scoped = contract_for_scene(_staged_contract(), 1)
+    assert [item["id"] for item in scoped["fair_play_clues"]] == ["C1"]
+
+
+def test_records_without_a_scene_marker_are_always_kept():
+    """看不出属于第几场的，有可能正是本场必须遵守的约束，宁可多给。"""
+    scoped = contract_for_scene(_staged_contract(), 1)
+    assert [item["id"] for item in scoped["timeline_events"]] == ["TL1"]
+    assert scoped["reader_must_not_know_yet"] == ["母本位置"]
+    assert scoped["forbidden_reveals"] == ["清道夫身份"]
+
+
+def test_the_last_scene_sees_the_whole_contract():
+    assert contract_for_scene(_staged_contract(), 3) == _staged_contract()
+
+
+def test_filtering_never_touches_the_contract_the_gate_uses():
+    original = _staged_contract()
+    contract_for_scene(original, 1)
+    assert original == _staged_contract()
+
+
+def test_an_unknown_scene_number_leaves_the_contract_alone():
+    assert contract_for_scene(_staged_contract(), None) == _staged_contract()
+
+
+def test_free_text_that_happens_to_mention_a_later_scene_is_not_a_marker():
+    """只看已知的场次标记键；正文里随口提到 scene 3 不算这条记录属于第三场。"""
+    contract = {
+        "reader_knows_after": [{"id": "K1", "note": "读者知道 scene 3 会揭晓母本"}],
+        "scene_boundaries": [
+            {"scene_number": 1, "end_state": "甲"},
+            {"scene_number": 3, "end_state": "丙"},
+        ],
+    }
+    scoped = contract_for_scene(contract, 1)
+    assert [item["id"] for item in scoped["reader_knows_after"]] == ["K1"]
+    assert [item["scene_number"] for item in scoped["scene_boundaries"]] == [1]

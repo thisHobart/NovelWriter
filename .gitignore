@@ -23,3 +23,7 @@ temp/
 .DS_Store
 Thumbs.db
 
+
+# 成章验证用的 current_work 副本；每次 --reset 都会重建，不入库。
+sandbox_run*/
+sandbox_outline_gate/

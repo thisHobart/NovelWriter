@@ -243,7 +243,30 @@ def _run_long_form_chapters(
         plan.batch_size = 1
     if plan.chapters_to_write:
         context.progress(f"撰写 {len(plan.chapters_to_write)} 章正文", 0.18)
-        result = agent.write_chapters_batch(chapter_info, plan)
+
+        def chapter_progress(
+            event: str,
+            number: int,
+            completed: int,
+            total: int,
+        ) -> None:
+            fraction = completed / total if total else -1.0
+            if event == "started":
+                context.progress(
+                    f"正在撰写第 {number} 章（已完成 {completed}/{total}）",
+                    fraction,
+                )
+            else:
+                context.progress(
+                    f"第 {number} 章已完成（{completed}/{total}）",
+                    fraction,
+                )
+
+        result = agent.write_chapters_batch(
+            chapter_info,
+            plan,
+            progress_callback=chapter_progress,
+        )
         if not result.success:
             messages = result.messages or (result.data or {}).get("errors", [])
             raise StageGenerationError("；".join(messages) or "章节生成失败")
@@ -253,6 +276,80 @@ def _run_long_form_chapters(
         ("story/content/chapters/chapter_*.md",),
     )
     return {"step": "chapters", "generated_files": files}
+
+
+def _load_pending(output_dir: str, chapter_number: int | None):
+    """取一章的待复审记录，顺便挡掉两种做不了的情况。"""
+    from core.generation import pending_review
+
+    if chapter_number is None:
+        raise StageGenerationError("复审动作缺少章节编号")
+    record = pending_review.load(output_dir, chapter_number)
+    if record is None:
+        raise StageGenerationError(f"第 {chapter_number} 章没有待复审记录")
+    if not record.resumable:
+        raise StageGenerationError(
+            f"第 {chapter_number} 章只写到一半就被闸门拦下，没有完整章节可用；"
+            "请重写本章，或先回场景规划改这一章的规划"
+        )
+    return record
+
+
+def _review_pending_chapter(
+    context: StageContext,
+    chapter_number: int | None,
+    action: str,
+    options: Dict[str, Any],
+) -> Dict[str, Any]:
+    """执行作者对某一待复审章节的裁决：照建议重修，或人工放行。
+
+    动作本身由写作 agent 完成，而不是在这里自己拼一个质量闭环：验收有可能判定
+    这一章的契约要让位于账本，那时旧正文全部作废、需要逐场重生成，而重生成用得
+    上的写作上下文与生成能力只有 agent 有。
+    """
+    from agents.writing.chapter_writing_agent import ChapterWritingAgent
+
+    record = _load_pending(context.output_dir, chapter_number)
+    number = record.chapter_number
+
+    asks: list[str] = []
+    if action == "revise":
+        issue_ids = options.get("issue_ids")
+        asks = record.asks_for(issue_ids if isinstance(issue_ids, list) else None)
+        if not asks and not record.needs_review_rerun:
+            raise StageGenerationError(
+                f"第 {number} 章没有勾选任何可执行的修改建议，重修没有依据"
+            )
+        if asks:
+            context.progress(f"照 {len(asks)} 条建议重修第 {number} 章", 0.15)
+        else:
+            # 评审没出过结论的那一稿：这条路是重跑评审，先给它补上判定。
+            context.progress(f"重跑第 {number} 章的质量评审", 0.15)
+    else:
+        context.progress(f"人工放行第 {number} 章", 0.20)
+
+    agent = ChapterWritingAgent(
+        context.output_dir,
+        app_instance=None,
+        use_new_structure=True,
+        model=context.model,
+    )
+    result = agent.review_pending_chapter(
+        number,
+        action,
+        asks=asks,
+        reason=str(options.get("reason") or "").strip(),
+    )
+    if not result.success:
+        messages = result.messages or (result.data or {}).get("errors", [])
+        raise StageGenerationError("；".join(messages) or f"第 {number} 章复审未完成")
+    return {
+        "step": "chapters",
+        "chapter_number": number,
+        "generated_files": _files(
+            context.output_dir, (f"story/content/chapters/chapter_{number}.md",)
+        ),
+    }
 
 
 def _run_chapters(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
@@ -284,11 +381,16 @@ def run_stage_action(
     parameters: Dict[str, Any] | None = None,
     report: ProgressReport | None = None,
     chapter_number: int | None = None,
+    options: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Run one user-visible action inside a stage.
 
     The Qt UI exposes fine-grained buttons. Keeping this dispatch here ensures
     those buttons remain GUI-independent and testable without importing Qt.
+
+    `options` 只服务于复审动作：重修要知道作者勾了哪几条建议（`issue_ids`），
+    放行要记下理由（`reason`）。这两样都不是作品参数，混进 parameters 会被当成
+    生成参数存进档案。
     """
     if step not in {"lore", "structure", "scenes", "chapters"}:
         raise ValueError(f"未知生成阶段：{step}")
@@ -370,6 +472,11 @@ def run_stage_action(
             raise ValueError(f"场景规划阶段没有动作：{action}")
         files = _require(output_dir, "场景规划", patterns)
         result = {"step": step, "action": action, "generated_files": files}
+    elif action in {"revise", "waive"}:
+        result = _review_pending_chapter(
+            context, chapter_number, action, options or {}
+        )
+        result["action"] = action
     else:
         if action not in {"next", "all", "rewrite"}:
             raise ValueError(f"章节撰写阶段没有动作：{action}")

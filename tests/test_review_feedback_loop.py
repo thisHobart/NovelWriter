@@ -341,6 +341,26 @@ def test_scene_revision_drops_an_echoed_old_scene_before_the_separator():
     assert revised == "新稿：金属链造成相间短路。"
 
 
+def test_the_brief_carries_only_the_asks_the_author_left_checked():
+    """作者划掉的条目不能出现在提示词里，否则勾选框只是个装饰。"""
+    review = DomainReview(
+        stage="chapter",
+        passed=False,
+        scores=flat_scores(),
+        pass_average=3.2,
+        repair_instructions=["删掉旁白那一句", "补上梁浩的手部动作", "换掉口号台词"],
+    )
+
+    everything = reviewer().revision_brief(review)
+    assert "删掉旁白那一句" in everything
+    assert "换掉口号台词" in everything
+
+    chosen = reviewer().revision_brief(review, asks=["删掉旁白那一句"])
+    assert "删掉旁白那一句" in chosen
+    assert "补上梁浩的手部动作" not in chosen
+    assert "换掉口号台词" not in chosen
+
+
 def test_the_brief_falls_back_to_the_shortfall_when_nothing_was_listed():
     """评审什么都没说时仍要给个着力点，否则重修只能原样再写一遍。"""
     review = DomainReview(

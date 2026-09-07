@@ -40,12 +40,9 @@ class ScenePlanPage(StagePage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("场景规划", "详细场景大纲")
 
-        self.outline_button = secondary_button("生成章节大纲")
+        # 「生成章节大纲」只在右栏「分步生成」里出现一次，页头只放主按钮。
         self.primary = primary_button("规划场景")
-        self.header.add_action(self.outline_button)
         self.header.add_action(self.primary)
-        self.outline_button.clicked.connect(
-            lambda: self._run_stage("outline", self.outline_button))
         self.primary.clicked.connect(
             lambda: self._run_stage("full", self.primary))
 
@@ -315,15 +312,11 @@ class ScenePlanPage(StagePage):
             self.gate.set_content("被阻塞", [f"{t}：{d}" for t, d in reasons], theme.DANGER)
             self.primary.setEnabled(False)
             self.primary.setToolTip("需先完成故事结构；也可在左侧选择强制规划。")
-            self.outline_button.setEnabled(False)
-            self.outline_button.setToolTip("需先完成故事结构。")
         else:
             self.gate.set_content("门禁已通过", ["输入依赖齐备，可以规划场景。"],
                                   theme.SUCCESS)
             self.primary.setEnabled(True)
             self.primary.setToolTip("")
-            self.outline_button.setEnabled(True)
-            self.outline_button.setToolTip("")
 
         self.primary.setText("重新规划场景" if self._plans else "规划场景")
         self.header.set_subtitle(

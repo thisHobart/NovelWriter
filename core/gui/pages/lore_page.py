@@ -118,15 +118,14 @@ class LorePage(StagePage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("世界设定", "世界构建与背景")
 
+        # 「完善主要人物」只在右栏「分步生成」里出现一次；页头留右栏没有的
+        # 「推荐作品标题」和跑完整阶段的主按钮。
         self.titles_button = secondary_button("推荐作品标题")
-        self.enhance_button = secondary_button("完善主要人物")
         self.generate_button = primary_button("生成世界设定")
-        for button in (self.titles_button, self.enhance_button, self.generate_button):
+        for button in (self.titles_button, self.generate_button):
             self.header.add_action(button)
         self.titles_button.clicked.connect(
             lambda: self._run_step("titles", self.titles_button))
-        self.enhance_button.clicked.connect(
-            lambda: self._run_step("enhance", self.enhance_button))
         self.generate_button.clicked.connect(
             lambda: self._run_step("full", self.generate_button))
 
@@ -294,8 +293,6 @@ class LorePage(StagePage):
             f"{len(backgrounds)} 份" if backgrounds else
             ("可选" if characters else "需先生成人物"))
 
-        self.enhance_button.setEnabled(bool(characters))
-        self.enhance_button.setToolTip("" if characters else "需先生成人物。")
         self.titles_button.setEnabled(bool(lore_text.strip()))
         self.titles_button.setToolTip("" if lore_text.strip() else "需先生成世界观。")
 

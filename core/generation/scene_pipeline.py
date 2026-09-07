@@ -39,6 +39,16 @@ from core.generation.planning_contract import (
     validate_contract_sequence,
     validate_planning_contract,
 )
+from core.generation.chapter_continuity import (
+    CHAPTER_FUNCTIONS,
+    CONTINUITY_KEY,
+    chapter_function_defects,
+    continuity_defects,
+    continuity_instructions,
+    continuity_schema_block,
+    established_context,
+    neglected_threads,
+)
 from core.generation.narrative_graph import NarrativeGraphManager
 from core.generation.story_ledger import StoryLedgerManager
 from core.generation.semantic_identity import (
@@ -46,8 +56,15 @@ from core.generation.semantic_identity import (
     resolve_contract_identities,
     resolve_domain_identities,
 )
-from core.generation.domain_profiles import resolve_domain_profile
+from agents.review.domain_review_agent import DomainReviewAgent, DomainReviewError
+from core.generation.domain_profiles import (
+    QUALITY_LOOP_OFF,
+    apply_quality_loop_mode,
+    resolve_domain_profile,
+    resolve_quality_loop_mode,
+)
 import os
+import re
 import logging
 from core.config.story_options import STRUCTURE_SECTIONS_MAP
 from core.localization import zh_label
@@ -103,14 +120,62 @@ class ScenePipeline:
             return False
         if output_dir is None or chapter_number is None:
             return True
-        contract = StoryLedgerManager(output_dir).load_contract(chapter_number, content)
+        manager = StoryLedgerManager(output_dir)
+        contract = manager.load_contract(chapter_number, content)
         if contract is None:
             return False
+        # 已验收章节的规划不再重生成：它对应的正文已经落盘并记进账本，重规划只会
+        # 让两者对不上。只有还没写的章节才要求补齐衔接字段——那正是重规划还便宜、
+        # 也还有意义的时候。
+        accepted = {
+            int(item.get("chapter"))
+            for item in manager.load_suspense_ledger().get("accepted_chapters", [])
+            if isinstance(item, dict) and item.get("chapter")
+        }
         try:
-            validate_planning_contract(contract, chapter_number, require_origin=True)
+            validate_planning_contract(
+                contract,
+                chapter_number,
+                require_origin=True,
+                require_continuity=int(chapter_number) not in accepted,
+            )
         except PlanningContractError:
             return False
         return True
+
+    @staticmethod
+    def _continuity_context(output_dir, chapter_number):
+        """第 N 章规划时，关于「从第 N-1 章什么状态接过来」的全部已知事实。
+
+        全部来自已经落盘的契约与正文，不发起任何调用。
+        """
+        chapter_number = int(chapter_number)
+        if chapter_number <= 1:
+            return {}
+        contracts = load_planning_contracts(output_dir)
+        prior = [item for item in contracts if int(item["chapter"]) < chapter_number]
+        previous = next(
+            (item for item in prior if int(item["chapter"]) == chapter_number - 1), None
+        )
+        events = (previous or {}).get("timeline_events", []) or []
+        tail = ""
+        for folder in ("story/content/chapters", "chapters"):
+            candidate = os.path.join(
+                output_dir, *folder.split("/"), f"chapter_{chapter_number - 1}.md"
+            )
+            if os.path.isfile(candidate):
+                try:
+                    with open(candidate, "r", encoding="utf-8") as handle:
+                        tail = handle.read()[-2000:]
+                except (OSError, UnicodeError):
+                    tail = ""
+                break
+        return {
+            "previous_tail": tail,
+            "established": established_context(prior, chapter_number),
+            "previous_last_event": events[-1] if events else None,
+            "neglected": neglected_threads(prior, chapter_number),
+        }
 
     @staticmethod
     def _contract_instructions(output_dir, chapter_number, story_params):
@@ -131,6 +196,9 @@ class ScenePipeline:
             domain_fields=domain_fields,
             obligations=downstream_obligations(output_dir, chapter_number),
             narrative_context=narrative_context,
+            continuity_context=ScenePipeline._continuity_context(
+                output_dir, chapter_number
+            ),
         )
 
     @staticmethod
@@ -191,7 +259,9 @@ class ScenePipeline:
                 profile=resolve_domain_profile(story_params),
             )
             try:
-                contract = validate_planning_contract(resolution.contract, chapter_number)
+                contract = validate_planning_contract(
+                    resolution.contract, chapter_number, require_continuity=True
+                )
             except PlanningContractError as exc:
                 return None, [exc]
             contract["schema_version"] = CONTRACT_SCHEMA_VERSION
@@ -395,6 +465,113 @@ class ScenePipeline:
         )
         return matches[0] if matches else None
 
+    def backfill_chapter_continuity(
+        self, output_dir, chapter_number, selected_model, story_params
+    ):
+        """给一份旧契约补上 continuity 与 chapter_function，不重写场景规划。
+
+        这两个字段都是后来才加进契约的。整章重规划当然也能补上，但那会把一份已经
+        过了跨章校验、已经被后面章节依赖的规划整个重掷一次，只为拿几个字段；这里
+        只问缺的那几个，其余部分一个字不动。
+
+        返回 True 表示补上了，False 表示本来就有。补不上会抛
+        `PlanningContractError`，和其它契约缺陷走同一条路。
+        """
+        chapter_number = int(chapter_number)
+        manager = StoryLedgerManager(output_dir)
+        scene_plan_path = self._plan_path_for_chapter(output_dir, chapter_number)
+        if scene_plan_path is None:
+            raise PlanningContractError(
+                f"找不到第 {chapter_number} 章的场景规划，无法补衔接字段",
+                chapters=(chapter_number,),
+                code="chapter_continuity_missing",
+            )
+        scene_markdown = open_file(scene_plan_path)
+        contract = manager.load_contract(chapter_number, scene_markdown)
+        if contract is None:
+            raise PlanningContractError(
+                f"第 {chapter_number} 章没有与场景规划匹配的契约",
+                chapters=(chapter_number,),
+                code="planning_contract_invalid",
+            )
+        prior = [
+            item
+            for item in load_planning_contracts(output_dir)
+            if int(item["chapter"]) < chapter_number
+        ]
+
+        def defects_of(candidate):
+            return [
+                *chapter_function_defects(candidate, prior, chapter_number),
+                *continuity_defects(candidate, chapter_number),
+            ]
+
+        if not defects_of(contract):
+            return False
+
+        context = self._continuity_context(output_dir, chapter_number)
+        recent = ", ".join(
+            "第 {chapter} 章 {function}".format(
+                chapter=item["chapter"],
+                function=item.get("chapter_function") or "未填",
+            )
+            for item in prior[-3:]
+        )
+        base_prompt = f"""请为第 {chapter_number} 章补写机器可读的章节衔接声明与章节功能，不要改动场景规划本身。
+
+本章已经通过验收的场景规划：
+{scene_markdown}
+
+{continuity_instructions(chapter_number, **context)}
+
+chapter_function 说明本章在全书中承担什么功能，取值只能是
+{"|".join(CHAPTER_FUNCTIONS)}。前面几章的功能是：{recent or "无"}。
+连着三章都是同一种功能读者会觉得情节在原地打转，请挑真正贴合本章场景的那一个。
+
+只输出一个 JSON 对象，不要代码围栏、不要任何解释：
+{{
+  "chapter_function": "{"|".join(CHAPTER_FUNCTIONS)}",
+{continuity_schema_block(chapter_number).strip().rstrip(',')}
+}}
+"""
+        prompt = base_prompt
+        last_defects = []
+        for attempt in range(self.planning_retry_limit + 1):
+            response = send_prompt(prompt, model=selected_model)
+            try:
+                payload = json.loads(
+                    re.sub(
+                        r"^```(?:json)?|```$",
+                        "",
+                        (response or "").strip(),
+                        flags=re.MULTILINE,
+                    ).strip()
+                )
+            except (TypeError, ValueError):
+                payload = {}
+            block = payload.get(CONTINUITY_KEY, payload)
+            candidate = {**contract, CONTINUITY_KEY: block}
+            function = str(payload.get("chapter_function", "")).strip().lower()
+            if function:
+                candidate["chapter_function"] = function
+            last_defects = defects_of(candidate)
+            if not last_defects:
+                manager.save_contract(chapter_number, candidate, scene_markdown)
+                self.app.logger.info(
+                    "Backfilled the chapter %s hand-off without rewriting its plan",
+                    chapter_number,
+                )
+                return True
+            prompt = base_prompt + "\n上一次的回答不合格：\n" + "\n".join(
+                f"- {item}" for item in last_defects
+            )
+        raise PlanningContractError(
+            f"第 {chapter_number} 章的衔接与章节功能补写 {self.planning_retry_limit} "
+            "次仍不合格：" + "；".join(last_defects),
+            chapters=(chapter_number,),
+            code="chapter_continuity_missing",
+        )
+
     def _normalise_repeated_thread(self, output_dir, chapter_number, scene_markdown, selected_model):
         """Repair a duplicated thread ID without touching the creative Markdown.
 
@@ -557,6 +734,21 @@ class ScenePipeline:
             return False
         return bool(parse_chapter_numbers(content))
 
+    def _outline_reviewer(self, selected_model, story_params):
+        """大纲阶段的评审；质量闭环关掉时返回 None，一次调用都不发。"""
+        mode = resolve_quality_loop_mode(story_params)
+        if mode == QUALITY_LOOP_OFF:
+            return None
+        profile = apply_quality_loop_mode(resolve_domain_profile(story_params), mode)
+        # 发送器显式传本模块的 send_prompt：评审默认用它自己模块里的那一个，
+        # 而这一阶段的测试都打在本模块上——不传就会在测试里真的发起网络调用。
+        return DomainReviewAgent(
+            model=selected_model,
+            profile=profile,
+            logger=self.app.logger,
+            send_prompt_fn=send_prompt,
+        )
+
     def _generate_valid_outline_response(
         self, prompt, selected_model, section_name, section_content, story_params
     ):
@@ -564,7 +756,12 @@ class ScenePipeline:
 
         A world-building conflict used to discard the whole section with no retry
         at all — one stray word and an entire act silently vanished from the book.
+
+        结构检查通过之后还要过一遍大纲评审：大纲里「辩护律师当庭指挥法警抓人」这种
+        事，此前一路穿到整章写完才被抓住，而那时重修改不掉——大纲要求这么写。在这
+        里拦一次一个结构部分只花一次调用，下游少赔一轮定向重修就回本了。
         """
+        reviewer = self._outline_reviewer(selected_model, story_params)
         seen = []
         rejected = ""
         previous = None
@@ -590,6 +787,13 @@ class ScenePipeline:
                         "没有可识别的章标题。每一章都必须单独成行，"
                         "写成“### 第 N 章：标题”，不要用“第一章”这种中文数字"
                     )
+            # 结构不成立时不评审：评审要引大纲原文，而这一稿连章标题都还没有。
+            if not problems and reviewer is not None:
+                problems.extend(
+                    self._outline_review_problems(
+                        reviewer, response, section_name, section_content, seen
+                    )
+                )
             if not problems:
                 return response
 
@@ -615,6 +819,38 @@ class ScenePipeline:
             + "；".join(seen),
             code="outline_retry_exhausted",
         )
+
+    def _outline_review_problems(
+        self, reviewer, outline, section_name, section_content, already_seen
+    ):
+        """大纲评审开出的问题；评审自己失灵时放行，不让整段大纲卡死。
+
+        判不出来和判不合格对作者是两回事：前者只说明这一次调用没成，而大纲阶段
+        没有待复审出口，卡在这里等于整部书写不下去。失灵记进日志，人能查。
+        """
+        try:
+            review = reviewer.review_chapter_outline(
+                outline,
+                section_name,
+                section_content,
+                repairs_requested=list(already_seen) or None,
+            )
+        except DomainReviewError as error:
+            self.app.logger.warning(
+                "Section '%s' outline review returned no verdict, letting it through: %s",
+                section_name,
+                error,
+            )
+            return []
+        if review.passed:
+            return []
+        self.app.logger.warning(
+            "Section '%s' outline failed review (avg %.2f/%.2f)",
+            section_name,
+            review.average_score,
+            review.pass_average,
+        )
+        return review.asks or ["章节大纲未通过评审，但评审没有给出具体修复项"]
 
     def _generate_chapter_outline(self, ui):
         """Runs on a worker thread; UI values arrive via the snapshot."""

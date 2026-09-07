@@ -19,6 +19,26 @@ from core.generation.story_ledger import StoryLedgerManager
 from agents.writing.chapter_writing_agent import ChapterWritingAgent
 
 
+def _continuity(chapter):
+    """第二章起契约必须交代的衔接块。第一章没有上一章可接。"""
+    if int(chapter) <= 1:
+        return {}
+    return {
+        "continuity": {
+            "picks_up_from": f"第 {int(chapter) - 1} 章结尾没有收起来的那份证物袋",
+            "time_gap": "紧接上一章结尾",
+            "opening_positions": [{"character": "程砚", "location": "物证中心"}],
+        }
+    }
+
+
+def _chapter_function(chapter):
+    """轮换章节功能，免得测试项目自己撞上「连着三章同一种功能」。"""
+    from core.generation.chapter_continuity import CHAPTER_FUNCTIONS
+
+    return CHAPTER_FUNCTIONS[int(chapter) % len(CHAPTER_FUNCTIONS)]
+
+
 class FakeApp:
     def __init__(self, output_dir):
         self.output_dir = str(output_dir)
@@ -60,6 +80,8 @@ def test_existing_scene_plans_are_skipped_and_only_missing_are_generated(monkeyp
         1,
         {
             "chapter": 1,
+            "chapter_function": _chapter_function(1),
+            **_continuity(1),
             "origin": "scene_planning",
             "schema_version": 2,
             "facts_added": [],
@@ -78,6 +100,8 @@ def test_existing_scene_plans_are_skipped_and_only_missing_are_generated(monkeyp
         calls.append((prompt, model))
         contract = {
             "chapter": 2,
+            "chapter_function": _chapter_function(2),
+            **_continuity(2),
             "facts_added": [],
             "facts_confirmed": [],
             "facts_contradicted": [],
@@ -126,6 +150,8 @@ def test_scene_contract_generation_retries_with_validation_feedback(monkeypatch,
     planner.app = FakeApp(tmp_path)
     valid_contract = {
         "chapter": 1,
+        "chapter_function": _chapter_function(1),
+        **_continuity(1),
         "facts_added": [],
         "facts_confirmed": [],
         "facts_contradicted": [],
@@ -184,6 +210,8 @@ def test_cross_chapter_contract_failure_repairs_only_deadline_chapter(monkeypatc
             chapter,
             {
                 "chapter": chapter,
+                "chapter_function": _chapter_function(chapter),
+                **_continuity(chapter),
                 "origin": "scene_planning",
                 "schema_version": 2,
                 "facts_added": [],
@@ -198,6 +226,8 @@ def test_cross_chapter_contract_failure_repairs_only_deadline_chapter(monkeypatc
 
     repaired_contract = {
         "chapter": 2,
+        "chapter_function": _chapter_function(2),
+        **_continuity(2),
         "facts_added": [],
         "facts_confirmed": [],
         "facts_contradicted": [],
@@ -247,6 +277,8 @@ def test_fact_conflict_feedback_survives_inside_the_targeted_retry(monkeypatch, 
             chapter,
             {
                 "chapter": chapter,
+                "chapter_function": _chapter_function(chapter),
+                **_continuity(chapter),
                 "origin": "scene_planning",
                 "schema_version": 2,
                 "facts_added": [{
@@ -265,6 +297,8 @@ def test_fact_conflict_feedback_survives_inside_the_targeted_retry(monkeypatch, 
 
     bad_retry = {
         "chapter": 17,
+        "chapter_function": _chapter_function(17),
+        **_continuity(17),
         "facts_added": [{
             "id": "F-014-01",
             "fact": "海陵先驱号HL-0941集装箱用途",
@@ -278,6 +312,8 @@ def test_fact_conflict_feedback_survives_inside_the_targeted_retry(monkeypatch, 
     }
     good_retry = {
         "chapter": 17,
+        "chapter_function": _chapter_function(17),
+        **_continuity(17),
         "facts_added": [],
         "facts_confirmed": [{
             "id": "F-014-01",
@@ -439,6 +475,8 @@ def _plan_project(tmp_path, updates):
             chapter,
             {
                 "chapter": chapter,
+                "chapter_function": _chapter_function(chapter),
+                **_continuity(chapter),
                 "origin": "scene_planning",
                 "schema_version": 2,
                 "facts_added": [],
@@ -477,6 +515,8 @@ def test_dangling_close_repairs_the_chapter_that_should_open_the_thread(
     )
     repaired = {
         "chapter": 5,
+        "chapter_function": _chapter_function(5),
+        **_continuity(5),
         "facts_added": [],
         "facts_confirmed": [],
         "facts_contradicted": [],
@@ -541,6 +581,8 @@ def test_sequence_repair_stops_when_a_failure_survives_its_own_repair(
     )
     unchanged = {
         "chapter": 2,
+        "chapter_function": _chapter_function(2),
+        **_continuity(2),
         "facts_added": [],
         "facts_confirmed": [],
         "facts_contradicted": [],
@@ -608,6 +650,8 @@ def _stub_planning(monkeypatch, asked):
         asked.append(chapter)
         contract = {
             "chapter": chapter,
+            "chapter_function": _chapter_function(chapter),
+            **_continuity(chapter),
             "facts_added": [],
             "facts_confirmed": [],
             "facts_contradicted": [],
@@ -728,6 +772,8 @@ def _seed_overdue_project(tmp_path):
         1,
         {
             "chapter": 1,
+            "chapter_function": _chapter_function(1),
+            **_continuity(1),
             "origin": "scene_planning",
             "schema_version": 2,
             "facts_added": [],
@@ -763,6 +809,8 @@ def _draft(title, contract_payload):
 def _bare(chapter, **overrides):
     payload = {
         "chapter": chapter,
+        "chapter_function": _chapter_function(chapter),
+        **_continuity(chapter),
         "facts_added": [],
         "facts_confirmed": [],
         "facts_contradicted": [],
@@ -954,8 +1002,34 @@ _ALL_SECTIONS = (
 )
 
 
+def _passing_outline_review():
+    """一份让大纲评审通过的回复。
+
+    大纲阶段现在会多问一次「这一段大纲本身立不立得住」。各条测试关心的是别的事，
+    所以默认答一份满分回复；要测评审拦下大纲的，自己在 responder 里answered。
+    """
+    from agents.review.domain_review_agent import DomainReviewAgent
+
+    return json.dumps(
+        {
+            "scores": {d: 4 for d in DomainReviewAgent._OUTLINE_DIMENSIONS},
+            "hard_failures": [],
+            "upgrades": [],
+            "evidence": [],
+            "strengths": [],
+        },
+        ensure_ascii=False,
+    )
+
+
 def _run_outline(planner, monkeypatch, responder, notices):
-    monkeypatch.setattr(scene_plan_module, "send_prompt", responder)
+    def routed(prompt, model=None, **kwargs):
+        # 大纲评审和大纲生成走同一个发送器，按提示词分流。
+        if "小说章节大纲审稿人" in prompt:
+            return _passing_outline_review()
+        return responder(prompt, model=model)
+
+    monkeypatch.setattr(scene_plan_module, "send_prompt", routed)
     monkeypatch.setattr(scene_plan_module, "save_prompt_to_file", lambda *a, **k: None)
     for name in ("show_warning", "show_success", "show_error"):
         monkeypatch.setattr(
@@ -1072,3 +1146,277 @@ def test_filling_a_gap_reports_that_later_sections_need_renumbering(monkeypatch,
     renumber = [n for n in notices if n[1] == "章号需要重排"]
     assert renumber, [n[1] for n in notices]
     assert "都声称占用同一批章号" in renumber[0][2]
+
+
+def _project_with_legacy_contract(tmp_path, chapter=3):
+    """一个衔接字段还是空的旧项目：契约在，规划在，正文也在。"""
+    plan_dir = tmp_path / "story" / "planning" / "detailed_scene_plans"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    chapters_dir = tmp_path / "story" / "content" / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    manager = StoryLedgerManager(str(tmp_path))
+    for number in range(1, chapter + 1):
+        markdown = f"### 场景 1：第{number}章\n规划正文"
+        (plan_dir / f"scenes_test_ch{number}.md").write_text(markdown, encoding="utf-8")
+        manager.save_contract(
+            number,
+            {
+                "chapter": number,
+                "chapter_function": _chapter_function(number),
+                "origin": "scene_planning",
+                "schema_version": 2,
+                "facts_added": [],
+                "facts_confirmed": [],
+                "facts_contradicted": [],
+                "timeline_events": [],
+                "character_updates": [],
+                "plot_thread_updates": [],
+            },
+            markdown,
+        )
+        if number < chapter:
+            (chapters_dir / f"chapter_{number}.md").write_text(
+                "程砚把封存单推回桌面，谁也没有伸手去接。", encoding="utf-8"
+            )
+    return manager
+
+
+def test_a_legacy_contract_gets_its_hand_off_without_replanning(monkeypatch, tmp_path):
+    """补三个字段不该把一份已经通过验收的场景规划整个重掷一次。"""
+    manager = _project_with_legacy_contract(tmp_path)
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+
+    prompts = []
+
+    def fake_send(prompt, model=None):
+        prompts.append(prompt)
+        return json.dumps(
+            {
+                "continuity": {
+                    "picks_up_from": "第 2 章结尾程砚把封存单推回桌面之后没有收手",
+                    "time_gap": "紧接上一章结尾",
+                    "opening_positions": [
+                        {"character": "程砚", "location": "讯问室"}
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(scene_plan_module, "send_prompt", fake_send)
+    assert planner.backfill_chapter_continuity(str(tmp_path), 3, "hosted-llm", {})
+
+    markdown = (
+        tmp_path / "story" / "planning" / "detailed_scene_plans" / "scenes_test_ch3.md"
+    ).read_text(encoding="utf-8")
+    assert markdown == "### 场景 1：第3章\n规划正文"
+    contract = manager.load_contract(3, markdown)
+    assert contract["continuity"]["time_gap"] == "紧接上一章结尾"
+    # 上一章的结尾必须进提示词，否则模型只能编一个承接点出来。
+    assert "程砚把封存单推回桌面" in prompts[0]
+    assert len(prompts) == 1
+
+
+def test_a_contract_that_already_declares_its_hand_off_is_left_alone(monkeypatch, tmp_path):
+    _project_with_legacy_contract(tmp_path)
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    monkeypatch.setattr(
+        scene_plan_module,
+        "send_prompt",
+        lambda *a, **k: pytest.fail("已经有衔接字段就不该再问一次"),
+    )
+    assert planner.backfill_chapter_continuity(str(tmp_path), 1, "hosted-llm", {}) is False
+
+
+def test_a_hand_off_that_stays_empty_is_reported_as_a_contract_defect(monkeypatch, tmp_path):
+    _project_with_legacy_contract(tmp_path)
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    monkeypatch.setattr(scene_plan_module, "send_prompt", lambda *a, **k: "{}")
+
+    with pytest.raises(PlanningContractError) as error:
+        planner.backfill_chapter_continuity(str(tmp_path), 3, "hosted-llm", {})
+    assert error.value.code == "chapter_continuity_missing"
+
+
+def test_the_backfill_also_fills_a_missing_chapter_function(monkeypatch, tmp_path):
+    """chapter_function 也是后加的必填字段，旧契约里同样是空的。"""
+    manager = _project_with_legacy_contract(tmp_path)
+    # 前两章都写 advance，逼补写把「连着三章同一功能」考虑进去。
+    markdown_by_chapter = {}
+    for number in (1, 2):
+        markdown = f"### 场景 1：第{number}章\n规划正文"
+        markdown_by_chapter[number] = markdown
+        contract = manager.load_contract(number, markdown)
+        contract["chapter_function"] = "advance"
+        manager.save_contract(number, contract, markdown)
+
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    prompts = []
+    replies = [
+        json.dumps(
+            {
+                "chapter_function": "advance",
+                "continuity": {
+                    "picks_up_from": "第 2 章结尾程砚把封存单推回桌面之后没有收手",
+                    "time_gap": "紧接上一章结尾",
+                    "opening_positions": [{"character": "程砚", "location": "讯问室"}],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {
+                "chapter_function": "reveal",
+                "continuity": {
+                    "picks_up_from": "第 2 章结尾程砚把封存单推回桌面之后没有收手",
+                    "time_gap": "紧接上一章结尾",
+                    "opening_positions": [{"character": "程砚", "location": "讯问室"}],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ]
+
+    def fake_send(prompt, model=None):
+        prompts.append(prompt)
+        return replies.pop(0)
+
+    monkeypatch.setattr(scene_plan_module, "send_prompt", fake_send)
+    assert planner.backfill_chapter_continuity(str(tmp_path), 3, "hosted-llm", {})
+
+    contract = manager.load_contract(3, "### 场景 1：第3章\n规划正文")
+    # 第一次回答让第 1、2、3 章都是 advance，被打回；第二次改成 reveal 才收下。
+    assert contract["chapter_function"] == "reveal"
+    assert len(prompts) == 2
+    assert "advance|reveal|relationship|aftermath|transition|breather" in prompts[0]
+    assert "上一次的回答不合格" in prompts[1]
+
+
+def _outline_review(hard_failures=(), scores=None):
+    from agents.review.domain_review_agent import DomainReviewAgent
+
+    base = {d: 4 for d in DomainReviewAgent._OUTLINE_DIMENSIONS}
+    base.update(scores or {})
+    return json.dumps(
+        {
+            "scores": base,
+            "hard_failures": list(hard_failures),
+            "upgrades": [],
+            "evidence": [],
+            "strengths": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_an_outline_that_lets_a_lawyer_arrest_someone_is_sent_back(monkeypatch, tmp_path):
+    """大纲里的越权在这里改一句话就行，等写成正文再改就得推翻整场戏。"""
+    outline_dir = _outline_workspace(
+        tmp_path, {}, ("episode_1_introduction",)
+    )
+    bad = "### 第 1 章：庭审\n郑娜敏当庭向法警下达拘捕指令。\n"
+    good = "### 第 1 章：庭审\n郑娜敏向法庭提交拘捕申请，由法官指令法警执行。\n"
+    outlines = [bad, good]
+    prompts = []
+
+    def responder(prompt, model=None):
+        prompts.append(prompt)
+        return outlines[min(len(prompts) - 1, len(outlines) - 1)]
+
+    reviews = [
+        _outline_review(
+            hard_failures=[
+                {
+                    "code": "ROLE_OVERREACH",
+                    "quote": "郑娜敏当庭向法警下达拘捕指令。",
+                    "problem": "辩护律师无权指挥法警拘捕",
+                    "change": "改成向法庭提交申请、由法官指令法警执行",
+                }
+            ]
+        ),
+        _outline_review(),
+    ]
+    asked = []
+
+    def routed(prompt, model=None, **kwargs):
+        if "小说章节大纲审稿人" in prompt:
+            asked.append(prompt)
+            return reviews[min(len(asked) - 1, len(reviews) - 1)]
+        return responder(prompt, model=model)
+
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    notices = []
+    monkeypatch.setattr(scene_plan_module, "send_prompt", routed)
+    monkeypatch.setattr(scene_plan_module, "save_prompt_to_file", lambda *a, **k: None)
+    for name in ("show_warning", "show_success", "show_error"):
+        monkeypatch.setattr(
+            scene_plan_module,
+            name,
+            lambda title, message, *a, _n=name, **k: notices.append((_n, title, str(message))),
+        )
+    planner._generate_chapter_outline(snapshot_ui(planner.app))
+
+    saved = (
+        outline_dir / "chapter_outlines_episodic_structure_episode_1_introduction.md"
+    ).read_text(encoding="utf-8")
+    assert "当庭向法警下达拘捕指令" not in saved, "越权那一稿不该落盘"
+    assert "由法官指令法警执行" in saved
+    # 重试要带着被拒的原稿和评审意见，模型才知道改什么。
+    assert "你的上一稿" in prompts[1]
+    assert "ROLE_OVERREACH" in prompts[1]
+
+
+def test_the_outline_stage_makes_one_review_call_per_section(monkeypatch, tmp_path):
+    """一个结构部分问一次；六幕的书全书六次，抵得上下游少跑半轮重修。"""
+    _outline_workspace(tmp_path, {}, ("episode_1_introduction", "episode_2_rising_action"))
+    reviews = []
+
+    def routed(prompt, model=None, **kwargs):
+        if "小说章节大纲审稿人" in prompt:
+            reviews.append(prompt)
+            return _outline_review()
+        start = int(re.search(r"从第 (\d+) 章开始", prompt).group(1))
+        return f"### 第 {start} 章：新生成\n"
+
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    notices = []
+    monkeypatch.setattr(scene_plan_module, "send_prompt", routed)
+    monkeypatch.setattr(scene_plan_module, "save_prompt_to_file", lambda *a, **k: None)
+    for name in ("show_warning", "show_success", "show_error"):
+        monkeypatch.setattr(
+            scene_plan_module,
+            name,
+            lambda title, message, *a, _n=name, **k: notices.append((_n, title, str(message))),
+        )
+    planner._generate_chapter_outline(snapshot_ui(planner.app))
+
+    assert len(reviews) == 2
+
+
+def test_quality_loop_off_never_asks_the_outline_reviewer(monkeypatch, tmp_path):
+    """关闭档一次调用都不该多花。"""
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    assert planner._outline_reviewer("hosted-llm", {"Quality Loop": "off"}) is None
+    assert planner._outline_reviewer("hosted-llm", {}) is not None
+
+
+def test_a_reviewer_that_cannot_answer_lets_the_outline_through(monkeypatch, tmp_path):
+    """判不出来和判不合格是两回事：大纲阶段没有待复审出口，卡住等于整部书写不下去。"""
+    from agents.review.domain_review_agent import DomainReviewError
+
+    class _Silent:
+        def review_chapter_outline(self, *args, **kwargs):
+            raise DomainReviewError("评审未能返回有效结果", stage="chapter_outline")
+
+    planner = object.__new__(ScenePlanning)
+    planner.app = FakeApp(tmp_path)
+    assert planner._outline_review_problems(
+        _Silent(), "### 第 1 章：开端\n", "Episode 1", "结构规划", []
+    ) == []

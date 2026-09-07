@@ -6,10 +6,12 @@ from typing import Iterable, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -135,6 +137,94 @@ class GatePanel(QWidget):
             self._items.addWidget(row)
 
 
+class IssueRow(QWidget):
+    """复审清单里的一条：严重程度色条 + 问题 + 改法，点一下跳到正文对应位置。
+
+    勾选框决定这一条要不要带进「照建议重修」的提示词——评审给的建议不都对，
+    作者划掉几条比接受全部更常见。纯分数维度没有可执行文本，不给勾选框。
+    """
+
+    activated = Signal(str)
+
+    TONES = {
+        "hard": (theme.DANGER, "硬伤"),
+        "dimension": (theme.WARN, "未达标"),
+        "upgrade": (theme.INK_400, "建议"),
+    }
+
+    def __init__(self, issue_id: str, kind: str, title: str, detail: str = "",
+                 change: str = "", selectable: bool = True,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.issue_id = issue_id
+        self.kind = kind
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setCursor(Qt.PointingHandCursor)
+        # 行高取决于换行后占几行，也就是取决于宽度。自定义控件默认不声明这件事，
+        # 父布局便按「高度与宽度无关」来排，几十行会被压成每行几像素。
+        policy = self.sizePolicy()
+        policy.setVerticalPolicy(QSizePolicy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        tone, badge = self.TONES.get(kind, self.TONES["upgrade"])
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+
+        bar = QWidget()
+        bar.setFixedWidth(3)
+        bar.setAttribute(Qt.WA_StyledBackground, True)
+        bar.setStyleSheet(f"background: {tone}; border-radius: 1px;")
+        layout.addWidget(bar)
+
+        self.checkbox: Optional[QCheckBox] = None
+        if selectable:
+            self.checkbox = QCheckBox()
+            self.checkbox.setChecked(True)
+            self.checkbox.setToolTip("取消勾选，这一条就不带进重修")
+            layout.addWidget(self.checkbox, 0, Qt.AlignTop)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(3)
+
+        head = QLabel(f"{badge} · {title}" if kind != "upgrade" else title)
+        head.setWordWrap(True)
+        head.setStyleSheet(
+            f"font-size: {theme.FS_SM}px; font-weight: 600; color: {tone};")
+        text.addWidget(head)
+
+        if detail:
+            body = QLabel(detail)
+            body.setWordWrap(True)
+            body.setObjectName("Secondary")
+            text.addWidget(body)
+        if change:
+            fix = QLabel(f"改为：{change}")
+            fix.setWordWrap(True)
+            fix.setObjectName("Tertiary")
+            text.addWidget(fix)
+
+        layout.addLayout(text, 1)
+        self.setStyleSheet(
+            f"IssueRow {{ background: {theme.CANVAS};"
+            f" border: 1px solid {theme.LINE}; border-radius: {theme.RADIUS}px; }}"
+        )
+
+    @property
+    def checked(self) -> bool:
+        return self.checkbox is None or self.checkbox.isChecked()
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt 命名
+        return self.layout().heightForWidth(width)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if event.button() == Qt.LeftButton:
+            self.activated.emit(self.issue_id)
+        super().mouseReleaseEvent(event)
+
+
 class ArtifactList(QListWidget):
     """产物列表：左侧图标表示状态，双击回调打开。"""
 
@@ -169,4 +259,7 @@ def _state_icon(state: str) -> Tuple[str, str]:
         "running": ("spinner", theme.ACCENT),
         "todo": ("empty", theme.INK_400),
         "locked": ("lock", theme.INK_400),
+        # 写出来了但没过闸门。必须和「从没写过」一眼分得开，否则失败的那一章在
+        # 列表里没有落脚点，作者根本不知道有东西等着自己看。
+        "review": ("half", theme.WARN),
     }.get(state, ("empty", theme.INK_400))

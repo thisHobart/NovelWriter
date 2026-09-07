@@ -126,7 +126,10 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         self.rail.step_selected.connect(self._on_step_selected)
         self.status.cancel_requested.connect(self.runner.cancel_current)
-        self.runner.progress.connect(self.status.set_progress)
+        self.runner.progress.connect(self._on_task_progress)
+        self.runner.task_finished.connect(
+            self.chapter_page.finish_generation_progress
+        )
 
         page = self.parameters_page
         page.dirty_changed.connect(self._on_dirty_changed)
@@ -207,6 +210,11 @@ class MainWindow(QMainWindow):
             "error": lambda: self.status.set_error("出错", text),
             "done": lambda: self.status.set_done("完成", text),
         }.get(kind, lambda: self.status.set_idle(text))()
+
+    def _on_task_progress(self, text: str, fraction: float) -> None:
+        """Update the status bar and refresh chapters at durable checkpoints."""
+        self.status.set_progress(text, fraction)
+        self.chapter_page.handle_generation_progress(text)
 
     # ================================================== 路由
     def _navigate(self, key: str) -> None:

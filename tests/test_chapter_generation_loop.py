@@ -4,8 +4,16 @@ import json
 
 import pytest
 
-from agents.review.legal_suspense_review_agent import DomainReview, SCORE_DIMENSIONS
-from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from agents.review.legal_suspense_review_agent import (
+    DomainReview,
+    DomainReviewError,
+    SCORE_DIMENSIONS,
+)
+from core.generation.chapter_generation_loop import (
+    ChapterGenerationLoop,
+    QualityGateError,
+    restore_result,
+)
 from core.generation.chapter_acceptance import (
     ChapterAcceptanceError,
     ValidationIssue,
@@ -256,6 +264,7 @@ def test_strict_planning_contract_retries_plan_without_rebuilding_contract(tmp_p
         {
             "origin": "scene_planning",
             "schema_version": 2,
+            "chapter_function": "advance",
             "facts_added": [],
             "facts_confirmed": [],
             "facts_contradicted": [],
@@ -999,3 +1008,642 @@ def test_waived_chapter_can_still_be_accepted(tmp_path):
         reviewer=PassingReviewer(),
     ).accept_result(1, result)
     assert acceptance.committed_revision == 1
+
+
+# ---------------------------------------------------------------- 待复审出口
+class FailingChapterReviewer(PassingReviewer):
+    """场景都过，整章不过：闸门在章节级抬手，现场是完整的。"""
+
+    def __init__(self):
+        super().__init__()
+        self.requested_per_round = []
+        self.revise_asks = []
+
+    def review_chapter(self, *args, **kwargs):
+        self.requested_per_round.append(list(kwargs.get("repairs_requested") or []))
+        review = failed_review("chapter", scope="scene_2")
+        review.hard_failures = [
+            {
+                "code": "AI_TEMPLATE_SATURATION",
+                "quote": "证人交出收据。",
+                "problem": "全知总结压过了动作。",
+                "change": "改写成手上的动作。",
+            }
+        ]
+        return review
+
+    def revise_scene(self, scene_content, *args, **kwargs):
+        self.revise_asks.append(kwargs.get("asks"))
+        return scene_content + " 已按意见改过。"
+
+
+def _run_until_blocked(tmp_path, reviewer=None, retries=1):
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer or FailingChapterReviewer(),
+        max_scene_retries=retries,
+    )
+    with pytest.raises(QualityGateError) as blocked:
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+    return loop, blocked.value
+
+
+def test_a_blocked_chapter_hands_back_the_verdict_and_the_scene(tmp_path):
+    """报错只带一句话时，作者只能回头翻几十份评审记录，所以现场必须一起交出。"""
+    _, blocked = _run_until_blocked(tmp_path)
+
+    assert blocked.review["passed"] is False
+    assert blocked.review["hard_failures"][0]["code"] == "AI_TEMPLATE_SATURATION"
+    assert blocked.review["repair_scope"] == "scene_2"
+    # 快照要够重新落地这一章：正文、契约、账本基线、场景规划、三份评审。
+    assert len(blocked.snapshot["scenes"]) == 2
+    assert blocked.snapshot["contract"]["chapter"] == 1
+    assert blocked.snapshot["plan_content"] == PLAN
+    assert blocked.snapshot["chapter_review"]["passed"] is False
+
+
+def test_a_half_written_chapter_reports_the_scene_that_stopped_it(tmp_path):
+    """场景级抬手时没有完整章节，只交评审，不交可放行的现场。"""
+
+    class FailingSceneReviewer(PassingReviewer):
+        def review_scene(self, *args, **kwargs):
+            return failed_review("scene_1")
+
+        def revise_scene(self, scene_content, *args, **kwargs):
+            return scene_content
+
+    _, blocked = _run_until_blocked(tmp_path, FailingSceneReviewer())
+
+    assert blocked.review["passed"] is False
+    assert blocked.snapshot == {}
+
+
+def test_revising_a_pending_chapter_carries_only_the_asks_it_was_given(tmp_path):
+    """作者划掉的建议不该再进提示词，否则勾选框只是个装饰。"""
+    loop, blocked = _run_until_blocked(tmp_path)
+    reviewer = loop.reviewer
+    reviewer.requested_per_round.clear()
+    reviewer.revise_asks.clear()
+
+    with pytest.raises(QualityGateError):
+        loop.revise_pending(
+            1, blocked.snapshot, {}, ["只改这一条：把收据的时间点写清楚"]
+        )
+
+    # 复评知道要核对哪几条，改写也必须拿到同一份——否则模型照样去动别的地方。
+    assert reviewer.requested_per_round[0] == ["只改这一条：把收据的时间点写清楚"]
+    assert reviewer.revise_asks[0] == ["只改这一条：把收据的时间点写清楚"]
+    # 第二轮起仍以新评审自己提出的改动为准。
+    if len(reviewer.revise_asks) > 1:
+        assert reviewer.revise_asks[1] != ["只改这一条：把收据的时间点写清楚"]
+
+
+def _publish(tmp_path, loop, result, waive_reason):
+    """走生成侧那条落盘路：先写文件再验收，失败时正文不会留在稿件目录里。"""
+    from core.generation.helper_fns import publish_chapter_with_acceptance
+
+    path = tmp_path / "story" / "content" / "chapters" / "chapter_1.md"
+    return publish_chapter_with_acceptance(
+        str(tmp_path),
+        1,
+        str(path),
+        result.chapter_content,
+        lambda saved: (
+            loop.accept_result(1, result, chapter_path=saved)
+            if waive_reason is None
+            else loop.accept_waived(1, result, waive_reason, chapter_path=saved)
+        ),
+    )
+
+
+def test_revising_a_pending_chapter_publishes_once_it_passes(tmp_path):
+    """重修通过后走的是同一条验收路，不是绕过闸门直接落盘。"""
+    loop, blocked = _run_until_blocked(tmp_path)
+
+    class NowPassing(PassingReviewer):
+        def revise_scene(self, scene_content, *args, **kwargs):
+            return scene_content + " 已改。"
+
+    loop.reviewer = NowPassing()
+    result = loop.revise_pending(1, blocked.snapshot, {}, ["把收据时间写清楚"])
+
+    assert result.chapter_review.passed
+    assert "已改。" in result.chapter_content
+    accepted = _publish(tmp_path, loop, result, waive_reason=None)
+    assert accepted.committed_revision >= 1
+
+
+def test_waiving_records_the_authors_reason_and_still_runs_acceptance(tmp_path):
+    """人工放行改的是评分判定，验收照跑，理由留在评审记录里。"""
+    loop, blocked = _run_until_blocked(tmp_path)
+    result = restore_result(blocked.snapshot)
+    assert not result.chapter_review.passed
+
+    accepted = _publish(tmp_path, loop, result, waive_reason="开篇节奏我认了，先往下写")
+
+    assert accepted.committed_revision >= 1
+    assert result.chapter_review.passed
+    assert result.chapter_review.waived
+    assert "开篇节奏我认了" in result.chapter_review.reviewer_warning
+    saved = list(
+        (tmp_path / "quality" / "legal_suspense_reviews" / "chapter_1").glob(
+            "chapter_waived_by_author_*.json"
+        )
+    )
+    assert saved, "放行必须留痕，事后查得出这一章是被谁放过去的"
+    assert "作者人工放行" in json.loads(saved[0].read_text(encoding="utf-8"))[
+        "reviewer_warning"
+    ]
+
+
+def test_regenerating_after_a_contract_change_needs_a_bound_context(tmp_path):
+    """契约让位于账本时旧正文整体作废，必须逐场重写。
+
+    直接调内部方法，是因为要走到这一步得先让验收判出「保留账本、改契约」，
+    在测试里搭那套前置比这条规则本身还长。规则本身很简单：没绑上下文就抛错，
+    绑了就能重生成——复审路径当初正是漏了绑，作者点下去要等到最后一步才失败。
+    """
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path), model="hosted-llm", reviewer=PassingReviewer()
+    )
+    result = restore_result(
+        {"scenes": ["旧的一场。"], "plan_content": PLAN, "contract": {}}
+    )
+    target = str(tmp_path / "story" / "content" / "chapters" / "chapter_1.md")
+
+    with pytest.raises(QualityGateError, match="缺少完整重生成上下文"):
+        loop._regenerate_after_contract_change(1, result, target)  # noqa: SLF001
+
+    loop.bind_generation_context(
+        {}, "世界观", lambda **kwargs: f"第{kwargs['scene_number']}场重生成正文。"
+    )
+    assert loop._regenerate_after_contract_change(1, result, target)  # noqa: SLF001
+    assert "重生成正文" in result.chapter_content
+    assert "旧的一场。" not in result.chapter_content
+
+
+# ------------------------------------------------------- 按场分组的章节级重修
+SCENE_ONE = "顾阳波把图纸铺开。防空洞顶部的混凝土严重剥落。"
+SCENE_TWO = "梁浩清点了装备。"
+SCENE_THREE = "七年前未竟的残局，都在这一刻压弯了肩膀。"
+
+
+def _upgrade(dimension, quote, change="改写这一句。"):
+    return {
+        "dimension": dimension,
+        "quote": quote,
+        "missing": "具体动作",
+        "change": change,
+    }
+
+
+def test_asks_are_routed_to_the_scene_their_quote_lives_in():
+    scenes = [SCENE_ONE, SCENE_TWO, SCENE_THREE]
+    asks = [
+        "【subtext】原文「七年前未竟的残局，都在这一刻压弯了肩膀。」缺少克制；改为：删去。",
+        "【opening_pull】原文「防空洞顶部的混凝土严重剥落。」缺少动势；改为：改成开工动作。",
+        "【pacing】原文「梁浩清点了装备。」缺少节奏；改为：补一句对话。",
+        "整体再压一压抒情密度。",
+    ]
+
+    grouped = ChapterGenerationLoop._asks_by_scene(asks, scenes, fallback=3)
+
+    assert list(grouped) == [1, 2, 3]
+    assert grouped[1] == [asks[1]]
+    assert grouped[2] == [asks[2]]
+    # 找不到出处的条目归给 repair_scope 指的那一场。
+    assert grouped[3] == [asks[0], asks[3]]
+
+
+def test_an_ask_with_no_usable_quote_falls_back_to_the_named_scene():
+    scenes = [SCENE_ONE, SCENE_TWO]
+
+    grouped = ChapterGenerationLoop._asks_by_scene(
+        ["原文「太短」缺少什么；改为：随便", "没有任何引用的一条"], scenes, fallback=2
+    )
+
+    assert grouped == {2: ["原文「太短」缺少什么；改为：随便", "没有任何引用的一条"]}
+
+
+class ScatteredIssuesReviewer(PassingReviewer):
+    """章节级不过，开出的条目散落在第一场和第三场，而位置只写了第三场。"""
+
+    def __init__(self):
+        super().__init__()
+        self.revisions = []
+
+    def review_chapter(self, *args, **kwargs):
+        review = failed_review("chapter", scope="scene_3")
+        review.repair_instructions = []
+        review.upgrades = [
+            _upgrade("subtext", SCENE_THREE),
+            _upgrade("opening_pull", SCENE_ONE),
+        ]
+        return review
+
+    def revise_scene(self, scene_content, *args, **kwargs):
+        self.revisions.append((scene_content, list(kwargs.get("asks") or [])))
+        return scene_content + " 已改。"
+
+
+def _repair(tmp_path, reviewer, scenes_text, retries=1):
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer,
+        max_scene_retries=retries,
+    )
+    plans = [f"### 场景 {i}：计划" for i in range(1, len(scenes_text) + 1)]
+    return loop._repair_chapter(  # noqa: SLF001 - 直接测这一轮的分派行为
+        7,
+        plans,
+        list(scenes_text),
+        [passed_review(f"scene_{i}") for i in range(1, len(scenes_text) + 1)],
+        reviewer.review_chapter(),
+        {},
+        {},
+        {},
+        "上一章结尾。",
+    )
+
+
+def test_one_round_repairs_every_scene_the_review_points_at(tmp_path):
+    """位置只写了第三场，但条目落在第一场和第三场，两场都得改到。
+
+    只改 repair_scope 那一场的话，另一场的条目就是发给模型却没有对应正文的要求，
+    而提示词里写着「逐条对应，不要遗漏」。
+    """
+    reviewer = ScatteredIssuesReviewer()
+
+    revised, _, _, _ = _repair(
+        tmp_path, reviewer, [SCENE_ONE, SCENE_TWO, SCENE_THREE]
+    )
+
+    touched = [content for content, _ in reviewer.revisions]
+    assert SCENE_ONE in touched
+    assert SCENE_THREE in touched
+    # 没有条目指向第二场，就不该动它。
+    assert SCENE_TWO not in touched
+    assert revised[1] == SCENE_TWO
+
+    # 每一场只收到属于自己的那几条。
+    by_scene = {content: asks for content, asks in reviewer.revisions}
+    assert all("防空洞顶部" in ask for ask in by_scene[SCENE_ONE])
+    assert all("七年前未竟" in ask for ask in by_scene[SCENE_THREE])
+
+
+def test_scenes_are_repaired_in_order_so_the_next_one_sees_the_new_text(tmp_path):
+    """升序逐场：后一场要接前一场改完之后的结尾，倒着改会接到旧文。"""
+
+    class TailWatchingReviewer(ScatteredIssuesReviewer):
+        def __init__(self):
+            super().__init__()
+            self.tails = {}
+
+        def revise_scene(self, scene_content, review, scene_plan,
+                         previous_scene_tail, *args, **kwargs):
+            self.tails[scene_content] = previous_scene_tail
+            return super().revise_scene(
+                scene_content, review, scene_plan, previous_scene_tail,
+                *args, **kwargs
+            )
+
+    reviewer = TailWatchingReviewer()
+    _repair(tmp_path, reviewer, [SCENE_ONE, SCENE_TWO, SCENE_THREE])
+
+    assert reviewer.tails[SCENE_ONE] == "上一章结尾。"
+    # 第三场看到的是第二场的原文（第二场没被改），而不是任何旧快照。
+    assert reviewer.tails[SCENE_THREE].endswith(SCENE_TWO)
+
+
+def test_a_review_with_nothing_actionable_still_repairs_the_named_scene(tmp_path):
+    """评审开不出条目时保留老行为：改位置指的那一场，依据退回大方向。"""
+
+    class VagueReviewer(PassingReviewer):
+        def __init__(self):
+            super().__init__()
+            self.revisions = []
+
+        def review_chapter(self, *args, **kwargs):
+            review = failed_review("chapter", scope="scene_2")
+            review.repair_instructions = []
+            return review
+
+        def revise_scene(self, scene_content, *args, **kwargs):
+            self.revisions.append((scene_content, kwargs.get("asks")))
+            return scene_content + " 已改。"
+
+    reviewer = VagueReviewer()
+    _repair(tmp_path, reviewer, [SCENE_ONE, SCENE_TWO])
+
+    assert [content for content, _ in reviewer.revisions] == [SCENE_TWO]
+    assert reviewer.revisions[0][1] == []
+
+
+# ------------------------------------------------- 评审自己没能出结论
+TRUNCATED = '{"scores": {"behavioral_logic": 3}, "hard_failures": [{"code": "X"'
+
+
+def _outage(stage="chapter"):
+    return DomainReviewError(
+        f"{stage} 质量检查未能返回有效结果：评审 JSON schema 校验失败："
+        "大模型的回复没有写完：JSON 对象缺少结尾",
+        stage=stage,
+        responses=[TRUNCATED, TRUNCATED],
+    )
+
+
+class ChapterReviewOutage(PassingReviewer):
+    """场景都过，整章评审两次都没能给出可用结论。"""
+
+    def review_chapter(self, *args, **kwargs):
+        raise _outage("chapter")
+
+
+def _reviews_named(tmp_path, prefix):
+    directory = tmp_path / "quality" / "legal_suspense_reviews" / "chapter_1"
+    if not directory.is_dir():
+        return []
+    return sorted(p for p in directory.iterdir() if p.name.startswith(prefix))
+
+
+def test_a_review_outage_keeps_the_chapter_instead_of_throwing_it_away(tmp_path):
+    """判不合格与判不出来后果一样：这一章都进不了正式稿。
+
+    既然如此，正文就该和判不合格时一样留住。此前评审失灵会一路抛到最外层，那一
+    遍写出来的东西一个字都留不下，整章的调用连同已经跑完的另外两份评审全部白烧。
+    """
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path), model="hosted-llm", reviewer=ChapterReviewOutage()
+    )
+
+    with pytest.raises(QualityGateError) as blocked:
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    error = blocked.value
+    assert error.verdict_unavailable
+    assert "没能给出结论" in str(error)
+    # 正文和现场都还在：作者能重跑评审，也能直接放行。
+    assert len(error.partial_scenes) == 2
+    assert len(error.snapshot["scenes"]) == 2
+    assert error.snapshot["contract"]["chapter"] == 1
+    # 没有判定就没有问题清单，别伪装成一份评审结论。
+    assert error.review == {}
+
+
+def test_a_review_outage_saves_what_the_model_actually_returned(tmp_path):
+    """只记一句错误摘要查不出原因：漏字段、写错形状、根本没写完，处置完全不同。"""
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path), model="hosted-llm", reviewer=ChapterReviewOutage()
+    )
+
+    with pytest.raises(QualityGateError):
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    saved = _reviews_named(tmp_path, "review_unavailable")
+    assert len(saved) == 1
+    payload = json.loads(saved[0].read_text(encoding="utf-8"))
+    assert payload["stage"] == "chapter"
+    assert payload["responses"] == [TRUNCATED, TRUNCATED]
+
+
+def test_a_scene_review_outage_keeps_the_half_written_draft(tmp_path):
+    """整章还没写完时交出的只有半稿，不构成可放行的现场。"""
+
+    class SceneReviewOutage(PassingReviewer):
+        def review_scene(self, *args, **kwargs):
+            raise _outage("scene_1")
+
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path), model="hosted-llm", reviewer=SceneReviewOutage()
+    )
+
+    with pytest.raises(QualityGateError) as blocked:
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    assert blocked.value.verdict_unavailable
+    assert blocked.value.snapshot == {}
+    assert _reviews_named(tmp_path, "review_unavailable")
+
+
+def test_rerunning_the_review_on_a_verdictless_draft_can_publish_it_as_is(tmp_path):
+    """评审没出结论的那一稿，重跑一次评审通过就直接收下，不必改一个字。"""
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path), model="hosted-llm", reviewer=ChapterReviewOutage()
+    )
+    with pytest.raises(QualityGateError) as blocked:
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    loop.reviewer = PassingReviewer()  # 这一次评审正常回话
+    result = loop.revise_pending(1, blocked.value.snapshot, {}, [])
+
+    assert result.chapter_review.passed
+    # 一个字都没改：重跑的是判定，不是正文。
+    assert result.scenes == blocked.value.snapshot["scenes"]
+    assert _reviews_named(tmp_path, "chapter_rerun")
+
+
+def test_rerunning_the_review_falls_through_to_repair_when_it_fails(tmp_path):
+    """重跑之后判不合格，就照新判定接着走定向重修那条路。"""
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=ChapterReviewOutage(),
+        max_scene_retries=1,
+    )
+    with pytest.raises(QualityGateError) as blocked:
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    reviewer = FailingChapterReviewer()
+    loop.reviewer = reviewer
+    with pytest.raises(QualityGateError) as again:
+        loop.revise_pending(1, blocked.value.snapshot, {}, [])
+
+    assert reviewer.revise_asks  # 重修真的跑了
+    assert not again.value.verdict_unavailable
+    assert again.value.review["hard_failures"][0]["code"] == "AI_TEMPLATE_SATURATION"
+
+
+def test_waiving_a_verdictless_draft_records_that_nobody_judged_it(tmp_path):
+    """放行没有结论的一稿，等于作者替评审签字，这件事必须留在账本上。"""
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path), model="hosted-llm", reviewer=ChapterReviewOutage()
+    )
+    with pytest.raises(QualityGateError) as blocked:
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    result = restore_result(blocked.value.snapshot)
+    assert result.chapter_review is None
+
+    accepted = _publish(tmp_path, loop, result, waive_reason="这一稿我自己看过了")
+
+    assert accepted.committed_revision >= 1
+    assert result.chapter_review.waived
+    assert "质量评审未能给出结论" in result.chapter_review.reviewer_warning
+    assert "这一稿我自己看过了" in result.chapter_review.reviewer_warning
+
+
+# ---------------------------------------------- 单场景多轮重修
+class DialogueWatchingReviewer(PassingReviewer):
+    """记下每次重修拿到的是哪一段对话。"""
+
+    def __init__(self, fail_rounds=1):
+        super().__init__()
+        self.fail_rounds = fail_rounds
+        self.seen = []
+        self.reviews = 0
+
+    def review_scene(self, *args, **kwargs):
+        self.reviews += 1
+        if self.reviews <= self.fail_rounds:
+            review = failed_review("scene_1")
+            # 每轮换一条：原样退回同一条会触发「无进展」提前收手。
+            review.repair_instructions = [f"第 {self.reviews} 轮发现的问题"]
+            return review
+        return passed_review("scene_1")
+
+    def revise_scene(self, scene_content, *args, **kwargs):
+        dialogue = kwargs.get("dialogue")
+        self.seen.append(dialogue)
+        if dialogue is not None:
+            # 真实实现会往对话里追加两轮，这里照做，好让下一轮看得出是同一段。
+            if not dialogue.seeded_for(scene_content):
+                dialogue.start("开场依据", scene_content)
+            dialogue.messages.append({"role": "user", "content": "改这里"})
+            dialogue.messages.append({"role": "assistant", "content": scene_content + " 已改。"})
+        return scene_content + " 已改。"
+
+
+def _run_loop(tmp_path, reviewer, parameters=None, retries=2):
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer,
+        max_scene_retries=retries,
+    )
+    return loop.run(
+        chapter_number=1,
+        plan_content=PLAN,
+        parameters=parameters if parameters is not None else {},
+        lore="世界观",
+        generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+    )
+
+
+def test_repairing_one_scene_twice_uses_one_conversation(tmp_path):
+    """同一场的两轮重修共用一段对话：第二轮时模型手上有它第一轮改了什么。"""
+    reviewer = DialogueWatchingReviewer(fail_rounds=2)
+
+    _run_loop(tmp_path, reviewer)
+
+    first, second = reviewer.seen[0], reviewer.seen[1]
+    assert first is not None
+    assert second is first
+    # 第一轮两条（开场依据 + 初稿），加上每轮追加的两条。
+    assert len(second.messages) == 6
+
+
+def test_each_scene_gets_its_own_conversation(tmp_path):
+    """一场的对话不能带到下一场：契约相同，正文和问题都不同。"""
+    reviewer = DialogueWatchingReviewer(fail_rounds=1)
+
+    _run_loop(tmp_path, reviewer)
+
+    assert len({id(dialogue) for dialogue in reviewer.seen}) == len(reviewer.seen)
+
+
+def test_scene_dialogue_can_be_switched_off(tmp_path):
+    """关掉之后退回一次性提问那条路，不给对话。"""
+    reviewer = DialogueWatchingReviewer(fail_rounds=1)
+
+    _run_loop(tmp_path, reviewer, parameters={"Scene Dialogue": "off"})
+
+    assert reviewer.seen and all(dialogue is None for dialogue in reviewer.seen)
+
+
+def test_a_waiver_names_which_review_was_short_not_the_merged_average():
+    """章节级是四份合议，差额只来自其中一份。
+
+    报合议后的平均分会写出「平均 3.59 分、门槛 3.20 分，仍差 0.08 分」这种自相
+    矛盾的记录——账本里留下的放行理由必须能查出是哪一份短了。
+    """
+    from core.generation.chapter_generation_loop import waiver_reason
+
+    merged = DomainReview(
+        stage="chapter",
+        passed=False,
+        scores={"contract.a": 4.0, "reader_blind.b": 3.125},
+        pass_average=3.2,
+        component_reviews={
+            "contract": {"passed": True, "average_score": 4.0, "pass_average": 3.2},
+            "reader_blind": {
+                "passed": False,
+                "average_score": 3.125,
+                "pass_average": 3.2,
+            },
+        },
+    )
+    reason = waiver_reason(merged, "第 24 章章节级检查")
+
+    assert reason is not None
+    assert "reader_blind" in reason
+    assert "3.12 分" in reason and "门槛 3.20 分" in reason
+    # 合议后的平均分（3.56）不该出现，它比门槛还高，写进去只会让人看不懂。
+    assert "平均 3.56" not in reason
+
+
+def test_a_single_review_waiver_still_reports_its_own_numbers():
+    from core.generation.chapter_generation_loop import waiver_reason
+
+    single = DomainReview(
+        stage="chapter",
+        passed=False,
+        scores={dimension: 3.1 for dimension in SCORE_DIMENSIONS},
+        pass_average=3.2,
+    )
+    reason = waiver_reason(single, "第 3 章章节级检查")
+    assert reason is not None
+    assert "平均 3.10 分，门槛 3.20 分" in reason

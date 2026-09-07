@@ -42,6 +42,59 @@ def parse_scene_sections(markdown_text):
 
     return scenes
 
+
+def scene_heading(scene_plan):
+    """一场规划里的标题行，用来告诉上一场「你该停在哪儿」。
+
+    写这一场时不能把下一场的规划整段发过去：那一段里有下一场的环境、出场人物和
+    编号的关键事件表，等于把材料递到模型手上，再在提示词里请它别用。实测下来它
+    会用——重修之后的场次被判「写进了下一场的地盘」，代价是多一轮章节级重修。
+    标题行给出了收束的方向，却不含任何可以提前写出来的事件。
+    """
+    if not scene_plan or not scene_plan.strip():
+        return ""
+    match = SCENE_HEADING_PATTERN.search(scene_plan)
+    if match:
+        return match.group(0).strip()
+    # 标题解析不出来时退回第一行：宁可少给，也不要整段倒给模型。
+    for line in scene_plan.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+_SCENE_NUMBER_IN_HEADING = re.compile(
+    r"(?:Scene|场景)\s*(\d+|[零〇一二三四五六七八九十]+)", flags=re.IGNORECASE
+)
+
+_CN_SCENE_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+
+def scene_number_from_plan(scene_plan):
+    """一场规划的标题里写的是第几场；认不出来返回 None。
+
+    调用方常常只拿得到这一场的规划文本（重修那条路就是），而「这一场只能看到契约
+    里属于它自己那部分」需要一个场号。与其在每个调用点上多传一个参数，不如从标题
+    行里读——标题格式本来就是场景拆分依赖的那一个。
+    """
+    match = _SCENE_NUMBER_IN_HEADING.search(scene_heading(scene_plan))
+    if not match:
+        return None
+    token = match.group(1)
+    if token.isdigit():
+        return int(token)
+    if token == "十":
+        return 10
+    if token.startswith("十"):
+        return 10 + _CN_SCENE_DIGITS.get(token[1:], 0)
+    if token.endswith("十"):
+        return _CN_SCENE_DIGITS.get(token[0], 0) * 10
+    return _CN_SCENE_DIGITS.get(token)
+
+
 def open_file(full_path):
     """Open and read a file. Throws an error if the file is missing."""
     print(f"Opening file: {full_path}")

@@ -360,6 +360,141 @@ def test_automatic_progress_detects_structured_workspace(tmp_path):
     assert progress["missing_scene_plans"] == [2]
 
 
+def test_review_actions_bind_the_context_needed_to_regenerate(monkeypatch, tmp_path):
+    """人工放行/照建议重修必须把重生成上下文绑给质量闭环。
+
+    验收有可能判定这一章的契约要让位于账本，那时旧正文全部作废、要逐场重写。
+    没绑上下文的话，作者点下去要等到最后一步才收到一句「缺少完整重生成上下文」，
+    而那时调用已经烧掉了。
+    """
+    from core.generation import pending_review
+    from agents.writing import chapter_writing_agent as agent_module
+
+    bound = {}
+
+    class RecordingLoop:
+        def __init__(self, **kwargs):
+            pass
+
+        def bind_generation_context(self, parameters, lore, generate_scene,
+                                    on_plan_revised=None):
+            bound["parameters"] = parameters
+            bound["lore"] = lore
+            bound["generate_scene"] = generate_scene
+
+        def accept_waived(self, chapter_number, result, reason, chapter_path=None):
+            bound["reason"] = reason
+            return SimpleNamespace(committed_revision=3, delta_path="")
+
+    monkeypatch.setattr(agent_module, "ChapterGenerationLoop", RecordingLoop)
+
+    agent = _bare_agent(tmp_path)
+    agent.cancel_token = None
+    agent.dir_manager = None
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent,
+        "_load_writing_context",
+        lambda self: {"parameters": {"Genre": "Mystery"}, "lore": "世界观正文"},
+    )
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent,
+        "analyze_chapter_structure",
+        lambda self: (
+            [ChapterInfo(
+                chapter_number=4,
+                section_name="Rising Action",
+                scene_plan_file="plans/scene_4.md",
+                output_file="chapters/chapter_4.md",
+            )],
+            {},
+        ),
+    )
+
+    record = pending_review.build(
+        4,
+        message="第 4 章仍未通过章节级质量检查",
+        review={"stage": "chapter", "passed": False, "pass_average": 3.2,
+                "average_score": 2.9},
+        prose="一场。\n\n---\n\n二场。",
+        stage=pending_review.STAGE_CHAPTER,
+        snapshot={"scenes": ["一场。", "二场。"], "chapter_review": {
+            "stage": "chapter", "passed": False, "pass_average": 3.2}},
+    )
+    pending_review.save(record, str(tmp_path))
+
+    result = agent.review_pending_chapter(4, "waive", reason="开篇我认了")
+
+    assert result.success, result.messages
+    assert bound["parameters"] == {"Genre": "Mystery"}
+    assert bound["lore"] == "世界观正文"
+    assert callable(bound["generate_scene"])
+    assert bound["reason"] == "开篇我认了"
+    # 通过之后待复审记录就不成立了。
+    assert pending_review.load(str(tmp_path), 4) is None
+    assert (tmp_path / "chapters" / "chapter_4.md").is_file()
+
+
+def test_review_actions_refuse_a_half_written_draft(tmp_path):
+    from core.generation import pending_review
+
+    agent = _bare_agent(tmp_path)
+    record = pending_review.build(
+        4,
+        message="第 4 章场景 2 在 2 次修订后仍未通过质量检查",
+        review={},
+        prose="只有一场。",
+        stage=pending_review.STAGE_SCENE,
+        snapshot={},
+    )
+    pending_review.save(record, str(tmp_path))
+
+    result = agent.review_pending_chapter(4, "waive")
+
+    assert not result.success
+    assert "请重写本章" in result.messages[0]
+
+
+def test_a_review_outage_is_recorded_as_pending_not_as_a_crash(monkeypatch, tmp_path):
+    """评审没能出结论时，这一章要进待复审，而不是把整遍成果扔掉只留一句报错。"""
+    from core.generation import pending_review
+    from agents.writing import chapter_writing_agent as agent_module
+
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+    agent._load_writing_context = lambda: {"parameters": {}}
+    agent._generate_scene_prose = lambda *args, **kwargs: "一场正文。"
+
+    def outage(self, **kwargs):
+        raise agent_module.QualityGateError(
+            "第 3 章的质量评审没能给出结论：plausibility 质量检查未能返回有效结果",
+            partial_scenes=["一场正文。", "二场正文。"],
+            chapter_number=3,
+            snapshot={"scenes": ["一场正文。", "二场正文。"], "contract": {"chapter": 3}},
+            verdict_unavailable=True,
+        )
+
+    monkeypatch.setattr(agent_module.ChapterGenerationLoop, "run", outage)
+
+    scene_path = tmp_path / "plans" / "scene_3.md"
+    scene_path.parent.mkdir(parents=True)
+    scene_path.write_text("### 场景 1：开端\n规划一\n", encoding="utf-8")
+
+    result = agent._write_single_chapter(
+        ChapterInfo(
+            chapter_number=3,
+            section_name="Rising Action",
+            scene_plan_file="plans/scene_3.md",
+            output_file="chapters/chapter_3.md",
+        )
+    )
+
+    assert not result.success
+    record = pending_review.load(str(tmp_path), 3)
+    assert record is not None
+    assert record.needs_review_rerun
+    assert "二场正文。" in record.prose
+
+
 def test_failed_scene_archives_partial_prose_instead_of_writing_a_chapter(tmp_path):
     """质量闸门失败时，稿件目录必须保持干净，部分正文只进归档。"""
     agent = _bare_agent(tmp_path)
@@ -398,6 +533,17 @@ def test_failed_scene_archives_partial_prose_instead_of_writing_a_chapter(tmp_pa
     assert "story/content" not in archived.replace("\\", "/")
     # 归档内容不得含有历史上的错误占位符。
     assert "[[[ERROR" not in archived_text
+
+    # 失败同时留下待复审记录：界面据它把这一章标出来，而不是让它看起来没写过。
+    from core.generation import pending_review
+
+    record = pending_review.load(str(tmp_path), 3)
+    assert record is not None
+    assert record.prose_path == archived
+    assert "第一场正文。" in record.prose
+    assert record.message == result.messages[0].split("；")[0]
+    # 只写到一半，谈不上放行或定向重修，界面据此把那两个出口关掉。
+    assert not record.resumable
 
 
 def test_batch_cancellation_keeps_finished_chapters_and_stops(tmp_path):
@@ -479,6 +625,43 @@ def test_batch_stops_after_first_rejected_chapter(tmp_path):
     assert result.data["chapters_written"] == []
     assert result.data["errors"] == ["第 1 章：验收失败"]
     assert result.success is False
+
+
+def test_batch_reports_started_and_durably_completed_chapters(tmp_path):
+    agent = _bare_agent(tmp_path)
+    agent.review_agent = None
+    agent._write_single_chapter = lambda chapter_info: AgentResult(
+        success=True,
+        data={},
+        messages=[],
+        metrics={},
+    )
+    chapter_infos = [
+        ChapterInfo(number, "Rising Action", f"scene_{number}.md", f"chapter_{number}.md")
+        for number in (17, 18)
+    ]
+    plan = ChapterWritingPlan(
+        total_chapters=18,
+        chapters_to_write=[17, 18],
+        chapters_completed=list(range(1, 17)),
+        batch_size=2,
+        enable_reviews=False,
+    )
+    progress = []
+
+    result = agent.write_chapters_batch(
+        chapter_infos,
+        plan,
+        progress_callback=lambda *event: progress.append(event),
+    )
+
+    assert result.success
+    assert progress == [
+        ("started", 17, 16, 18),
+        ("completed", 17, 17, 18),
+        ("started", 18, 17, 18),
+        ("completed", 18, 18, 18),
+    ]
 
 
 def test_batch_preserves_conflict_details_for_the_gui_buttons(tmp_path):

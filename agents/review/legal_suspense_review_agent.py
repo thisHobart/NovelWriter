@@ -35,10 +35,12 @@ class LegalSuspenseReviewAgent(DomainReviewAgent):
         model: str,
         logger: Optional[logging.Logger] = None,
         send_prompt_fn: Callable[..., str] = send_prompt,
+        send_conversation_fn: Optional[Callable[..., str]] = None,
     ):
         super().__init__(
             model=model,
             profile=LEGAL_SUSPENSE,
             logger=logger or logging.getLogger("legal-suspense-review"),
             send_prompt_fn=send_prompt_fn,
+            send_conversation_fn=send_conversation_fn,
         )

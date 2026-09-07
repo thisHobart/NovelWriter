@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QWidget,
 )
@@ -38,6 +39,62 @@ def hint_label(text: str, wrap: bool = True) -> QLabel:
 
 def section_label(text: str) -> QLabel:
     return _label(text, "SectionLabel")
+
+
+class VScrollArea(QScrollArea):
+    """纵向滚动区，内容里有自动换行的标签时用它，别用裸的 QScrollArea。
+
+    换行标签的高度取决于宽度，这在 Qt 里叫 heightForWidth。QScrollArea 的
+    widgetResizable 不问这个，直接把内容压成视口那么高——几十行的清单会被挤成
+    每行几像素，文字互相叠在一起。这里在宽度变化后按当前宽度重算一次内容高度。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QScrollArea.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea { background: transparent; }")
+
+    def sync_content_height(self) -> None:
+        """内容增删之后调用一次。
+
+        优先问布局，问不出来就逐个问子控件：QBoxLayout 只有在自己重新算过几何
+        之后才承认「高度随宽度变」，刚插完控件那一刻它还按空布局回答。
+        """
+        inner = self.widget()
+        layout = inner.layout() if inner is not None else None
+        width = self.viewport().width()
+        if layout is None or width <= 0:
+            return
+        layout.invalidate()
+        height = layout.heightForWidth(width) if layout.hasHeightForWidth() else -1
+        if height < 0:
+            margins = layout.contentsMargins()
+            height = margins.top() + margins.bottom()
+            visible = 0
+            for index in range(layout.count()):
+                child = layout.itemAt(index).widget()
+                if child is None or child.isHidden():
+                    continue
+                inner_width = width - margins.left() - margins.right()
+                own = (
+                    child.heightForWidth(inner_width)
+                    if child.sizePolicy().hasHeightForWidth()
+                    else child.sizeHint().height()
+                )
+                height += max(own, child.minimumSizeHint().height())
+                visible += 1
+            height += layout.spacing() * max(0, visible - 1)
+        inner.setMinimumHeight(height)
+
+    def setWidget(self, widget: QWidget) -> None:  # noqa: N802 - Qt 命名
+        super().setWidget(widget)
+        self.sync_content_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self.sync_content_height()
 
 
 # --- 按钮 ------------------------------------------------------------------

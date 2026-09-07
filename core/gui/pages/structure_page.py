@@ -23,7 +23,7 @@ from core.gui.pages.lore_page import read_only_text
 from core.gui.pages.stage_base import StagePage
 from core.gui.services import artifacts
 from core.gui.services.step_runner import action_work, step_work
-from core.gui.widgets import Card, GatePanel, hint_label, primary_button, secondary_button
+from core.gui.widgets import Card, GatePanel, hint_label, primary_button
 from core.gui.widgets.inspector import StepButton
 
 
@@ -127,15 +127,9 @@ class StructurePage(StagePage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("故事结构", "情节与故事弧")
 
-        self.arcs_button = secondary_button("生成人物弧光")
-        self.faction_arcs_button = secondary_button("生成势力弧光")
+        # 单步入口只在右栏「分步生成」里出现一次，页头只放跑完整阶段的主按钮。
         self.primary = primary_button("生成故事结构")
-        for button in (self.arcs_button, self.faction_arcs_button, self.primary):
-            self.header.add_action(button)
-        self.arcs_button.clicked.connect(
-            lambda: self._run_stage("arcs", self.arcs_button))
-        self.faction_arcs_button.clicked.connect(
-            lambda: self._run_stage("faction_arcs", self.faction_arcs_button))
+        self.header.add_action(self.primary)
         self.primary.clicked.connect(
             lambda: self._run_stage("full", self.primary))
 

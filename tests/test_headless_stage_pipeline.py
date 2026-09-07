@@ -99,9 +99,11 @@ def test_ui_action_work_forwards_action_parameters_and_chapter(monkeypatch, tmp_
 
     def fake_run_action(
         step, action, output_dir, model, parameters=None, report=None,
-        chapter_number=None,
+        chapter_number=None, options=None,
     ):
-        calls.append((step, action, output_dir, model, parameters, chapter_number))
+        calls.append(
+            (step, action, output_dir, model, parameters, chapter_number, options)
+        )
         report("动作进度", 0.4)
         return {"step": step, "action": action}
 
@@ -114,11 +116,12 @@ def test_ui_action_work_forwards_action_parameters_and_chapter(monkeypatch, tmp_
         "test-model",
         parameters={"num_characters": 7},
         chapter_number=3,
+        options={"reason": "作者放行"},
     )(lambda text, fraction: progress.append((text, fraction)))
 
     assert calls == [(
         "chapters", "rewrite", str(tmp_path), "test-model",
-        {"num_characters": 7}, 3,
+        {"num_characters": 7}, 3, {"reason": "作者放行"},
     )]
     assert result == {"step": "chapters", "action": "rewrite"}
     assert ("动作进度", 0.4) in progress
@@ -153,6 +156,191 @@ def test_lore_action_merges_saved_parameters_with_ui_counts(monkeypatch, tmp_pat
     assert observed == {"genre": "Mystery", "count": 3}
     assert result["action"] == "factions"
     assert result["generated_files"] == [os.path.join("story", "lore", "factions.json")]
+
+
+def _project(tmp_path):
+    system = tmp_path / "system"
+    system.mkdir(exist_ok=True)
+    (system / "parameters.txt").write_text(
+        "Genre: Mystery\nBackend: api\nModel: test-model\n", encoding="utf-8"
+    )
+    return str(tmp_path)
+
+
+def _pending(tmp_path, *, resumable=True, asks=True, verdict_unavailable=False):
+    from core.generation import pending_review
+
+    review = {
+        "stage": "chapter",
+        "passed": False,
+        "pass_average": 3.2,
+        "average_score": 2.8,
+        "repair_instructions": ["把收据时间写清楚"] if asks else [],
+    }
+    record = pending_review.build(
+        4,
+        message="第 4 章仍未通过章节级质量检查",
+        review={} if verdict_unavailable else review,
+        prose="一场。\n\n二场。",
+        stage=(
+            pending_review.STAGE_CHAPTER if resumable else pending_review.STAGE_SCENE
+        ),
+        snapshot={"scenes": ["一场。", "二场。"]} if resumable else {},
+        verdict_unavailable=verdict_unavailable,
+    )
+    pending_review.save(record, str(tmp_path))
+    return record
+
+
+def test_review_actions_need_a_record_to_act_on(monkeypatch, tmp_path):
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+
+    with pytest.raises(stage_pipeline.StageGenerationError, match="没有待复审记录"):
+        stage_pipeline.run_stage_action(
+            "chapters", "waive", _project(tmp_path), chapter_number=4
+        )
+
+    with pytest.raises(stage_pipeline.StageGenerationError, match="缺少章节编号"):
+        stage_pipeline.run_stage_action("chapters", "revise", _project(tmp_path))
+
+
+def test_a_half_written_draft_is_sent_back_to_a_rewrite(monkeypatch, tmp_path):
+    """只写到一半的稿子没有完整章节，放行和定向重修都无从谈起。"""
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+    _pending(tmp_path, resumable=False)
+
+    with pytest.raises(stage_pipeline.StageGenerationError, match="请重写本章"):
+        stage_pipeline.run_stage_action(
+            "chapters", "waive", _project(tmp_path), chapter_number=4
+        )
+
+
+def test_revising_without_a_single_checked_ask_is_refused(monkeypatch, tmp_path):
+    """勾选框全被划掉时重修没有依据，比空跑一轮大模型早一步说清楚。"""
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+    _pending(tmp_path)
+
+    with pytest.raises(stage_pipeline.StageGenerationError, match="没有勾选"):
+        stage_pipeline.run_stage_action(
+            "chapters",
+            "revise",
+            _project(tmp_path),
+            chapter_number=4,
+            options={"issue_ids": []},
+        )
+
+
+def test_a_verdictless_draft_may_be_sent_back_without_any_checked_ask(
+    monkeypatch, tmp_path
+):
+    """评审自己没出过结论时没有清单可勾，这条路是重跑评审，不该被当成空重修拦下。"""
+    from agents.writing import chapter_writing_agent as agent_module
+    from agents.base.agent import AgentResult
+
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+    _pending(tmp_path, verdict_unavailable=True)
+    seen = {}
+
+    def fake_review(self, chapter_number, action, asks=None, reason=""):
+        seen.update(action=action, asks=list(asks or []))
+        target = tmp_path / "story/content/chapters/chapter_4.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("重跑评审后通过的正文", encoding="utf-8")
+        return AgentResult(success=True, data={}, messages=["好了"], metrics={})
+
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent, "review_pending_chapter", fake_review
+    )
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent, "__init__",
+        lambda self, output_dir, **kwargs: setattr(self, "output_dir", output_dir),
+    )
+
+    stage_pipeline.run_stage_action(
+        "chapters",
+        "revise",
+        _project(tmp_path),
+        chapter_number=4,
+        options={"issue_ids": []},
+    )
+
+    assert seen == {"action": "revise", "asks": []}
+
+
+def test_review_actions_are_handed_to_the_writing_agent(monkeypatch, tmp_path):
+    """复审动作必须交给写作 agent：只有它带得起整章重生成要用的上下文。"""
+    from agents.writing import chapter_writing_agent as agent_module
+    from agents.base.agent import AgentResult
+
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+    record = _pending(tmp_path)
+    seen = {}
+
+    def fake_review(self, chapter_number, action, asks=None, reason=""):
+        seen.update(
+            chapter=chapter_number, action=action, asks=list(asks or []), reason=reason
+        )
+        target = tmp_path / "story/content/chapters/chapter_4.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("放行后的正文", encoding="utf-8")
+        return AgentResult(success=True, data={}, messages=["好了"], metrics={})
+
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent, "review_pending_chapter", fake_review
+    )
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent, "__init__",
+        lambda self, output_dir, **kwargs: setattr(self, "output_dir", output_dir),
+    )
+
+    result = stage_pipeline.run_stage_action(
+        "chapters",
+        "waive",
+        _project(tmp_path),
+        chapter_number=4,
+        options={"reason": "开篇节奏我认了"},
+    )
+
+    assert seen == {
+        "chapter": 4, "action": "waive", "asks": [], "reason": "开篇节奏我认了",
+    }
+    assert result["action"] == "waive"
+    assert result["generated_files"]
+
+    stage_pipeline.run_stage_action(
+        "chapters",
+        "revise",
+        _project(tmp_path),
+        chapter_number=4,
+        options={"issue_ids": [record.issues[0].id]},
+    )
+    assert seen["action"] == "revise"
+    assert seen["asks"] == ["把收据时间写清楚"]
+
+
+def test_a_failed_review_action_surfaces_the_reason(monkeypatch, tmp_path):
+    from agents.writing import chapter_writing_agent as agent_module
+    from agents.base.agent import AgentResult
+
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+    _pending(tmp_path)
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent, "__init__",
+        lambda self, output_dir, **kwargs: setattr(self, "output_dir", output_dir),
+    )
+    monkeypatch.setattr(
+        agent_module.ChapterWritingAgent,
+        "review_pending_chapter",
+        lambda self, *args, **kwargs: AgentResult(
+            success=False, data={}, metrics={},
+            messages=["第 4 章重修后仍未通过质量检查；1 处硬伤，仍待复审"],
+        ),
+    )
+
+    with pytest.raises(stage_pipeline.StageGenerationError, match="仍待复审"):
+        stage_pipeline.run_stage_action(
+            "chapters", "waive", _project(tmp_path), chapter_number=4
+        )
 
 
 def test_pipeline_error_message_is_not_swallowed_or_rewritten():

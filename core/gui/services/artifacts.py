@@ -282,6 +282,16 @@ def chapters(output_dir: str) -> List[Chapter]:
     return result
 
 
+def pending_reviews(output_dir: str) -> Dict[int, Any]:
+    """未通过质量闸门、等着作者裁决的章节，按章号索引。
+
+    记录存在本身就等于「这一章待复审」：章节被接受时生成侧会删掉它。
+    """
+    from core.generation.pending_review import load_all
+
+    return load_all(output_dir)
+
+
 def expected_chapter_count(output_dir: str) -> int:
     """优先用 workflow_status 的判定，无计划时退回场景规划数量。"""
     from core.generation.workflow_status import expected_chapter_count as expected

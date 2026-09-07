@@ -9,7 +9,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agents.review.domain_review_agent import DomainReview, DomainReviewAgent
+from agents.review.domain_review_agent import (
+    DomainReview,
+    DomainReviewAgent,
+    DomainReviewError,
+    SceneDialogue,
+)
 from core.generation.cancellation import CancelToken, raise_if_cancelled
 from core.generation.chapter_acceptance import (
     ChapterAcceptanceError,
@@ -26,10 +31,18 @@ from core.generation.domain_profiles import (
     resolve_domain_profile,
     resolve_quality_loop_mode,
 )
+from core.generation.chapter_continuity import (
+    continuity_gate,
+    established_context,
+    protected_terms,
+    scene_one_continuity_rules,
+)
 from core.generation.helper_fns import parse_scene_sections, write_file
+from core.generation.plan_fault import describe_plan_faults, plan_mandated_failures
 from core.generation.narrative_quality import analyze_narrative_quality
 from core.generation.planning_contract import (
     PlanningContractError,
+    load_planning_contracts,
     validate_planning_contract,
 )
 from core.generation.story_ledger import (
@@ -44,6 +57,10 @@ class QualityGateError(RuntimeError):
 
     Carries whatever prose was produced before the gate failed so callers can
     archive it for inspection instead of writing it into the manuscript.
+
+    也带上抬手那一刻的评审结论与现场：闸门早就算出了哪一句触硬伤、差几分、要改
+    成什么，此前这些只随重试记录留在盘上，报错本身只剩一句「请人工审核」，作者
+    得回头按时间戳翻几十份 JSON 才能开始判断。
     """
 
     def __init__(
@@ -51,10 +68,27 @@ class QualityGateError(RuntimeError):
         message: str,
         partial_scenes: Optional[List[str]] = None,
         chapter_number: Optional[int] = None,
+        review: Optional[Dict[str, Any]] = None,
+        snapshot: Optional[Dict[str, Any]] = None,
+        verdict_unavailable: bool = False,
     ):
         super().__init__(message)
         self.partial_scenes = list(partial_scenes or [])
         self.chapter_number = chapter_number
+        self.review = review or {}
+        self.snapshot = snapshot or {}
+        # 评审自己没能给出结论（回复没写完、格式不对），不是判了不合格。两者
+        # 的出口不同：前者该重跑评审，后者该按清单重修。
+        self.verdict_unavailable = bool(verdict_unavailable)
+
+
+#: 关掉单场景多轮重修的参数值。默认开：改同一场时让模型看见自己上一稿，
+#: 改动更贴着被点名的那几句走，而不是整体重写一遍。
+SCENE_DIALOGUE_OFF = {"off", "false", "no", "关闭", "关"}
+
+
+def scene_dialogue_enabled(parameters: Dict[str, Any]) -> bool:
+    return str((parameters or {}).get("Scene Dialogue", "on")).strip().lower()         not in SCENE_DIALOGUE_OFF
 
 
 # 可放行的最大分差。取严格档相对标准档的加分幅度：差距不超过这个数的稿子，
@@ -79,10 +113,17 @@ def waiver_reason(review: DomainReview, stage_label: str) -> Optional[str]:
     """
     if not review.soft_failure or review.shortfall > WAIVABLE_SHORTFALL + _SHORTFALL_TOLERANCE:
         return None
+    # 差额只来自其中一份评审。报合议后的平均分会写出「平均 3.59 分、门槛 3.20 分，
+    # 仍差 0.08 分」这种自相矛盾的记录，作者事后查不出是哪一份短了。
+    source = review.shortfall_source
+    scores = (
+        f"差在 {source}"
+        if source
+        else f"平均 {review.average_score:.2f} 分，门槛 {review.pass_average:.2f} 分"
+    )
     return (
         f"{stage_label} 在重试耗尽后仍差 {review.shortfall:.2f} 分，按差分放行："
-        f"平均 {review.average_score:.2f} 分，门槛 {review.pass_average:.2f} 分；"
-        f"评审未报告硬失败，必要维度全部达标。"
+        f"{scores}；评审未报告硬失败，必要维度全部达标。"
     )
 
 
@@ -114,6 +155,67 @@ class ChapterLoopResult:
     @property
     def chapter_content(self) -> str:
         return "\n\n---\n\n".join(self.scenes)
+
+
+def review_from_dict(payload):
+    """从存档还原一份评审。`to_dict` 会多带一个算出来的 average_score，滤掉。"""
+    if not isinstance(payload, dict):
+        return None
+    fields = DomainReview.__dataclass_fields__
+    return DomainReview(**{k: v for k, v in payload.items() if k in fields})
+
+
+def snapshot_of(result: ChapterLoopResult) -> Dict[str, Any]:
+    """把一次循环的现场收成纯 JSON，供待复审记录保存。
+
+    存的是重新落地这一章所需的全部输入：正文、契约、账本基线、场景规划与三份
+    评审。案情圣经、悬念账本、上一章结尾都能从账本重新读出来，不必入档。
+    """
+    return {
+        "scenes": list(result.scenes),
+        "contract": result.contract,
+        "base_revision": int(result.base_revision),
+        "plan_content": result.plan_content,
+        "plan_revised": bool(result.plan_revised),
+        "plan_review": result.plan_review.to_dict() if result.plan_review else None,
+        "scene_reviews": [review.to_dict() for review in result.scene_reviews],
+        "chapter_review": (
+            result.chapter_review.to_dict() if result.chapter_review else None
+        ),
+        "retry_count": int(result.retry_count),
+        "profile_key": result.profile_key,
+        "gate_waivers": list(result.gate_waivers),
+        "regeneration_marker": result.regeneration_marker,
+        "narrative_report": result.narrative_report,
+    }
+
+
+def restore_result(snapshot: Dict[str, Any]) -> ChapterLoopResult:
+    """把待复审记录里的现场还原成一份循环结果。"""
+    scene_reviews = [
+        review
+        for review in (
+            review_from_dict(raw) for raw in snapshot.get("scene_reviews") or []
+        )
+        if review is not None
+    ]
+    return ChapterLoopResult(
+        scenes=list(snapshot.get("scenes") or []),
+        contract=snapshot.get("contract") or {},
+        base_revision=int(snapshot.get("base_revision") or 0),
+        plan_content=str(snapshot.get("plan_content") or ""),
+        plan_revised=bool(snapshot.get("plan_revised")),
+        plan_review=(
+            review_from_dict(snapshot.get("plan_review")) or skipped_review("plan")
+        ),
+        scene_reviews=scene_reviews,
+        chapter_review=review_from_dict(snapshot.get("chapter_review")),
+        retry_count=int(snapshot.get("retry_count") or 0),
+        profile_key=str(snapshot.get("profile_key") or ""),
+        gate_waivers=list(snapshot.get("gate_waivers") or []),
+        regeneration_marker=str(snapshot.get("regeneration_marker") or ""),
+        narrative_report=snapshot.get("narrative_report") or {},
+    )
 
 
 class ChapterGenerationLoop:
@@ -149,9 +251,103 @@ class ChapterGenerationLoop:
         self.cancel_token = cancel_token
         self.require_planning_contract = require_planning_contract
         self.max_acceptance_retries = max(0, int(max_acceptance_retries))
+        # 手上最新的一稿正文。评审失灵时要连它一起交出去，否则这一遍写出来的
+        # 东西一个字都留不下，只能整章重写。
+        self._latest_scenes: List[str] = []
+        # 同一场的多轮重修是否走对话；由作品参数决定，绑定档案时读一次。
+        self._scene_dialogue = True
 
     def _check_cancelled(self) -> None:
         raise_if_cancelled(self.cancel_token)
+
+    def _prior_contracts(self, chapter_number: int) -> List[Dict[str, Any]]:
+        """已经落盘的、本章之前的章节契约；读不出来就当没有。
+
+        衔接检查是加分项，不该因为账本里有一份坏契约就让整章写不下去。
+        """
+        try:
+            return [
+                item
+                for item in load_planning_contracts(self.output_dir)
+                if int(item.get("chapter", 0)) < int(chapter_number)
+            ]
+        except (PlanningContractError, OSError, ValueError) as exc:
+            self.logger.warning(
+                "Chapter %s continuity context unavailable: %s", chapter_number, exc
+            )
+            return []
+
+    def _plan_faults(
+        self, review: DomainReview, scenes: List[str]
+    ) -> List[Dict[str, Any]]:
+        """这份评审里，哪几条硬伤是场景规划自己要求的。
+
+        判据在 `core/generation/plan_fault.py`：硬伤必须附正文逐字引文，引文与规划
+        共用的片段够长，就说明正文只是照规划写的。找出来之后写进评审警告，作者在
+        待复审界面上能直接看到该回规划里改哪一句。
+        """
+        try:
+            protected = protected_terms(self.ledger.load_suspense_ledger())
+        except (OSError, ValueError, TypeError):
+            # 人名地名只是用来把纯专名的重合排除掉，读不到账本就少一层过滤，
+            # 判据照常成立——不该因为这一步让整轮重修停下来。
+            protected = ()
+        faults = plan_mandated_failures(review.hard_failures, scenes, protected=protected)
+        if not faults:
+            return []
+        description = describe_plan_faults(faults)
+        if description and description not in (review.reviewer_warning or ""):
+            review.reviewer_warning = "; ".join(
+                part for part in (review.reviewer_warning, description) if part
+            )
+        self.logger.warning("Plan-level defects, not repairable in prose:\n%s", description)
+        return faults
+
+    @staticmethod
+    def _without_plan_faults(
+        asks: List[str], plan_faults: List[Dict[str, Any]]
+    ) -> List[str]:
+        """把出在规划里的那几条从重修清单里摘掉，其余照常发下去。
+
+        按引文匹配：一条 ask 的文本里带着某处规划缺陷的引文，就是同一条。
+        """
+        quotes = [
+            str(item.get("quote", "")).strip()
+            for item in plan_faults
+            if str(item.get("quote", "")).strip()
+        ]
+        if not quotes:
+            return asks
+        return [ask for ask in asks if not any(quote in ask for quote in quotes)]
+
+    def _continuity_rules(
+        self, chapter_number: int, contract: Dict[str, Any]
+    ) -> List[str]:
+        """第一场提示词里的硬性衔接要求。"""
+        if int(chapter_number) <= 1:
+            return []
+        prior = self._prior_contracts(chapter_number)
+        return scene_one_continuity_rules(
+            contract, established_context(prior, chapter_number)
+        )
+
+    def _continuity_report(
+        self, chapter_number: int, chapter_content: str, contract: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """整章写完之后的确定性衔接检查，不花任何调用。"""
+        prior = self._prior_contracts(chapter_number)
+        report = continuity_gate(
+            chapter_content,
+            self._load_previous_chapter_content(chapter_number),
+            contract,
+            chapter_number,
+            protected=protected_terms(self.ledger.load_suspense_ledger(), prior),
+            prior_contracts=prior,
+        )
+        # 存一份带统计数字的原始结果：合议后的评审只留得下硬失败，套语条数、
+        # 时间读数、悬念沉默章数这些量化结果没有别的地方可看。
+        self.ledger.save_review(chapter_number, "continuity", report)
+        return report
 
     def _review_complete_chapter(
         self,
@@ -161,6 +357,7 @@ class ChapterGenerationLoop:
         suspense_ledger: Dict[str, Any],
         previous_chapter_tail: str,
         repairs_requested: Optional[List[str]] = None,
+        chapter_number: Optional[int] = None,
     ) -> DomainReview:
         """Use independent contract/reader/plausibility gates when available.
 
@@ -170,6 +367,13 @@ class ChapterGenerationLoop:
 
         bundle = getattr(self.reviewer, "review_chapter_bundle", None)
         if callable(bundle):
+            # 衔接检查是确定性的，它不占一次调用，但结论必须和三份评审一起合议：
+            # 否则「开头又把上一章重写了一遍」会在闸门之外被无声吞掉。
+            continuity_report = (
+                self._continuity_report(chapter_number, chapter_content, contract)
+                if chapter_number
+                else None
+            )
             return bundle(
                 chapter_content,
                 contract,
@@ -177,6 +381,7 @@ class ChapterGenerationLoop:
                 suspense_ledger,
                 previous_chapter_tail=previous_chapter_tail,
                 repairs_requested=repairs_requested,
+                continuity_report=continuity_report,
             )
         return self.reviewer.review_chapter(
             chapter_content,
@@ -220,6 +425,7 @@ class ChapterGenerationLoop:
 
         resolved = apply_quality_loop_mode(resolved, mode)
         self.profile = resolved
+        self._scene_dialogue = scene_dialogue_enabled(parameters)
         if self._max_plan_retries is None:
             self.max_plan_retries = resolved.max_plan_retries
         if self._max_scene_retries is None:
@@ -232,6 +438,74 @@ class ChapterGenerationLoop:
             )
         return resolved
 
+    def bind_generation_context(
+        self,
+        parameters: Dict[str, Any],
+        lore: str,
+        generate_scene: Callable[..., str],
+        on_plan_revised: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """记下重新生成这一章所需的输入。
+
+        最终验收有可能判定这一章的契约要让位于账本。那时按旧契约写出来的正文
+        整体作废，必须逐场重生成，靠的就是这份上下文。正常写作路径进 run() 时
+        自动记下；复审路径（照建议重修、人工放行）没有跑过生成，必须由调用方
+        显式绑定——不绑的话，作者点下去等到最后一步才换来一句「缺少完整重生成
+        上下文」，而那时已经烧掉了整轮调用。
+        """
+        self._generation_context = {
+            "parameters": parameters,
+            "lore": lore,
+            "generate_scene": generate_scene,
+            "on_plan_revised": on_plan_revised,
+        }
+
+    def _save_unavailable_verdict(
+        self, chapter_number: int, error: DomainReviewError
+    ) -> str:
+        """把评审失灵的现场存进本章的评审目录：错在哪、大模型原样回了什么。
+
+        只记一句错误摘要是查不出原因的——「评审里没有评分表」既可能是模型漏写了
+        字段，也可能是回复根本没写完，两者的处置完全不同。回复原文留在盘上，下
+        次报同一句话时能直接看出是哪一种。
+        """
+        return self.ledger.save_review(
+            chapter_number,
+            "review_unavailable",
+            {
+                "stage": getattr(error, "stage", ""),
+                "error": str(error),
+                "model": self.model,
+                "responses": list(getattr(error, "responses", []) or []),
+            },
+        )
+
+    def _verdict_unavailable(
+        self,
+        chapter_number: int,
+        error: DomainReviewError,
+        snapshot: Optional[Dict[str, Any]] = None,
+    ) -> QualityGateError:
+        """评审没能出结论时，按「待复审」交出去，而不是让整章白跑。
+
+        判不合格与判不出来是两码事，但对作者来说后果一样：这一章不能进正式稿。
+        既然如此，正文就该和判不合格时一样留住，让作者能重跑评审或直接放行。
+        """
+        path = self._save_unavailable_verdict(chapter_number, error)
+        self.logger.error(
+            "Chapter %s has no verdict: %s (raw response saved at %s)",
+            chapter_number,
+            error,
+            path,
+        )
+        return QualityGateError(
+            f"第 {chapter_number} 章的质量评审没能给出结论：{error}",
+            partial_scenes=list(self._latest_scenes),
+            chapter_number=chapter_number,
+            snapshot=snapshot,
+            verdict_unavailable=True,
+        )
+
     def run(
         self,
         chapter_number: int,
@@ -241,15 +515,33 @@ class ChapterGenerationLoop:
         generate_scene: Callable[..., str],
         on_plan_revised: Optional[Callable[[str], None]] = None,
     ) -> ChapterLoopResult:
-        # Final acceptance may repair a contract.  If that happens, the prose
-        # generated from the old contract is invalid and this exact generation
-        # context is required to rebuild every scene before acceptance retries.
-        self._generation_context = {
-            "parameters": parameters,
-            "lore": lore,
-            "generate_scene": generate_scene,
-            "on_plan_revised": on_plan_revised,
-        }
+        self._latest_scenes = []
+        try:
+            return self._run(
+                chapter_number,
+                plan_content,
+                parameters,
+                lore,
+                generate_scene,
+                on_plan_revised,
+            )
+        except DomainReviewError as error:
+            # 章节闸门那一处自己带着完整现场兜住了；能落到这里的是规划评审与
+            # 场景评审失灵，那时整章还没写完，交出去的只有半稿。
+            raise self._verdict_unavailable(chapter_number, error) from error
+
+    def _run(
+        self,
+        chapter_number: int,
+        plan_content: str,
+        parameters: Dict[str, Any],
+        lore: str,
+        generate_scene: Callable[..., str],
+        on_plan_revised: Optional[Callable[[str], None]] = None,
+    ) -> ChapterLoopResult:
+        self.bind_generation_context(
+            parameters, lore, generate_scene, on_plan_revised
+        )
         self._check_cancelled()
         self.ledger.initialize(parameters)
         pending_regeneration = self.ledger.pending_chapter_regeneration(chapter_number)
@@ -331,8 +623,13 @@ class ChapterGenerationLoop:
 
         if self.require_planning_contract:
             try:
+                # 衔接字段在这里也要求非空：正文马上就要照它写第一场，缺了它这一章
+                # 只能凭空开头。契约不合格就退回场景规划重做，那时改还便宜。
                 contract = validate_planning_contract(
-                    contract, chapter_number, require_origin=True
+                    contract,
+                    chapter_number,
+                    require_origin=True,
+                    require_continuity=True,
                 )
             except PlanningContractError as exc:
                 raise QualityGateError(str(exc), chapter_number=chapter_number) from exc
@@ -423,7 +720,9 @@ class ChapterGenerationLoop:
 
         generated_scenes: List[str] = []
         scene_reviews: List[DomainReview] = []
+        self._latest_scenes = generated_scenes
         previous_chapter_tail = self._load_previous_chapter_tail(chapter_number)
+        continuity_rules = self._continuity_rules(chapter_number, contract)
 
         for index, scene_plan in enumerate(scenes, start=1):
             # 场景边界是安全点：已完成的场景还在内存里，尚未落盘也未提交账本。
@@ -441,6 +740,8 @@ class ChapterGenerationLoop:
                 next_scene_plan=next_scene_plan,
                 contract=contract,
                 profile=profile,
+                # 只有第一场接的是上一章；后面几场接的是上一场。
+                continuity_rules=continuity_rules if index == 1 else (),
             )
             if not prose or not prose.strip():
                 raise QualityGateError(
@@ -470,6 +771,8 @@ class ChapterGenerationLoop:
             # 结果，而不是碰巧最后生成的那一稿。
             best_prose, best_review = prose, review
             unmet_asks = []
+            # 这一场自己的对话：几轮重修共用一段，模型看得见它上一稿改了什么。
+            dialogue = SceneDialogue() if self._scene_dialogue else None
             for attempt in range(self.max_scene_retries):
                 if review.passed:
                     break
@@ -497,6 +800,8 @@ class ChapterGenerationLoop:
                     next_scene_plan,
                     contract,
                     unmet_asks=unmet_asks,
+                    dialogue=dialogue,
+                    continuity_rules=continuity_rules if index == 1 else (),
                 )
                 if not prose or not prose.strip():
                     raise QualityGateError(
@@ -544,6 +849,7 @@ class ChapterGenerationLoop:
                         f"{stage_label} 在 {self.max_scene_retries} 次修订后仍未通过质量检查",
                         partial_scenes=[*generated_scenes, prose],
                         chapter_number=chapter_number,
+                        review=review.to_dict(),
                     )
                 self.logger.warning(
                     "Chapter %s Scene %s waived: %s", chapter_number, index, reason
@@ -578,67 +884,466 @@ class ChapterGenerationLoop:
                 narrative_report=narrative_report,
             )
 
-        chapter_review = self._review_complete_chapter(
-            chapter_content,
-            contract,
-            case_bible,
-            suspense_ledger,
-            previous_chapter_tail,
-        )
-        self.ledger.save_review(chapter_number, "chapter", chapter_review.to_dict())
+        # 整章已经写完，从这里往后每一次评审失灵都会赔掉一整章的调用。评审判不
+        # 出结论时按待复审交出去，连同现场一起——作者重跑一次评审就能接着走，不必
+        # 从头重写。
+        chapter_review = None
+        try:
+            chapter_review = self._review_complete_chapter(
+                chapter_content,
+                contract,
+                case_bible,
+                suspense_ledger,
+                previous_chapter_tail,
+                chapter_number=chapter_number,
+            )
+            # 标注要赶在存盘之前：作者事后翻账本时，该回规划改哪一句必须在记录里。
+            self._plan_faults(chapter_review, scenes)
+            self.ledger.save_review(chapter_number, "chapter", chapter_review.to_dict())
 
-        # A chapter-level failure is routed to the scene named in repair_scope.
-        # The repaired scene and the assembled chapter must both pass again.
+            (
+                generated_scenes,
+                scene_reviews,
+                chapter_review,
+                retry_count,
+            ) = self._repair_chapter(
+                chapter_number,
+                scenes,
+                generated_scenes,
+                scene_reviews,
+                chapter_review,
+                contract,
+                case_bible,
+                suspense_ledger,
+                previous_chapter_tail,
+                retry_count,
+            )
+        except DomainReviewError as error:
+            raise self._verdict_unavailable(
+                chapter_number,
+                error,
+                snapshot=snapshot_of(
+                    ChapterLoopResult(
+                        scenes=generated_scenes,
+                        contract=contract,
+                        base_revision=base_revision,
+                        plan_content=current_plan,
+                        plan_revised=plan_revised,
+                        plan_review=plan_review,
+                        scene_reviews=scene_reviews,
+                        chapter_review=chapter_review,
+                        retry_count=retry_count,
+                        profile_key=profile.key,
+                        gate_waivers=gate_waivers,
+                        regeneration_marker=regeneration_marker,
+                        narrative_report=narrative_report,
+                    )
+                ),
+            ) from error
+        narrative_report = analyze_narrative_quality(
+            "\n\n---\n\n".join(generated_scenes)
+        ).to_dict()
+
+        # 先把现场成型再判定：闸门拦下时要连同这份现场一起交出去，作者才可能在
+        # 界面上直接重修或放行，而不是只拿到一句话和一个归档路径。
+        result = ChapterLoopResult(
+            scenes=generated_scenes,
+            contract=contract,
+            base_revision=base_revision,
+            plan_content=current_plan,
+            plan_revised=plan_revised,
+            plan_review=plan_review,
+            scene_reviews=scene_reviews,
+            chapter_review=chapter_review,
+            retry_count=retry_count,
+            profile_key=profile.key,
+            gate_waivers=gate_waivers,
+            regeneration_marker=regeneration_marker,
+            narrative_report=narrative_report,
+        )
+
+        blocked = [
+            review for review in (chapter_review, *scene_reviews) if not review.passed
+        ]
+        if blocked:
+            stage_label = f"第 {chapter_number} 章章节级检查"
+            reason = (
+                waiver_reason(blocked[0], stage_label)
+                if all(review.soft_failure for review in blocked)
+                else None
+            )
+            if reason is None:
+                raise QualityGateError(
+                    f"第 {chapter_number} 章在定向修订后仍未通过章节级质量检查，请人工审核",
+                    partial_scenes=generated_scenes,
+                    chapter_number=chapter_number,
+                    review=(
+                        chapter_review if not chapter_review.passed else blocked[0]
+                    ).to_dict(),
+                    snapshot=snapshot_of(result),
+                )
+            self.logger.warning("Chapter %s waived: %s", chapter_number, reason)
+            if not chapter_review.passed:
+                chapter_review = chapter_review.waive(reason)
+            scene_reviews = [
+                review if review.passed else review.waive(reason) for review in scene_reviews
+            ]
+            gate_waivers.append(reason)
+            self.ledger.save_review(
+                chapter_number, "chapter_waived", chapter_review.to_dict()
+            )
+            result.chapter_review = chapter_review
+            result.scene_reviews = scene_reviews
+
+        return result
+
+    # ------------------------------------------------------------ 复审出口
+    def revise_pending(
+        self,
+        chapter_number: int,
+        snapshot: Dict[str, Any],
+        parameters: Dict[str, Any],
+        asks: Optional[List[str]] = None,
+    ) -> ChapterLoopResult:
+        """从待复审现场接着做定向重修，改哪几条由作者说了算。
+
+        走的是闸门自己那条定向修订路：改 repair_scope 指到的那一场，再整章复评。
+        自动重试与这一次的区别只有依据来自哪里——自动重试拿评审全量的 asks，这里
+        拿作者勾选后剩下的那几条。案情圣经、悬念账本、上一章结尾都从账本重新读，
+        所以现场快照只需存正文、契约和评审。
+
+        上一轮评审自己没出结论时，这条路就是「重跑评审」：先给这一稿补上判定，
+        通过就直接交付，不通过再照新判定重修。
+        """
+        result = restore_result(snapshot)
+        if not result.scenes:
+            raise QualityGateError(
+                f"第 {chapter_number} 章没有可重修的现场，请重写本章",
+                chapter_number=chapter_number,
+            )
+        self._check_cancelled()
+        self.ledger.initialize(parameters)
+        self._bind_profile(parameters, resolve_quality_loop_mode(parameters))
+        self._latest_scenes = list(result.scenes)
+        scenes = parse_scene_sections(result.plan_content)
+        if len(scenes) != len(result.scenes):
+            raise QualityGateError(
+                f"第 {chapter_number} 章的场景规划已经改过，无法与旧稿逐场对应，请重写本章",
+                partial_scenes=result.scenes,
+                chapter_number=chapter_number,
+            )
+        try:
+            return self._revise_pending(
+                chapter_number, result, scenes, parameters, asks
+            )
+        except DomainReviewError as error:
+            raise self._verdict_unavailable(
+                chapter_number, error, snapshot=snapshot_of(result)
+            ) from error
+
+    def _revise_pending(
+        self,
+        chapter_number: int,
+        result: ChapterLoopResult,
+        scenes: List[str],
+        parameters: Dict[str, Any],
+        asks: Optional[List[str]] = None,
+    ) -> ChapterLoopResult:
+        if result.chapter_review is None:
+            result.chapter_review = self._review_complete_chapter(
+                result.chapter_content,
+                result.contract,
+                self.ledger.load_case_bible(),
+                self.ledger.load_suspense_ledger(),
+                self._load_previous_chapter_tail(chapter_number),
+                chapter_number=chapter_number,
+            )
+            self.ledger.save_review(
+                chapter_number, "chapter_rerun", result.chapter_review.to_dict()
+            )
+            if result.chapter_review.passed and all(
+                review.passed for review in result.scene_reviews
+            ):
+                result.base_revision = self.ledger.current_revision()
+                return result
+        carried = [ask for ask in (asks or []) if str(ask).strip()]
+        # 作者只勾了出在规划里的那几条时，重修拿不到任何能在正文里改的东西。
+        # 这时改一场正文既改不到点上又要花两次调用，不如直接说清楚该去哪儿改。
+        if carried:
+            plan_faults = self._plan_faults(result.chapter_review, scenes)
+            if plan_faults and not self._without_plan_faults(carried, plan_faults):
+                raise QualityGateError(
+                    f"第 {chapter_number} 章：勾选的条目全部出在场景规划里，"
+                    "重写正文改不掉。\n" + describe_plan_faults(plan_faults),
+                    chapter_number=chapter_number,
+                    review=result.chapter_review.to_dict(),
+                    snapshot=snapshot_of(result),
+                )
+        (
+            revised_scenes,
+            scene_reviews,
+            chapter_review,
+            retry_count,
+        ) = self._repair_chapter(
+            chapter_number,
+            scenes,
+            list(result.scenes),
+            list(result.scene_reviews),
+            result.chapter_review,
+            result.contract,
+            self.ledger.load_case_bible(),
+            self.ledger.load_suspense_ledger(),
+            self._load_previous_chapter_tail(chapter_number),
+            result.retry_count,
+            carried_asks=carried or None,
+        )
+        result.scenes = revised_scenes
+        result.scene_reviews = scene_reviews
+        result.chapter_review = chapter_review
+        result.retry_count = retry_count
+        # 账本基线可能在这一章卡住期间被别的章节推进过，重新取一次，否则验收
+        # 会因为基线过期而走一轮本可避免的 rebase 修复。
+        result.base_revision = self.ledger.current_revision()
+        result.narrative_report = analyze_narrative_quality(
+            result.chapter_content
+        ).to_dict()
+
+        blocked = [
+            review
+            for review in (chapter_review, *scene_reviews)
+            if not review.passed
+        ]
+        if blocked:
+            raise QualityGateError(
+                f"第 {chapter_number} 章重修后仍未通过质量检查",
+                partial_scenes=result.scenes,
+                chapter_number=chapter_number,
+                review=(
+                    chapter_review if not chapter_review.passed else blocked[0]
+                ).to_dict(),
+                snapshot=snapshot_of(result),
+            )
+        return result
+
+    def accept_waived(
+        self,
+        chapter_number: int,
+        result: ChapterLoopResult,
+        reason: str = "",
+        chapter_path: Optional[str] = None,
+    ) -> ChapterAcceptanceResult:
+        """作者看过问题后决定收下这一稿。
+
+        放行只改评分判定，不跳过验收：正文照样走账本提交，前后矛盾与契约冲突
+        仍会挡下来。放行理由写进评审记录，事后查得出这一章是被谁放过去的。
+        """
+        note = f"作者人工放行：{reason}" if reason.strip() else "作者人工放行"
+        if result.chapter_review is None:
+            # 评审没能给出结论的那一稿：放行就是作者替它签字。记下来，事后查得出
+            # 这一章根本没被评审判定过，而不是判过之后被放过去的。
+            result.chapter_review = DomainReview(
+                stage="chapter",
+                passed=True,
+                waived=True,
+                reviewer_warning=f"{note}（质量评审未能给出结论）",
+            )
+        elif not result.chapter_review.passed:
+            result.chapter_review = result.chapter_review.waive(note)
+        result.scene_reviews = [
+            review if review.passed else review.waive(note)
+            for review in result.scene_reviews
+        ]
+        result.gate_waivers = [*result.gate_waivers, note]
+        self.logger.warning("Chapter %s waived by author: %s", chapter_number, note)
+        if result.chapter_review is not None:
+            self.ledger.save_review(
+                chapter_number, "chapter_waived_by_author", result.chapter_review.to_dict()
+            )
+        return self.accept_result(chapter_number, result, chapter_path=chapter_path)
+
+    # Repair routes, most authoritative first.  A human ruling outranks every
+    # automatic fix, and a stale base revision has to be refreshed before any
+    # other repair is even meaningful.
+    _REPAIR_ORDER = ("human_decision", "rebase", "contract", "prose")
+
+    #: 修复条目里引用原文的写法：硬伤是「原文：「…」」，加分项是「原文「…」缺少…」，
+    #: 评审自己写的修复指令也惯用同一对括号。
+    _QUOTE_IN_ASK = re.compile(r"「([^」]{4,})」")
+
+    @classmethod
+    def _scene_of_ask(
+        cls,
+        ask: str,
+        generated_scenes: List[str],
+        fallback: int,
+    ) -> int:
+        """这一条要改的东西在第几场：按它引用的原文去正文里找。"""
+        for quote in cls._QUOTE_IN_ASK.findall(ask or ""):
+            fragment = quote.strip().splitlines()[0].strip()
+            if len(fragment) < 6:
+                continue  # 太短的片段会在全章命中一堆无关位置
+            for index, scene in enumerate(generated_scenes, start=1):
+                if fragment in scene:
+                    return index
+        return fallback
+
+    @classmethod
+    def _asks_by_scene(
+        cls,
+        asks: List[str],
+        generated_scenes: List[str],
+        fallback: int,
+    ) -> Dict[int, List[str]]:
+        """把修复清单按「这条说的是哪一场」分派下去。
+
+        评审给的 repair_scope 只写一个场号，但它开出的条目常常散落在整章：某章
+        十三条带原文引用的条目里，五条在第一场、一条在第二场、七条在第三场，而
+        repair_scope 只写了第三场。照它只重写一场，另外六条就成了发给模型却没有
+        对应正文的要求——提示词里还写着「逐条对应，不要遗漏」，模型要么忽略它们，
+        要么把别场的内容拽进这一场。
+
+        找不到出处的条目归给 repair_scope 指的那一场：那是评审自己的判断，没有更
+        好的依据时听它的。
+        """
+        grouped: Dict[int, List[str]] = {}
+        for ask in asks:
+            scene = cls._scene_of_ask(ask, generated_scenes, fallback)
+            grouped.setdefault(scene, []).append(ask)
+        return dict(sorted(grouped.items()))
+
+    def _repair_chapter(
+        self,
+        chapter_number: int,
+        scenes: List[str],
+        generated_scenes: List[str],
+        scene_reviews: List[DomainReview],
+        chapter_review: DomainReview,
+        contract: Dict[str, Any],
+        case_bible: Dict[str, Any],
+        suspense_ledger: Dict[str, Any],
+        previous_chapter_tail: str,
+        retry_count: int = 0,
+        carried_asks: Optional[List[str]] = None,
+    ) -> Tuple[List[str], List[DomainReview], DomainReview, int]:
+        """定向重修：一轮里把有问题的每一场都改到，然后整章复评。
+
+        修复清单先按条目引用的原文分派到各场，哪几场有条目就改哪几场，每一场只
+        收到属于它自己的那几条。改完的每一场和重新拼起来的整章都要再过一遍评审。
+
+        闸门拦下之后自动跑一遍，作者在「待复审」里点「照建议重修」时再跑一遍——
+        两条路走同一段代码，区别只有 `carried_asks`：作者划掉的条目不进提示词，
+        且只作用于第一轮，之后仍以新评审自己提出的改动为准。
+        """
         repair_review = chapter_review
         repaired_scene_passed = True
+        # 每一场自己的对话，跨轮沿用：第二轮改同一场时，模型手上还有它第一轮
+        # 改过什么、当时被要求了什么。
+        dialogues: Dict[int, SceneDialogue] = {}
+        # 评审中途失灵时要交出改到一半的这一稿，而不是最初那一稿。
+        self._latest_scenes = generated_scenes
         # 章节级重修就地覆盖某一场，而重修不保证变好。留一份当前最好的整章快照，
         # 放弃时交出它，别让一次变差的定向修订把已经更好的稿子顶掉。
         best_scenes = list(generated_scenes)
         best_scene_reviews = list(scene_reviews)
         best_chapter_review = chapter_review
         unmet_asks = []
+        # 上一轮已经报过的规划缺陷引文。第一轮为空，所以规划缺陷一定先得到一次
+        # 重修机会——引文照搬了规划不等于正文没救，直接全撤实测更糟。
+        reported_fault_quotes: set[str] = set()
         for attempt in range(self.max_scene_retries):
             if chapter_review.passed and repaired_scene_passed:
                 break
-            target = self._target_scene(repair_review.repair_scope, len(generated_scenes))
+            fallback = self._target_scene(
+                repair_review.repair_scope, len(generated_scenes)
+            )
             retry_count += 1
-            requested = repair_review.asks
-            # 修第一场时同样要带上一章结尾，否则重写出来的开头会与上一章脱节。
-            previous_tail = (
-                generated_scenes[target - 2][-2500:] if target > 1 else previous_chapter_tail
-            )
-            next_scene_plan = scenes[target] if target < len(scenes) else ""
-            generated_scenes[target - 1] = self.reviewer.revise_scene(
-                generated_scenes[target - 1],
-                repair_review,
-                scenes[target - 1],
-                previous_tail,
-                next_scene_plan,
-                contract,
-                unmet_asks=unmet_asks,
-            )
-            if not generated_scenes[target - 1].strip():
-                raise QualityGateError(
-                    f"第 {chapter_number} 章场景 {target} 的章节级修订正文为空"
+            requested = carried_asks or repair_review.asks
+            carried_asks = None
+            # 出在规划里的那几条，先给重修一次机会再撤：引文照搬了规划不等于正文
+            # 没救——规划那句话往某个方向推，正文往往仍有回旋余地。实测直接全撤会
+            # 让重修手上什么都不剩，同样的问题原样留到最后，整章掉进待复审。
+            # 同一句引文被重新报出来，才算证明正文确实改不动。
+            detected_faults = self._plan_faults(repair_review, scenes)
+            plan_faults = [
+                fault
+                for fault in detected_faults
+                if str(fault.get("quote", "")).strip() in reported_fault_quotes
+            ]
+            requested = self._without_plan_faults(requested, plan_faults)
+            # 引文是稳定的标识：正文那句话没改，下一轮评审还会引同一句。整条修复
+            # 说明不行——评审每轮都会把同一个问题换个说法重写，逐字比对永远匹配
+            # 不上（四个副本的轨迹里「仍未解决」标记一次都没出现过）。
+            reported_fault_quotes = {
+                str(fault.get("quote", "")).strip()
+                for fault in detected_faults
+                if str(fault.get("quote", "")).strip()
+            }
+            # 评审什么都没开出来时保留老行为：改 repair_scope 指的那一场，改写依据
+            # 退回评审给的大方向。
+            grouped = self._asks_by_scene(requested, generated_scenes, fallback) or {
+                fallback: []
+            }
+
+            repaired_reviews: List[DomainReview] = []
+            # 升序逐场：后一场要拿前一场改完之后的结尾去接，倒着改会接到旧文。
+            for target, scene_asks in grouped.items():
+                # 修第一场时同样要带上一章结尾，否则重写出来的开头会与上一章脱节。
+                previous_tail = (
+                    generated_scenes[target - 2][-2500:]
+                    if target > 1
+                    else previous_chapter_tail
+                )
+                next_scene_plan = scenes[target] if target < len(scenes) else ""
+                generated_scenes[target - 1] = self.reviewer.revise_scene(
+                    generated_scenes[target - 1],
+                    repair_review,
+                    scenes[target - 1],
+                    previous_tail,
+                    next_scene_plan,
+                    contract,
+                    unmet_asks=[ask for ask in unmet_asks if ask in scene_asks],
+                    dialogue=(
+                        dialogues.setdefault(target, SceneDialogue())
+                        if self._scene_dialogue
+                        else None
+                    ),
+                    # 改写依据必须和复评依据是同一份，而且只能是这一场自己的那
+                    # 几条：把整章的清单发过来，模型手上却只有这一场的正文。
+                    asks=scene_asks,
+                    # 重写第一场时把开场的衔接要求一起带上，否则刚接上的开头会在
+                    # 定向重修里被改回重新布景那一版。
+                    continuity_rules=(
+                        self._continuity_rules(chapter_number, contract)
+                        if target == 1
+                        else ()
+                    ),
+                )
+                if not generated_scenes[target - 1].strip():
+                    raise QualityGateError(
+                        f"第 {chapter_number} 章场景 {target} 的章节级修订正文为空"
+                    )
+
+                scene_review = self.reviewer.review_scene(
+                    generated_scenes[target - 1],
+                    scenes[target - 1],
+                    target,
+                    previous_tail,
+                    next_scene_plan,
+                    contract,
+                    case_bible,
+                    suspense_ledger,
+                    repairs_requested=scene_asks,
+                )
+                scene_reviews[target - 1] = scene_review
+                repaired_reviews.append(scene_review)
+                self.ledger.save_review(
+                    chapter_number,
+                    f"chapter_retry_{attempt + 1}_scene_{target}",
+                    scene_review.to_dict(),
                 )
 
-            repaired_scene_review = self.reviewer.review_scene(
-                generated_scenes[target - 1],
-                scenes[target - 1],
-                target,
-                previous_tail,
-                next_scene_plan,
-                contract,
-                case_bible,
-                suspense_ledger,
-                repairs_requested=requested,
-            )
-            repaired_scene_passed = repaired_scene_review.passed
-            scene_reviews[target - 1] = repaired_scene_review
-            self.ledger.save_review(
-                chapter_number,
-                f"chapter_retry_{attempt + 1}_scene_{target}",
-                repaired_scene_review.to_dict(),
+            repaired_scene_passed = all(
+                review.passed for review in repaired_reviews
             )
             chapter_content = "\n\n---\n\n".join(generated_scenes)
             chapter_review = self._review_complete_chapter(
@@ -648,15 +1353,19 @@ class ChapterGenerationLoop:
                 suspense_ledger,
                 previous_chapter_tail,
                 repairs_requested=requested,
+                chapter_number=chapter_number,
             )
+            self._plan_faults(chapter_review, scenes)
             self.ledger.save_review(
                 chapter_number,
                 f"chapter_retry_{attempt + 1}",
                 chapter_review.to_dict(),
             )
-            repair_review = (
-                repaired_scene_review if not repaired_scene_review.passed else chapter_review
+            # 还有场次没过就以它为准：整章评审看不见「这一场自己还不成立」。
+            failed_scene = next(
+                (review for review in repaired_reviews if not review.passed), None
             )
+            repair_review = failed_scene or chapter_review
             improved = chapter_review.average_score > best_chapter_review.average_score
             if (chapter_review.passed and repaired_scene_passed) or improved:
                 best_scenes = list(generated_scenes)
@@ -679,60 +1388,7 @@ class ChapterGenerationLoop:
                 )
                 break
 
-        generated_scenes = best_scenes
-        scene_reviews = best_scene_reviews
-        chapter_review = best_chapter_review
-        narrative_report = analyze_narrative_quality(
-            "\n\n---\n\n".join(generated_scenes)
-        ).to_dict()
-
-        blocked = [
-            review for review in (chapter_review, *scene_reviews) if not review.passed
-        ]
-        if blocked:
-            stage_label = f"第 {chapter_number} 章章节级检查"
-            reason = (
-                waiver_reason(blocked[0], stage_label)
-                if all(review.soft_failure for review in blocked)
-                else None
-            )
-            if reason is None:
-                raise QualityGateError(
-                    f"第 {chapter_number} 章在定向修订后仍未通过章节级质量检查，请人工审核",
-                    partial_scenes=generated_scenes,
-                    chapter_number=chapter_number,
-                )
-            self.logger.warning("Chapter %s waived: %s", chapter_number, reason)
-            if not chapter_review.passed:
-                chapter_review = chapter_review.waive(reason)
-            scene_reviews = [
-                review if review.passed else review.waive(reason) for review in scene_reviews
-            ]
-            gate_waivers.append(reason)
-            self.ledger.save_review(
-                chapter_number, "chapter_waived", chapter_review.to_dict()
-            )
-
-        return ChapterLoopResult(
-            scenes=generated_scenes,
-            contract=contract,
-            base_revision=base_revision,
-            plan_content=current_plan,
-            plan_revised=plan_revised,
-            plan_review=plan_review,
-            scene_reviews=scene_reviews,
-            chapter_review=chapter_review,
-            retry_count=retry_count,
-            profile_key=profile.key,
-            gate_waivers=gate_waivers,
-            regeneration_marker=regeneration_marker,
-            narrative_report=narrative_report,
-        )
-
-    # Repair routes, most authoritative first.  A human ruling outranks every
-    # automatic fix, and a stale base revision has to be refreshed before any
-    # other repair is even meaningful.
-    _REPAIR_ORDER = ("human_decision", "rebase", "contract", "prose")
+        return best_scenes, best_scene_reviews, best_chapter_review, retry_count
 
     @classmethod
     def _repair_route(cls, issues: List[ValidationIssue]) -> str:
@@ -756,7 +1412,24 @@ class ChapterGenerationLoop:
         to a prose rewrite cannot fix a contract that disagrees with the ledger,
         and stopping at the first non-prose failure — which is what this used to
         do — dumps a machine-fixable problem on the author.
+
+        验收里的修复会重写正文并重新评审，所以这里同样可能撞上评审失灵；那时把
+        这一稿交回待复审，不要让一整章连同验收修复的成果一起丢掉。
         """
+        self._latest_scenes = list(result.scenes)
+        try:
+            return self._accept_result(chapter_number, result, chapter_path)
+        except DomainReviewError as error:
+            raise self._verdict_unavailable(
+                chapter_number, error, snapshot=snapshot_of(result)
+            ) from error
+
+    def _accept_result(
+        self,
+        chapter_number: int,
+        result: ChapterLoopResult,
+        chapter_path: Optional[str] = None,
+    ) -> ChapterAcceptanceResult:
         if not result.chapter_review or not result.chapter_review.passed:
             raise QualityGateError("不能把未通过章节级检查的内容写入悬疑账本")
         pending_regeneration = self.ledger.pending_chapter_regeneration(chapter_number)
@@ -1167,6 +1840,7 @@ class ChapterGenerationLoop:
             self.ledger.load_suspense_ledger(),
             self._load_previous_chapter_tail(chapter_number),
             repairs_requested=requested,
+            chapter_number=chapter_number,
         )
         self.ledger.save_review(
             chapter_number,
@@ -1329,6 +2003,31 @@ class ChapterGenerationLoop:
         enriched["withheld_truth_ids"] = withheld_ids
         enriched["reader_must_not_know_yet"] = withheld_facts
         return enriched
+
+    def _load_previous_chapter_content(self, chapter_number: int) -> str:
+        """上一章的完整正文，读不到就返回空串。
+
+        与 `_load_previous_chapter_tail` 分开：那一份是喂给写作和评审的上下文，
+        缺了它这一章根本没法接着写，所以它该报错；这一份只用来统计两章开头之间
+        的套语重合，读不到时不做这项统计即可，不该让整章停下来。
+        """
+        if int(chapter_number) <= 1:
+            return ""
+        filename = f"chapter_{int(chapter_number) - 1}.md"
+        for candidate in (
+            os.path.join(self.output_dir, "story", "content", "chapters", filename),
+            os.path.join(self.output_dir, "chapters", filename),
+        ):
+            if not os.path.isfile(candidate):
+                continue
+            try:
+                with open(candidate, "r", encoding="utf-8") as handle:
+                    return handle.read()
+            except (OSError, UnicodeError) as exc:
+                self.logger.warning(
+                    "Could not read previous chapter from %s: %s", candidate, exc
+                )
+        return ""
 
     def _load_previous_chapter_tail(self, chapter_number: int) -> str:
         if chapter_number <= 1:

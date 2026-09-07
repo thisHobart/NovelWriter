@@ -5,9 +5,19 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from glob import glob
 from typing import Any, Dict, Iterable, Iterator, List, Tuple
 
+from core.generation.chapter_continuity import (
+    CHAPTER_FUNCTIONS,
+    CONTINUITY_KEY,
+    chapter_function_defects,
+    continuity_defects,
+    continuity_instructions,
+    continuity_schema_block,
+    timeline_mesh_findings,
+)
 from core.generation.helper_fns import parse_scene_sections
 from core.generation.story_ledger import StoryLedgerManager, compact_json
 
@@ -54,6 +64,7 @@ def contract_output_instructions(
     domain_fields: Dict[str, str] | None = None,
     obligations: Dict[str, Any] | None = None,
     narrative_context: Dict[str, Any] | None = None,
+    continuity_context: Dict[str, Any] | None = None,
 ) -> str:
     """Instructions appended to the existing scene-planning request.
 
@@ -132,13 +143,23 @@ def contract_output_instructions(
         f'  "{name}": {chapter_scoped_ids(schema_hint)},'
         for name, schema_hint in (domain_fields or {}).items()
     )
+    chapter_function_values = "|".join(CHAPTER_FUNCTIONS)
+    # 第一章没有上一章可接，衔接块整段不出现在模板里，免得模型为它编一个来源。
+    continuity_schema = (
+        "\n" + continuity_schema_block(chapter_number)
+        if int(chapter_number) > 1
+        else ""
+    )
+    continuity_block = continuity_instructions(
+        chapter_number, **(continuity_context or {})
+    )
     return f"""
 
 完成场景规划后，在文档末尾追加以下机器可读契约。标记必须原样保留，标记之间只能放一个合法 JSON 对象，不要使用代码围栏。
 {CONTRACT_START}
 {{
   "chapter": {chapter_number},
-  "chapter_function": "advance|reveal|relationship|aftermath|transition|breather",
+  "chapter_function": "{chapter_function_values}",{continuity_schema}
   "core_question": "本章集中追问的问题",
   "reader_knows_before": [],
   "reader_knows_after": [],
@@ -161,7 +182,7 @@ def contract_output_instructions(
   "facts_added": [{{"id":"F-{chapter_number:03d}-01","fact":"属性名","value":"取值","first_stated_at":"scene_1"}}],
   "facts_confirmed": [{{"id":"已有事实ID","fact":"属性名","value":"既有取值"}}],
   "facts_contradicted": [{{"id":"已有事实ID","reason":"推翻理由","new_value":"新取值"}}],
-  "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点"}}],
+  "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点","scene":"scene_1"}}],
   "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":false}}],
   "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","action":"advance","via_node_ids":["图节点ID"],"progress_note":"实际推进"}}],
   "narrative_transitions": [{{"node_id":"图节点ID","transition":"introduce_to_reader|make_inferable|reveal|execute|deprecate","scene":"scene_1"}}]
@@ -169,6 +190,9 @@ def contract_output_instructions(
 {CONTRACT_END}
 
 契约只记录本章场景已经明确安排的内容，没有相应内容的数组留空。
+
+timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene_2…）。写第 N 场时，
+提示词里只会放到第 N 场为止的内容；标错场次会让某一场提前拿到后面才该发生的事。
 
 关于 plot_thread_updates：status 填 "open" 表示**本章埋下**这条悬念（读者开始好奇），填 "closed" 表示**本章了结**它（读者得到答案）。
 - 埋下：必须给出不早于本章的 deadline_chapter，说明最晚第几章揭晓；id 不能与任何既有悬念重复。
@@ -188,6 +212,7 @@ plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进�
 
 既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：
 {index_text}
+{continuity_block}
 """.strip()
 
 
@@ -212,7 +237,9 @@ def extract_scene_plan_contract(response: str, chapter_number: int) -> Tuple[str
     markdown = (response[: matches[0].start()] + response[matches[0].end() :]).strip()
     if not parse_scene_sections(markdown):
         raise PlanningContractError("场景规划中没有可解析的场景标题")
-    normalized = validate_planning_contract(contract, chapter_number)
+    normalized = validate_planning_contract(
+        contract, chapter_number, require_continuity=True
+    )
     normalized["schema_version"] = CONTRACT_SCHEMA_VERSION
     normalized["origin"] = "scene_planning"
     return markdown, normalized
@@ -223,7 +250,16 @@ def validate_planning_contract(
     chapter_number: int,
     *,
     require_origin: bool = False,
+    require_continuity: bool = False,
 ) -> Dict[str, Any]:
+    """Check one chapter contract, optionally demanding the continuity block.
+
+    ``require_continuity`` is off by default so that contracts written before
+    the block existed still load: an accepted chapter must not become invalid
+    retroactively.  It is switched on wherever a contract is being *produced*
+    (scene planning) or is about to drive prose (the writing loop), which is
+    exactly where an empty hand-off is still cheap to fix.
+    """
     if not isinstance(contract, dict):
         raise PlanningContractError("章节契约必须是 JSON 对象")
     try:
@@ -244,6 +280,17 @@ def validate_planning_contract(
         )
 
     normalized = dict(contract)
+    if require_continuity:
+        defects = [
+            *chapter_function_defects(normalized, (), chapter_number),
+            *continuity_defects(normalized, chapter_number),
+        ]
+        if defects:
+            raise PlanningContractError(
+                "；".join(defects),
+                chapters=(chapter_number,),
+                code="chapter_continuity_missing",
+            )
     normalized.setdefault("chapter_function", "advance")
     normalized.setdefault(
         "ending_effect", str(normalized.get("irreversible_change", ""))
@@ -326,6 +373,104 @@ def validate_planning_contract(
         }:
             raise PlanningContractError(f"不支持的叙事状态转换：{name}")
     return normalized
+
+
+_SCENE_MARKER = re.compile(r"scene[_\s-]*(\d+)", re.IGNORECASE)
+
+#: 记录里可能出现的「这条属于第几场」标记。`payoff_at` 不在其中：一条线索在第一场
+#: 埋下、第三场兑现，写第一场时仍旧需要看见它。
+_SCENE_MARKER_KEYS = ("first_stated_at", "introduced_at", "scene", "scene_id")
+
+
+def _marked_scene(value: Any) -> int | None:
+    match = _SCENE_MARKER.search(str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def contract_for_scene(
+    contract: Dict[str, Any], scene_number: int | None
+) -> Dict[str, Any]:
+    """写第 N 场时该看到的那一份契约副本：本场及此前的内容。
+
+    整份契约里写着全章每一场分别要做什么，而这一份的抬头是「必须兑现」——写第一场
+    的模型照着把第二、三场也兑现了。所以属于后面场次的记录不放在这一份里。
+
+    **后面场次的边界不是靠删掉来防的**：实测把它们一并删掉之后越界反而更严重——
+    那几行同时还在当栅栏用，模型靠它们才知道自己这一场到哪儿为止，删掉就一路写到
+    底。边界要单独交给 `later_scene_boundaries`，在提示词里以「禁止触碰」的名义
+    列出来，而不是躺在「必须兑现」的清单里。
+
+    **闸门用的仍是完整契约**：这里过滤的只是提示词副本，没有放宽任何检查。看不出
+    属于第几场的记录一律保留——那有可能正是本场必须遵守的约束，宁可多给也不能漏。
+    """
+    if not isinstance(contract, dict) or not scene_number or int(scene_number) <= 0:
+        return contract
+    scene_number = int(scene_number)
+    scoped = deepcopy(contract)
+
+    def belongs_to_a_later_scene(item: Any, is_boundary: bool) -> bool:
+        marked = None
+        if isinstance(item, dict):
+            # 只看已知的场次标记键，不把整个字典 str() 之后拿去匹配：那样任何
+            # 一个恰好写着 "scene 3" 的自由文本都会被当成场次标记。
+            keys = ("scene_number", *_SCENE_MARKER_KEYS) if is_boundary else _SCENE_MARKER_KEYS
+            for key in keys:
+                marked = _marked_scene(item.get(key))
+                if marked is None and str(item.get(key, "")).strip().isdigit():
+                    marked = int(item[key])
+                if marked is not None:
+                    break
+        elif is_boundary:
+            marked = _marked_scene(item)
+        return marked is not None and marked > scene_number
+
+    for name, value in list(scoped.items()):
+        if not isinstance(value, list):
+            continue
+        is_boundary = name == "scene_boundaries"
+        scoped[name] = [
+            item for item in value if not belongs_to_a_later_scene(item, is_boundary)
+        ]
+    return scoped
+
+
+def later_scene_boundaries(
+    contract: Dict[str, Any], scene_number: int | None
+) -> List[str]:
+    """属于第 N 场之后的场次边界，写成一行一条给提示词用。
+
+    这些行必须让写第 N 场的模型看见——它靠这些才知道自己这一场到哪儿为止。要紧的
+    是名义：放在「必须兑现」的契约清单里，模型会去兑现；放在「禁止触碰」的清单里，
+    才是栅栏。
+    """
+    if not isinstance(contract, dict) or not scene_number or int(scene_number) <= 0:
+        return []
+    scene_number = int(scene_number)
+    boundaries = contract.get("scene_boundaries")
+    if not isinstance(boundaries, list):
+        return []
+    later: List[str] = []
+    for item in boundaries:
+        if isinstance(item, dict):
+            marked = _marked_scene(item.get("scene_number"))
+            if marked is None and str(item.get("scene_number", "")).strip().isdigit():
+                marked = int(item["scene_number"])
+            if marked is None:
+                marked = next(
+                    (
+                        _marked_scene(item.get(key))
+                        for key in _SCENE_MARKER_KEYS
+                        if _marked_scene(item.get(key)) is not None
+                    ),
+                    None,
+                )
+            text = json.dumps(item, ensure_ascii=False)
+        else:
+            marked = _marked_scene(item)
+            text = str(item)
+        if marked is not None and marked > scene_number:
+            later.append(text)
+    return later
 
 
 def load_planning_contracts(output_dir: str) -> List[Dict[str, Any]]:
@@ -610,6 +755,19 @@ def iter_history_defects(
     known_facts |= {
         str(record.get("id", "")) for record in contract.get("facts_added", [])
     }
+
+    # 章节功能与时间读数只有放在邻章旁边才看得出问题：连着三章都是 advance，
+    # 或者本章第一个事件回到上一章末尾之前，单看这一份契约都完全合法。
+    for message in chapter_function_defects(contract, prior, chapter_number):
+        yield PlanningContractError(
+            message, chapters=(chapter_number,), code="chapter_function_monotony"
+        )
+    for finding in timeline_mesh_findings(contract, prior, chapter_number):
+        if finding.get("severity") != "blocking":
+            continue
+        yield PlanningContractError(
+            finding["message"], chapters=(chapter_number,), code=finding["code"]
+        )
 
     for record in contract.get("facts_added", []):
         fact_id = str(record.get("id", ""))

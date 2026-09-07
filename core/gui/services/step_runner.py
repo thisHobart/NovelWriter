@@ -50,8 +50,12 @@ def action_work(
     *,
     parameters: Optional[Dict[str, Any]] = None,
     chapter_number: Optional[int] = None,
+    options: Optional[Dict[str, Any]] = None,
 ) -> Callable[[Callable], Dict[str, Any]]:
-    """Return a worker for one fine-grained action exposed by a stage page."""
+    """Return a worker for one fine-grained action exposed by a stage page.
+
+    `options` 走复审动作：重修带上作者勾选的条目，放行带上理由。
+    """
 
     def work(report: Callable[[str, float], None]) -> Dict[str, Any]:
         label = STEP_LABELS.get(step, step)
@@ -64,6 +68,7 @@ def action_work(
             parameters=parameters,
             report=report,
             chapter_number=chapter_number,
+            options=options,
         )
         report(f"{label}已完成", 1.0)
         return result

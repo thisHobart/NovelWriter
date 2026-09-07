@@ -265,6 +265,9 @@ class ScriptedModel:
             return "scene_planning_and_contract"
         if prompt.startswith("请对场景正文进行最小范围修订"):
             return "targeted_revision_and_retry"
+        # 同一场的多轮重修摊平后带着轮次标签，开头是当初的写作依据。
+        if "请在你上面这一稿的基础上改" in prompt:
+            return "targeted_revision_and_retry"
         if "中文类型小说盲读审稿人" in prompt:
             return "reader_blind_review"
         if "现实合理性与专业机制审稿人" in prompt:

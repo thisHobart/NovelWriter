@@ -12,17 +12,81 @@ import logging
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from core.generation.ai_helper import send_prompt
+from core.generation.ai_helper import send_conversation, send_prompt
 from core.generation.domain_profiles import DomainProfile, get_domain_profile
 from core.generation.narrative_quality import analyze_narrative_quality
+from core.generation.helper_fns import scene_heading, scene_number_from_plan
+from core.localization import zh_label
+from core.generation.planning_contract import contract_for_scene, later_scene_boundaries
 from core.generation.prompt_context import analyze_chinese_prose_style
 from core.generation.story_ledger import build_ledger_prompt_view, compact_json
 
 
 class DomainReviewError(RuntimeError):
-    """Raised when the quality gate itself cannot produce a valid verdict."""
+    """Raised when the quality gate itself cannot produce a valid verdict.
+
+    带上出错的评审名和大模型的原始回复：此前只留一句错误摘要，回复本身丢掉了，
+    同一个报错再来一次仍旧查不出模型到底回了什么。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        stage: str = "",
+        responses: Optional[List[str]] = None,
+    ):
+        super().__init__(message)
+        self.stage = stage
+        self.responses = list(responses or [])
+
+
+@dataclass
+class SceneDialogue:
+    """一场正文的重修对话：模型看得见自己上一轮写的东西。
+
+    一次性提问里，上一稿是「一段别人给的文字」，模型倾向整体重写；作为对话，上一稿
+    是它自己的回答，改动更贴着被点名的那几句走，也不必每轮把契约、场景规划、上一场
+    结尾重念一遍——那些在第一轮里已经说过。
+
+    第一轮由重修方补齐：写作那次调用在别处发生，这里把当时的依据重述成开场要求，
+    再把已经写出来的正文作为模型自己的回答放进去，后面各轮只发新的修改清单。
+    """
+
+    messages: List[Dict[str, str]] = field(default_factory=list)
+
+    def seeded_for(self, scene_content: str) -> bool:
+        """这段对话是不是正接着这一稿往下走。"""
+        return bool(self.messages) and self.messages[-1].get("content") == scene_content
+
+    def start(self, brief: str, scene_content: str) -> None:
+        self.messages = [
+            {"role": "user", "content": brief},
+            {"role": "assistant", "content": scene_content},
+        ]
+
+    def ask(self, request: str, send) -> str:
+        self.messages.append({"role": "user", "content": request})
+        reply = (send(self.messages) or "").strip()
+        self.messages.append({"role": "assistant", "content": reply})
+        return reply
+
+
+class MissingUpgradesError(ValueError):
+    """低分维度没给出对应的改法。带上是哪几个，好只补这几条而不是整份重评。"""
+
+    def __init__(self, message: str, dimensions: Optional[List[str]] = None):
+        super().__init__(message)
+        self.dimensions = list(dimensions or [])
+
+
+class ReviewSchemaError(ValueError):
+    """评审回复不符合 schema，且已用尽那一次补救机会。"""
+
+    def __init__(self, message: str, responses: Optional[List[str]] = None):
+        super().__init__(message)
+        self.responses = list(responses or [])
 
 
 @dataclass
@@ -103,6 +167,33 @@ class DomainReview:
         return max(self.pass_average - self.average_score, 0.0)
 
     @property
+    def shortfall_source(self) -> str:
+        """差分是差在哪一份评审上；单份评审时为空。
+
+        章节级是四份评审合议，差额只来自其中一份。放行理由若报合议后的平均分，
+        作者会看到「平均 3.59 分、门槛 3.20 分，仍差 0.08 分」这种自相矛盾的记录，
+        事后查不出到底哪一份短了。
+        """
+        if not self.component_reviews:
+            return ""
+        worst, worst_gap = "", 0.0
+        for name, review in self.component_reviews.items():
+            if bool(review.get("passed")):
+                continue
+            gap = float(review.get("pass_average", 0) or 0) - float(
+                review.get("average_score", 0) or 0
+            )
+            if gap > worst_gap:
+                worst, worst_gap = name, gap
+        if not worst:
+            return ""
+        review = self.component_reviews[worst]
+        return (
+            f"{worst}（{float(review.get('average_score', 0) or 0):.2f} 分，"
+            f"门槛 {float(review.get('pass_average', 0) or 0):.2f} 分）"
+        )
+
+    @property
     def has_actionable_repair(self) -> bool:
         """评审是否给出了可据以重修的具体依据。"""
         return bool(self.hard_failures or self.repair_instructions or self.upgrades)
@@ -159,19 +250,91 @@ class DomainReview:
         return data
 
 
+#: 整章拼接时场景之间的分隔线。
+def _flatten_conversation(messages: List[Dict[str, str]]) -> str:
+    """把多轮摊成一次提问：注入了单轮发送器时走这条路。"""
+    blocks = []
+    for message in messages:
+        label = (
+            "【我上一轮的要求】" if message.get("role") == "user" else "【你上一轮的回答】"
+        )
+        blocks.append(label + chr(10) + str(message.get("content", "")))
+    return (chr(10) * 2).join(blocks)
+
+
+SCENE_SEPARATOR = re.compile(r"\n\s*---\s*\n")
+
+
+def _object_end(fragment: str) -> Optional[int]:
+    """这个花括号块在哪里闭合；一直没闭合就返回 None（回复写到一半断了）。
+
+    只按花括号配对数，不管块内的语法对不对：语法坏掉的块同样要知道它占了多长，
+    才能整块跳过去，而不是掉进去捡里面的碎片。
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(fragment):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
 def extract_json_object(text: str) -> Dict[str, Any]:
-    """Extract the first valid JSON object from a model response."""
+    """Extract the first valid JSON object from a model response.
+
+    回复被截断时必须直说，不能退而求其次拿里面的小块顶包：从第一个花括号往后
+    扫，残缺对象的内部还有一堆能单独解析的小对象——评分表自己就是其中之一。把
+    评分表当成整份评审交出去，报出来的错会变成「评审里没有评分表」，与真正的
+    原因（回复没写完）差了十万八千里，重来一次只会更长、更容易再断一次。
+    """
     if not text:
         raise ValueError("大模型未返回评审 JSON")
     cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text.strip(), flags=re.IGNORECASE)
     decoder = json.JSONDecoder()
+    skip_until = 0
+    broken: Optional[json.JSONDecodeError] = None
+    broken_at = 0
     for match in re.finditer(r"\{", cleaned):
+        start = match.start()
+        if start < skip_until:
+            continue  # 落在某个坏掉的块里面，是它的碎片，不是另一份回复
+        fragment = cleaned[start:]
         try:
-            value, _ = decoder.raw_decode(cleaned[match.start():])
-        except json.JSONDecodeError:
+            value, _ = decoder.raw_decode(fragment)
+        except json.JSONDecodeError as error:
+            end = _object_end(fragment)
+            if end is None:
+                raise ValueError(
+                    "大模型的回复没有写完：JSON 对象缺少结尾"
+                    f"（已收到 {len(cleaned)} 个字符）"
+                ) from None
+            skip_until = start + end
+            if broken is None:
+                broken, broken_at = error, start
             continue
         if isinstance(value, dict):
             return value
+    if broken is not None:
+        spot = broken_at + broken.pos
+        raise ValueError(
+            f"大模型返回的 JSON 有语法错误：{broken.msg}；"
+            f"出错处前后原文：…{cleaned[max(0, spot - 60):spot + 30]}…"
+        ) from broken
     raise ValueError("无法从大模型响应中解析 JSON 对象")
 
 
@@ -231,11 +394,24 @@ class DomainReviewAgent:
         profile: Optional[DomainProfile] = None,
         logger: Optional[logging.Logger] = None,
         send_prompt_fn: Callable[..., str] = send_prompt,
+        send_conversation_fn: Optional[Callable[..., str]] = None,
     ):
         self.model = model
         self.profile = profile or get_domain_profile("general")
         self.logger = logger or logging.getLogger("domain-review")
         self.send_prompt = send_prompt_fn
+        # 换掉了单轮发送的调用方（测试、离线重放），多轮也跟着走同一条路：摊平成
+        # 一次提问交给它，免得一个注入的假发送器背后仍旧打真实网络请求。
+        if send_conversation_fn is not None:
+            self.send_conversation = send_conversation_fn
+        elif send_prompt_fn is send_prompt:
+            self.send_conversation = lambda messages: send_conversation(
+                messages, model=self.model
+            )
+        else:
+            self.send_conversation = lambda messages: send_prompt_fn(
+                _flatten_conversation(messages), model=self.model
+            )
 
     # --- profile-derived prompt fragments ---------------------------------
 
@@ -277,10 +453,21 @@ class DomainReviewAgent:
         "subtext",
         "narrative_restraint",
         "chinese_readability",
+        # 连载读者是接着上一章往下读的：开头接不上，或者把上一章刚建立的地点和
+        # 人物又从零介绍一遍，都是这一维度在扣分。第一章没有上一章可接，那时这
+        # 一维度会被整条忽略。
+        "chapter_continuity",
     )
-    _BLIND_REQUIRED = ("reader_orientation", "character_credibility", "chinese_readability")
-    _BLIND_HARD_FAILURES = frozenset(
-        {"READER_CONFUSION", "CHARACTER_LOGIC_BREAK", "AI_TEMPLATE_SATURATION"}
+    _BLIND_REQUIRED = (
+        "reader_orientation",
+        "character_credibility",
+        "chinese_readability",
+        "chapter_continuity",
+    )
+    _CONTINUITY_HARD_FAILURES = frozenset({"CONTINUITY_BREAK", "REDUNDANT_RESTAGING"})
+    _BLIND_HARD_FAILURES = (
+        frozenset({"READER_CONFUSION", "CHARACTER_LOGIC_BREAK", "AI_TEMPLATE_SATURATION"})
+        | _CONTINUITY_HARD_FAILURES
     )
     _PLAUSIBILITY_DIMENSIONS = (
         "behavioral_logic",
@@ -301,6 +488,16 @@ class DomainReviewAgent:
             "PROCEDURAL_IMPOSSIBILITY",
             "UNSUPPORTED_PRECISION",
         }
+    )
+    _OUTLINE_DIMENSIONS = (
+        "chapter_purpose",
+        "chapter_variety",
+        "cross_chapter_consistency",
+        "role_plausibility",
+    )
+    _OUTLINE_REQUIRED = ("cross_chapter_consistency", "role_plausibility")
+    _OUTLINE_HARD_FAILURES = frozenset(
+        {"ROLE_OVERREACH", "OUTLINE_CONTRADICTION", "CHAPTER_PURPOSE_REPEATED"}
     )
 
     def _contract_schema_block(self) -> str:
@@ -375,11 +572,95 @@ class DomainReviewAgent:
             repaired_response = self.send_prompt(repair_prompt, model=self.model)
             return extract_json_object(repaired_response)
 
+    @staticmethod
+    def _merge_upgrade_patch(
+        base: Dict[str, Any], patch: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """把补来的那几条改法并回上一份评审，同名同引文的不重复添加。"""
+        merged = deepcopy(base)
+        upgrades = [item for item in merged.get("upgrades", []) if isinstance(item, dict)]
+        seen = {(item.get("dimension"), item.get("quote")) for item in upgrades}
+        for item in patch.get("upgrades", []):
+            if not isinstance(item, dict):
+                continue
+            if (item.get("dimension"), item.get("quote")) in seen:
+                continue
+            upgrades.append(item)
+        merged["upgrades"] = upgrades
+
+        # 评审也可以改口说这一维其实没问题，那就把分数提上去，而不是留着低分不给改法。
+        rescore = patch.get("rescore")
+        scores = merged.get("scores")
+        if isinstance(rescore, dict) and isinstance(scores, dict):
+            for dimension, value in rescore.items():
+                if dimension in scores:
+                    scores[dimension] = value
+        return merged
+
+    def _upgrade_patch_prompt(
+        self, dimensions: List[str], content: str
+    ) -> str:
+        """只要缺的那几条，不要重评。
+
+        重评一次要写两三千字，写坏的概率随篇幅上升——真实失败里出现过键名引号写错，
+        也出现过写到一半断掉。而这里缺的其实只有两三条改法，让模型只写这几条，输出
+        短得多，也不会把已经评好的部分推翻重来。
+        """
+        wanted = "、".join(dimensions)
+        return f"""你上一次的评审已经收到，绝大部分没有问题，只差一处：
+
+下面这些维度你打了 3 分或更低，却没有在 upgrades 里给出对应的改法：{wanted}
+
+请只补这几条，不要重新评审，不要改动其他维度的分数，不要重复已有条目。
+每条必须包含：dimension（就写上面这几个维度名）、quote（正文中一段连续、逐字可检索的
+原文，不得改写、概括或用省略号拼接）、missing（这一句缺的效果）、change（最小改法）。
+
+某个维度如果其实并没有问题、给不出可引用的原句，就不要硬编，把它写进 rescore 改打 4 分。
+
+正文：
+{content[:18000]}
+
+只输出 JSON：
+{{
+  "upgrades": [{{"dimension":"{dimensions[0]}","quote":"正文短引文","missing":"缺少的效果","change":"最小改法"}}],
+  "rescore": {{}}
+}}"""
+
+    #: 同一个提示词最多问几次。写到一半断掉的回复不是「答得不对」，是这次调用没成，
+    #: 该重问同一个提示词，而不是让模型去「修」一份它根本没写完的东西。
+    TRUNCATED_REPLY_RETRIES = 3
+
+    def _json_reply(self, prompt: str, responses: List[str]) -> Dict[str, Any]:
+        """要一份读得出来的 JSON；断在半路就原样再问一次。
+
+        实测同一个提示词在同一个端点上，有时回完整的两千多字，有时回三百多字就断，
+        端点每次都报「正常结束」。把断掉的那份送去补救，等于拿评审仅有的一次机会
+        去修一份不存在的错误——它的内容本来没问题，只是没送完。
+        """
+        last_error: Optional[ValueError] = None
+        for attempt in range(self.TRUNCATED_REPLY_RETRIES):
+            reply = self.send_prompt(prompt, model=self.model)
+            responses.append(reply)
+            try:
+                return extract_json_object(reply)
+            except ValueError as error:
+                if "没有写完" not in str(error) and "未返回评审 JSON" not in str(error):
+                    raise
+                last_error = error
+                self.logger.warning(
+                    "Review reply was cut off (%s/%s): %s",
+                    attempt + 1,
+                    self.TRUNCATED_REPLY_RETRIES,
+                    error,
+                )
+        raise last_error if last_error else ValueError("无法从大模型响应中解析 JSON 对象")
+
     def _call_review(
         self,
         prompt: str,
         normalize: Callable[[Dict[str, Any]], DomainReview],
         fallback_normalize: Optional[Callable[[Dict[str, Any]], DomainReview]] = None,
+        content: str = "",
     ) -> DomainReview:
         """Parse and validate a review, with one bounded schema-repair attempt.
 
@@ -390,31 +671,64 @@ class DomainReviewAgent:
         """
         current_prompt = prompt
         last_error: Optional[Exception] = None
+        # 两次尝试的原始回复都留着：schema 报错说的是解析结果不合规，只有回复
+        # 原文能分辨出模型到底是漏了字段、写错了形状，还是根本没写完。
+        responses: List[str] = []
+        # 第一次那份读得出来、只是依据不足的评审留着。第二次要是连 JSON 都写坏了，
+        # 它就是手上仅剩的判定，扔掉它等于让一个标点毁掉整章。
+        salvageable: Optional[Dict[str, Any]] = None
+        # 第二次是不是「只补缺的那几条」，而不是整份重评。
+        patching = False
         for attempt in range(2):
-            response = self.send_prompt(current_prompt, model=self.model)
+            raw: Optional[Dict[str, Any]] = None
             try:
-                raw = extract_json_object(response)
+                raw = self._json_reply(current_prompt, responses)
+                if patching and salvageable is not None:
+                    raw = self._merge_upgrade_patch(salvageable, raw)
                 return normalize(raw)
             except (TypeError, ValueError) as exc:
                 last_error = exc
-                if attempt:
-                    recoverable_grounding_error = any(
-                        marker in str(exc)
-                        for marker in (
-                            "upgrades 缺少低分维度",
-                            "hard_failures 中每条允许代码",
-                        )
+                recoverable_grounding_error = any(
+                    marker in str(exc)
+                    for marker in (
+                        "upgrades 缺少低分维度",
+                        "hard_failures 中每条允许代码",
                     )
-                    if fallback_normalize is not None and recoverable_grounding_error:
-                        # The repair attempt may contain a perfectly grounded hard
-                        # failure alongside unrelated low scores, or useful
-                        # scored feedback beside a composite/non-verbatim hard
-                        # failure quote.  Preserve grounded items; ungrounded
-                        # claims lose the right to block after bounded repair.
-                        return fallback_normalize(raw)
+                )
+                if attempt:
+                    # The repair attempt may contain a perfectly grounded hard
+                    # failure alongside unrelated low scores, or useful
+                    # scored feedback beside a composite/non-verbatim hard
+                    # failure quote.  Preserve grounded items; ungrounded
+                    # claims lose the right to block after bounded repair.
+                    usable = raw if recoverable_grounding_error else salvageable
+                    if fallback_normalize is not None and usable is not None:
+                        return fallback_normalize(usable)
                     break
+                if recoverable_grounding_error and raw is not None:
+                    salvageable = raw
+                missing = list(getattr(exc, "dimensions", []) or [])
+                if missing and raw is not None and content:
+                    # 只缺几条改法时不必推翻重评：让模型补这几条，输出短得多，
+                    # 已经评好的分数和硬伤也原样保留。
+                    patching = True
+                    current_prompt = self._upgrade_patch_prompt(missing, content)
+                    continue
+                # 回复被截断时要求「补齐所有字段」只会让第二次写得更长、断得更早。
+                if "没有写完" in str(exc):
+                    shorter = (
+                        "\n上一次的回复没有写完，说明篇幅超了：evidence 与 upgrades "
+                        "各留最多 3 条最关键的，宁可少写也要把 JSON 写完整。"
+                    )
+                elif "语法错误" in str(exc):
+                    shorter = (
+                        "\n上一次坏在标点上，不是内容不对：请逐个检查键名两侧的引号"
+                        "与冒号，同一个键不要写两遍。"
+                    )
+                else:
+                    shorter = ""
                 current_prompt = f"""你上一次返回的评审 JSON 不符合 schema，不能据此放行或阻断正文。
-错误：{exc}
+错误：{exc}{shorter}
 
 请重新执行原任务，补齐所有字段，只输出一个合法 JSON 对象，不要解释，不要使用代码围栏。
 每条 hard_failures 必须包含正文真引文 quote、具体影响 problem 和最小改法 change。
@@ -424,7 +738,9 @@ quote 必须是正文中一段连续、逐字可检索的原文；不得用省�
 原任务：
 {prompt}
 """
-        raise ValueError(f"评审 JSON schema 校验失败：{last_error}") from last_error
+        raise ReviewSchemaError(
+            f"评审 JSON schema 校验失败：{last_error}", responses=responses
+        ) from last_error
 
     # --- canon conflicts --------------------------------------------------
 
@@ -739,12 +1055,31 @@ timeline_events、character_updates、plot_thread_updates）：
         """
 
         diagnostics = analyze_narrative_quality(chapter_content)
-        context = f"""你没有章节大纲、章节契约、作者解释或标准答案，也不得猜测它们。
-你是一位长期阅读中文类型小说的普通读者，只判断正文实际产生的效果。
-
-上一章结尾（仅用于衔接判断，第一章可能为空）：
+        has_previous = bool((previous_chapter_tail or "").strip())
+        continuity_block = (
+            f"""
+上一章结尾（本章必须从这里接下去）：
 {previous_chapter_tail[-2500:]}
 
+先回答一个问题，再往下评：**这一章的开头是不是接着上一章结尾？**
+- 在上一章结尾里指出本章开头承接的那件事（动作、对话、后果或悬念）。指不出来，
+  说明这一章是另起炉灶，chapter_continuity 打 1 分以下并报 CONTINUITY_BREAK。
+- 开头如果把上一章刚建立过的地点从零重新描写一遍（环境、光线、气味、渗水、
+  管线这类铺陈），或者把读者已经认识的人物身份、职务、来历又交代一次，报
+  REDUNDANT_RESTAGING，并在 change 里写明删掉哪几句、改成承接上一章的什么动作。
+- 时间也要对得上：上一章结尾在什么时刻，本章开头隔了多久，读者应当能算出来；
+  算不出来或与上一章矛盾，同样算 chapter_continuity 的失分。
+- 只有真正接上、且没有重复布景，chapter_continuity 才能打 4 分。
+"""
+            if has_previous
+            else """
+这是全书第一章，没有上一章可接：chapter_continuity 一律打 4 分，也不要报
+CONTINUITY_BREAK 或 REDUNDANT_RESTAGING。
+"""
+        )
+        context = f"""你没有章节大纲、章节契约、作者解释或标准答案，也不得猜测它们。
+你是一位长期阅读中文类型小说的普通读者，只判断正文实际产生的效果。
+{continuity_block}
 {diagnostics.prompt_block()}
 
 特别检查：
@@ -761,7 +1096,64 @@ timeline_events、character_updates、plot_thread_updates）：
             context=context,
             score_dimensions=self._BLIND_DIMENSIONS,
             required_dimensions=self._BLIND_REQUIRED,
-            hard_failure_codes=self._BLIND_HARD_FAILURES,
+            hard_failure_codes=(
+                self._BLIND_HARD_FAILURES
+                if has_previous
+                else self._BLIND_HARD_FAILURES - self._CONTINUITY_HARD_FAILURES
+            ),
+            # 第一章没有上一章可接，衔接维度整条不参与评分，也不占硬失败名额。
+            ignored_dimensions=(
+                frozenset() if has_previous else frozenset({"chapter_continuity"})
+            ),
+            pass_average=max(3.2, min(3.4, self.profile.pass_average)),
+            repairs_requested=repairs_requested,
+        )
+
+    def review_chapter_outline(
+        self,
+        outline: str,
+        section_name: str,
+        section_plan: str = "",
+        repairs_requested: Optional[List[str]] = None,
+    ) -> DomainReview:
+        """在写任何正文之前，先看这一段章节大纲本身立不立得住。
+
+        大纲此前只查三件事：模型有没有返回、有没有夹带世界观里没有的设定、章标题
+        格式对不对。内容本身没人看，于是「辩护律师当庭指挥法警抓人」这种事一路穿
+        过场景规划、穿过写作，直到整章写完才被现实合理性那一份抓住——那时每拦一次
+        要赔一轮定向重修（约十次调用），而且重修改不掉：大纲要求这么写。
+
+        这里只判从大纲就能判、且下游代价最贵的四件事，一个结构部分问一次。六幕的
+        书全书六次调用，抵得上下游少跑半轮重修。
+        """
+        context = f"""你在审的是一部小说其中一个结构部分的**章节大纲**，不是正文。
+当前部分：{zh_label(section_name)}
+
+这一部分的上游结构规划（大纲应当据此展开，冲突时以它为准）：
+{section_plan[:8000]}
+
+只判下面四件事，别的一概不管——大纲写得笼统、文笔平淡都不是这里的问题：
+
+1. **每一章有没有自己不可替代的目的**：这一章被删掉，后面的故事是不是就接不上。
+2. **连着几章是不是在做同一件事**：三章都在「继续追查」而没有各自的转折，读者会
+   觉得情节原地打转。连着三章功能相同就报 CHAPTER_PURPOSE_REPEATED。
+3. **章与章之间对不对得上**：时间往前走了还是倒回去了、上一章在甲地的人下一章怎么
+   到了乙地、上一章还不知道的事下一章为什么已经知道。对不上就报
+   OUTLINE_CONTRADICTION。
+4. **有没有人做了他的身份做不到的事**：辩护律师不能当庭行使公诉权指挥法警拘捕，
+   法医不能签发逮捕令，记者不能查封账户。**这一条最要紧**——它在大纲里改一句话就
+   行，等写成正文再改就得推翻整场戏。越权就报 ROLE_OVERREACH，并在 change 里给出
+   同样效果、但由有权限的人来做的写法。
+
+判「做不到」要按现实中的职权和程序，除非作品的世界观里明确写过另一套规则。"""
+        return self._specialized_review(
+            stage="chapter_outline",
+            role="小说章节大纲审稿人",
+            content=outline,
+            context=context,
+            score_dimensions=self._OUTLINE_DIMENSIONS,
+            required_dimensions=self._OUTLINE_REQUIRED,
+            hard_failure_codes=self._OUTLINE_HARD_FAILURES,
             pass_average=max(3.2, min(3.4, self.profile.pass_average)),
             repairs_requested=repairs_requested,
         )
@@ -786,7 +1178,10 @@ timeline_events、character_updates、plot_thread_updates）：
   不得因为听起来专业就放行；会误导核心推理时使用 UNSUPPORTED_PRECISION。
 - 销毁、污染或改变唯一证物后仍从中得出原本需要该证物才能支持的结论，使用
   EVIDENCE_SELF_DESTRUCTION。
-- 只报告会改变情节可信度的机制问题，不纠缠无关紧要的行业措辞。"""
+- 只报告会改变情节可信度的机制问题，不纠缠无关紧要的行业措辞。
+- problem 与 change 只写结论和对情节的影响，不要复述药物、毒物、爆炸物、武器的
+  配制步骤、合成路线、剂量或器材操作方法。判断「这一步在现实中不成立」不需要说明
+  正确做法是什么；写成「现场条件不足以支撑该结论」即可。"""
         return self._specialized_review(
             stage="plausibility",
             role="现实合理性与专业机制审稿人",
@@ -807,29 +1202,73 @@ timeline_events、character_updates、plot_thread_updates）：
         suspense_ledger: Dict[str, Any],
         previous_chapter_tail: str = "",
         repairs_requested: Optional[List[str]] = None,
+        continuity_report: Optional[Dict[str, Any]] = None,
     ) -> DomainReview:
-        """Run three independent chapter gates and retain each verdict."""
+        """Run three independent chapter gates and retain each verdict.
 
-        reviews = {
-            "contract": self.review_chapter(
-                chapter_content,
-                contract,
-                case_bible,
-                suspense_ledger,
-                repairs_requested=repairs_requested,
-            ),
-            "reader_blind": self.review_reader_blind(
-                chapter_content,
-                previous_chapter_tail,
-                repairs_requested=repairs_requested,
-            ),
-            "plausibility": self.review_plausibility(
-                chapter_content,
-                case_bible,
-                repairs_requested=repairs_requested,
-            ),
-        }
-        return self._merge_reviews("chapter", reviews)
+        三份里有一份始终问不出结果时，用剩下的两份判定，并把缺的那份写进警告。
+        少一个意见不该盖过在场的两个：正文本身没有问题，问题在于这一份评审拿不到
+        回复——真实情况是模型在写到某类内容时被自己的安全策略截断，同一章重问多
+        少次都一样。三份全军覆没才是真的判不了，那时仍旧交给人工。
+        """
+        askers = (
+            ("contract", lambda: self.review_chapter(
+                chapter_content, contract, case_bible, suspense_ledger,
+                repairs_requested=repairs_requested)),
+            ("reader_blind", lambda: self.review_reader_blind(
+                chapter_content, previous_chapter_tail,
+                repairs_requested=repairs_requested)),
+            ("plausibility", lambda: self.review_plausibility(
+                chapter_content, case_bible, repairs_requested=repairs_requested)),
+        )
+        reviews: Dict[str, DomainReview] = {}
+        unavailable: List[str] = []
+        for name, ask in askers:
+            try:
+                reviews[name] = ask()
+            except DomainReviewError as error:
+                unavailable.append(name)
+                self.logger.error("Chapter gate '%s' returned no verdict: %s", name, error)
+
+        if len(reviews) < 2:
+            raise DomainReviewError(
+                "章节级质量检查的三份评审里有 "
+                f"{len(unavailable)} 份没能给出结论：{'、'.join(unavailable)}",
+                stage="chapter",
+            )
+        # 第四份意见是算出来的，不是问出来的：套语重合、开场站位是否兑现这类
+        # 事情有确定答案，花一次调用去问只会得到一个不稳定的近似。它和三份评审
+        # 一起合议，因此拦下的东西同样走定向重修，不会绕过闸门。
+        if continuity_report:
+            reviews["continuity"] = self.continuity_review(continuity_report)
+        merged = self._merge_reviews("chapter", reviews)
+        if unavailable:
+            merged.reviewer_warning = "; ".join(
+                part for part in (
+                    merged.reviewer_warning,
+                    f"review_unavailable: {', '.join(unavailable)}",
+                ) if part
+            )
+        return merged
+
+    @staticmethod
+    def continuity_review(report: Dict[str, Any]) -> DomainReview:
+        """把确定性衔接检查的结果包成一份与其它评审同构的判定。
+
+        它不打分：分数是给「写得好不好」用的，而这里判的是「接上没有」——一个
+        有确定答案的问题。没有分数就不会稀释三份评审算出的平均分，硬失败却照样
+        进合议、照样按引文路由到具体那一场。
+        """
+        warnings = [str(item) for item in report.get("warnings", []) if str(item).strip()]
+        return DomainReview(
+            stage="continuity",
+            passed=bool(report.get("passed", True)),
+            hard_failures=[dict(item) for item in report.get("hard_failures", [])],
+            repair_scope=str(report.get("repair_scope", "")),
+            repair_instructions=[],
+            reviewer_warning="; ".join(warnings),
+            component_reviews={},
+        )
 
     def _specialized_review(
         self,
@@ -843,6 +1282,7 @@ timeline_events、character_updates、plot_thread_updates）：
         hard_failure_codes: frozenset[str],
         pass_average: float,
         repairs_requested: Optional[List[str]] = None,
+        ignored_dimensions: Optional[frozenset[str]] = None,
     ) -> DomainReview:
         template = ", ".join(f'"{dimension}": 0' for dimension in score_dimensions)
         prompt = f"""你是{role}。请独立评审下面这一章，只判断正文中可证实的问题。
@@ -857,16 +1297,28 @@ timeline_events、character_updates、plot_thread_updates）：
 {self._BLIND_SCORE_RUBRIC}
 
 任何批评必须附正文中一段连续、逐字可检索的短引文；quote 不得用省略号拼接多处文字，
-也不得改写或概括。每个 3 分或更低的维度必须在 upgrades 中指出原句、
-缺失效果和最小改法；无法引用原文就不要报告。repair_scope 请写 scene_1、scene_2 等可路由位置，
-无法判断场次时写最接近问题的段落描述。
+也不得改写或概括。无法引用原文就不要报告。
+
+**打了 3 分或更低的维度，每一个都必须在 upgrades 里有自己的一条**，`dimension` 写同一个
+维度名，一一对应：低分维度有几个，upgrades 就至少有几条。写进 evidence 不算数——
+evidence 是判断依据，upgrades 才是要改的地方。给不出这一条，就说明该维度其实没有问题，
+请把它改打 4 分，而不是留着低分不给改法。
+
+输出前自查一遍：把 scores 里 ≤3 的维度名列出来，逐个到 upgrades 里找同名条目，缺一条
+都不要提交。
+
+篇幅：每条 quote 控制在 40 字以内（够定位即可），evidence 最多 3 条，strengths 最多 2 条，
+problem / missing / change 各一两句话说清楚就够。写得越长越容易在中途断掉，断掉的评审
+一条也用不上。
+
+repair_scope 请写 scene_1、scene_2 等可路由位置，无法判断场次时写最接近问题的段落描述。
 
 只输出 JSON：
 {{
   "scores": {{{template}}},
   "hard_failures": [{{"code":"允许的代码","quote":"正文短引文","problem":"阅读或机制后果","change":"不扩写情节的最小改法"}}],
   "evidence": [{{"dimension":"维度","quote":"正文短引文","assessment":"判断依据"}}],
-  "upgrades": [{{"dimension":"维度","quote":"正文短引文","missing":"缺少的效果","change":"最小改法"}}],
+  "upgrades": [{{"dimension":"每个≤3分的维度各一条","quote":"正文短引文","missing":"缺少的效果","change":"最小改法"}}],
   "repair_scope": "scene_1 或具体段落",
   "repair_instructions": ["可执行的最小修复"],
   "strengths": ["正文中真实成立的优点"]
@@ -882,6 +1334,7 @@ timeline_events、character_updates、plot_thread_updates）：
                     required_dimensions=required_dimensions,
                     hard_failure_codes=hard_failure_codes,
                     pass_average=pass_average,
+                    ignored_dimensions=ignored_dimensions,
                 ),
                 fallback_normalize=lambda raw: self._normalize_review(
                     stage,
@@ -891,13 +1344,19 @@ timeline_events、character_updates、plot_thread_updates）：
                     required_dimensions=required_dimensions,
                     hard_failure_codes=hard_failure_codes,
                     pass_average=pass_average,
+                    ignored_dimensions=ignored_dimensions,
                     tolerate_ungrounded_low_scores=True,
                     tolerate_ungrounded_hard_failures=True,
                 ),
+                content=content,
             )
         except Exception as exc:
             self.logger.error("Specialized review unavailable for %s: %s", stage, exc)
-            raise DomainReviewError(f"{stage} 质量检查未能返回有效结果：{exc}") from exc
+            raise DomainReviewError(
+                f"{stage} 质量检查未能返回有效结果：{exc}",
+                stage=stage,
+                responses=getattr(exc, "responses", None),
+            ) from exc
 
     @staticmethod
     def _merge_reviews(stage: str, reviews: Dict[str, DomainReview]) -> DomainReview:
@@ -1038,10 +1497,15 @@ timeline_events、character_updates、plot_thread_updates）：
                     tolerate_ungrounded_low_scores=True,
                     tolerate_ungrounded_hard_failures=True,
                 ),
+                content=content,
             )
         except Exception as exc:
             self.logger.error("Domain review unavailable for %s: %s", stage, exc)
-            raise DomainReviewError(f"{stage} 质量检查未能返回有效结果：{exc}") from exc
+            raise DomainReviewError(
+                f"{stage} 质量检查未能返回有效结果：{exc}",
+                stage=stage,
+                responses=getattr(exc, "responses", None),
+            ) from exc
 
     @staticmethod
     def _non_applicable_contract_dimensions(contract: Dict[str, Any]) -> frozenset[str]:
@@ -1173,9 +1637,10 @@ timeline_events、character_updates、plot_thread_updates）：
         missing_upgrades = sorted(low_dimensions - grounded_upgrade_dimensions)
         if missing_upgrades:
             if not tolerate_ungrounded_low_scores:
-                raise ValueError(
+                raise MissingUpgradesError(
                     "upgrades 缺少低分维度的正文真引文和最小改法："
-                    + ", ".join(missing_upgrades)
+                    + ", ".join(missing_upgrades),
+                    dimensions=missing_upgrades,
                 )
             # A score without grounded evidence is only an opinion.  It may not
             # lower an average or become a blocking dimension.  Keep the raw
@@ -1284,14 +1749,18 @@ timeline_events、character_updates、plot_thread_updates）：
         self,
         review: DomainReview,
         unmet_asks: Optional[List[str]] = None,
+        asks: Optional[List[str]] = None,
     ) -> str:
         """把这一轮要改的东西写成编号清单，重复出现的单独点名。
 
         原先的做法是把整份评审 to_dict 后塞进提示词。里面 scores、strengths 和判
         「通过」的 evidence 占了绝大部分篇幅，真正要动的那一两句混在中间，模型很
         容易照着「哪里都还行」的整体印象重写一遍，改动落不到点上。
+
+        `asks` 显式给出时以它为准：作者在待复审界面上划掉的条目不该再出现在提示
+        词里，否则勾选框只是个装饰，模型照样会去改作者不认同的地方。
         """
-        asks = review.asks
+        asks = review.asks if asks is None else list(asks)
         if not asks:
             return self.revision_focus(review)
         repeated = set(unmet_asks or [])
@@ -1330,6 +1799,51 @@ timeline_events、character_updates、plot_thread_updates）：
 输出完整修订版场景规划。保持“### 场景 1：标题”的 Markdown 格式，不要附加说明。"""
         return self.send_prompt(prompt, model=self.model).strip()
 
+    def _scene_brief(
+        self,
+        scene_plan: str,
+        previous_scene_tail: str,
+        next_scene_plan: str,
+        contract: Dict[str, Any],
+        continuity_rules: Sequence[str] = (),
+    ) -> str:
+        """这一场当初是照什么写的：对话开场用，后面各轮不再重复。"""
+        rules = [str(rule).strip() for rule in continuity_rules if str(rule).strip()]
+        # 重写第一场时同样要带上开场的硬性衔接要求：一份只说「改这几句」的提示词
+        # 会让模型把刚接上的开头又改回重新布景那一版。
+        hand_off = (
+            "\n本章开场的硬性衔接要求（本场是本章第一场，每一条都必须做到）：\n"
+            + "\n".join(f" - {rule}" for rule in rules)
+            + "\n"
+            if rules
+            else ""
+        )
+        scene_number = scene_number_from_plan(scene_plan)
+        later = later_scene_boundaries(contract, scene_number)
+        forbidden = (
+            "\n以下内容属于本章后面的场次，本场一个字都不许碰"
+            "（列在这里只为让你知道自己这一场到哪儿为止）：\n"
+            + "\n".join(f" - {item}" for item in later)
+            + "\n"
+            if later
+            else ""
+        )
+        return f"""请按下面的依据写出这一场正文。不要增加新的决定性信息，不要提前完成下一场的任务，只输出场景正文。
+
+章节契约（只列到本场为止；后面几场要做什么另见下方禁止触碰的清单）：
+{compact_json(contract_for_scene(contract, scene_number), 8000)}
+{forbidden}
+
+当前场景规划：
+{scene_plan[:8000]}
+
+上一场结尾：
+{previous_scene_tail[-2500:]}
+
+本场必须在下一场开始之前收束。下一场是（只用来定收束位置，其中的事件一个都不许提前写出来）：
+{scene_heading(next_scene_plan)}
+{hand_off}"""
+
     def revise_scene(
         self,
         scene_content: str,
@@ -1339,39 +1853,84 @@ timeline_events、character_updates、plot_thread_updates）：
         next_scene_plan: str,
         contract: Dict[str, Any],
         unmet_asks: Optional[List[str]] = None,
+        asks: Optional[List[str]] = None,
+        dialogue: Optional[SceneDialogue] = None,
+        continuity_rules: Sequence[str] = (),
     ) -> str:
+        """改这一场。给了对话就接着这一场自己的对话往下改。"""
+        brief = self.revision_brief(review, unmet_asks, asks)
+        if dialogue is not None:
+            return self._single_scene(
+                self._revise_in_dialogue(
+                    dialogue, scene_content, brief, scene_plan,
+                    previous_scene_tail, next_scene_plan, contract,
+                    continuity_rules,
+                )
+            )
+
         prompt = f"""请对场景正文进行最小范围修订，只处理评审指出的问题。不要改变已经通过的情节，不要增加新的决定性信息，不要提前完成下一场任务，只输出修订后的场景正文。
 
-章节契约：
-{compact_json(contract, 8000)}
+{self._scene_brief(scene_plan, previous_scene_tail, next_scene_plan, contract, continuity_rules)}
 
-当前场景规划：
-{scene_plan[:8000]}
-
-上一场结尾：
-{previous_scene_tail[-2500:]}
-
-下一场规划边界：
-{next_scene_plan[:5000]}
-
-{self.revision_brief(review, unmet_asks)}
+{brief}
 
 原正文：
 {scene_content}
 """
-        revised = self.send_prompt(prompt, model=self.model).strip()
-        # A single-scene repair must never contain the chapter assembler's
-        # scene separator. Some models echo the whole old scene, add ``---``,
-        # then append the actual revision; accepting that response duplicates
-        # the scene and can preserve the very mechanism the repair removed.
-        parts = [part.strip() for part in re.split(r"\n\s*---\s*\n", revised) if part.strip()]
+        return self._single_scene(self.send_prompt(prompt, model=self.model).strip())
+
+    def _revise_in_dialogue(
+        self,
+        dialogue: SceneDialogue,
+        scene_content: str,
+        brief: str,
+        scene_plan: str,
+        previous_scene_tail: str,
+        next_scene_plan: str,
+        contract: Dict[str, Any],
+        continuity_rules: Sequence[str] = (),
+    ) -> str:
+        """接着这一场自己的对话往下改。
+
+        对话还没起头，或正文被别处改过对不上了，就重新起头：当初的写作依据作为开场
+        要求，手上这一稿作为模型自己的回答，之后每轮只发新的修改清单——契约、场景
+        规划、上一场结尾都在第一轮里说过了，不必每轮重念。
+        """
+        if not dialogue.seeded_for(scene_content):
+            dialogue.start(
+                self._scene_brief(
+                    scene_plan,
+                    previous_scene_tail,
+                    next_scene_plan,
+                    contract,
+                    continuity_rules,
+                ),
+                scene_content,
+            )
+        request = (
+            brief
+            + chr(10) * 2
+            + "请在你上面这一稿的基础上改，只动被点名的地方，其余保持原样。"
+            + "不要解释，不要复述清单，只输出修订后的完整场景正文。"
+        )
+        return dialogue.ask(request, self.send_conversation)
+
+    def _single_scene(self, revised: str) -> str:
+        """A single-scene repair must never contain the chapter separator.
+
+        Some models echo the whole old scene, add ``---``, then append the actual
+        revision; accepting that response duplicates the scene and can preserve
+        the very mechanism the repair removed.
+        """
+        parts = [part.strip() for part in re.split(SCENE_SEPARATOR, revised) if part.strip()]
         if len(parts) > 1:
             self.logger.warning(
                 "Scene revision returned %s chapter-separated blocks; keeping the final block",
                 len(parts),
             )
-            revised = parts[-1]
+            return parts[-1]
         return revised
+
 
     def revise_chapter_style(
         self,

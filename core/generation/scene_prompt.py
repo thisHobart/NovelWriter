@@ -7,9 +7,11 @@ GUI 阶段管线和智能体（agents/writing/chapter_writing_agent.py）
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from core.generation.domain_profiles import DomainProfile
+from core.generation.helper_fns import scene_heading
+from core.generation.planning_contract import contract_for_scene, later_scene_boundaries
 from core.generation.prompt_context import (
     CHINESE_PROSE_REQUIREMENTS,
     build_location_guidance,
@@ -59,10 +61,14 @@ def build_scene_prompt(
     contract: Optional[Dict[str, Any]] = None,
     previous_scene_tail: str = "",
     next_scene_plan: str = "",
+    continuity_rules: Sequence[str] = (),
 ) -> str:
     """构造一个场景的写作 prompt。
 
     `chapter_number` 为 None 表示短篇小说（整篇作为单章处理）。
+
+    `continuity_rules` 只在本章第一场传入：它说的是「从上一章的什么状态接过来」，
+    第二场往后接的是上一场，把同一批要求再发一遍只会让模型在半途又写一次开场。
     """
     params = normalize_story_parameters(parameters)
     genre_label = format_genre_label(params)
@@ -91,7 +97,16 @@ def build_scene_prompt(
         ]
     )
     lines.extend(
-        _continuity_lines(contract, previous_scene_tail, next_scene_plan)
+        _continuity_lines(
+            # 契约整份写着全章每一场分别要做什么，而抬头是「必须兑现」——写第一场
+            # 的模型会照着把后面几场也兑现了。所以后面场次不放在这一份里，改用
+            # 「禁止触碰」的名义单列。闸门用的仍是完整契约。
+            contract_for_scene(contract, scene_number),
+            previous_scene_tail,
+            next_scene_plan,
+            continuity_rules,
+            later_scene_boundaries(contract, scene_number),
+        )
     )
     lines.append("若当前场景描述与作品参数或世界观冲突，必须以作品参数和世界观为准并静默纠正。")
 
@@ -147,13 +162,39 @@ def _continuity_lines(
     contract: Optional[Dict[str, Any]],
     previous_scene_tail: str,
     next_scene_plan: str,
+    continuity_rules: Sequence[str] = (),
+    later_boundaries: Sequence[str] = (),
 ):
     if contract:
-        yield "\n## 本章质量契约（必须兑现，不得擅自增加真相）："
+        # 标题要说清这一份是截到本场为止的：不然模型会把「后面几场的内容不在这里」
+        # 读成「本章没有别的事要发生」，反过来又去抢写。
+        yield (
+            "\n## 本章质量契约（只列到本场为止；后面几场要做什么另见下方禁止触碰的"
+            "清单。列出的必须兑现，不得擅自增加真相）："
+        )
         yield compact_json(contract, max_chars=10000)
     if previous_scene_tail:
         yield "\n## 上一场或上一章的已验收结尾（从这一状态续写，不得重演已完成动作）："
         yield previous_scene_tail
     if next_scene_plan:
-        yield "\n## 下一场边界（仅用于控制本场收束；禁止提前写出下一场事件）："
-        yield next_scene_plan
+        # 只给标题，不给下一场的环境、人物和事件表：把整段发过去等于先递材料、
+        # 再请模型别用，而它会用。标题足够说明本场该停在哪儿。
+        yield "\n## 本场必须在下一场开始之前收束。下一场是（只用来定收束位置，其中的事件一个都不许提前写出来）："
+        yield scene_heading(next_scene_plan)
+    later = [str(item).strip() for item in later_boundaries if str(item).strip()]
+    if later:
+        # 这几行必须让模型看见——它靠这些才知道自己这一场到哪儿为止。实测把它们
+        # 一并删掉之后越界反而更严重：第一场一口气把后面两场都写完了。要紧的是
+        # 名义：躺在「必须兑现」里它会去兑现，写成禁令才是栅栏。
+        yield (
+            "\n## 以下内容属于本章后面的场次，本场一个字都不许碰"
+            "（列在这里只为让你知道自己这一场到哪儿为止）："
+        )
+        yield from (f" - {item}" for item in later)
+    rules = [str(rule).strip() for rule in continuity_rules if str(rule).strip()]
+    if rules:
+        yield (
+            "\n## 本章开场的硬性衔接要求（本场是本章第一场，下面每一条都必须做到，"
+            "做不到就是这一场没写对）："
+        )
+        yield from (f" - {rule}" for rule in rules)

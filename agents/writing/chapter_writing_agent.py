@@ -13,7 +13,7 @@ import os
 import logging
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Callable, List, Dict, Any, Optional, Sequence, Tuple
 from dataclasses import dataclass, asdict
 
 from agents.base.agent import BaseAgent, AgentResult
@@ -36,7 +36,12 @@ from core.generation.prompt_context import (
     sanitize_lore_content,
 )
 from core.generation.cancellation import CancelToken, GenerationCancelled, raise_if_cancelled
-from core.generation.chapter_generation_loop import ChapterGenerationLoop, QualityGateError
+from core.generation import pending_review
+from core.generation.chapter_generation_loop import (
+    ChapterGenerationLoop,
+    QualityGateError,
+    restore_result,
+)
 from core.generation.chapter_acceptance import ChapterAcceptanceError
 from core.generation.conflict_briefing import (
     build_briefing,
@@ -626,7 +631,12 @@ class ChapterWritingAgent(BaseAgent):
             quality_thresholds=quality_thresholds or self.quality_thresholds
         )
         
-    def write_chapters_batch(self, chapter_info_list: List[ChapterInfo], plan: ChapterWritingPlan) -> AgentResult:
+    def write_chapters_batch(
+        self,
+        chapter_info_list: List[ChapterInfo],
+        plan: ChapterWritingPlan,
+        progress_callback: Optional[Callable[[str, int, int, int], None]] = None,
+    ) -> AgentResult:
         """Write a batch of chapters automatically."""
         if not plan.chapters_to_write:
             return AgentResult(
@@ -676,12 +686,26 @@ class ChapterWritingAgent(BaseAgent):
                 try:
                     # 章节边界是取消的安全点：上一章已经落盘并提交，下一章尚未开始。
                     raise_if_cancelled(self.cancel_token)
+                    if progress_callback is not None:
+                        progress_callback(
+                            "started",
+                            chapter_num,
+                            len(plan.chapters_completed) + len(chapters_written),
+                            plan.total_chapters,
+                        )
                     chapter_info = next(ch for ch in chapter_info_list if ch.chapter_number == chapter_num)
                     result = self._write_single_chapter(chapter_info)
                     
                     if result.success:
                         chapters_written.append(chapter_num)
                         self.logger.info(f"Successfully wrote Chapter {chapter_num}")
+                        if progress_callback is not None:
+                            progress_callback(
+                                "completed",
+                                chapter_num,
+                                len(plan.chapters_completed) + len(chapters_written),
+                                plan.total_chapters,
+                            )
                         
                         # Extract chapter review if available
                         if "chapter_review" in result.data and result.data["chapter_review"]:
@@ -795,6 +819,173 @@ class ChapterWritingAgent(BaseAgent):
             }
         )
         
+    def review_pending_chapter(
+        self,
+        chapter_number: int,
+        action: str,
+        asks: Optional[List[str]] = None,
+        reason: str = "",
+    ) -> AgentResult:
+        """执行作者在「待复审」里做出的裁决：照建议重修，或人工放行。
+
+        必须走这条路而不是自己拼一个质量闭环：验收有可能判定这一章的契约要让位
+        于账本，那时旧正文全部作废、需要逐场重生成，而重生成要用到写作上下文与
+        生成场景的能力——两样都只有 agent 有。缺了它们，作者点下去要等到最后一步
+        才收到一句「缺少完整重生成上下文」。
+        """
+        record = pending_review.load(self.output_dir, chapter_number)
+        if record is None:
+            return AgentResult(
+                success=False, data={}, metrics={},
+                messages=[f"第 {chapter_number} 章没有待复审记录"],
+            )
+        if not record.resumable:
+            return AgentResult(
+                success=False, data={}, metrics={},
+                messages=[
+                    f"第 {chapter_number} 章只写到一半就被闸门拦下，没有完整章节可用；"
+                    "请重写本章，或先回场景规划改这一章的规划"
+                ],
+            )
+
+        chapter_info_list, _ = self.analyze_chapter_structure()
+        chapter_info = next(
+            (info for info in chapter_info_list
+             if info.chapter_number == chapter_number),
+            None,
+        )
+        if chapter_info is None:
+            return AgentResult(
+                success=False, data={}, metrics={},
+                messages=[f"找不到第 {chapter_number} 章的规划"],
+            )
+
+        context = self._load_writing_context()
+        scene_plan_path = os.path.join(self.output_dir, chapter_info.scene_plan_file)
+        quality_loop = ChapterGenerationLoop(
+            output_dir=self.output_dir,
+            model=self._get_selected_model(),
+            logger=self.logger,
+            cancel_token=self.cancel_token,
+            require_planning_contract=self.require_planning_contract,
+        )
+
+        def generate_scene(**kwargs):
+            return self._generate_scene_prose(
+                chapter_number,
+                kwargs["scene_number"],
+                kwargs["scene_plan"],
+                context,
+                previous_scene_tail=kwargs.get("previous_scene_tail", ""),
+                next_scene_plan=kwargs.get("next_scene_plan", ""),
+                chapter_contract=kwargs.get("contract"),
+                profile=kwargs.get("profile"),
+            )
+
+        def save_revised_plan(revised_plan: str) -> None:
+            write_file(scene_plan_path, revised_plan)
+
+        quality_loop.bind_generation_context(
+            context.get("parameters", {}),
+            context.get("lore", ""),
+            generate_scene,
+            save_revised_plan,
+        )
+
+        try:
+            if action == "revise":
+                result = quality_loop.revise_pending(
+                    chapter_number,
+                    record.snapshot,
+                    context.get("parameters", {}),
+                    asks or [],
+                )
+            else:
+                result = restore_result(record.snapshot)
+        except QualityGateError as gate_error:
+            return self._pending_again(chapter_number, record, gate_error)
+
+        output_path = os.path.join(self.output_dir, chapter_info.output_file)
+        output_directory = os.path.dirname(output_path)
+        if output_directory:
+            os.makedirs(output_directory, exist_ok=True)
+
+        def accept(saved_path: str):
+            if action == "waive":
+                return quality_loop.accept_waived(
+                    chapter_number, result, reason, chapter_path=saved_path
+                )
+            return quality_loop.accept_result(
+                chapter_number, result, chapter_path=saved_path
+            )
+
+        try:
+            acceptance_result = publish_chapter_with_acceptance(
+                self.output_dir,
+                chapter_number,
+                output_path,
+                result.chapter_content,
+                accept,
+            )
+        except ChapterAcceptanceError as acceptance_error:
+            # 验收挡下的是与既有设定的冲突，要作者裁定契约，不是评分问题；
+            # 待复审记录原样留着，别让它看起来像已经处理完了。
+            return self._acceptance_conflict_result(chapter_number, acceptance_error)
+        except QualityGateError as gate_error:
+            return self._pending_again(chapter_number, record, gate_error)
+
+        pending_review.clear(self.output_dir, chapter_number)
+        result_data = {
+            "chapter_number": chapter_number,
+            "action": action,
+            "output_file": chapter_info.output_file,
+        }
+        if acceptance_result:
+            result_data["story_revision"] = acceptance_result.committed_revision
+        verb = "已按建议重修并通过验收" if action == "revise" else "已由作者放行并通过验收"
+        return AgentResult(
+            success=True,
+            data=result_data,
+            messages=[f"第 {chapter_number} 章{verb}"],
+            metrics={"retry_count": getattr(result, "retry_count", 0)},
+        )
+
+    def _pending_again(
+        self,
+        chapter_number: int,
+        previous: "pending_review.PendingReview",
+        gate_error: QualityGateError,
+    ) -> AgentResult:
+        """复审这一轮没成：把记录换成最新一稿的结论，章节留在待复审。"""
+        prose = "\n\n---\n\n".join(gate_error.partial_scenes) or previous.prose
+        record = pending_review.build(
+            chapter_number,
+            message=str(gate_error),
+            review=gate_error.review or {},
+            prose=prose,
+            prose_path=previous.prose_path,
+            stage=(
+                pending_review.STAGE_CHAPTER
+                if gate_error.snapshot
+                else pending_review.STAGE_SCENE
+            ),
+            snapshot=gate_error.snapshot or previous.snapshot,
+            verdict_unavailable=gate_error.verdict_unavailable,
+        )
+        pending_review.save(record, self.output_dir)
+        self.logger.error(
+            "Chapter %s is still pending review: %s", chapter_number, gate_error
+        )
+        return AgentResult(
+            success=False,
+            data={
+                "chapter_number": chapter_number,
+                "pending_review_chapter": chapter_number,
+            },
+            messages=[f"{gate_error}；{record.headline}，仍待复审"],
+            metrics={},
+        )
+
     def _write_single_chapter(self, chapter_info: ChapterInfo) -> AgentResult:
         """Write a single chapter or short story using the existing writing logic."""
         try:
@@ -898,6 +1089,7 @@ class ChapterWritingAgent(BaseAgent):
                     next_scene_plan=kwargs.get("next_scene_plan", ""),
                     chapter_contract=kwargs.get("contract"),
                     profile=kwargs.get("profile"),
+                    continuity_rules=kwargs.get("continuity_rules", ()),
                 )
 
             def save_revised_plan(revised_plan: str) -> None:
@@ -940,12 +1132,35 @@ class ChapterWritingAgent(BaseAgent):
                     gate_error,
                     f" Partial prose archived at {archived}." if archived else "",
                 )
+                # 闸门手上的结论收成一份待复审记录：这一稿正文、按严重程度排好的
+                # 问题清单、以及重修与放行要用的现场，全在一个文件里。此前这些散
+                # 在归档目录和评审目录两处，作者得自己对时间戳才能拼出问题是什么。
+                record = pending_review.build(
+                    chapter_info.chapter_number,
+                    message=str(gate_error),
+                    review=gate_error.review,
+                    prose="\n\n---\n\n".join(gate_error.partial_scenes),
+                    prose_path=archived,
+                    stage=(
+                        pending_review.STAGE_CHAPTER
+                        if gate_error.snapshot
+                        else pending_review.STAGE_SCENE
+                    ),
+                    snapshot=gate_error.snapshot,
+                    verdict_unavailable=gate_error.verdict_unavailable,
+                )
+                record_path = pending_review.save(record, self.output_dir)
                 message = str(gate_error)
-                if archived:
-                    message += f"（部分正文已归档：{archived}）"
+                if record.components:
+                    message += f"（{record.verdict}）"
+                message += f"；{record.headline}，已标为待复审"
                 return AgentResult(
                     success=False,
-                    data={"archived_partial_prose": archived},
+                    data={
+                        "archived_partial_prose": archived,
+                        "pending_review": record_path,
+                        "pending_review_chapter": chapter_info.chapter_number,
+                    },
                     messages=[message],
                     metrics={},
                 )
@@ -998,6 +1213,8 @@ class ChapterWritingAgent(BaseAgent):
                 return self._acceptance_conflict_result(
                     chapter_info.chapter_number, acceptance_error
                 )
+            # 这一章过了闸门也过了验收，之前那次失败的待复审记录不再成立。
+            pending_review.clear(self.output_dir, chapter_info.chapter_number)
             final_content = domain_loop_result.chapter_content
             
             # Perform chapter-level review if enabled
@@ -1186,6 +1403,7 @@ class ChapterWritingAgent(BaseAgent):
         next_scene_plan: str = "",
         chapter_contract: Optional[Dict[str, Any]] = None,
         profile: Optional[DomainProfile] = None,
+        continuity_rules: Sequence[str] = (),
     ) -> str:
         """Generate prose for a single scene using genuine NovelWriter AI functions."""
 
@@ -1217,6 +1435,7 @@ class ChapterWritingAgent(BaseAgent):
             contract=chapter_contract,
             previous_scene_tail=previous_scene_tail,
             next_scene_plan=next_scene_plan,
+            continuity_rules=continuity_rules,
         )
 
         # Use genuine NovelWriter AI helper functions

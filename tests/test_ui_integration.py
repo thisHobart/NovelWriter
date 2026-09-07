@@ -232,6 +232,7 @@ def test_lore_action_buttons_and_generation_counts(
 
     def fake_action_work(
         step, action, output_dir, model="", *, parameters=None, chapter_number=None,
+        options=None,
     ):
         calls.append((step, action, output_dir, parameters, chapter_number))
         return _instant_work({"step": step, "action": action})
@@ -241,7 +242,6 @@ def test_lore_action_buttons_and_generation_counts(
     page = window.lore_page
 
     assert not page.titles_button.isEnabled()
-    assert not page.enhance_button.isEnabled()
     assert page.step_buttons["enhance"].state == "locked"
 
     _write(tmp_path / "story/lore/generated_lore.md", "# 世界观\n可推荐标题。")
@@ -251,10 +251,10 @@ def test_lore_action_buttons_and_generation_counts(
     )
     page.refresh()
     assert page.titles_button.isEnabled()
-    assert page.enhance_button.isEnabled()
+    assert page.step_buttons["enhance"].state == "todo"
 
     _click_and_wait(qapp, window, page.titles_button)
-    _click_and_wait(qapp, window, page.enhance_button)
+    _click_and_wait(qapp, window, page.step_buttons["enhance"])
 
     page.faction_stepper.set_value(3)
     page.character_stepper.set_value(4)
@@ -277,8 +277,8 @@ def test_structure_action_buttons_dispatch_individual_actions(
     window._navigate("structure")
     page = window.structure_page
 
-    _click_and_wait(qapp, window, page.arcs_button)
-    _click_and_wait(qapp, window, page.faction_arcs_button)
+    _click_and_wait(qapp, window, page.step_buttons["arcs"])
+    _click_and_wait(qapp, window, page.step_buttons["faction_arcs"])
     _click_and_wait(qapp, window, page.step_buttons["locations"])
     _click_and_wait(qapp, window, page.step_buttons["plot"])
 
@@ -311,7 +311,7 @@ def test_scene_gate_force_action_and_plan_selection(
 
     assert page.stack.currentIndex() == 0
     assert not page.primary.isEnabled()
-    assert not page.outline_button.isEnabled()
+    assert page.step_buttons["outline"].state == "locked"
     QTest.mouseClick(page.goto_structure_button, Qt.LeftButton)
     assert window.stack.currentWidget() is window.structure_page
 
@@ -331,7 +331,7 @@ def test_scene_gate_force_action_and_plan_selection(
         "### 第二章场景\n\n**第二章场景内容**",
     )
     page.refresh()
-    assert page.outline_button.isEnabled()
+    assert page.step_buttons["outline"].state == "todo"
     assert page.plan_list.count() == 2
     assert page.plan_view.content_font_size == 15
     page.plan_list.setCurrentRow(1)
@@ -339,7 +339,7 @@ def test_scene_gate_force_action_and_plan_selection(
     assert "###" not in page.plan_view.toPlainText()
     assert "**" not in page.plan_view.toPlainText()
 
-    _click_and_wait(qapp, window, page.outline_button)
+    _click_and_wait(qapp, window, page.step_buttons["outline"])
     _click_and_wait(qapp, window, page.step_buttons["scenes"])
     assert action_calls == [("scenes", "outline"), ("scenes", "scenes")]
 
@@ -351,6 +351,7 @@ def test_chapter_controls_analysis_rewrite_and_html_escaping(
 
     def fake_action_work(
         step, action, output_dir, model="", *, parameters=None, chapter_number=None,
+        options=None,
     ):
         calls.append((step, action, chapter_number))
         return _instant_work({"step": step, "action": action})
@@ -389,6 +390,240 @@ def test_chapter_controls_analysis_rewrite_and_html_escaping(
         ("chapters", "all", None),
         ("chapters", "rewrite", 1),
     ]
+
+
+BLOCKED_QUOTE = "七年前未竟的残局，都在这一刻压弯了肩膀。"
+
+
+def _pending_chapter(tmp_path, number=2, *, resumable=True):
+    """在磁盘上摆一章被闸门拦下的稿子，形状与生成侧写出来的一致。"""
+    from core.generation import pending_review
+
+    reader_blind = {
+        "stage": "chapter",
+        "passed": False,
+        "pass_average": 3.2,
+        "average_score": 2.714,
+        "scores": {"subtext": 2.0, "narrative_restraint": 2.0},
+        "hard_failures": [
+            {
+                "code": "AI_TEMPLATE_SATURATION",
+                "quote": BLOCKED_QUOTE,
+                "problem": "全知总结压过了实战前的具体行为。",
+                "change": "删去该句，改成两人对接线束时的微动作。",
+                "review": "reader_blind",
+            }
+        ],
+        "repair_instructions": ["删除分岔路口的叙述者旁白。"],
+    }
+    record = pending_review.build(
+        number,
+        message=f"第 {number} 章在定向修订后仍未通过章节级质量检查，请人工审核",
+        review={
+            "stage": "chapter",
+            "passed": False,
+            "pass_average": 3.2,
+            "average_score": 3.0,
+            "repair_scope": "scene_3（路口分道扬镳段落）",
+            "hard_failures": list(reader_blind["hard_failures"]),
+            "repair_instructions": list(reader_blind["repair_instructions"]),
+            "component_reviews": {"reader_blind": reader_blind},
+        },
+        prose=f"雨还在下。\n\n{BLOCKED_QUOTE}\n\n他们分头上了车。",
+        prose_path="archive/failed_generations/chapter_2.md",
+        stage=(
+            pending_review.STAGE_CHAPTER if resumable else pending_review.STAGE_SCENE
+        ),
+        snapshot={"scenes": ["一", "二", "三"]} if resumable else {},
+    )
+    pending_review.save(record, str(tmp_path))
+    return record
+
+
+def _chapter_rows(page):
+    return [
+        page.chapter_list.item(row).text()
+        for row in range(page.chapter_list.count())
+    ]
+
+
+def test_a_blocked_chapter_shows_its_problems_instead_of_looking_unwritten(
+    qapp, window, tmp_path,
+):
+    for number in (1, 2):
+        _write(
+            tmp_path / f"story/planning/detailed_scene_plans/chapter_{number}.md",
+            f"第 {number} 章规划",
+        )
+    _write(tmp_path / "story/content/chapters/chapter_1.md", "# 第一章\n已定稿。")
+    record = _pending_chapter(tmp_path)
+
+    window._navigate("chapters")
+    page = window.chapter_page
+
+    # 列表里和「从没写过」分得开，右侧直接说卡在什么上。
+    rows = _chapter_rows(page)
+    assert any("待复审" in row and "1 处硬伤" in row for row in rows)
+    assert "待复审" in page.header._subtitle.text()  # noqa: SLF001
+
+    # 刚出现的待复审章自动选中：出问题第一步就看见问题。
+    assert page._selected == ("review", 2)  # noqa: SLF001
+    assert page.review_card.isVisibleTo(page)
+    assert page.review_verdict.text() == "读者盲测 2.71 / 3.20"
+    assert "scene_3" in page.review_scope.text()
+
+    # 正文区显示被拦下的那一稿，并把被点名的句子标出来。
+    assert BLOCKED_QUOTE in page.prose.toPlainText()
+    assert "没通过质量闸门" in page.draft_banner.text()
+    html = page.prose.toHtml()
+    assert chapter_module.HARD_TINT.lower() in html.lower()
+    assert 'name="' + record.hard_failures[0].id + '"' in html
+
+    # 清单按严重程度排，硬伤在最前。
+    kinds = [row.kind for row in page._issue_rows]  # noqa: SLF001
+    assert kinds[0] == "hard"
+    assert "dimension" in kinds
+    # 每行都要有读得下去的高度：换行文字的高度取决于宽度，算错了整份清单会被
+    # 压成几像素一条、字叠在一起。
+    assert all(row.height() >= 32 for row in page._issue_rows)  # noqa: SLF001
+    assert page.revise_button.isEnabled()
+    assert page.waive_button.isEnabled()
+
+
+def test_review_actions_carry_the_authors_choices_into_the_run(
+    qapp, window, tmp_path, monkeypatch,
+):
+    calls = []
+
+    def fake_action_work(
+        step, action, output_dir, model="", *, parameters=None, chapter_number=None,
+        options=None,
+    ):
+        calls.append((action, chapter_number, options))
+        return _instant_work({"step": step, "action": action})
+
+    monkeypatch.setattr(chapter_module, "action_work", fake_action_work)
+    monkeypatch.setattr(
+        chapter_module.QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: ("这条建议我不认同", True)),
+    )
+    for number in (1, 2):
+        _write(
+            tmp_path / f"story/planning/detailed_scene_plans/chapter_{number}.md",
+            f"第 {number} 章规划",
+        )
+    record = _pending_chapter(tmp_path)
+
+    window._navigate("chapters")
+    page = window.chapter_page
+    assert page._selected == ("review", 2)  # noqa: SLF001
+
+    # 划掉一条建议，重修就不该带上它。
+    dropped = [row for row in page._issue_rows if row.checkbox][-1]  # noqa: SLF001
+    dropped.checkbox.setChecked(False)
+    _click_and_wait(qapp, window, page.revise_button)
+
+    _click_and_wait(qapp, window, page.waive_button)
+
+    revise, waive = calls
+    assert revise[0] == "revise" and revise[1] == 2
+    assert dropped.issue_id not in revise[2]["issue_ids"]
+    assert record.hard_failures[0].id in revise[2]["issue_ids"]
+    assert waive == ("waive", 2, {"reason": "这条建议我不认同"})
+
+
+def test_a_verdictless_draft_offers_a_rerun_instead_of_a_repair_list(
+    qapp, window, tmp_path,
+):
+    """评审自己没出结论时没有清单可照，按钮改成重跑评审，正文照样留着。"""
+    from core.generation import pending_review
+
+    for number in (1, 2):
+        _write(
+            tmp_path / f"story/planning/detailed_scene_plans/chapter_{number}.md",
+            f"第 {number} 章规划",
+        )
+    record = pending_review.build(
+        2,
+        message="第 2 章的质量评审没能给出结论：现实合理性 质量检查未能返回有效结果",
+        review={},
+        prose="雨还在下。",
+        snapshot={"scenes": ["雨还在下。"]},
+        verdict_unavailable=True,
+    )
+    pending_review.save(record, str(tmp_path))
+
+    window._navigate("chapters")
+    page = window.chapter_page
+
+    assert page._selected == ("review", 2)  # noqa: SLF001
+    assert any("评审未出结论" in row for row in _chapter_rows(page))
+    assert page.revise_button.text() == "重跑评审"
+    assert page.revise_button.isEnabled()
+    # 正文完整，作者也可以直接放行。
+    assert page.waive_button.isEnabled()
+    assert "没能给出结论" in page.draft_banner.text()
+
+
+def test_a_half_written_draft_offers_rewrite_rather_than_waiving(
+    qapp, window, tmp_path,
+):
+    for number in (1, 2):
+        _write(
+            tmp_path / f"story/planning/detailed_scene_plans/chapter_{number}.md",
+            f"第 {number} 章规划",
+        )
+    _pending_chapter(tmp_path, resumable=False)
+
+    window._navigate("chapters")
+    page = window.chapter_page
+
+    assert page._selected == ("review", 2)  # noqa: SLF001
+    assert not page.waive_button.isEnabled()
+    assert "重写本章" in page.waive_button.toolTip()
+    assert page.rewrite_button.isEnabled()
+
+
+def test_chapter_progress_refreshes_during_a_running_batch(
+    qapp, window, tmp_path,
+):
+    for number in range(1, 4):
+        _write(
+            tmp_path / f"story/planning/detailed_scene_plans/chapter_{number}.md",
+            f"第{number}章规划",
+        )
+    _write(
+        tmp_path / "story/content/chapters/chapter_1.md",
+        "# 第一章\n已完成正文。",
+    )
+    window._navigate("chapters")
+    page = window.chapter_page
+    assert page.list_meta.text() == "1 / 3"
+
+    _write(
+        tmp_path / "story/content/chapters/chapter_2.md",
+        "# 第二章\n后台刚刚验收的正文。",
+    )
+    window._on_task_progress("第 2 章已完成（2/3）", 2 / 3)
+    qapp.processEvents()
+
+    assert page.list_meta.text() == "2 / 3"
+    assert "已写 2 章" in page.quality_summary.text()
+    assert not page.primary.isEnabled()
+
+    window._on_task_progress("正在撰写第 3 章（已完成 2/3）", 2 / 3)
+    qapp.processEvents()
+
+    assert page._running_chapter == 3  # noqa: SLF001 - UI state assertion
+    assert any(
+        "03  正在撰写" in page.chapter_list.item(row).text()
+        for row in range(page.chapter_list.count())
+    )
+    assert not page.primary.isEnabled()
+
+    page.finish_generation_progress()
+    assert page.primary.isEnabled()
 
 
 def test_failed_background_task_restores_ui_and_shows_error(

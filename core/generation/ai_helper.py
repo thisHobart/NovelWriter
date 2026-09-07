@@ -93,6 +93,80 @@ def get_model() -> str:
     return _current_model
 
 
+#: 一次调用回空之后重试几次。空回复不是内容问题，是这一次调用没成，重问一遍
+#: 往往就有了——托管端点在同一个提示词上时而返回正文、时而只返回空。
+EMPTY_REPLY_RETRIES = 3
+
+
+def _with_empty_reply_retry(model: str, call) -> str:
+    """调用返回空正文时重问，别把它当成模型的回答。
+
+    实测同一个提示词连发四次，两次拿到正文（642 / 3412 字），两次正文为空，而端点
+    每次都报「正常结束」、也都计了几百到几千 token 的生成量。空回复交给上层，会被
+    当成「模型答得不合规」，白白吃掉评审仅有的那次补救机会，最后整章停在待复审。
+    """
+    for attempt in range(EMPTY_REPLY_RETRIES):
+        reply = call()
+        if reply and str(reply).strip():
+            return reply
+        print(
+            f"Model '{model}' returned an empty reply "
+            f"({attempt + 1}/{EMPTY_REPLY_RETRIES}); asking again."
+        )
+    return ""
+
+
+def _flatten(messages) -> str:
+    """把多轮对话摊成一次性提问，给不支持消息列表的后端用。"""
+    blocks = []
+    for message in messages:
+        role = message.get("role")
+        label = "【我上一轮的要求】" if role == "user" else "【你上一轮的回答】"
+        blocks.append(label + "\n" + str(message.get("content", "")))
+    return "\n\n".join(blocks)
+
+
+def send_conversation(messages, model=None) -> str:
+    """按多轮对话提问：模型看得见自己上一轮写的东西。
+
+    单场景重修用得上：一次性提问里，上一稿是「一段别人给的文字」，模型容易整体
+    重写；作为对话，上一稿是它自己的回答，改动更贴着被点名的那几句走。
+
+    后端不支持消息列表时摊平成一次提问，行为退回原样，不影响 CLI 后端。
+    """
+    messages = [dict(message) for message in messages if message.get("content")]
+    if not messages:
+        return ""
+    if get_backend() != "api" or len(messages) == 1:
+        return send_prompt(_flatten(messages), model=model)
+
+    client = getattr(_mp, "_get_hosted_llm_client", None)
+    resolved = model or _current_model
+    if resolved != "hosted-llm" or client is None:
+        # 只有自建的 OpenAI 兼容端点走真正的多轮；其余后端摊平，保持一致行为。
+        return send_prompt(_flatten(messages), model=model)
+
+    def invoke() -> str:
+        response = client().chat.completions.create(
+            model=os.environ.get("HOSTED_LLM_MODEL"),
+            messages=[{"role": "system", "content": ROLE_DESCRIPTION}, *messages],
+            max_tokens=DEFAULT_MAX_TOKENS,
+            temperature=0.7,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        return response.choices[0].message.content or ""
+
+    return _with_empty_reply_retry(
+        resolved,
+        lambda: trace_model_call(
+            prompt=_flatten(messages),
+            backend="api",
+            model=resolved,
+            invoke=invoke,
+        ),
+    )
+
+
 def send_prompt(prompt, model=None):
     """Sends a prompt to the specified AI model.
 
@@ -141,12 +215,15 @@ def send_prompt(prompt, model=None):
     _current_model = model
 
     try:
-        return trace_model_call(
-            prompt=prompt,
-            backend=current_backend,
-            model=model,
-            invoke=lambda: _mp.send_prompt(
-                prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS
+        return _with_empty_reply_retry(
+            model,
+            lambda: trace_model_call(
+                prompt=prompt,
+                backend=current_backend,
+                model=model,
+                invoke=lambda: _mp.send_prompt(
+                    prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS
+                ),
             ),
         )
     except Exception as e:
