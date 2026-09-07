@@ -1647,3 +1647,53 @@ def test_a_single_review_waiver_still_reports_its_own_numbers():
     reason = waiver_reason(single, "第 3 章章节级检查")
     assert reason is not None
     assert "平均 3.10 分，门槛 3.20 分" in reason
+
+
+def test_cancellation_stops_before_another_chapter_repair_round(tmp_path):
+    """按下停止之后，不该再启动一轮章节级重修。
+
+    评审本身没有检查点（半路停下会白扔一整章），但一轮重修要再花约十次调用，
+    而这一章尚未验收——停在这里丢掉的东西和「下一场之前」停下是同一类。
+    """
+
+    class FailingChapterReviewer(PassingReviewer):
+        def __init__(self, token):
+            super().__init__()
+            self.token = token
+            self.chapter_reviews = 0
+
+        def review_chapter(self, *args, **kwargs):
+            self.chapter_reviews += 1
+            # 第一轮合议出结果的同时，作者按下了停止。
+            self.token.cancel()
+            return failed_review("chapter")
+
+        def revise_scene(self, *args, **kwargs):
+            raise AssertionError("取消之后不该再重修任何一场")
+
+    token = CancelToken()
+    reviewer = FailingChapterReviewer(token)
+    loop = ChapterGenerationLoop(
+        output_dir=str(tmp_path),
+        model="hosted-llm",
+        reviewer=reviewer,
+        cancel_token=token,
+    )
+
+    with pytest.raises(GenerationCancelled):
+        loop.run(
+            chapter_number=1,
+            plan_content=PLAN,
+            parameters={"Genre": "Mystery", "Subgenre": "Legal Thriller"},
+            lore="世界观",
+            generate_scene=lambda **kwargs: f"第{kwargs['scene_number']}场正文。",
+        )
+
+    # 那一轮评审自己走完了，重修一轮都没有开始，账本也没有提交。
+    assert reviewer.chapter_reviews == 1
+    ledger = json.loads(
+        (tmp_path / "system" / "story_ledgers" / "suspense_ledger.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert ledger["accepted_chapters"] == []

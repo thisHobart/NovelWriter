@@ -1253,6 +1253,11 @@ class ChapterGenerationLoop:
         for attempt in range(self.max_scene_retries):
             if chapter_review.passed and repaired_scene_passed:
                 break
+            # 每一轮重修之前是安全点：这一章尚未验收，继续下去要再花约十次调用。
+            # 停在这里丢掉的和「下一场之前」停下丢掉的是同一类东西——一份没通过
+            # 闸门、本来也不会落盘的稿子。评审本身仍然不设检查点：那时整章的生成
+            # 成本已经付出，半路停下等于白扔一章。
+            self._check_cancelled()
             fallback = self._target_scene(
                 repair_review.repair_scope, len(generated_scenes)
             )
