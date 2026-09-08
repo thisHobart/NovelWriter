@@ -177,6 +177,22 @@ class ChapterInfo:
     plan_exists: bool = False
 
 
+def _first_field(record: dict, *keys: str) -> str:
+    """按顺序取第一个有内容的字段；数组取第一项。
+
+    人物卡有两种形状：模型生成的新卡用单数 goal/flaw/strength，旧项目的
+    characters.json 用复数数组。读取方只认一种，另一种就会静默变成空。
+    """
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 class ChapterWritingAgent(BaseAgent):
     """
     Automated agent for writing novel chapters.
@@ -1336,27 +1352,35 @@ class ChapterWritingAgent(BaseAgent):
                             f"角色：{char.get('role', '无')}",
                             f"性别：{char.get('gender', '无')}",
                             f"年龄：{char.get('age', '无')}",
-                            f"外貌：{char.get('appearance_summary', '无')}"
+                            f"外貌：{_first_field(char, 'appearance_summary', 'description') or '无'}",
                         ]
-                        
-                        goals = char.get('goals', [])
-                        if goals:
-                            details.append(f"主要目标：{goals[0]}")
-                            
-                        strengths = char.get('strengths', [])
-                        if strengths:
-                            details.append(f"主要优点：{strengths[0]}")
-                            
-                        flaws = char.get('flaws', [])
-                        if flaws:
-                            details.append(f"主要缺点：{flaws[0]}")
-                            
-                        backstory = char.get('backstory_summary', '')
-                        if backstory:
-                            details.append(f"背景故事：{backstory}")
-                            
+                        # 新卡是单数 goal/flaw/strength，旧项目是复数数组；两种都读。
+                        # 只读复数会让新项目的人物名单除了姓名年龄之外全是空的，而这
+                        # 份名单是写作时唯一能看到人物想要什么、怕什么的地方。
+                        for label, keys in (
+                            ("所属", ("faction",)),
+                            ("职业", ("profession",)),
+                            ("职务", ("title",)),
+                            ("主要目标", ("goals", "goal")),
+                            ("动机", ("motivations", "motivation")),
+                            ("主要优点", ("strengths", "strength")),
+                            ("主要缺点", ("flaws", "flaw")),
+                            ("人物弧光", ("arc",)),
+                            ("背景故事", ("backstory_summary", "background")),
+                        ):
+                            value = _first_field(char, *keys)
+                            if value:
+                                details.append(f"{label}：{value}")
+
+                        opposes = char.get("opposes")
+                        if isinstance(opposes, dict) and opposes.get("character"):
+                            details.append(
+                                f"对抗：挡住「{opposes['character']}」的"
+                                f"{opposes.get('blocked_goal', '目标')}"
+                            )
+
                         summaries.append("\n".join(details))
-                        
+
                     return "主要人物：\n" + "\n".join(summaries)
         except Exception as e:
             self.logger.error(f"Error loading character roster: {e}")

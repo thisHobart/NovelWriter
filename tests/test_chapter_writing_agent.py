@@ -772,3 +772,66 @@ def test_blocked_batch_reports_which_chapter_stopped_it(tmp_path):
     assert "停在第 2 章" in message
     assert "仍未通过质量检查" in message
     assert "从第 2 章继续" in message
+
+
+def test_character_roster_reads_both_the_new_and_legacy_card_shapes(tmp_path):
+    """新卡是单数 goal/flaw/strength，旧项目是复数数组。
+
+    只读复数会让新项目的人物名单除了姓名年龄之外全是空的，而这份名单是写作时
+    唯一能看到人物想要什么、怕什么的地方。
+    """
+    agent = _bare_agent(tmp_path)
+    lore_dir = tmp_path / "story" / "lore"
+    lore_dir.mkdir(parents=True)
+    (lore_dir / "characters.json").write_text(
+        json.dumps(
+            {
+                "characters": [
+                    {
+                        "name": "陆崇远", "role": "protagonist", "gender": "男", "age": 42,
+                        "faction": "沿港分局刑侦大队", "profession": "刑警", "title": "副大队长",
+                        "goal": "在船厂被填平前取出旧案物证",
+                        "motivation": "当年是他安置的证人失踪了",
+                        "strength": "现场空间复原能力",
+                        "flaw": "执拗于程序，却动过伪造证据的念头",
+                        "arc": "从坚守程序到直面抉择",
+                        "background": "十四年前证据链断裂，此后被边缘化。",
+                        "description": "身材削瘦微驼。",
+                    },
+                    {
+                        "name": "陈继发", "role": "antagonist", "gender": "男", "age": 53,
+                        "goal": "赶在汛期前推平船厂",
+                        "flaw": "对效率抱有冷酷信仰",
+                        "description": "永远拿着工程图纸。",
+                        "opposes": {"character": "陆崇远", "blocked_goal": "对泵房进行技术勘验"},
+                    },
+                    {
+                        "name": "旧格式人物", "role": "supporting", "gender": "女", "age": 30,
+                        "goals": ["守住码头", "另一个目标"],
+                        "flaws": ["胆小"],
+                        "strengths": ["记性好"],
+                        "backstory_summary": "旧项目写在这个字段里。",
+                        "appearance_summary": "旧项目的外貌字段。",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    roster = agent._load_character_roster()
+
+    # 新卡：单数字段全部要出现
+    assert "职业：刑警" in roster
+    assert "职务：副大队长" in roster
+    assert "主要目标：在船厂被填平前取出旧案物证" in roster
+    assert "主要缺点：执拗于程序，却动过伪造证据的念头" in roster
+    assert "背景故事：十四年前证据链断裂，此后被边缘化。" in roster
+    assert "外貌：身材削瘦微驼。" in roster
+    # 反派挡的是谁，写作时要看得见
+    assert "对抗：挡住「陆崇远」的对泵房进行技术勘验" in roster
+    # 旧卡：复数数组取第一项，旧的外貌与背景字段仍然优先
+    assert "主要目标：守住码头" in roster
+    assert "外貌：旧项目的外貌字段。" in roster
+    assert "背景故事：旧项目写在这个字段里。" in roster
