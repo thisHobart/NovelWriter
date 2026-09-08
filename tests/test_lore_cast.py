@@ -222,3 +222,29 @@ def test_markdown_fenced_json_is_accepted():
         lambda prompt: f"```json\n{payload}\n```", PARAMETERS, 1
     )
     assert factions[0]["name"] == "海陵市公安局刑事侦查支队"
+
+
+def test_gender_ratio_survives_a_string_from_parameters_txt():
+    """parameters.txt 是纯文本，`Female Percentage: 50` 读回来是字符串。
+
+    界面那条路径上有人先转过 int，无界面直接调用时没有——早期版本在这里直接
+    抛 TypeError，整个设定阶段崩掉。
+    """
+    cast = [_character(), _antagonist()]
+    assert validate_characters(cast, female_percentage="50") == []
+    assert any(
+        "女性占比" in d for d in validate_characters(cast, female_percentage="0")
+    )
+    # 读不出数字时退回默认值，而不是让整个阶段崩掉
+    assert validate_characters(cast, female_percentage="") == []
+
+
+def test_prompt_renders_a_string_percentage_as_a_number():
+    prompts = []
+
+    def send(prompt):
+        prompts.append(prompt)
+        return json.dumps({"characters": [_character(), _antagonist()]}, ensure_ascii=False)
+
+    generate_characters(send, PARAMETERS, 2, female_percentage="50")
+    assert "女性大约占 50%" in prompts[0]

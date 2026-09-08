@@ -122,6 +122,20 @@ def _latin_defects(record: Dict[str, Any], label: str) -> List[str]:
     return defects
 
 
+def _percentage(value: Any, default: float = 50.0) -> float:
+    """把性别比例读成数字。
+
+    `parameters.txt` 是纯文本，`Female Percentage: 50` 读回来是字符串 `"50"`。
+    界面那条路径上有人先转过 int，无界面直接调用时没有——于是「按下按钮才炸」。
+    这里在校验入口统一收口，读不出数字就退回默认值而不是让整个设定阶段崩掉。
+    """
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return number if 0.0 <= number <= 100.0 else default
+
+
 def _missing_fields(record: Dict[str, Any], required: Sequence[str], label: str) -> List[str]:
     return [
         _defect(f"{label} 的 {field} 是空的，必须写实际内容")
@@ -253,6 +267,7 @@ def validate_characters(
     tolerance: float = 0.25,
 ) -> List[str]:
     """人物卡的确定性缺陷清单；空列表表示通过。"""
+    female_percentage = _percentage(female_percentage)
     defects: List[str] = []
     if not characters:
         return ["没有生成任何人物"]
@@ -438,9 +453,10 @@ def generate_factions(
 def _character_prompt(
     parameters: Dict[str, Any],
     num_characters: int,
-    female_percentage: int,
+    female_percentage: Any,
     factions: Sequence[Dict[str, Any]],
 ) -> str:
+    female_percentage = _percentage(female_percentage)
     faction_names = [str(f.get("name", "")).strip() for f in factions if isinstance(f, dict)]
     faction_block = (
         "已有的势力（人物的 faction 只能从这里面选，或者留空表示无组织）：\n"
@@ -457,7 +473,7 @@ def _character_prompt(
 - 全部用中文写，名字是普通的中文姓名。职业、职务要符合这个题材所在的现实体系。
 - role 只能是 protagonist / deuteragonist / antagonist / supporting，
   至少要有一位 protagonist 和一位 antagonist。
-- gender 只写「男」或「女」；女性大约占 {female_percentage}%。
+- gender 只写「男」或「女」；女性大约占 {female_percentage:.0f}%。
 - 每个人的 goal、flaw、background 都要来自上面的主题和基调，彼此之间要能产生冲突，
   不要写成可以套在任何一本书上的通用短语。
 - **反派必须挡住主角**：antagonist 要写 opposes，说明他挡的是哪位主角的哪个目标。
