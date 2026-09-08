@@ -488,3 +488,38 @@ def test_the_gate_counts_the_anchor_when_the_opening_picks_up_the_ending():
     )
     assert report["metrics"]["hand_off_anchors"] >= 1
     assert not any("没有任何字面上的回指" in item for item in report["warnings"])
+
+
+def test_planning_is_told_which_functions_the_previous_chapters_used():
+    """「连着三章同一个功能」是硬规则，模型必须先知道前两章填了什么。
+
+    实测一次 20 章的规划里有 6 章（3、8、11、15、18、20）栽在这一条上，每章白烧
+    一轮规划调用——因为这个约束此前只通过「失败后重试」传达。
+    """
+    text = continuity_instructions(3, recent_functions={2: "advance", 1: "advance"})
+
+    assert "第 2 章是「advance」" in text
+    assert "第 1 章是「advance」" in text
+    assert "不能再填它" in text
+
+
+def test_no_ban_when_the_previous_two_chapters_differ():
+    text = continuity_instructions(3, recent_functions={2: "reveal", 1: "advance"})
+
+    assert "紧邻的前几章功能定位" in text
+    assert "不能再填它" not in text
+
+
+def test_the_two_overlapping_enums_are_told_apart():
+    """chapter_function 与 primary_action 只共用 advance 一个词。
+
+    实测模型把 primary_action 才有的 complicate 填进了 chapter_function。
+    """
+    text = continuity_instructions(3, recent_functions={2: "advance", 1: "reveal"})
+
+    assert "complicate" in text
+    assert "只属于 primary_action" in text
+
+
+def test_chapter_one_has_no_previous_functions_to_report():
+    assert continuity_instructions(1, recent_functions={}) == ""

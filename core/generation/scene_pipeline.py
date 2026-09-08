@@ -178,11 +178,18 @@ class ScenePipeline:
                 except (OSError, UnicodeError):
                     tail = ""
                 break
+        # 「连着三章同一个功能」是硬规则，模型必须先知道前两章填了什么。
+        recent_functions = {
+            int(item["chapter"]): str(item.get("chapter_function", "") or "")
+            for item in prior
+            if int(item["chapter"]) in (chapter_number - 1, chapter_number - 2)
+        }
         return {
             "previous_tail": tail,
             "established": established_context(prior, chapter_number),
             "previous_last_event": events[-1] if events else None,
             "neglected": neglected_threads(prior, chapter_number),
+            "recent_functions": recent_functions,
         }
 
     @staticmethod

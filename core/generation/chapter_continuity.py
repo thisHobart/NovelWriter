@@ -141,6 +141,7 @@ def continuity_instructions(
     established: Optional[Dict[str, List[str]]] = None,
     previous_last_event: Optional[Dict[str, Any]] = None,
     neglected: Sequence[Dict[str, Any]] = (),
+    recent_functions: Optional[Dict[int, str]] = None,
 ) -> str:
     """规划第 N 章时，关于「从上一章什么状态接过来」要交代的全部上下文。"""
     if int(chapter_number) <= 1:
@@ -153,6 +154,34 @@ def continuity_instructions(
         "- time_gap 必须给出可读的时间差；无论隔了多久，读者都要能算出来。",
         "- opening_positions 至少一条，且这些人物必须真的出现在本章开头。",
     ]
+    # 连着三章同一个功能是硬规则，而模型此前根本看不到前两章填了什么，只能靠
+    # 失败重试去撞。实测一次 20 章的规划里有 6 章栽在这一条上，每章白烧一轮调用。
+    recent = {int(k): _text(v).lower() for k, v in (recent_functions or {}).items() if v}
+    if recent:
+        listed = "、".join(
+            f"第 {number} 章是「{recent[number]}」"
+            for number in sorted(recent, reverse=True)
+            if recent.get(number)
+        )
+        lines.append(f"- 紧邻的前几章功能定位：{listed}。")
+        # 两套枚举只共用 advance 一个词，模型写过 primary_action 才有的
+        # complicate。点明它们不是同一张表，比让校验退回去重问一轮便宜。
+        lines.append(
+            "- chapter_function 只能从 " + "|".join(CHAPTER_FUNCTIONS) + " 里选；"
+            "它和 primary_action 是两套不同的取值，complicate、open、close、cross、touch "
+            "只属于 primary_action，不能填到 chapter_function 里。"
+        )
+        blocked = [
+            value
+            for value in {recent.get(chapter_number - 1)}
+            if value and recent.get(chapter_number - 2) == value
+        ]
+        if blocked:
+            lines.append(
+                f"- 前两章都是「{blocked[0]}」，**本章的 chapter_function 不能再填它**"
+                "——连着三章做同一件事，读者会觉得情节原地打转。"
+                "换一个真正符合本章内容的功能定位。"
+            )
     if previous_last_event:
         lines.append(
             "- 第 {chapter} 章最后一个记账事件是「{event}」，时间 {time}，地点 {location}。"
