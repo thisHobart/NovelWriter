@@ -268,9 +268,21 @@ def format_faction_summary(factions_data: Any, limit: int = 5) -> str:
         traits = _as_list(faction.get("primary_traits") or faction.get("traits"))
         if traits:
             details.append(f"主要特征：{', '.join(traits[:3])}")
-        goals = _as_list(faction.get("goals"))
+        # 新卡是单数 goal，旧项目的 factions.json 是复数 goals 的数组。只读复数
+        # 会让整本书的势力摘要里「主要目标」一栏对新项目全空——而这份摘要正是
+        # 章节写作、结构与短篇三条路径判断势力想要什么的唯一依据。
+        goals = _as_list(faction.get("goals") or faction.get("goal"))
         if goals:
+            # 分隔符保持原样：既有输出一直是逗号，没有理由在这次改动里换掉。
             details.append(f"主要目标：{', '.join(goals[:3])}")
+        # 势力之间的利害关系是新卡才有的，旧项目没有这一栏，读不到就不写。
+        conflicts = [
+            f"与「{item.get('with')}」：{item.get('over', '')}".rstrip("：")
+            for item in faction.get("conflicts", []) or []
+            if isinstance(item, dict) and item.get("with")
+        ]
+        if conflicts:
+            details.append(f"冲突：{'；'.join(conflicts[:3])}")
         summaries.append("\n".join(details))
     return "主要势力概览：\n\n" + "\n\n".join(summaries) if summaries else "没有可用的势力信息。"
 

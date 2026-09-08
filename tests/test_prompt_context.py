@@ -221,3 +221,30 @@ def test_markers_present_in_the_lore_are_allowed():
     assert find_scene_world_conflicts(
         "案发地点在行星站。", "世界观提到行星站是一座旧工业区的绰号。", params
     ) == []
+
+
+def test_faction_summary_reads_both_the_new_singular_goal_and_the_legacy_array():
+    """新卡是单数 goal，旧项目的 factions.json 是复数 goals 的数组。
+
+    只读复数会让「主要目标」一栏对新项目全空，而这份摘要是章节写作、结构与
+    短篇三条路径判断势力想要什么的唯一依据。
+    """
+    new_card = format_faction_summary([
+        {
+            "name": "海陵市公安局沿港分局刑侦大队",
+            "description": "辖区大半已划入拆迁范围。",
+            "nature": "公权力机关",
+            "type": "基层刑侦机构",
+            "territory": "沿港分局刑侦小楼",
+            "goal": "在回填工程覆盖抛尸现场前固定关键物证",
+            "conflicts": [{"with": "临港新城城市更新建设指挥部", "over": "是否叫停工期"}],
+        }
+    ])
+    assert "主要目标：在回填工程覆盖抛尸现场前固定关键物证" in new_card
+    assert "冲突：与「临港新城城市更新建设指挥部」：是否叫停工期" in new_card
+
+    legacy_card = format_faction_summary([
+        {"name": "旧势力", "description": "旧格式", "goals": ["守住码头", "洗白账目"]}
+    ])
+    assert "主要目标：守住码头, 洗白账目" in legacy_card
+    assert "冲突：" not in legacy_card
