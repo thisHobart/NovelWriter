@@ -280,3 +280,28 @@ def test_the_place_name_limit_is_stated_in_the_prompt_not_only_in_the_error():
 
     generate_factions(send, PARAMETERS, 1)
     assert "不超过 25 个字" in prompts[0]
+
+
+def test_chinese_building_labels_are_not_treated_as_english():
+    """中文楼宇门牌本来就写「A 座」「B 栋」。
+
+    实测长篇设定阶段为「海陵资金监管A座十二层」这个完全正常的地名白烧了一轮重试
+    ——当时的判据是「出现任何一个拉丁字母就算外文」。
+    """
+    from core.generation.lore_cast import has_latin
+
+    for text in ("海陵资金监管A座十二层", "市局B栋三层", "1号楼C单元", "DNA 比对中心"):
+        assert not has_latin(text), text
+
+
+def test_leftover_english_names_are_still_caught():
+    from core.generation.lore_cast import has_latin
+
+    for text in ("Michelle Lee", "Police Department", "Criminal Investigation Unit"):
+        assert has_latin(text), text
+
+
+def test_a_faction_card_with_a_building_label_passes_validation():
+    defects = validate_factions([_faction(
+        territory={"name": "海陵资金监管A座十二层", "kind": "办公楼"})])
+    assert defects == [], defects

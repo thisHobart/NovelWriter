@@ -16,6 +16,7 @@ from core.generation.design_contract import (
     extract_structure_contract,
     generate_with_contract_retry,
     open_threads_after,
+    truths_after,
     structure_contract_instructions,
     validate_structure_sequence,
 )
@@ -626,6 +627,7 @@ class StructurePipeline:
                 total_sections=len(sections_to_iterate),
                 known_threads=open_threads_after(section_contracts),
                 central_conflict_schema=domain_profile.central_conflict_schema,
+                known_truths=truths_after(section_contracts),
             )
 
             safe_structure_name_for_file = selected_structure_name.lower().replace(' ', '_').replace(':', '').replace('/', '_')

@@ -39,23 +39,26 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 
+from core.generation.prompt_context import foreign_words
 from core.generation.design_contract import (
     DesignContractError,
     generate_with_contract_retry,
 )
 
 
-_LATIN = re.compile(r"[A-Za-z]")
-
-
 def has_latin(text: Any) -> bool:
-    """卡片里还剩英文，就是这一张没按要求写完。
+    """卡片里还剩没翻译的外文，就是这一张没按要求写完。
+
+    判据与正文的文风检查共用一份（`prompt_context.foreign_words`）：单个字母不算，
+    中文楼宇门牌本来就写「A 座」「B 栋」；DNA、CT 这类缩写也不算。此前这里是
+    「出现任何一个拉丁字母就算」，实测把「资金监管A座十二层」这种完全正常的地名
+    判成外文，白烧一轮重试。
 
     以前这个判断属于 `chinese_names`——那个模块负责把英文词库生成的名字换成中文。
     卡片改成直接用中文生成之后整套改名机制都没有了（它本身就是「Criminal
     Investigation Unit」被映射成民营咨询公司的成因），只留下这一条检查。
     """
-    return bool(_LATIN.search(str(text or "")))
+    return bool(foreign_words(str(text or "")))
 
 
 CAST_RETRY_LIMIT = 2

@@ -192,8 +192,14 @@ def structure_contract_instructions(
     total_sections: int,
     known_threads: Iterable[Dict[str, Any]] = (),
     central_conflict_schema: Optional[Mapping[str, str]] = None,
+    known_truths: Iterable[Dict[str, Any]] = (),
 ) -> str:
     """Appended to the existing per-section structure prompt."""
+    declared_truths = [
+        {"id": record.get("id"), "fact": record.get("fact")}
+        for record in known_truths
+        if str(record.get("id", "")).strip()
+    ]
     open_threads = [
         {
             "id": record.get("id"),
@@ -231,6 +237,10 @@ def structure_contract_instructions(
 
 只登记本部分正文已经明确安排的内容，没有的数组留空。chronology_events 只记录故事世界中真实发生的事件，order 表示全书真实发生顺序，不是读者得知顺序，也不能用普通事实凑数。开启的悬念必须给出不早于本部分的 must_close_by_section；了结悬念必须沿用已有 id。截至目前仍未了结的悬念如下，本部分若要了结其中任何一条，必须使用这里的 id：
 {json.dumps(open_threads, ensure_ascii=False)}
+
+前面各部分已经确立的真相如下。**同一个 id 在全书只能指同一件事**：要复述其中任何一条，
+必须连 id 带 fact 原样沿用，一个字都不要改写；本部分新确立的真相另起一个没用过的 id。
+{json.dumps(declared_truths, ensure_ascii=False)}
 """.strip()
 
 
@@ -376,6 +386,21 @@ def open_threads_after(contracts: Iterable[Dict[str, Any]]) -> List[Dict[str, An
         for thread_id in contract.get("threads_closed", []):
             opened.pop(str(thread_id), None)
     return list(opened.values())
+
+
+def truths_after(contracts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Truths already declared by earlier sections, in declaration order.
+
+    后面几部分必须看得见这些：全书校验要求同一个 truth id 在各部分里说的是同一件
+    事，而各部分是分别生成的。此前只把「尚未了结的悬念」发下去，真相没发，于是第二
+    幕会用不同的措辞重新定义 T001，等到全部生成完才在合校时报错——整个结构阶段
+    （实测 465 秒、八次调用）的产出一起作废，而且没有补救路径。
+    """
+    known: Dict[str, Dict[str, Any]] = {}
+    for contract in sorted(contracts, key=lambda item: int(item.get("section_index", 0))):
+        for record in contract.get("truths_introduced", []):
+            known.setdefault(str(record.get("id", "")), record)
+    return [record for key, record in known.items() if key]
 
 
 def validate_structure_sequence(contracts: Iterable[Dict[str, Any]]) -> None:

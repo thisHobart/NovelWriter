@@ -318,3 +318,58 @@ def test_retry_gives_up_after_the_limit_and_reports_the_last_reason():
 
     assert len(attempts) == 3
     assert exc_info.value.code == "contract_marker_missing"
+
+
+def test_later_sections_are_told_which_truths_are_already_declared():
+    """全书校验要求同一个 truth id 各部分说的是同一件事，而各部分是分别生成的。
+
+    此前只把「尚未了结的悬念」发下去，真相没发，于是第二幕会用不同措辞重新定义
+    T001，等全部生成完才在合校时报错——整个结构阶段（实测 465 秒、八次调用）的
+    产出一起作废，而且没有补救路径。
+    """
+    from core.generation.design_contract import (
+        structure_contract_instructions,
+        truths_after,
+    )
+
+    act_one = {
+        "section_index": 1,
+        "truths_introduced": [
+            {"id": "T001", "fact": "保全裁定冻结的是同名的另一个账户", "reveal_at_section": "act_3"}
+        ],
+        "threads_opened": [],
+        "threads_closed": [],
+    }
+
+    known = truths_after([act_one])
+    assert [record["id"] for record in known] == ["T001"]
+
+    prompt = structure_contract_instructions(
+        section_name="act_2", section_index=2, total_sections=3, known_truths=known
+    )
+    assert "T001" in prompt
+    assert "保全裁定冻结的是同名的另一个账户" in prompt
+    assert "同一个 id 在全书只能指同一件事" in prompt
+
+
+def test_the_first_section_has_no_declared_truths_to_reuse():
+    from core.generation.design_contract import (
+        structure_contract_instructions,
+        truths_after,
+    )
+
+    assert truths_after([]) == []
+    prompt = structure_contract_instructions(
+        section_name="act_1", section_index=1, total_sections=3, known_truths=[]
+    )
+    assert "[]" in prompt
+
+
+def test_truths_after_keeps_the_first_wording_when_a_later_section_repeats_an_id():
+    """复述必须原样沿用，所以发下去的应当是最早那一版措辞。"""
+    from core.generation.design_contract import truths_after
+
+    first = {"section_index": 1, "truths_introduced": [{"id": "T001", "fact": "原始说法"}]}
+    later = {"section_index": 2, "truths_introduced": [{"id": "T001", "fact": "改写过的说法"}]}
+    known = truths_after([later, first])
+    assert known == [{"id": "T001", "fact": "原始说法"}]

@@ -159,12 +159,23 @@ def _long_attributives(content: str) -> List[str]:
     return found
 
 
-def _foreign_names(content: str) -> List[str]:
+def foreign_words(content: str) -> List[str]:
+    """文本里真正算「没翻译」的外文串。
+
+    单个字母不算：中文楼宇门牌本来就写「A 座」「B 栋」「1 号楼 C 单元」，把它判成
+    外文会让设定阶段为一个正确的地名反复重试。缩写也不算，DNA、CT 这些在中文刑侦
+    小说里本来就不翻译。剩下的成串字母才是遗留的英文名（Michelle Lee、Police
+    Department）。
+    """
     runs = {match.group().strip() for match in _LATIN_RUN.finditer(content)}
     return sorted(
         run for run in runs
         if len(run) > 1 and run.upper() not in _ALLOWED_LATIN
     )
+
+
+def _foreign_names(content: str) -> List[str]:
+    return foreign_words(content)
 
 
 def analyze_chinese_prose_style(content: str) -> List[str]:
