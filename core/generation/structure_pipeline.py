@@ -22,7 +22,7 @@ from core.generation.design_contract import (
 
 STRUCTURE_CONTRACT_RETRY_LIMIT = 2
 
-from core.generation.prompt_context import format_faction_summary
+from core.generation.prompt_context import first_field, format_faction_summary
 from core.generation.domain_profiles import resolve_domain_profile
 import os
 import traceback
@@ -113,17 +113,26 @@ class StructurePipeline:
                 summary_parts.append(f"性别：{gender}")
                 summary_parts.append(f"所属势力：{faction}")
                 
-                goals = char_info.get("goals", [])
-                if goals and isinstance(goals, list) and len(goals) > 0:
-                    summary_parts.append(f"主要目标：{goals[0]}")
-                
-                strengths = char_info.get("strengths", [])
-                if strengths and isinstance(strengths, list) and len(strengths) > 0:
-                    summary_parts.append(f"优点：{strengths[0]}")
+                # 新卡是单数 goal/strength/flaw，旧项目是复数数组；两种都读。
+                # 这份名单是人物弧光生成的唯一输入，读空了整段弧光就没有依据。
+                for label, keys in (
+                    ("职业", ("profession",)),
+                    ("主要目标", ("goals", "goal")),
+                    ("动机", ("motivations", "motivation")),
+                    ("优点", ("strengths", "strength")),
+                    ("缺点", ("flaws", "flaw")),
+                    ("人物弧光", ("arc",)),
+                ):
+                    value = first_field(char_info, *keys)
+                    if value:
+                        summary_parts.append(f"{label}：{value}")
 
-                flaws = char_info.get("flaws", [])
-                if flaws and isinstance(flaws, list) and len(flaws) > 0:
-                    summary_parts.append(f"缺点：{flaws[0]}")
+                opposes = char_info.get("opposes")
+                if isinstance(opposes, dict) and opposes.get("character"):
+                    summary_parts.append(
+                        f"对抗：挡住「{opposes['character']}」的"
+                        f"{opposes.get('blocked_goal', '目标')}"
+                    )
 
                 summary = ", ".join(summary_parts)
                 character_roster_summaries.append(summary)

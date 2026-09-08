@@ -235,6 +235,26 @@ def sanitize_lore_content(content: str) -> str:
     return content.strip()
 
 
+def first_field(record: Any, *keys: str) -> str:
+    """按顺序取第一个有内容的字段；数组取第一项。
+
+    人物卡有两种形状：模型生成的新卡用单数 goal/flaw/strength 与 description/
+    background，旧项目的 characters.json 用复数数组与 appearance_summary/
+    backstory_summary。四处读取方（章节写作、结构、短篇、世界观）此前各自只认
+    一种，另一种就静默变成空。
+    """
+    if not isinstance(record, dict):
+        return ""
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _as_list(value: Any) -> List[str]:
     if not value:
         return []

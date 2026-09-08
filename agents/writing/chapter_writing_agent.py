@@ -31,6 +31,7 @@ from core.generation.ai_helper import send_prompt, get_backend
 from core.generation.prompt_context import (
     analyze_chinese_prose_style,
     generate_prose_with_style_retry,
+    first_field,
     format_faction_summary,
     find_scene_world_conflicts,
     sanitize_lore_content,
@@ -175,22 +176,6 @@ class ChapterInfo:
     output_file: str
     exists: bool = False
     plan_exists: bool = False
-
-
-def _first_field(record: dict, *keys: str) -> str:
-    """按顺序取第一个有内容的字段；数组取第一项。
-
-    人物卡有两种形状：模型生成的新卡用单数 goal/flaw/strength，旧项目的
-    characters.json 用复数数组。读取方只认一种，另一种就会静默变成空。
-    """
-    for key in keys:
-        value = record.get(key)
-        if isinstance(value, (list, tuple)):
-            value = value[0] if value else ""
-        text = str(value or "").strip()
-        if text:
-            return text
-    return ""
 
 
 class ChapterWritingAgent(BaseAgent):
@@ -1352,7 +1337,7 @@ class ChapterWritingAgent(BaseAgent):
                             f"角色：{char.get('role', '无')}",
                             f"性别：{char.get('gender', '无')}",
                             f"年龄：{char.get('age', '无')}",
-                            f"外貌：{_first_field(char, 'appearance_summary', 'description') or '无'}",
+                            f"外貌：{first_field(char, 'appearance_summary', 'description') or '无'}",
                         ]
                         # 新卡是单数 goal/flaw/strength，旧项目是复数数组；两种都读。
                         # 只读复数会让新项目的人物名单除了姓名年龄之外全是空的，而这
@@ -1368,7 +1353,7 @@ class ChapterWritingAgent(BaseAgent):
                             ("人物弧光", ("arc",)),
                             ("背景故事", ("backstory_summary", "background")),
                         ):
-                            value = _first_field(char, *keys)
+                            value = first_field(char, *keys)
                             if value:
                                 details.append(f"{label}：{value}")
 

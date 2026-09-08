@@ -23,6 +23,7 @@ from core.generation.prompt_context import (
     analyze_chinese_prose_style,
     generate_prose_with_style_retry,
     find_scene_world_conflicts,
+    first_field,
     format_faction_summary,
     normalize_story_parameters,
     sanitize_lore_content,
@@ -278,19 +279,18 @@ class ShortStoryPipeline:
             details.append(f" - 角色：{char_info.get('role', '无')}\n")
             details.append(f" - 性别：{char_info.get('gender', '无')}\n")
             details.append(f" - 年龄：{char_info.get('age', '无')}\n")
-            details.append(f" - 外貌：{char_info.get('appearance_summary', '无')}\n")
-            goals = char_info.get('goals', [])
-            if goals:
-                details.append(f" - 主要目标：{goals[0]}\n")
-            strengths = char_info.get('strengths', [])
-            if strengths:
-                details.append(f" - 主要优点：{strengths[0]}\n")
-            flaws = char_info.get('flaws', [])
-            if flaws:
-                details.append(f" - 主要缺点：{flaws[0]}\n")
-            backstory = char_info.get('backstory_summary', '')
-            if backstory:
-                details.append(f" - 背景摘要：{backstory}")
+            details.append(f" - 外貌：{first_field(char_info, 'appearance_summary', 'description') or '无'}\n")
+            # 新卡是单数，旧项目是复数数组；两种都读。
+            for label, keys in (
+                ("职业", ("profession",)),
+                ("主要目标", ("goals", "goal")),
+                ("主要优点", ("strengths", "strength")),
+                ("主要缺点", ("flaws", "flaw")),
+                ("背景摘要", ("backstory_summary", "background")),
+            ):
+                value = first_field(char_info, *keys)
+                if value:
+                    details.append(f" - {label}：{value}\n")
             summaries.append("\n".join(details))
         if summaries:
             self.app.logger.info(f"Loaded and summarized character roster from {characters_json_path}")
