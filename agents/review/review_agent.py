@@ -28,6 +28,43 @@ class ContentReview:
     confidence: float  # How confident the agent is in its assessment
 
 
+#: 中日韩统一表意文字的常用区，用来判断该按英文还是中文的规矩看这段文本。
+_CJK_START, _CJK_END = chr(0x3400), chr(0x9FFF)
+
+#: 中英文的句末标点。原来只有 ASCII 三个，中文正文因此整篇被算作一句话，
+#: 每一章都被报「Content lacks proper sentence structure」。
+_SENTENCE_END = re.compile(r"[.!?\u3002\uff01\uff1f\u2026]+")
+
+
+def _is_cjk(content: str) -> bool:
+    """这段文本主要是中文吗。"""
+    if not content:
+        return False
+    visible = [char for char in content if not char.isspace()]
+    if not visible:
+        return False
+    cjk = sum(_CJK_START <= char <= _CJK_END for char in visible)
+    return cjk * 2 > len(visible)
+
+
+def _split_sentences(content: str):
+    return _SENTENCE_END.split(content or "")
+
+
+def _repetition_units(content: str):
+    """判重复用的单位：英文按词，中文按相邻二字组。
+
+    中文没有空格，``content.split()`` 等于按行切，几乎每行都不同，重复度检查
+    因此对中文完全不起作用。
+    """
+    if not content:
+        return []
+    if not _is_cjk(content):
+        return content.lower().split()
+    chars = [char for char in content if not char.isspace()]
+    return ["".join(chars[i : i + 2]) for i in range(len(chars) - 1)]
+
+
 class ReviewAndRetryAgent(BaseAgent):
     """
     Safe review agent that analyzes content quality and provides recommendations.
@@ -250,29 +287,38 @@ class ReviewAndRetryAgent(BaseAgent):
         return min(1.0, max(0.0, score))
     
     def _assess_language_quality(self, content: str) -> float:
-        """Assess basic language quality."""
-        
+        """Assess basic language quality.
+
+        这两项检查原本只认英文，用在中文正文上全部失灵，于是每一章拿到的分数都
+        钉在 0.77 上下、与内容无关（实测连续三章都是 0.77）：
+
+        * 按空格切词在中文里等于按行切，``unique_ratio`` 恒约 1.0，那 +0.1 白送；
+        * 大写率对中文恒为 0，那 +0.1 中文稿永远拿不到。
+          两项偏差方向相反，恰好把分数固定住。
+        """
+
         score = 0.7  # Start with good baseline
-        
-        # Check for excessive repetition
-        words = content.lower().split()
-        if len(words) > 0:
-            unique_ratio = len(set(words)) / len(words)
+
+        units = _repetition_units(content)
+        if units:
+            unique_ratio = len(set(units)) / len(units)
             if unique_ratio < 0.3:
                 score -= 0.3  # Too repetitive
             elif unique_ratio > 0.7:
                 score += 0.1  # Good variety
-        
-        # Check for reasonable capitalization
-        sentences = re.split(r'[.!?]+', content)
-        properly_capitalized = sum(1 for s in sentences if s.strip() and s.strip()[0].isupper())
-        if len(sentences) > 0:
-            cap_ratio = properly_capitalized / len(sentences)
-            if cap_ratio > 0.8:
+
+        # 句式整齐度：英文看首字母大写；中文没有大小写，改看句子长度是否失控。
+        sentences = [part.strip() for part in _split_sentences(content) if part.strip()]
+        if sentences:
+            if _is_cjk(content):
+                reasonable = sum(1 for part in sentences if 4 <= len(part) <= 60)
+            else:
+                reasonable = sum(1 for part in sentences if part[0].isupper())
+            if reasonable / len(sentences) > 0.8:
                 score += 0.1
-        
+
         return min(1.0, max(0.0, score))
-    
+
     def _identify_issues(self, step_name: str, content: str) -> List[str]:
         """Identify specific issues in the content."""
         
@@ -282,7 +328,7 @@ class ReviewAndRetryAgent(BaseAgent):
         if len(content.strip()) < 100:
             issues.append("Content is very short and may be incomplete")
         
-        if not re.search(r'[.!?]', content):
+        if len([part for part in _split_sentences(content) if part.strip()]) < 2:
             issues.append("Content lacks proper sentence structure")
         
         # Domain-specific checks
