@@ -248,3 +248,35 @@ def test_prompt_renders_a_string_percentage_as_a_number():
 
     generate_characters(send, PARAMETERS, 2, female_percentage="50")
     assert "女性大约占 50%" in prompts[0]
+
+
+def test_a_specific_but_long_place_name_is_accepted():
+    """真实跑里这条曾经把整个设定阶段判死。
+
+    模型写出的「市公安局旧办公楼地下一层档案室」（15 字）正是提示词要的那种具体
+    地点，却被当时 12 字的上限拦下，重试两次后整个阶段崩溃、零产出。字数分不开
+    地名和描述——15 字的具体地点和 16 字的机构描述一样长。
+    """
+    for place in ("市公安局旧办公楼地下一层档案室", "棉纺三厂职工宿舍四号筒子楼水房"):
+        defects = [d for d in validate_factions([_faction(
+            territory={"name": place, "kind": "档案室"})]) if "territory" in d]
+        assert defects == [], f"{place} 不该被拦下：{defects}"
+
+
+def test_a_whole_sentence_is_still_rejected_as_a_place_name():
+    long_description = "负责统筹全市刑事案件侦查工作并协调各分局警力资源的常设机构所在地"
+    defects = validate_factions([_faction(
+        territory={"name": long_description, "kind": "机构"})])
+    assert any("整句描述" in d for d in defects), defects
+
+
+def test_the_place_name_limit_is_stated_in_the_prompt_not_only_in_the_error():
+    """约束只写在报错里，模型从头到尾不知道有这条限制，只能靠重试撞。"""
+    prompts = []
+
+    def send(prompt):
+        prompts.append(prompt)
+        return json.dumps({"factions": [_faction()]}, ensure_ascii=False)
+
+    generate_factions(send, PARAMETERS, 1)
+    assert "不超过 25 个字" in prompts[0]

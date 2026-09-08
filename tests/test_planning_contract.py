@@ -679,3 +679,35 @@ def test_free_text_that_happens_to_mention_a_later_scene_is_not_a_marker():
     scoped = contract_for_scene(contract, 1)
     assert [item["id"] for item in scoped["reader_knows_after"]] == ["K1"]
     assert [item["scene_number"] for item in scoped["scene_boundaries"]] == [1]
+
+
+def test_empty_graph_tells_the_model_to_leave_the_graph_fields_blank():
+    """空图上契约必须落进「非图支撑」那一档，否则六条规则一起报错。
+
+    校验按「有没有引用图节点」分两档：零引用合法（既有项目一路三十章都跑在空图
+    上），一旦引用任何节点，primary_thread / primary_action / via_node_ids /
+    plot_thread_updates 全部变成必填且必须指向真实节点——空图上没有一条能满足。
+    而 schema 仍写着「从 active_threads 选择」并给了 advance 示例，模型只能编一个
+    情节线 id，契约当场升级成图支撑，重试两次后整个场景规划阶段崩溃。
+    """
+    empty = {
+        "active_threads": [], "available_threads": [],
+        "available_clues": [], "available_facts": [], "graph_revision": 0,
+    }
+    prompt = contract_output_instructions(1, narrative_context=empty)
+
+    assert "本作目前没有叙事图节点" in prompt
+    assert "不要自己编造节点 ID" in prompt
+    assert '"plot_thread_updates"' in prompt
+
+
+def test_a_populated_graph_keeps_the_original_instructions():
+    populated = {
+        "active_threads": [{"id": "PT-MAIN", "type": "thread"}],
+        "available_threads": [], "available_clues": [], "available_facts": [],
+        "graph_revision": 3,
+    }
+    prompt = contract_output_instructions(1, narrative_context=populated)
+
+    assert "本作目前没有叙事图节点" not in prompt
+    assert "PT-MAIN" in prompt

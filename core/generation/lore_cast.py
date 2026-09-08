@@ -74,6 +74,13 @@ _COMMERCIAL_SUFFIXES = (
 #: 被当成地名转成了城市。
 _ABSTRACT_TAILS = ("系统", "网络", "体系", "领域", "范围", "机制", "行业", "圈子")
 
+#: 地名的字数上限。这条曾经是 12 字，实测把整个设定阶段判死过：模型写出的
+#: 「市公安局旧办公楼地下一层档案室」「棉纺三厂职工宿舍四号筒子楼水房」都是 15 字，
+#: 而它们恰恰是提示词要的那种具体地点。字数根本分不开地名和描述——15 字的具体地点
+#: 和 16 字的机构描述一样长。真正管用的判据是上面那张后缀表；这里只拦「明显是一整
+#: 句话」的情况，所以放宽到一个中文地名不可能达到的长度。
+MAX_PLACE_NAME_CHARS = 25
+
 CHARACTER_ROLES = ("protagonist", "deuteragonist", "antagonist", "supporting")
 
 #: 每张人物卡必须写满的字段。旧词表把 description 一直留空。
@@ -196,9 +203,12 @@ def validate_factions(factions: Sequence[Dict[str, Any]]) -> List[str]:
                     "写一个具体地点，比如某个城区、码头、大楼或街道"
                 )
             )
-        elif len(place) > 12:
+        elif len(place) > MAX_PLACE_NAME_CHARS:
             defects.append(
-                _defect(f"{label} 的 territory.name 是「{place}」，太长了，地名请控制在 12 个字以内")
+                _defect(
+                    f"{label} 的 territory.name 是「{place}」，这是一整句描述，不是地名。"
+                    f"写出这个地方叫什么，不超过 {MAX_PLACE_NAME_CHARS} 个字"
+                )
             )
     return defects
 
@@ -430,7 +440,9 @@ def generate_factions(
 - nature 只能从这几个里选一个：{'、'.join(FACTION_NATURES)}。
   名字必须和 nature 对得上——公权力机关不能叫「××商务调查」或「××咨询」。
 - territory 是这个势力活动的**具体地点**，不是一类事物的统称。
-  「市法院大楼」「北岸三号码头」是地点；「法院与司法系统」「情报网络」不是。
+  「市法院大楼」「北岸三号码头」「棉纺三厂四号筒子楼」是地点；
+  「法院与司法系统」「情报网络」不是。地名写这个地方叫什么就行，不要写成一句
+  描述，不超过 25 个字。
 - 势力之间要有明确的利害关系：谁挡了谁的路，写进 conflicts。
 - 每个势力都要和上面的主题、基调有关，不要写成通用模板。
 

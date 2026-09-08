@@ -154,7 +154,14 @@ class ShortStoryPipeline:
             next_scene_plan="",
             contract=None,
             profile=None,
+            continuity_rules=(),
+            **extra,
         ):
+            # 章节循环按关键字调用这个回调，参数集会随衔接、契约这类改动增加。
+            # `continuity_rules` 是 2026-09-06 加章节衔接时加上的，长篇那条路径
+            # 改了、短篇这条漏了，于是短篇的写作阶段从那天起必然抛 TypeError。
+            # 收 **extra 是为了下次再加参数时，短篇不会又被漏掉——多出来的参数
+            # 只是用不上，不该让整个阶段崩掉。
             self.app.logger.info(f"Processing Scene {scene_number} for the short story.")
             prompt = build_scene_prompt(
                 scene_plan=scene_plan,
@@ -170,6 +177,7 @@ class ShortStoryPipeline:
                 contract=contract,
                 previous_scene_tail=previous_scene_tail,
                 next_scene_plan=next_scene_plan,
+                continuity_rules=continuity_rules,
             )
             prompt_filepath = save_prompt_to_file(
                 output_dir, scene_prompt_filename(scene_number), prompt

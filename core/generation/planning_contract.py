@@ -128,6 +128,35 @@ def contract_output_instructions(
         5000,
     )
     narrative_text = compact_json(narrative_context or {}, 8000)
+
+    # 叙事图上一个可选节点都没有时，必须明说这几个字段留空。
+    #
+    # 契约校验对「有没有引用图节点」分两档：零引用是合法的（既有项目一路三十章
+    # 都跑在空图上），一旦引用了任何节点，primary_thread、primary_action、
+    # via_node_ids、plot_thread_updates 就全部变成必填且必须指向真实存在的节点。
+    # 空图上这一档没有任何一条能满足。
+    #
+    # 而上面的 schema 仍然写着「从 active_threads 选择」并给了一条 advance 示例，
+    # 于是模型只能自己编一个情节线 id——契约当场升级成「图支撑」，六条规则一起
+    # 报错，重试两次后整个场景规划阶段崩溃。实测短篇链路必然踩中：它从头到尾没有
+    # 任何一步会往图里加节点。
+    graph_is_empty = not any(
+        (narrative_context or {}).get(key)
+        for key in ("active_threads", "available_threads", "available_clues", "available_facts")
+    )
+    empty_graph_block = ""
+    if graph_is_empty:
+        empty_graph_block = """
+**本作目前没有叙事图节点**（上面的 active_threads、available_threads、
+available_clues、available_facts 都是空的）。因此下面这几个字段必须留空，
+不要自己编造节点 ID：
+- "primary_thread"、"secondary_thread"、"primary_action"、"secondary_action"、
+  "crossover" 一律填空字符串 ""；
+- "plot_thread_updates"、"narrative_transitions"、"allowed_reveals"、
+  "forbidden_reveals"、"intentionally_silent_threads" 一律填空数组 []。
+本章的悬念与推进照常写进 core_question、reader_knows_after 和场景规划正文，
+不需要挂到叙事图上。
+"""
     def chapter_scoped_ids(schema_hint: str) -> str:
         """Turn static examples such as C001 into chapter-unique sample IDs."""
         return re.sub(
@@ -209,6 +238,7 @@ timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene
 本章规划前叙事图上下文如下。blocked_reveals 和 forbidden_nodes 绝对不能选择；
 plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进节点：
 {narrative_text}
+{empty_graph_block}
 
 既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：
 {index_text}
