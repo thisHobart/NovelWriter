@@ -373,3 +373,150 @@ def test_truths_after_keeps_the_first_wording_when_a_later_section_repeats_an_id
     later = {"section_index": 2, "truths_introduced": [{"id": "T001", "fact": "改写过的说法"}]}
     known = truths_after([later, first])
     assert known == [{"id": "T001", "fact": "原始说法"}]
+
+
+# --- 全书时间线编号 ---------------------------------------------------------
+
+
+def test_a_section_may_not_reuse_an_order_an_earlier_section_claimed():
+    """实测每个真实项目都撞车：第 6 部分从 1 重新起编，与第 1 部分整段重叠。"""
+    from core.generation.design_contract import chronology_orders_used
+
+    first = extract_structure_contract(_structure_response(1), 1, 3)[1]
+    assert chronology_orders_used([first]) == [1]
+
+    body = json.dumps(
+        _structure_payload(
+            2,
+            chronology_events=[
+                {"id": "TL021", "order": 1, "event": "同一个编号又用了一次"}
+            ],
+        ),
+        ensure_ascii=False,
+    )
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            f"## 第2幕\n正文。\n{STRUCTURE_CONTRACT_START}\n{body}\n{STRUCTURE_CONTRACT_END}",
+            2,
+            3,
+            known_orders=chronology_orders_used([first]),
+        )
+    assert exc_info.value.code == "chronology_order_reused"
+    assert "TL021" in str(exc_info.value)
+
+
+def test_two_events_in_one_section_may_not_share_an_order():
+    body = json.dumps(
+        _structure_payload(
+            2,
+            chronology_events=[
+                {"id": "TL021", "order": 7, "event": "两件事"},
+                {"id": "TL022", "order": 7, "event": "共用一个编号"},
+            ],
+        ),
+        ensure_ascii=False,
+    )
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            f"## 第2幕\n正文。\n{STRUCTURE_CONTRACT_START}\n{body}\n{STRUCTURE_CONTRACT_END}",
+            2,
+            3,
+        )
+    assert exc_info.value.code == "chronology_order_duplicated"
+
+
+def test_gaps_and_flashbacks_stay_legal():
+    """编号只表示故事世界的真实先后：留空档、往前排都合法，唯独不能撞号。"""
+    from core.generation.design_contract import chronology_orders_used
+
+    first = extract_structure_contract(_structure_response(1), 1, 3)[1]
+    body = json.dumps(
+        _structure_payload(
+            2,
+            chronology_events=[
+                {"id": "TL021", "order": 40, "event": "留了一大段空档"},
+                {"id": "TL022", "order": 2, "event": "倒叙，排在第一部分之后但更早"},
+            ],
+        ),
+        ensure_ascii=False,
+    )
+    _, second = extract_structure_contract(
+        f"## 第2幕\n正文。\n{STRUCTURE_CONTRACT_START}\n{body}\n{STRUCTURE_CONTRACT_END}",
+        2,
+        3,
+        known_orders=chronology_orders_used([first]),
+    )
+    assert chronology_orders_used([first, second]) == [1, 2, 40]
+
+
+def test_later_sections_are_told_which_orders_are_taken():
+    from core.generation.design_contract import (
+        chronology_after,
+        structure_contract_instructions,
+    )
+
+    first = extract_structure_contract(_structure_response(1), 1, 3)[1]
+    prompt = structure_contract_instructions(
+        section_name="act_2",
+        section_index=2,
+        total_sections=3,
+        known_events=chronology_after([first]),
+    )
+    assert "已占用的编号是 1，" in prompt
+    assert "零点十二分运尸车进入法医中心" in prompt
+
+
+def test_the_first_section_is_told_it_may_start_at_one():
+    from core.generation.design_contract import structure_contract_instructions
+
+    prompt = structure_contract_instructions(
+        section_name="act_1", section_index=1, total_sections=3, known_events=[]
+    )
+    assert "本部分是第一批登记时间线的，从 1 开始编即可" in prompt
+
+
+def test_whole_story_check_catches_a_collision_the_per_section_check_never_saw():
+    """各部分单独生成时若绕过了 known_orders，合校仍要拦下来。"""
+    first = extract_structure_contract(_structure_response(1), 1, 3)[1]
+    body = json.dumps(
+        _structure_payload(
+            2, chronology_events=[{"id": "TL021", "order": 1, "event": "撞号"}]
+        ),
+        ensure_ascii=False,
+    )
+    _, second = extract_structure_contract(
+        f"## 第2幕\n正文。\n{STRUCTURE_CONTRACT_START}\n{body}\n{STRUCTURE_CONTRACT_END}",
+        2,
+        3,
+    )
+
+    with pytest.raises(DesignContractError) as exc_info:
+        validate_structure_sequence([first, second])
+    assert exc_info.value.code == "chronology_order_duplicated"
+    assert "TL011" in str(exc_info.value) and "TL021" in str(exc_info.value)
+
+
+def test_contracts_written_before_v3_are_not_retroactively_blocked():
+    """current_work 六个部分撞了六个号，但正文已经定稿，不该把它的结构那一步锁上。"""
+    old = [
+        {
+            "section_index": 1,
+            "total_sections": 2,
+            "schema_version": 2,
+            "chronology_events": [{"id": "TL011", "order": 1, "event": "旧档"}],
+            "truths_introduced": [],
+            "threads_opened": [],
+            "threads_closed": [],
+        },
+        {
+            "section_index": 2,
+            "total_sections": 2,
+            "schema_version": 2,
+            "chronology_events": [{"id": "TL021", "order": 1, "event": "旧档撞号"}],
+            "truths_introduced": [],
+            "threads_opened": [],
+            "threads_closed": [],
+        },
+    ]
+
+    validate_structure_sequence(old)

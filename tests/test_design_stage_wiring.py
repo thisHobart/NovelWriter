@@ -35,6 +35,8 @@ def test_structure_stage_requests_and_enforces_its_contract():
     assert "generate_with_contract_retry" in source, "结构没有接入带反馈的重试"
     assert "validate_structure_sequence(section_contracts)" in source, "缺少全书跨段校验"
     assert "open_threads_after(section_contracts)" in source, "未把未了结悬念带给下一段"
+    assert "chronology_after(section_contracts)" in source, "未把已登记的时间线带给下一段"
+    assert "known_orders=orders_taken" in source, "未把已占用的时间线编号交给逐段校验"
     assert "structure_contract.json" in source, "全书结构契约没有落盘"
 
 

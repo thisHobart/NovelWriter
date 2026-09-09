@@ -23,9 +23,13 @@ LORE_CONTRACT_END = "<!-- LORE_CONTRACT_END -->"
 STRUCTURE_CONTRACT_START = "<!-- STRUCTURE_CONTRACT_START -->"
 STRUCTURE_CONTRACT_END = "<!-- STRUCTURE_CONTRACT_END -->"
 # v2 adds profile-specific central-conflict fields and explicit chronology
-# events to the structure contract.  Existing v1 files remain readable; newly
-# generated contracts advertise the stronger schema.
-DESIGN_CONTRACT_SCHEMA_VERSION = 2
+# events to the structure contract.  v3 additionally guarantees that the
+# chronology `order` numbers are unique across the whole book.  Existing files
+# remain readable; the whole-story check that needs that guarantee is skipped
+# for anything written before v3, so a finished project is never retroactively
+# marked blocked over a defect its own generation run could not have caught.
+DESIGN_CONTRACT_SCHEMA_VERSION = 3
+CHRONOLOGY_UNIQUE_ORDER_SINCE = 3
 
 MIN_CANONICAL_CHARACTERS = 2
 MIN_SECTION_TRUTHS = 1
@@ -193,8 +197,51 @@ def structure_contract_instructions(
     known_threads: Iterable[Dict[str, Any]] = (),
     central_conflict_schema: Optional[Mapping[str, str]] = None,
     known_truths: Iterable[Dict[str, Any]] = (),
+    known_events: Iterable[Dict[str, Any]] = (),
 ) -> str:
     """Appended to the existing per-section structure prompt."""
+    # 提示词构造不该因为一条记录残缺就把整个阶段带崩：拿不到编号的记录照样列出来
+    # 给模型看，只是不计入「已占用」。
+    declared_events = [
+        {
+            "id": record.get("id"),
+            "order": record.get("order"),
+            "event": record.get("event"),
+        }
+        for record in known_events
+        if str(record.get("id", "")).strip()
+    ]
+    used_orders: List[int] = []
+    for record in declared_events:
+        try:
+            order = int(record["order"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if order > 0 and order not in used_orders:
+            used_orders.append(order)
+    used_orders.sort()
+    shared_order_rules = (
+        "编号只表示故事世界里的真实先后，允许留空档（比如上一部分用到 9，"
+        "本部分从 20 开始），也允许本部分的事件排在前面部分之前（倒叙是合法的），"
+        "唯独不允许两条事件共用一个编号。两件事若真的同时发生，仍要给两个不同的"
+        "编号，在 event 文字里说明它们同时。"
+    )
+    if used_orders:
+        chronology_block = (
+            "\n前面各部分已经登记的时间线事件如下。**order 是全书共用的一条编号，"
+            "不是本部分内部的计数**：已占用的编号是 "
+            + "、".join(str(number) for number in used_orders)
+            + "，本部分的每一条事件都必须另取一个没出现过的数字。\n"
+            + shared_order_rules
+            + "\n"
+            + json.dumps(declared_events, ensure_ascii=False)
+        )
+    else:
+        chronology_block = (
+            "\n**order 是全书共用的一条编号，不是本部分内部的计数。**"
+            "本部分是第一批登记时间线的，从 1 开始编即可，后面的部分会接着往下取。\n"
+            + shared_order_rules
+        )
     declared_truths = [
         {"id": record.get("id"), "fact": record.get("fact")}
         for record in known_truths
@@ -241,6 +288,8 @@ def structure_contract_instructions(
 前面各部分已经确立的真相如下。**同一个 id 在全书只能指同一件事**：要复述其中任何一条，
 必须连 id 带 fact 原样沿用，一个字都不要改写；本部分新确立的真相另起一个没用过的 id。
 {json.dumps(declared_truths, ensure_ascii=False)}
+
+{chronology_block}
 """.strip()
 
 
@@ -249,6 +298,7 @@ def validate_structure_contract(
     section_index: int,
     total_sections: int,
     central_conflict_schema: Optional[Mapping[str, str]] = None,
+    known_orders: Iterable[int] = (),
 ) -> Dict[str, Any]:
     if not isinstance(contract, dict):
         raise DesignContractError("结构契约必须是 JSON 对象", code="contract_not_object")
@@ -276,6 +326,16 @@ def validate_structure_contract(
 
     chronology = _named_records(normalized, "chronology_events", "结构契约")
     normalized["chronology_events"] = chronology
+    # order 声称是「全书真实发生顺序」，但各部分是分别生成的，谁也看不见别人用过
+    # 什么号。实测每一个真实项目都撞车：current_work 六个部分里，第 4、5 部分并列
+    # 用 13–15，第 6 部分从 1 重新开始，与第 1 部分整段重叠，六个编号重复。一条声
+    # 称是全书总序的字段实际是六段互不相干的局部计数，下游拿它排不出任何顺序。
+    #
+    # 在这里拦，是因为这里还救得回来：单段契约不合格会走 generate_with_contract_retry
+    # 的重试，报错原文直接当修复指令发回去，代价是一次重试。等到全部段落生成完再合校，
+    # 整个结构阶段（实测三幕 350 秒、六部分 465 秒）一起作废，而且没有补救路径。
+    taken = {int(number) for number in known_orders}
+    seen_orders: Dict[int, str] = {}
     for record in chronology:
         event_id = str(record.get("id", "")).strip()
         event = str(record.get("event", "")).strip()
@@ -288,6 +348,20 @@ def validate_structure_contract(
                 "chronology_events 中的记录必须提供 id、event 和大于零的 order",
                 code="record_missing_id",
             )
+        if order in seen_orders:
+            raise DesignContractError(
+                f"时间线事件 {event_id} 与本部分的 {seen_orders[order]} 都用了 order "
+                f"{order}。order 是全书唯一编号，每条事件必须各占一个。",
+                code="chronology_order_duplicated",
+            )
+        if order in taken:
+            raise DesignContractError(
+                f"时间线事件 {event_id} 用的 order {order} 已经被前面的部分占用。"
+                f"order 是全书共用的一条编号，请改用一个没出现过的数字"
+                f"（已占用：{'、'.join(str(number) for number in sorted(taken))}）。",
+                code="chronology_order_reused",
+            )
+        seen_orders[order] = event_id
         record["order"] = order
         known_by = record.setdefault("known_initially_by", [])
         if not isinstance(known_by, list):
@@ -365,6 +439,7 @@ def extract_structure_contract(
     section_index: int,
     total_sections: int,
     central_conflict_schema: Optional[Mapping[str, str]] = None,
+    known_orders: Iterable[int] = (),
 ) -> Tuple[str, Dict[str, Any]]:
     markdown, contract = _extract_marked_json(
         response, STRUCTURE_CONTRACT_START, STRUCTURE_CONTRACT_END, "全书结构"
@@ -374,6 +449,7 @@ def extract_structure_contract(
         section_index,
         total_sections,
         central_conflict_schema=central_conflict_schema,
+        known_orders=known_orders,
     )
 
 
@@ -403,6 +479,35 @@ def truths_after(contracts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [record for key, record in known.items() if key]
 
 
+def chronology_after(contracts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Timeline events already registered by earlier sections, in story order.
+
+    同真相一样，这些必须发给下一部分：order 是全书共用的一条编号，而各部分分别
+    生成，看不见别人用过什么号。不发下去，模型只能从 1 或从本部分序号重新起编，
+    撞车是必然的。
+    """
+    events: Dict[str, Dict[str, Any]] = {}
+    for contract in sorted(contracts, key=lambda item: int(item.get("section_index", 0))):
+        for record in contract.get("chronology_events", []):
+            event_id = str(record.get("id", "")).strip()
+            if event_id:
+                events.setdefault(event_id, record)
+    return sorted(events.values(), key=lambda item: int(item.get("order", 0) or 0))
+
+
+def chronology_orders_used(contracts: Iterable[Dict[str, Any]]) -> List[int]:
+    """The order numbers earlier sections have already claimed."""
+    used: set[int] = set()
+    for record in chronology_after(contracts):
+        try:
+            order = int(record.get("order"))
+        except (TypeError, ValueError):
+            continue
+        if order > 0:
+            used.add(order)
+    return sorted(used)
+
+
 def validate_structure_sequence(contracts: Iterable[Dict[str, Any]]) -> None:
     """Check the whole-story spine holds across sections before planning starts.
 
@@ -414,11 +519,37 @@ def validate_structure_sequence(contracts: Iterable[Dict[str, Any]]) -> None:
     if not ordered:
         return
 
+    # 时间线编号的唯一性只在 v3 起才由生成过程保证。更早写下的契约每一份都撞车
+    # （见 validate_structure_contract 里的说明），而这个函数同时被流程门禁和总览
+    # 页的状态判定调用——对着已经定稿的项目报错，只会把它的结构那一步锁上，写完
+    # 的正文一个字也不会因此变好。所以旧档不查，新档必查。
+    checks_unique_orders = all(
+        int(contract.get("schema_version", 0) or 0) >= CHRONOLOGY_UNIQUE_ORDER_SINCE
+        for contract in ordered
+    )
+    seen_orders: Dict[int, Tuple[int, str]] = {}
+
     known_truths: Dict[str, Dict[str, Any]] = {}
     opened: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
     closed: Dict[str, int] = {}
     for contract in ordered:
         index = int(contract["section_index"])
+        if checks_unique_orders:
+            for record in contract.get("chronology_events", []):
+                event_id = str(record.get("id", "")).strip()
+                try:
+                    order = int(record.get("order"))
+                except (TypeError, ValueError):
+                    continue
+                if order in seen_orders:
+                    previous_section, previous_id = seen_orders[order]
+                    raise DesignContractError(
+                        f"时间线 order {order} 被第 {previous_section} 部分的 "
+                        f"{previous_id} 和第 {index} 部分的 {event_id} 同时占用，"
+                        f"全书排不出真实先后",
+                        code="chronology_order_duplicated",
+                    )
+                seen_orders[order] = (index, event_id)
         for record in contract.get("truths_introduced", []):
             truth_id = str(record["id"])
             previous = known_truths.get(truth_id)

@@ -15,6 +15,8 @@ from core.generation.design_contract import (
     DesignContractError,
     extract_structure_contract,
     generate_with_contract_retry,
+    chronology_after,
+    chronology_orders_used,
     open_threads_after,
     truths_after,
     structure_contract_instructions,
@@ -628,6 +630,7 @@ class StructurePipeline:
                 known_threads=open_threads_after(section_contracts),
                 central_conflict_schema=domain_profile.central_conflict_schema,
                 known_truths=truths_after(section_contracts),
+                known_events=chronology_after(section_contracts),
             )
 
             safe_structure_name_for_file = selected_structure_name.lower().replace(' ', '_').replace(':', '').replace('/', '_')
@@ -660,6 +663,7 @@ class StructurePipeline:
                 )
 
             section_index = i + 1
+            orders_taken = chronology_orders_used(section_contracts)
             try:
                 response, section_contract = generate_with_contract_retry(
                     lambda request: send_prompt(request, model=selected_model),
@@ -669,6 +673,7 @@ class StructurePipeline:
                         section_index,
                         len(sections_to_iterate),
                         central_conflict_schema=domain_profile.central_conflict_schema,
+                        known_orders=orders_taken,
                     ),
                     retry_limit=STRUCTURE_CONTRACT_RETRY_LIMIT,
                     on_retry=_log_contract_retry,
