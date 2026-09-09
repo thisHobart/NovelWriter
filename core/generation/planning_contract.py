@@ -145,6 +145,50 @@ def contract_output_instructions(
         for key in ("active_threads", "available_threads", "available_clues", "available_facts")
     )
     empty_graph_block = ""
+    graph_usage_block = ""
+    if not graph_is_empty:
+        context = narrative_context or {}
+        active = [
+            str(item.get("id", "")) for item in context.get("active_threads", [])
+            if str(item.get("id", "")).strip()
+        ]
+        available = [
+            str(item.get("id", "")) for item in context.get("available_threads", [])
+            if str(item.get("id", "")).strip()
+        ]
+        unopened = [item for item in available if item not in active]
+        # 「先 open 再 advance」是硬规则：touch/advance/complicate/cross 都要求这条线
+        # 已经被前面某一章打开过。叙事图播种之后节点是存在的，但账本里一章都还没打开
+        # 它们，模型看见 id 就直接写 advance——实测第 1、2 章都栽在这里，每章白烧
+        # 一轮规划调用。这条在构造提示词时就完全知道，没有理由让校验退回去重问。
+        lines = ["", "关于叙事图上的情节线（下面这几条规则是硬性的）："]
+        if active:
+            lines.append(
+                "- **已经打开、可以直接推进**的情节线：" + "、".join(active)
+                + "。对它们可以用 touch / advance / complicate / cross / close。"
+            )
+        if unopened:
+            lines.append(
+                "- **图上有、但还没有任何一章打开过**的情节线：" + "、".join(unopened)
+                + "。选中其中任何一条，primary_action 只能是 open，"
+                "plot_thread_updates 里也必须有一条同 id、action 为 open 的记录，"
+                "并给出不早于本章的 deadline_chapter（最晚第几章了结）。"
+                "对没打开过的线直接写 advance 会被判不合格。"
+            )
+        if not active and unopened:
+            lines.append(
+                "- 本章之前没有任何情节线处于打开状态，所以本章的 primary_action "
+                "只能是 open。"
+            )
+        lines.append(
+            "- primary_thread 与 primary_action 必须在 plot_thread_updates 里有一条"
+            "对应记录，否则算没记账。"
+        )
+        lines.append(
+            "- 所有节点 id 只能从上面列出的清单里取，不要自己编造——"
+            "图上不存在的 id 会让整份契约不合格。"
+        )
+        graph_usage_block = "\n".join(lines) + "\n"
     if graph_is_empty:
         empty_graph_block = """
 **本作目前没有叙事图节点**（上面的 active_threads、available_threads、
@@ -238,7 +282,7 @@ timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene
 本章规划前叙事图上下文如下。blocked_reveals 和 forbidden_nodes 绝对不能选择；
 plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进节点：
 {narrative_text}
-{empty_graph_block}
+{empty_graph_block}{graph_usage_block}
 
 既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：
 {index_text}

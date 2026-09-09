@@ -711,3 +711,53 @@ def test_a_populated_graph_keeps_the_original_instructions():
 
     assert "本作目前没有叙事图节点" not in prompt
     assert "PT-MAIN" in prompt
+
+
+def _graph_context(active, available, revision=1):
+    return {
+        "active_threads": [{"id": item} for item in active],
+        "available_threads": [{"id": item} for item in available],
+        "available_clues": [],
+        "available_facts": [],
+        "graph_revision": revision,
+    }
+
+
+def test_unopened_threads_must_be_opened_before_they_can_advance():
+    """「先 open 再 advance」是硬规则，图播种之后必须提前讲清楚。
+
+    播种让节点存在了，但账本里一章都还没打开它们。模型看见 id 就直接写 advance，
+    实测第 1、2 章都栽在这里，每章白烧一轮规划调用。
+    """
+    prompt = contract_output_instructions(
+        1, narrative_context=_graph_context(active=[], available=["PT001", "PT002"])
+    )
+
+    assert "PT001、PT002" in prompt
+    assert "primary_action 只能是 open" in prompt
+    assert "deadline_chapter" in prompt
+    assert "直接写 advance 会被判不合格" in prompt
+
+
+def test_already_open_threads_are_listed_separately():
+    prompt = contract_output_instructions(
+        5, narrative_context=_graph_context(active=["PT001"], available=["PT001", "PT003"])
+    )
+
+    assert "已经打开、可以直接推进**的情节线：PT001" in prompt
+    assert "还没有任何一章打开过**的情节线：PT003" in prompt
+
+
+def test_the_model_is_told_not_to_invent_node_ids():
+    """实测出现过「ChapterContract 引用了不存在的叙事图节点」。"""
+    prompt = contract_output_instructions(
+        3, narrative_context=_graph_context(active=["PT001"], available=["PT001"])
+    )
+    assert "不要自己编造" in prompt
+
+
+def test_an_empty_graph_gets_the_other_block_instead():
+    prompt = contract_output_instructions(1, narrative_context=_graph_context([], []))
+
+    assert "本作目前没有叙事图节点" in prompt
+    assert "关于叙事图上的情节线" not in prompt
