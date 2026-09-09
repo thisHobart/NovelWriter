@@ -761,3 +761,29 @@ def test_an_empty_graph_gets_the_other_block_instead():
 
     assert "本作目前没有叙事图节点" in prompt
     assert "关于叙事图上的情节线" not in prompt
+
+
+def test_schema_examples_use_real_node_ids_when_the_graph_is_seeded():
+    """示例原本写死成 "id":"PT-004-01"、"via_node_ids":["图节点ID"]。
+
+    那是在演示怎么编一个不存在的 id。图播种之后，契约校验会因为这些编造的 id 判
+    「引用了不存在的叙事图节点」——实测第 4、5 章连报五次，第 4 章两轮重试后硬失败。
+    """
+    context = _graph_context(active=["PT001"], available=["PT001", "PT002"])
+    context["available_facts"] = [{"id": "T001"}, {"id": "T002"}]
+
+    prompt = contract_output_instructions(4, narrative_context=context)
+
+    assert '"id":"PT001"' in prompt
+    assert '"via_node_ids":["T001"]' in prompt
+    assert '"node_id":"T001"' in prompt
+    assert "PT-004-01" not in prompt
+    assert "图节点ID" not in prompt
+
+
+def test_an_empty_graph_keeps_the_placeholder_examples():
+    """空图时那几个字段本来就该留空，占位符无害。"""
+    prompt = contract_output_instructions(4, narrative_context=_graph_context([], []))
+
+    assert "PT-004-01" in prompt
+    assert "本作目前没有叙事图节点" in prompt

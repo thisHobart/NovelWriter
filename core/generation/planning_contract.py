@@ -189,6 +189,26 @@ def contract_output_instructions(
             "图上不存在的 id 会让整份契约不合格。"
         )
         graph_usage_block = "\n".join(lines) + "\n"
+
+    # schema 里的示例原本写死成 "id":"PT-004-01"、"via_node_ids":["图节点ID"]——
+    # 那是在演示怎么编一个不存在的 id。图是空的时候无所谓，图一旦播种，契约校验
+    # 就会因为这些编造的 id 判「引用了不存在的叙事图节点」。实测第 4、5 章连报
+    # 五次，第 4 章两轮重试后硬失败。示例改用图上真实存在的 id。
+    context = narrative_context or {}
+    _thread_ids = [
+        str(item.get("id", "")).strip()
+        for group in ("active_threads", "available_threads")
+        for item in context.get(group, [])
+        if str(item.get("id", "")).strip()
+    ]
+    _node_ids = [
+        str(item.get("id", "")).strip()
+        for group in ("available_facts", "available_clues")
+        for item in context.get(group, [])
+        if str(item.get("id", "")).strip()
+    ]
+    thread_example = _thread_ids[0] if _thread_ids else f"PT-{chapter_number:03d}-01"
+    node_example = _node_ids[0] if _node_ids else (_thread_ids[0] if _thread_ids else "图节点ID")
     if graph_is_empty:
         empty_graph_block = """
 **本作目前没有叙事图节点**（上面的 active_threads、available_threads、
@@ -257,8 +277,8 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
   "facts_contradicted": [{{"id":"已有事实ID","reason":"推翻理由","new_value":"新取值"}}],
   "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点","scene":"scene_1"}}],
   "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":false}}],
-  "plot_thread_updates": [{{"id":"PT-{chapter_number:03d}-01","action":"advance","via_node_ids":["图节点ID"],"progress_note":"实际推进"}}],
-  "narrative_transitions": [{{"node_id":"图节点ID","transition":"introduce_to_reader|make_inferable|reveal|execute|deprecate","scene":"scene_1"}}]
+  "plot_thread_updates": [{{"id":"{thread_example}","action":"advance","via_node_ids":["{node_example}"],"progress_note":"实际推进"}}],
+  "narrative_transitions": [{{"node_id":"{node_example}","transition":"introduce_to_reader|make_inferable|reveal|execute|deprecate","scene":"scene_1"}}]
 }}
 {CONTRACT_END}
 
