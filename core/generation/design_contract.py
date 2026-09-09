@@ -28,8 +28,11 @@ STRUCTURE_CONTRACT_END = "<!-- STRUCTURE_CONTRACT_END -->"
 # remain readable; the whole-story check that needs that guarantee is skipped
 # for anything written before v3, so a finished project is never retroactively
 # marked blocked over a defect its own generation run could not have caught.
-DESIGN_CONTRACT_SCHEMA_VERSION = 3
+# v4 makes `reveal_at_section` a validated number and adds `depends_on`, which
+# is where the narrative graph's `requires` edges come from.
+DESIGN_CONTRACT_SCHEMA_VERSION = 4
 CHRONOLOGY_UNIQUE_ORDER_SINCE = 3
+TRUTH_DEPENDENCY_SINCE = 4
 
 MIN_CANONICAL_CHARACTERS = 2
 MIN_SECTION_TRUTHS = 1
@@ -242,8 +245,14 @@ def structure_contract_instructions(
             "本部分是第一批登记时间线的，从 1 开始编即可，后面的部分会接着往下取。\n"
             + shared_order_rules
         )
+    # 揭晓部分要一起发下去：depends_on 要求被依赖的真相不晚于依赖它的那条揭晓，
+    # 模型看不见前面各条排在第几部分就没法遵守。
     declared_truths = [
-        {"id": record.get("id"), "fact": record.get("fact")}
+        {
+            "id": record.get("id"),
+            "fact": record.get("fact"),
+            "reveal_at_section": record.get("reveal_at_section"),
+        }
         for record in known_truths
         if str(record.get("id", "")).strip()
     ]
@@ -275,7 +284,7 @@ def structure_contract_instructions(
   "section": "{section_name}",
   "section_index": {section_index},
   "total_sections": {total_sections},{spine_hint}
-  "truths_introduced": [{{"id":"T{section_index:02d}1","fact":"本部分确立的关键真相","reveal_at_section":"最晚在哪一部分向读者揭晓"}}],
+  "truths_introduced": [{{"id":"T{section_index:02d}1","fact":"本部分确立的关键真相","reveal_at_section":{total_sections},"depends_on":[]}}],
   "chronology_events": [{{"id":"TL{section_index:02d}1","order":1,"event":"按故事真实发生顺序记录的事件","known_initially_by":[]}}],
   "threads_opened": [{{"id":"PT{section_index:02d}1","thread":"本部分开启的悬念","must_close_by_section":{total_sections}}}],
   "threads_closed": ["本部分了结的悬念 id"]
@@ -285,6 +294,14 @@ def structure_contract_instructions(
 只登记本部分正文已经明确安排的内容，没有的数组留空。chronology_events 只记录故事世界中真实发生的事件，order 表示全书真实发生顺序，不是读者得知顺序，也不能用普通事实凑数。开启的悬念必须给出不早于本部分的 must_close_by_section；了结悬念必须沿用已有 id。截至目前仍未了结的悬念如下，本部分若要了结其中任何一条，必须使用这里的 id：
 {json.dumps(open_threads, ensure_ascii=False)}
 
+reveal_at_section 必须是**数字**（第几部分），不能写部分的名字，取值落在第 {section_index}
+到 {total_sections} 部分之间——真相不能在它被确立之前就揭晓。
+
+depends_on 登记**这条真相要成立，读者必须先知道哪几条真相**，填的是真相 id，只能取
+本部分或前面部分已经确立的 id。没有前置就留空数组，不要为了填而填。被依赖的真相必须
+在依赖它的那条之前（或同一部分）揭晓，否则读者会先看到结论、后看到依据。依赖关系不能
+绕成环——A 依赖 B、B 又依赖 A，两条就都永远揭不了。
+
 前面各部分已经确立的真相如下。**同一个 id 在全书只能指同一件事**：要复述其中任何一条，
 必须连 id 带 fact 原样沿用，一个字都不要改写；本部分新确立的真相另起一个没用过的 id。
 {json.dumps(declared_truths, ensure_ascii=False)}
@@ -293,12 +310,108 @@ def structure_contract_instructions(
 """.strip()
 
 
+def _validate_truth_dependencies(
+    truths: List[Dict[str, Any]],
+    earlier: Iterable[Dict[str, Any]] = (),
+) -> None:
+    """Check `depends_on` names real truths and never schedules a premise late.
+
+    这是叙事图上 requires 边的来源。图那边早就有查环（三色 DFS）和「揭示缺前置」
+    两条检查，但生产代码从不建边，所以两条都从未真正执行过。边一旦由这里播种出来，
+    环和「依据排在结论之后」就都变成会真实发生的错误，而在这里拦下来只花一次重试，
+    等到图上再拦，播种失败只记日志、图会静悄悄地保持为空。
+
+    档期这一条不需要真的排一遍拓扑序：只要每条依赖边都满足「被依赖的不晚于依赖它
+    的」，按揭晓部分排出来的顺序就已经是一个合法拓扑序，逐边检查与整体排序等价。
+    """
+    earlier_records = [
+        record for record in earlier if str(record.get("id", "")).strip()
+    ]
+    known_sections: Dict[str, int] = {}
+    for record in list(earlier_records) + list(truths):
+        truth_id = str(record.get("id", "")).strip()
+        if not truth_id:
+            continue
+        try:
+            known_sections[truth_id] = int(record.get("reveal_at_section"))
+        except (TypeError, ValueError):
+            known_sections.setdefault(truth_id, 0)
+
+    # 前面部分的依赖也放进邻接表：环不一定全落在本部分之内。
+    adjacency: Dict[str, List[str]] = {}
+    for record in earlier_records:
+        truth_id = str(record.get("id", "")).strip()
+        raw = record.get("depends_on") or []
+        if isinstance(raw, list):
+            adjacency.setdefault(truth_id, []).extend(
+                str(item).strip() for item in raw if str(item).strip()
+            )
+
+    for record in truths:
+        truth_id = str(record.get("id", "")).strip()
+        raw = record.get("depends_on", [])
+        if raw in (None, ""):
+            raw = []
+        if not isinstance(raw, list):
+            raise DesignContractError(
+                f"真相 {truth_id} 的 depends_on 必须是数组", code="field_not_list"
+            )
+        depends_on = [str(item).strip() for item in raw if str(item).strip()]
+        record["depends_on"] = depends_on
+        for dependency in depends_on:
+            if dependency == truth_id:
+                raise DesignContractError(
+                    f"真相 {truth_id} 的 depends_on 指向了它自己",
+                    code="dependency_self_reference",
+                )
+            if dependency not in known_sections:
+                raise DesignContractError(
+                    f"真相 {truth_id} 依赖的 {dependency} 不是任何一部分确立过的真相。"
+                    f"depends_on 只能填本部分或前面部分已经确立的真相 id。",
+                    code="dependency_not_found",
+                )
+            premise = known_sections[dependency]
+            target = known_sections.get(truth_id, 0)
+            if premise and target and premise > target:
+                raise DesignContractError(
+                    f"真相 {truth_id} 计划在第 {target} 部分揭晓，却依赖第 {premise}"
+                    f" 部分才揭晓的 {dependency}：读者会先看到结论、后看到依据",
+                    code="dependency_revealed_too_late",
+                )
+        # 本部分复述某条真相时给的依赖以本部分为准，不与前面那份合并。
+        adjacency[truth_id] = depends_on
+
+    # 只有本部分新写的依赖会引入新环，但环可能穿过前面部分的真相，所以整张图一起查。
+    colours: Dict[str, int] = {}
+
+    def visit(node: str, path: List[str]) -> None:
+        colours[node] = 1
+        for dependency in adjacency.get(node, []):
+            state = colours.get(dependency, 0)
+            if state == 0:
+                visit(dependency, path + [dependency])
+            elif state == 1:
+                start = path.index(dependency) if dependency in path else 0
+                cycle = " → ".join(path[start:] + [dependency])
+                raise DesignContractError(
+                    f"真相之间的 depends_on 绕成了环：{cycle}。"
+                    f"环上的每一条都要等别人先揭晓，结果谁也揭不了。",
+                    code="dependency_cycle",
+                )
+        colours[node] = 2
+
+    for candidate in sorted(adjacency):
+        if colours.get(candidate, 0) == 0:
+            visit(candidate, [candidate])
+
+
 def validate_structure_contract(
     contract: Dict[str, Any],
     section_index: int,
     total_sections: int,
     central_conflict_schema: Optional[Mapping[str, str]] = None,
     known_orders: Iterable[int] = (),
+    known_truths: Iterable[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     if not isinstance(contract, dict):
         raise DesignContractError("结构契约必须是 JSON 对象", code="contract_not_object")
@@ -319,10 +432,33 @@ def validate_structure_contract(
     truths = _named_records(normalized, "truths_introduced", "结构契约")
     normalized["truths_introduced"] = truths
     for record in truths:
-        if not str(record.get("id", "")).strip() or not str(record.get("fact", "")).strip():
+        truth_id = str(record.get("id", "")).strip()
+        if not truth_id or not str(record.get("fact", "")).strip():
             raise DesignContractError(
                 "truths_introduced 中的记录必须同时提供 id 和 fact", code="record_missing_id"
             )
+        # reveal_at_section 此前只在 schema 里写着「最晚在哪一部分向读者揭晓」，
+        # 一个字的校验都没有。实测模型有时写数字、有时写部分的名字（current_work
+        # 第 2 部分的两条写的是「情节上升」），播种时又被整个丢掉，于是没有一个
+        # 真相节点带着计划揭晓章号——「计划在结局前完成的揭示仍未执行」这条检查
+        # 因此永远不会响。
+        try:
+            reveal_at = int(record.get("reveal_at_section"))
+        except (TypeError, ValueError):
+            raise DesignContractError(
+                f"真相 {truth_id} 的 reveal_at_section 必须是数字（第几部分），"
+                f"不能写部分的名字",
+                code="reveal_section_invalid",
+            ) from None
+        if reveal_at < section_index or reveal_at > total_sections:
+            raise DesignContractError(
+                f"真相 {truth_id} 的 reveal_at_section 必须落在第 {section_index}"
+                f" 到 {total_sections} 部分之间",
+                code="reveal_section_out_of_range",
+            )
+        record["reveal_at_section"] = reveal_at
+
+    _validate_truth_dependencies(truths, known_truths)
 
     chronology = _named_records(normalized, "chronology_events", "结构契约")
     normalized["chronology_events"] = chronology
@@ -440,6 +576,7 @@ def extract_structure_contract(
     total_sections: int,
     central_conflict_schema: Optional[Mapping[str, str]] = None,
     known_orders: Iterable[int] = (),
+    known_truths: Iterable[Dict[str, Any]] = (),
 ) -> Tuple[str, Dict[str, Any]]:
     markdown, contract = _extract_marked_json(
         response, STRUCTURE_CONTRACT_START, STRUCTURE_CONTRACT_END, "全书结构"
@@ -450,6 +587,7 @@ def extract_structure_contract(
         total_sections,
         central_conflict_schema=central_conflict_schema,
         known_orders=known_orders,
+        known_truths=known_truths,
     )
 
 
@@ -523,10 +661,11 @@ def validate_structure_sequence(contracts: Iterable[Dict[str, Any]]) -> None:
     # （见 validate_structure_contract 里的说明），而这个函数同时被流程门禁和总览
     # 页的状态判定调用——对着已经定稿的项目报错，只会把它的结构那一步锁上，写完
     # 的正文一个字也不会因此变好。所以旧档不查，新档必查。
+    versions = [int(contract.get("schema_version", 0) or 0) for contract in ordered]
     checks_unique_orders = all(
-        int(contract.get("schema_version", 0) or 0) >= CHRONOLOGY_UNIQUE_ORDER_SINCE
-        for contract in ordered
+        version >= CHRONOLOGY_UNIQUE_ORDER_SINCE for version in versions
     )
+    checks_dependencies = all(version >= TRUTH_DEPENDENCY_SINCE for version in versions)
     seen_orders: Dict[int, Tuple[int, str]] = {}
 
     known_truths: Dict[str, Dict[str, Any]] = {}
@@ -577,6 +716,34 @@ def validate_structure_sequence(contracts: Iterable[Dict[str, Any]]) -> None:
                     f"悬念 {thread_id} 在开启前被了结", code="thread_closed_before_open"
                 )
             closed[thread_id] = index
+
+    # 依赖是逐段校验的，但那时只看得见当时已有的部分。全部齐了再合起来查一遍：
+    # 被依赖的真相是否真的存在、有没有排在依赖它的那条之后、整体有没有绕成环。
+    #
+    # 用每一次出现的并集，不是按 id 去重后的最后一份：一条真相被后面的部分复述时
+    # 可以带不同的 depends_on，而播种会把每一次出现的依赖都建成边。这里只看最后
+    # 一份，就会漏掉第一份声明、稍后却被真的建出来的那条边。
+    merged: Dict[str, Dict[str, Any]] = {}
+    for contract in ordered:
+        for record in contract.get("truths_introduced", []):
+            truth_id = str(record.get("id", "")).strip()
+            if not truth_id:
+                continue
+            entry = merged.setdefault(
+                truth_id,
+                {
+                    "id": truth_id,
+                    "fact": record.get("fact"),
+                    "reveal_at_section": record.get("reveal_at_section"),
+                    "depends_on": [],
+                },
+            )
+            for dependency in record.get("depends_on") or []:
+                premise = str(dependency).strip()
+                if premise and premise not in entry["depends_on"]:
+                    entry["depends_on"].append(premise)
+    if checks_dependencies:
+        _validate_truth_dependencies(list(merged.values()))
 
     total_sections = int(ordered[-1].get("total_sections", ordered[-1]["section_index"]))
     complete = int(ordered[-1]["section_index"]) >= total_sections

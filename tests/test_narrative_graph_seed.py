@@ -24,7 +24,7 @@ SECTIONS = [
             {"id": "PT002", "thread": "伪造公章能否查实", "must_close_by_section": 2},
         ],
         "truths_introduced": [
-            {"id": "T001", "fact": "赵崇德指使伪造公章", "reveal_at_section": "Act 3: Resolution"},
+            {"id": "T001", "fact": "赵崇德指使伪造公章", "reveal_at_section": 2, "depends_on": []},
         ],
         "threads_closed": [],
     },
@@ -34,7 +34,7 @@ SECTIONS = [
         "total_sections": 3,
         "threads_opened": [],
         "truths_introduced": [
-            {"id": "T002", "fact": "专户享有查封豁免权", "reveal_at_section": "Act 2: Confrontation"},
+            {"id": "T002", "fact": "专户享有查封豁免权", "reveal_at_section": 3, "depends_on": ["T001"]},
         ],
         "threads_closed": ["PT002"],
     },
@@ -133,3 +133,71 @@ def test_a_real_structure_contract_seeds_both_kinds(tmp_path):
     assert result["added"] == 4
     types = {node["type"] for node in NarrativeGraphManager(str(tmp_path)).load()["nodes"]}
     assert types == {"thread", "fact"}
+
+
+# --- 依赖变成 requires 边 ---------------------------------------------------
+
+
+def test_depends_on_becomes_a_requires_edge(tmp_path):
+    """图上此前一条边都没有，requires 查环与「揭示缺前置」两条检查从未真正跑过。"""
+    manager = NarrativeGraphManager(str(tmp_path))
+    result = manager.seed_from_structure(SECTIONS, {1: 7, 2: 14, 3: 20})
+
+    assert result["edges"] == 1
+    edges = manager.load()["edges"]
+    assert [(e["type"], e["source_id"], e["target_id"]) for e in edges] == [
+        ("requires", "T001", "T002")
+    ]
+    nodes = {node["id"]: node for node in manager.load()["nodes"]}
+    assert nodes["T001"]["planned_reveal_chapter"] == 14
+    assert nodes["T002"]["planned_reveal_chapter"] == 20
+
+
+def test_seeding_edges_twice_adds_nothing(tmp_path):
+    manager = NarrativeGraphManager(str(tmp_path))
+    first = manager.seed_from_structure(SECTIONS, {1: 7, 2: 14, 3: 20})
+    second = manager.seed_from_structure(SECTIONS, {1: 7, 2: 14, 3: 20})
+
+    assert (first["added"], first["edges"]) == (4, 1)
+    assert (second["added"], second["edges"]) == (0, 0)
+
+
+def test_a_dependency_scheduled_after_its_dependent_is_reported(tmp_path):
+    """图上完全无环，但第 14 章那一刻 T002 的前置一定不满足。"""
+    sections = json.loads(json.dumps(SECTIONS))
+    sections[0]["truths_introduced"][0]["reveal_at_section"] = 3
+    sections[1]["truths_introduced"][0]["reveal_at_section"] = 2
+
+    manager = NarrativeGraphManager(str(tmp_path))
+    manager.seed_from_structure(sections, {1: 7, 2: 14, 3: 20})
+
+    issues = manager.validate()
+    reported = [
+        issue for issue in issues
+        if issue["code"] == "DEPENDENCY_SCHEDULED_AFTER_DEPENDENT"
+    ]
+    assert len(reported) == 1
+    assert reported[0]["severity"] == "warning"
+    assert reported[0]["details"]["source_planned_chapter"] == 20
+    assert reported[0]["details"]["target_planned_chapter"] == 14
+
+
+def test_a_consistent_schedule_reports_nothing(tmp_path):
+    manager = NarrativeGraphManager(str(tmp_path))
+    manager.seed_from_structure(SECTIONS, {1: 7, 2: 14, 3: 20})
+
+    codes = {issue["code"] for issue in manager.validate()}
+    assert "DEPENDENCY_SCHEDULED_AFTER_DEPENDENT" not in codes
+    assert "REQUIRES_CYCLE" not in codes
+
+
+def test_a_dependency_on_a_truth_no_section_declared_is_skipped(tmp_path):
+    """契约那层已经拦过，播种再筛一次：一条建不出来的边不该拖垮整次播种。"""
+    sections = json.loads(json.dumps(SECTIONS))
+    sections[1]["truths_introduced"][0]["depends_on"] = ["T001", "T404"]
+
+    manager = NarrativeGraphManager(str(tmp_path))
+    result = manager.seed_from_structure(sections, {1: 7, 2: 14, 3: 20})
+
+    assert result["added"] == 4
+    assert result["edges"] == 1

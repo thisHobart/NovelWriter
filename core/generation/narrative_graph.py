@@ -231,18 +231,45 @@ def _thread_node(
     return node
 
 
-def _fact_node(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _fact_node(
+    record: Dict[str, Any], section_last_chapter: Optional[Dict[int, int]] = None
+) -> Optional[Dict[str, Any]]:
     """结构契约里的一条「真相」对应图上的一个 fact 节点。
 
     不是 reveal：reveal 节点要求有 clue 或 fact 前置（公平推理——揭晓必须建立在
     读者见过的证据上），而结构阶段声明的是故事世界里成立的事实本身，什么时候揭给
     读者是账本里的运行期状态，不是图的结构。
+
+    ``reveal_at_section`` 换算成章号写进 ``planned_reveal_chapter``。此前这个字段
+    整个被丢掉，于是没有一个节点带着计划揭晓章号，「依据排在结论之后」这类档期
+    检查在图上无从谈起。
     """
     node_id = str(record.get("id", "")).strip()
     label = str(record.get("fact", "")).strip()
     if not node_id or not label:
         return None
-    return {"id": node_id, "type": "fact", "label": label}
+    node: Dict[str, Any] = {"id": node_id, "type": "fact", "label": label}
+    try:
+        section = int(record.get("reveal_at_section"))
+    except (TypeError, ValueError):
+        section = 0
+    planned = (section_last_chapter or {}).get(section)
+    if planned:
+        node["planned_reveal_chapter"] = int(planned)
+    return node
+
+
+def _requires_edge(source_id: str, target_id: str) -> Dict[str, Any]:
+    """``target`` 要成立，读者得先知道 ``source``。
+
+    边 id 由两端确定性拼出来，播种因此可以重复调用而不会重复加边。
+    """
+    return {
+        "id": f"REQ-{source_id}-{target_id}",
+        "type": "requires",
+        "source_id": source_id,
+        "target_id": target_id,
+    }
 
 
 class NarrativeGraphManager:
@@ -803,6 +830,40 @@ class NarrativeGraphManager:
             if colours[candidate_id] == 0:
                 visit(candidate_id, [candidate_id])
 
+        # 查环只能发现「互相等待」，发现不了「依据排在结论之后」：A requires B、
+        # B 计划第 12 章才揭、A 却排在第 5 章，图上完全无环，但第 5 章那一刻 A 的
+        # 前置一定不满足。现在只有跑到第 5 章、烧掉一轮规划才会知道。
+        #
+        # 不需要真排一遍拓扑序：每条边都满足「前置不晚于依赖它的」，按计划章号排出
+        # 来的顺序就已经是合法拓扑序，逐边检查与整体排序等价。
+        #
+        # 判 warning 不判 error：播种失败只记日志、图会静悄悄地保持为空，用 error
+        # 会把整张图连同能用的部分一起丢掉。真正拦下来的地方在结构契约那一层，那里
+        # 报错还能走重试。
+        for edge in active_edges:
+            if edge.get("type") != "requires":
+                continue
+            source_id = _edge_endpoint(edge, "source")
+            target_id = _edge_endpoint(edge, "target")
+            premise = self._planned_chapter(node_map.get(source_id, {}))
+            dependent = self._planned_chapter(node_map.get(target_id, {}))
+            if premise and dependent and premise > dependent:
+                issues.append(
+                    _issue(
+                        "DEPENDENCY_SCHEDULED_AFTER_DEPENDENT",
+                        f"{target_id} 计划第 {dependent} 章，却依赖计划第 {premise} 章的"
+                        f" {source_id}：前置排在了它之后",
+                        severity="warning",
+                        edge_id=str(edge.get("id", "")),
+                        details={
+                            "source_id": source_id,
+                            "source_planned_chapter": premise,
+                            "target_id": target_id,
+                            "target_planned_chapter": dependent,
+                        },
+                    )
+                )
+
         for node_id, node in node_map.items():
             if node.get("deprecated"):
                 continue
@@ -1325,7 +1386,7 @@ class NarrativeGraphManager:
         sections: Sequence[Dict[str, Any]],
         section_last_chapter: Optional[Dict[int, int]] = None,
     ) -> Dict[str, Any]:
-        """把结构阶段已经声明的悬念与真相变成叙事图节点。
+        """把结构阶段已经声明的悬念、真相与真相之间的依赖变成叙事图。
 
         在此之前，生产代码里没有任何一处会往图里加节点——只有
         ``tools/run_e2e_10_chapters.py`` 会。于是图永远是空的，而契约校验只要发现
@@ -1340,12 +1401,22 @@ class NarrativeGraphManager:
         章号连续），拿不到就不写计划章号——那只影响「悬念沉默过久」这类提示，不影响
         节点本身可选。
 
-        重复调用是安全的：已经在图上的 id 不会再加一次。
+        ``depends_on`` 转成 ``requires`` 边，这是图上边的唯一来源。此前生产代码只
+        加节点、从不加边，于是图里连一条边都没有，requires 查环、「线索必须属于某
+        条情节线」、「揭示至少需要一个前置」这三条检查全都恒真——写着，但从没在真
+        实项目上执行过一次。
+
+        重复调用是安全的：已经在图上的 id 不会再加一次，边 id 由两端确定性拼出来，
+        同样不会重复。
         """
-        existing = {str(node.get("id", "")) for node in self.load().get("nodes", [])}
+        current = self.load()
+        existing = {str(node.get("id", "")) for node in current.get("nodes", [])}
+        existing_edges = {str(edge.get("id", "")) for edge in current.get("edges", [])}
         mapping = dict(section_last_chapter or {})
-        operations: List[Dict[str, Any]] = []
+        node_operations: List[Dict[str, Any]] = []
+        edge_operations: List[Dict[str, Any]] = []
         seen: Set[str] = set()
+        dependencies: List[Tuple[str, str]] = []
 
         for section in sorted(
             [item for item in sections if isinstance(item, dict)],
@@ -1355,22 +1426,46 @@ class NarrativeGraphManager:
                 node = _thread_node(record, mapping)
                 if node and node["id"] not in existing and node["id"] not in seen:
                     seen.add(node["id"])
-                    operations.append({"op": "add_node", "node": node})
+                    node_operations.append({"op": "add_node", "node": node})
             for record in section.get("truths_introduced", []) or []:
-                node = _fact_node(record)
+                node = _fact_node(record, mapping)
                 if node and node["id"] not in existing and node["id"] not in seen:
                     seen.add(node["id"])
-                    operations.append({"op": "add_node", "node": node})
+                    node_operations.append({"op": "add_node", "node": node})
+                if not node:
+                    continue
+                for dependency in record.get("depends_on") or []:
+                    premise = str(dependency).strip()
+                    if premise and premise != node["id"]:
+                        dependencies.append((premise, node["id"]))
 
+        # 边要等两端都在图上，所以节点操作先排。契约校验已经确认 depends_on 指向
+        # 的是确实声明过的真相，这里仍然按图上是否有这个节点再筛一次——播种是加分
+        # 项，一条建不出来的边不值得把整次播种拖垮。
+        known_nodes = existing | seen
+        for premise, dependent in dependencies:
+            if premise not in known_nodes or dependent not in known_nodes:
+                continue
+            edge = _requires_edge(premise, dependent)
+            if edge["id"] in existing_edges:
+                continue
+            existing_edges.add(edge["id"])
+            edge_operations.append({"op": "add_edge", "edge": edge})
+
+        operations = node_operations + edge_operations
         if not operations:
-            return {"added": 0, "revision": self.current_revision()}
+            return {"added": 0, "edges": 0, "revision": self.current_revision()}
 
         revision = self.apply_change(
             operations,
-            "从结构契约播种：把已声明的悬念与真相登记为叙事图节点",
+            "从结构契约播种：把已声明的悬念、真相与真相之间的依赖登记为叙事图",
             self.current_revision(),
         )
-        return {"added": len(operations), "revision": revision}
+        return {
+            "added": len(node_operations),
+            "edges": len(edge_operations),
+            "revision": revision,
+        }
 
 
     def planning_context(

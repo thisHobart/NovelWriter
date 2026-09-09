@@ -5,6 +5,7 @@ import json
 import pytest
 
 from core.generation.design_contract import (
+    DESIGN_CONTRACT_SCHEMA_VERSION,
     DesignContractError,
     LORE_CONTRACT_END,
     LORE_CONTRACT_START,
@@ -15,6 +16,7 @@ from core.generation.design_contract import (
     generate_with_contract_retry,
     open_threads_after,
     structure_contract_instructions,
+    truths_after,
     validate_structure_sequence,
 )
 from core.generation.domain_profiles import LEGAL_SUSPENSE
@@ -59,7 +61,7 @@ def _structure_payload(index, total=3, **overrides):
             "stakes": "一个无辜者的死刑",
         }
         payload["truths_introduced"] = [
-            {"id": "T011", "fact": "门禁时钟被调慢", "reveal_at_section": "第3幕"}
+            {"id": "T011", "fact": "门禁时钟被调慢", "reveal_at_section": 3, "depends_on": []}
         ]
         payload["chronology_events"] = [
             {
@@ -248,7 +250,7 @@ def test_structure_sequence_flags_contradictory_truth_definitions():
             _structure_response(
                 2,
                 truths_introduced=[
-                    {"id": "T011", "fact": "门禁时钟被调快", "reveal_at_section": "第3幕"}
+                    {"id": "T011", "fact": "门禁时钟被调快", "reveal_at_section": 3}
                 ],
             ),
             2,
@@ -520,3 +522,158 @@ def test_contracts_written_before_v3_are_not_retroactively_blocked():
     ]
 
     validate_structure_sequence(old)
+
+
+# --- 真相之间的依赖 ---------------------------------------------------------
+
+
+def _truth(truth_id, fact, reveal_at, depends_on=()):
+    return {
+        "id": truth_id,
+        "fact": fact,
+        "reveal_at_section": reveal_at,
+        "depends_on": list(depends_on),
+    }
+
+
+def _with_truths(index, truths, total=3):
+    body = json.dumps(
+        _structure_payload(index, total, truths_introduced=truths), ensure_ascii=False
+    )
+    return f"## 第{index}幕\n正文。\n{STRUCTURE_CONTRACT_START}\n{body}\n{STRUCTURE_CONTRACT_END}"
+
+
+def test_reveal_at_section_must_be_a_number_in_range():
+    """current_work 第 2 部分写的是「情节上升」，此前一个字的校验都没有。"""
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            _with_truths(1, [_truth("T011", "门禁时钟被调慢", "情节上升")]), 1, 3
+        )
+    assert exc_info.value.code == "reveal_section_invalid"
+
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            _with_truths(2, [_truth("T021", "调慢了十二分钟", 1)]), 2, 3
+        )
+    assert exc_info.value.code == "reveal_section_out_of_range"
+
+
+def test_a_dependency_must_name_a_truth_some_section_actually_declared():
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            _with_truths(1, [_truth("T011", "门禁时钟被调慢", 3, ["T999"])]), 1, 3
+        )
+    assert exc_info.value.code == "dependency_not_found"
+    assert "T999" in str(exc_info.value)
+
+
+def test_a_premise_may_not_be_revealed_after_what_depends_on_it():
+    """图上无环，但第 2 部分那一刻前置一定不满足——正是拓扑序与档期不一致。"""
+    first = extract_structure_contract(
+        _with_truths(1, [_truth("T011", "门禁时钟被调慢", 3)]), 1, 3
+    )[1]
+
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            _with_truths(2, [_truth("T021", "所以尸检时间被推翻", 2, ["T011"])]),
+            2,
+            3,
+            known_truths=truths_after([first]),
+        )
+    assert exc_info.value.code == "dependency_revealed_too_late"
+    assert "T011" in str(exc_info.value)
+
+
+def test_dependencies_may_not_form_a_cycle():
+    with pytest.raises(DesignContractError) as exc_info:
+        extract_structure_contract(
+            _with_truths(
+                1,
+                [
+                    _truth("T011", "甲", 3, ["T012"]),
+                    _truth("T012", "乙", 3, ["T011"]),
+                ],
+            ),
+            1,
+            3,
+        )
+    assert exc_info.value.code == "dependency_cycle"
+
+
+def test_a_premise_revealed_earlier_or_together_is_accepted():
+    first = extract_structure_contract(
+        _with_truths(1, [_truth("T011", "门禁时钟被调慢", 1)]), 1, 3
+    )[1]
+    _, second = extract_structure_contract(
+        _with_truths(2, [_truth("T021", "所以尸检时间被推翻", 2, ["T011"])]),
+        2,
+        3,
+        known_truths=truths_after([first]),
+    )
+    assert second["truths_introduced"][0]["depends_on"] == ["T011"]
+    assert second["schema_version"] == DESIGN_CONTRACT_SCHEMA_VERSION
+
+
+def test_later_sections_see_when_each_known_truth_is_revealed():
+    """没有揭晓部分，模型无从判断 depends_on 会不会把依据排到结论之后。"""
+    first = extract_structure_contract(
+        _with_truths(1, [_truth("T011", "门禁时钟被调慢", 3)]), 1, 3
+    )[1]
+    prompt = structure_contract_instructions(
+        section_name="act_2",
+        section_index=2,
+        total_sections=3,
+        known_truths=truths_after([first]),
+    )
+    assert '"reveal_at_section": 3' in prompt
+    assert "depends_on" in prompt
+
+
+def test_contracts_written_before_v4_skip_the_dependency_check():
+    old = [
+        {
+            "section_index": 1,
+            "total_sections": 1,
+            "schema_version": 3,
+            "chronology_events": [],
+            "truths_introduced": [
+                {"id": "T011", "fact": "旧档", "reveal_at_section": "情节上升",
+                 "depends_on": ["T999"]}
+            ],
+            "threads_opened": [],
+            "threads_closed": [],
+        }
+    ]
+
+    validate_structure_sequence(old)
+
+
+def test_the_whole_story_check_uses_every_declaration_of_a_dependency():
+    """复述时换了一份 depends_on，播种仍会把两次声明都建成边，合校不能只看最后一份。"""
+    first = {
+        "section_index": 1,
+        "total_sections": 2,
+        "schema_version": DESIGN_CONTRACT_SCHEMA_VERSION,
+        "chronology_events": [],
+        "truths_introduced": [
+            _truth("T011", "甲", 1),
+            _truth("T012", "乙", 2, ["T013"]),
+            _truth("T013", "丙", 2),
+        ],
+        "threads_opened": [],
+        "threads_closed": [],
+    }
+    later = {
+        "section_index": 2,
+        "total_sections": 2,
+        "schema_version": DESIGN_CONTRACT_SCHEMA_VERSION,
+        "chronology_events": [],
+        # 复述 T013 时反过来依赖 T012，两次声明合起来就是一个环
+        "truths_introduced": [_truth("T013", "丙", 2, ["T012"])],
+        "threads_opened": [],
+        "threads_closed": [],
+    }
+
+    with pytest.raises(DesignContractError) as exc_info:
+        validate_structure_sequence([first, later])
+    assert exc_info.value.code == "dependency_cycle"

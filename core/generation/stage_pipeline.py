@@ -214,16 +214,16 @@ def seed_narrative_graph(output_dir: str) -> Dict[str, Any]:
         sections = (contract or {}).get("sections") or []
         if not sections:
             logger.info("没有结构契约，叙事图不播种（短篇本来就没有这一份）")
-            return {"added": 0}
+            return {"added": 0, "edges": 0}
         result = NarrativeGraphManager(output_dir).seed_from_structure(
             sections, _section_last_chapters(output_dir)
         )
-        logger.info("叙事图播种：新增 %s 个节点，修订号 %s",
-                    result.get("added"), result.get("revision"))
+        logger.info("叙事图播种：新增 %s 个节点、%s 条依赖边，修订号 %s",
+                    result.get("added"), result.get("edges"), result.get("revision"))
         return result
     except Exception as exc:  # noqa: BLE001  播种失败不该挡住场景规划
         logger.warning("叙事图播种失败，按空图继续：%s", exc)
-        return {"added": 0, "error": str(exc)}
+        return {"added": 0, "edges": 0, "error": str(exc)}
 
 
 def _section_last_chapters(output_dir: str) -> Dict[int, int]:

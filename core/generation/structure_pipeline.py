@@ -664,6 +664,7 @@ class StructurePipeline:
 
             section_index = i + 1
             orders_taken = chronology_orders_used(section_contracts)
+            truths_known = truths_after(section_contracts)
             try:
                 response, section_contract = generate_with_contract_retry(
                     lambda request: send_prompt(request, model=selected_model),
@@ -674,6 +675,7 @@ class StructurePipeline:
                         len(sections_to_iterate),
                         central_conflict_schema=domain_profile.central_conflict_schema,
                         known_orders=orders_taken,
+                        known_truths=truths_known,
                     ),
                     retry_limit=STRUCTURE_CONTRACT_RETRY_LIMIT,
                     on_retry=_log_contract_retry,
