@@ -740,8 +740,13 @@ def test_unopened_threads_must_be_opened_before_they_can_advance():
 
 
 def test_already_open_threads_are_listed_separately():
+    # 开状态来自规划契约（校验用的同一份），不是叙事图上下文
+    index = {"facts": [], "timeline_events": [],
+             "open_plot_threads": [{"id": "PT001", "thread": "线一"}],
+             "closed_plot_threads": []}
     prompt = contract_output_instructions(
-        5, narrative_context=_graph_context(active=["PT001"], available=["PT001", "PT003"])
+        5, existing_index=index,
+        narrative_context=_graph_context(active=[], available=["PT001", "PT003"]),
     )
 
     assert "已经打开、可以直接推进**的情节线：PT001" in prompt
@@ -803,3 +808,41 @@ def test_the_transition_example_matches_the_example_node_type():
     assert '"node_id":"T001"' in prompt
     assert '"transition":"introduce_to_reader|make_inferable|reveal"' in prompt
     assert "execute" not in prompt.split('"narrative_transitions"')[1][:200]
+
+
+def test_open_state_comes_from_the_planning_contracts_not_the_ledger():
+    """提示词的「已打开/未打开」必须和校验读同一个来源。
+
+    planning_context 的 active_threads 读的是账本里的 thread_status，而账本只在
+    章节**验收**时才写。规划阶段一章都还没验收，它对每一章都说「一条都没打开」；
+    模型照做去 open，而校验读的是已累积的规划契约、知道这条线上一章就开过了，
+    于是判「不能重复打开」。实测第 4 章开了 PT001，第 5、6 章又各开一遍，全部硬失败。
+    """
+    context = _graph_context(active=[], available=["PT001", "PT002", "PT003"])
+    index = {
+        "facts": [],
+        "timeline_events": [],
+        # 账本还是空的（active=[]），但规划契约已经记下 PT001 开过、PT002 结过
+        "open_plot_threads": [{"id": "PT001", "thread": "线一"}],
+        "closed_plot_threads": [{"id": "PT002", "thread": "线二", "closed_at": 3}],
+    }
+
+    prompt = contract_output_instructions(6, existing_index=index, narrative_context=context)
+
+    assert "可以直接推进**的情节线：PT001" in prompt
+    assert "还没有任何一章打开过**的情节线：PT003" in prompt
+    assert "已经了结**的情节线：PT002" in prompt
+    # PT001 不能再出现在「没打开过」那一栏里
+    unopened_line = [
+        line for line in prompt.splitlines() if "还没有任何一章打开过" in line
+    ][0]
+    assert "PT001" not in unopened_line
+    assert "PT002" not in unopened_line
+
+
+def test_with_no_prior_contracts_every_seeded_thread_is_unopened():
+    context = _graph_context(active=[], available=["PT001", "PT002"])
+    prompt = contract_output_instructions(1, narrative_context=context)
+
+    assert "还没有任何一章打开过**的情节线：PT001、PT002" in prompt
+    assert "已经了结**的情节线" not in prompt

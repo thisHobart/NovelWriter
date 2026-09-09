@@ -148,15 +148,34 @@ def contract_output_instructions(
     graph_usage_block = ""
     if not graph_is_empty:
         context = narrative_context or {}
-        active = [
-            str(item.get("id", "")) for item in context.get("active_threads", [])
-            if str(item.get("id", "")).strip()
-        ]
         available = [
             str(item.get("id", "")) for item in context.get("available_threads", [])
             if str(item.get("id", "")).strip()
         ]
-        unopened = [item for item in available if item not in active]
+        # 「哪些线已经打开」必须和校验读同一个来源，否则两边各说各话。
+        #
+        # planning_context 的 active_threads 读的是账本里的 thread_status，而账本
+        # 只在章节**验收**时才写。规划阶段一章都还没验收，于是它对每一章都说
+        # 「一条都没打开」；模型照做去 open，而校验读的是已经累积的规划契约、知道
+        # 这条线上一章就开过了，于是判「不能重复打开」。实测第 4 章开了 PT001，
+        # 第 5、6 章又各开一遍，全部硬失败。
+        #
+        # existing_index 里的 open_plot_threads 正是校验用的那份，直接拿来分类。
+        opened_ids = {
+            str(item.get("id", "")).strip()
+            for item in (index or {}).get("open_plot_threads", [])
+            if str(item.get("id", "")).strip()
+        }
+        closed_ids = {
+            str(item.get("id", "")).strip()
+            for item in (index or {}).get("closed_plot_threads", [])
+            if str(item.get("id", "")).strip()
+        }
+        active = [item for item in available if item in opened_ids]
+        unopened = [
+            item for item in available
+            if item not in opened_ids and item not in closed_ids
+        ]
         # 「先 open 再 advance」是硬规则：touch/advance/complicate/cross 都要求这条线
         # 已经被前面某一章打开过。叙事图播种之后节点是存在的，但账本里一章都还没打开
         # 它们，模型看见 id 就直接写 advance——实测第 1、2 章都栽在这里，每章白烧
@@ -184,6 +203,12 @@ def contract_output_instructions(
             "- primary_thread 与 primary_action 必须在 plot_thread_updates 里有一条"
             "对应记录，否则算没记账。"
         )
+        finished = [item for item in available if item in closed_ids]
+        if finished:
+            lines.append(
+                "- **已经了结**的情节线：" + "、".join(finished)
+                + "。不要再打开或推进它们。"
+            )
         lines.append(
             "- 所有节点 id 只能从上面列出的清单里取，不要自己编造——"
             "图上不存在的 id 会让整份契约不合格。"
