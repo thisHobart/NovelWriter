@@ -99,3 +99,28 @@ def test_structure_sections_pretty_titles(tmp_path):
     section = artifacts.structure_sections(root)[0]
     assert section.title == "Rising Action"
     assert section.text == "上升动作"
+
+
+def test_character_cards_do_not_show_the_raw_english_role(tmp_path):
+    """摘要以前把 role 排在最前面，而它是英文枚举。
+
+    界面上每个人的说明因此都是「protagonist」——看不出谁是谁。
+    """
+    root = str(tmp_path)
+    _write(os.path.join(root, artifacts.LORE_DIR, "characters.json"), json.dumps({
+        "characters": [
+            {"name": "陆崇远", "role": "protagonist",
+             "description": "身材削瘦微驼，穿褪色的深灰夹克。"},
+            {"name": "旧格式", "role": "antagonist",
+             "backstory_summary": "旧项目把背景写在这个字段里。"},
+            {"name": "只有角色", "role": "supporting"},
+        ]
+    }, ensure_ascii=False))
+
+    cards = {item.name: item.summary for item in artifacts.characters(root)}
+
+    assert cards["陆崇远"] == "身材削瘦微驼，穿褪色的深灰夹克。"
+    assert cards["旧格式"] == "旧项目把背景写在这个字段里。"
+    # 确实只剩 role 时，至少译成中文
+    assert cards["只有角色"] == "配角"
+    assert "protagonist" not in "".join(cards.values())

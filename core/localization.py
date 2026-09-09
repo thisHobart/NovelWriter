@@ -8,6 +8,11 @@ from __future__ import annotations
 
 
 ZH_LABELS = {
+    # 人物卡里的 role 是英文枚举，界面上曾经原样显示成 protagonist。
+    "protagonist": "主角",
+    "deuteragonist": "第二主角",
+    "antagonist": "反派",
+    "supporting": "配角",
     # 类型
     "Sci-Fi": "科幻",
     "Fantasy": "奇幻",

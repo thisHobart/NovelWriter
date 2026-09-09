@@ -213,6 +213,38 @@ def _atomic_append_jsonl(path: str, record: Dict[str, Any]) -> None:
             os.remove(temporary)
 
 
+def _thread_node(
+    record: Dict[str, Any], section_last_chapter: Dict[int, int]
+) -> Optional[Dict[str, Any]]:
+    node_id = str(record.get("id", "")).strip()
+    label = str(record.get("thread", "")).strip()
+    if not node_id or not label:
+        return None
+    node: Dict[str, Any] = {"id": node_id, "type": "thread", "label": label}
+    try:
+        section = int(record.get("must_close_by_section"))
+    except (TypeError, ValueError):
+        section = 0
+    planned = section_last_chapter.get(section)
+    if planned:
+        node["planned_resolve_chapter"] = int(planned)
+    return node
+
+
+def _fact_node(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """结构契约里的一条「真相」对应图上的一个 fact 节点。
+
+    不是 reveal：reveal 节点要求有 clue 或 fact 前置（公平推理——揭晓必须建立在
+    读者见过的证据上），而结构阶段声明的是故事世界里成立的事实本身，什么时候揭给
+    读者是账本里的运行期状态，不是图的结构。
+    """
+    node_id = str(record.get("id", "")).strip()
+    label = str(record.get("fact", "")).strip()
+    if not node_id or not label:
+        return None
+    return {"id": node_id, "type": "fact", "label": label}
+
+
 class NarrativeGraphManager:
     """Own and query the current story's versioned narrative design graph."""
 
@@ -1285,6 +1317,61 @@ class NarrativeGraphManager:
             "graph_revision": int(graph.get("revision", 0) or 0),
             "ledger_revision": int(ledger.get("revision", 0) or 0),
         }
+
+    # ------------------------------------------------------------------ 播种
+
+    def seed_from_structure(
+        self,
+        sections: Sequence[Dict[str, Any]],
+        section_last_chapter: Optional[Dict[int, int]] = None,
+    ) -> Dict[str, Any]:
+        """把结构阶段已经声明的悬念与真相变成叙事图节点。
+
+        在此之前，生产代码里没有任何一处会往图里加节点——只有
+        ``tools/run_e2e_10_chapters.py`` 会。于是图永远是空的，而契约校验只要发现
+        契约引用了任何节点就会切到严格档，要求 ``primary_thread`` /
+        ``primary_action`` / ``via_node_ids`` 全部指向真实存在的节点。空图上没有一条
+        能满足，新项目的场景规划因此必然失败（``current_work`` 躲过只是因为它的契约
+        恰好从未引用过节点）。
+
+        播种不花任何调用：结构契约里的 ``threads_opened`` 与 ``truths_introduced``
+        已经带着 id、文字和「最晚在第几部分了结/揭晓」，直接转成 thread 与 reveal
+        节点即可。``section_last_chapter`` 把部分序号换成章号（章节大纲按部分分文件，
+        章号连续），拿不到就不写计划章号——那只影响「悬念沉默过久」这类提示，不影响
+        节点本身可选。
+
+        重复调用是安全的：已经在图上的 id 不会再加一次。
+        """
+        existing = {str(node.get("id", "")) for node in self.load().get("nodes", [])}
+        mapping = dict(section_last_chapter or {})
+        operations: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+
+        for section in sorted(
+            [item for item in sections if isinstance(item, dict)],
+            key=lambda item: int(item.get("section_index", 0) or 0),
+        ):
+            for record in section.get("threads_opened", []) or []:
+                node = _thread_node(record, mapping)
+                if node and node["id"] not in existing and node["id"] not in seen:
+                    seen.add(node["id"])
+                    operations.append({"op": "add_node", "node": node})
+            for record in section.get("truths_introduced", []) or []:
+                node = _fact_node(record)
+                if node and node["id"] not in existing and node["id"] not in seen:
+                    seen.add(node["id"])
+                    operations.append({"op": "add_node", "node": node})
+
+        if not operations:
+            return {"added": 0, "revision": self.current_revision()}
+
+        revision = self.apply_change(
+            operations,
+            "从结构契约播种：把已声明的悬念与真相登记为叙事图节点",
+            self.current_revision(),
+        )
+        return {"added": len(operations), "revision": revision}
+
 
     def planning_context(
         self, chapter_number: int, ledger: Optional[Dict[str, Any]] = None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable
 
@@ -190,6 +191,62 @@ def _run_structure(context: StageContext, host: GenerationHost) -> Dict[str, Any
     return {"step": "structure", "generated_files": files}
 
 
+def seed_narrative_graph(output_dir: str) -> Dict[str, Any]:
+    """把结构契约里已声明的悬念与真相登记为叙事图节点。
+
+    生产代码此前从不往图里加节点，于是新项目的图永远是空的，而契约校验只要发现
+    契约引用了任何节点就切到严格档，要求那些 id 指向真实存在的节点——空图上没有
+    一条能满足。播种不花调用：结构阶段已经写好了 threads_opened 与
+    truths_introduced，这里只是把它们搬到图上。
+
+    章号来自章节大纲：大纲按部分分文件、章号连续，所以每一部分的最后一章就是
+    该部分声明的悬念的计划了结章。拿不到就不写计划章号，只影响「悬念沉默过久」
+    这类提示，不影响节点可用。
+
+    任何一步取不到东西都只记一条日志：播种是加分项，不该让整个场景规划停下来。
+    """
+    from core.generation.narrative_graph import NarrativeGraphManager
+    from core.generation.story_ledger import StoryLedgerManager
+
+    logger = logging.getLogger("generation.scenes")
+    try:
+        contract = StoryLedgerManager(output_dir).load_structure_contract()
+        sections = (contract or {}).get("sections") or []
+        if not sections:
+            logger.info("没有结构契约，叙事图不播种（短篇本来就没有这一份）")
+            return {"added": 0}
+        result = NarrativeGraphManager(output_dir).seed_from_structure(
+            sections, _section_last_chapters(output_dir)
+        )
+        logger.info("叙事图播种：新增 %s 个节点，修订号 %s",
+                    result.get("added"), result.get("revision"))
+        return result
+    except Exception as exc:  # noqa: BLE001  播种失败不该挡住场景规划
+        logger.warning("叙事图播种失败，按空图继续：%s", exc)
+        return {"added": 0, "error": str(exc)}
+
+
+def _section_last_chapters(output_dir: str) -> Dict[int, int]:
+    """每一部分的最后一章章号，从章节大纲文件里数出来。"""
+    directory = os.path.join(output_dir, "story", "planning", "chapter_outlines")
+    if not os.path.isdir(directory):
+        return {}
+    chapter_heading = re.compile(r"^#+\s*第\s*(\d+)\s*章", re.MULTILINE)
+    found: Dict[str, int] = {}
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(directory, name), "r", encoding="utf-8") as handle:
+                numbers = [int(item) for item in chapter_heading.findall(handle.read())]
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if numbers:
+            found[name] = max(numbers)
+    # 文件名按部分排序，第 N 个文件就是第 N 部分。
+    return {index: last for index, (_, last) in enumerate(sorted(found.items()), 1)}
+
+
 def _run_scenes(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
     pipeline = ScenePipeline(host)
     story_length = context.parameters.get("story_length", "Novel (Standard)")
@@ -200,6 +257,12 @@ def _run_scenes(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
     else:
         context.progress("生成章节大纲", 0.12)
         pipeline._generate_chapter_outline(context)
+        # 章节大纲出来之后才知道每一部分covers哪几章，这时才能把结构契约里声明的
+        # 悬念与真相登记成叙事图节点。不花任何调用，但决定了下一步逐章规划时模型
+        # 能不能从真实存在的节点里选 primary_thread——图是空的时候它只能自己编，
+        # 编出来的 id 会让契约切到严格档，六条规则一起报错。
+        context.progress("登记叙事图节点", 0.30)
+        seed_narrative_graph(context.output_dir)
         context.progress("逐章规划场景", 0.45)
         pipeline._plan_long_form_scenes(context)
         patterns = (

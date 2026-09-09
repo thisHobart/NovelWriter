@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+
+from core.localization import zh_label
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -78,6 +80,12 @@ class Entity:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
+#: 人物卡里 role 的取值。摘要退到这一栏时要译成中文再显示。
+CHARACTER_ROLE_LABELS = frozenset(
+    {"protagonist", "deuteragonist", "antagonist", "supporting"}
+)
+
+
 def _entity_summary(item: Dict[str, Any], keys: List[str]) -> str:
     for key in keys:
         value = item.get(key)
@@ -123,9 +131,23 @@ def factions(output_dir: str) -> List[Entity]:
 
 
 def characters(output_dir: str) -> List[Entity]:
+    """人物卡片。
+
+    摘要以前把 role 排在最前面，而它是英文枚举，于是界面上每个人的说明都是
+    「protagonist」。改成优先显示外貌与背景这类真正能认人的字段；确实只剩 role
+    时译成中文再显示。
+    """
     payload = _read_json(os.path.join(output_dir, LORE_DIR, "characters.json"))
-    return _entities_from(payload, "人物", ["name", "character_name", "full_name"],
-                          ["role", "description", "summary", "background"])
+    entities = _entities_from(
+        payload, "人物", ["name", "character_name", "full_name"],
+        ["description", "appearance_summary", "background", "backstory_summary",
+         "summary", "role"],
+    )
+    return [
+        Entity(item.name, item.kind, zh_label(item.summary), item.raw)
+        if item.summary in CHARACTER_ROLE_LABELS else item
+        for item in entities
+    ]
 
 
 def lore_text(output_dir: str) -> str:
