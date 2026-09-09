@@ -209,6 +209,19 @@ def contract_output_instructions(
     ]
     thread_example = _thread_ids[0] if _thread_ids else f"PT-{chapter_number:03d}-01"
     node_example = _node_ids[0] if _node_ids else (_thread_ids[0] if _thread_ids else "图节点ID")
+    # transition 的合法取值取决于节点类型：execute 只能用于 reveal 节点。示例里
+    # 摆一个 fact 节点却列出完整枚举，模型就会对着 fact 写 execute——实测第 4、5、
+    # 6 章都因此报「execute 不能应用到 fact 节点」。按示例节点的类型裁剪枚举。
+    _fact_ids = {
+        str(item.get("id", "")).strip()
+        for item in context.get("available_facts", [])
+    }
+    if node_example in _fact_ids:
+        transition_values = "introduce_to_reader|make_inferable|reveal"
+    elif _node_ids or _thread_ids:
+        transition_values = "deprecate"
+    else:
+        transition_values = "introduce_to_reader|make_inferable|reveal|execute|deprecate"
     if graph_is_empty:
         empty_graph_block = """
 **本作目前没有叙事图节点**（上面的 active_threads、available_threads、
@@ -278,7 +291,7 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
   "timeline_events": [{{"id":"TL-{chapter_number:03d}-01","event":"事件名称","time":"明确时刻","location_id":"地点","scene":"scene_1"}}],
   "character_updates": [{{"id":"CU-{chapter_number:03d}-01","character":"人物规范名","attribute":"属性名","value":"取值","stable":false}}],
   "plot_thread_updates": [{{"id":"{thread_example}","action":"advance","via_node_ids":["{node_example}"],"progress_note":"实际推进"}}],
-  "narrative_transitions": [{{"node_id":"{node_example}","transition":"introduce_to_reader|make_inferable|reveal|execute|deprecate","scene":"scene_1"}}]
+  "narrative_transitions": [{{"node_id":"{node_example}","transition":"{transition_values}","scene":"scene_1"}}]
 }}
 {CONTRACT_END}
 

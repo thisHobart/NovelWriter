@@ -787,3 +787,19 @@ def test_an_empty_graph_keeps_the_placeholder_examples():
 
     assert "PT-004-01" in prompt
     assert "本作目前没有叙事图节点" in prompt
+
+
+def test_the_transition_example_matches_the_example_node_type():
+    """execute 只能用于 reveal 节点。
+
+    示例摆一个 fact 节点却列出完整枚举，模型就会对着 fact 写 execute——实测第 4、
+    5、6 章都因此报「execute 不能应用到 fact 节点」。
+    """
+    context = _graph_context(active=["PT001"], available=["PT001"])
+    context["available_facts"] = [{"id": "T001"}]
+
+    prompt = contract_output_instructions(4, narrative_context=context)
+
+    assert '"node_id":"T001"' in prompt
+    assert '"transition":"introduce_to_reader|make_inferable|reveal"' in prompt
+    assert "execute" not in prompt.split('"narrative_transitions"')[1][:200]
