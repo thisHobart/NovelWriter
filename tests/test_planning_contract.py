@@ -846,3 +846,42 @@ def test_with_no_prior_contracts_every_seeded_thread_is_unopened():
 
     assert "还没有任何一章打开过**的情节线：PT001、PT002" in prompt
     assert "已经了结**的情节线" not in prompt
+
+
+def test_reveal_fields_are_declared_to_take_node_ids_not_prose():
+    """实测模型往这三栏填的是自然语言描述。
+
+    schema 里它们只写成空数组、没有任何说明，模型于是写下
+    「正衡律所管委会选择迎合商业利益而放弃程序合规防线」这样的句子，
+    而校验把每一项都当节点 id，整章报「引用了不存在的叙事图节点」。
+    """
+    context = _graph_context(active=[], available=["PT001"])
+    context["available_facts"] = [{"id": "T001"}]
+
+    prompt = contract_output_instructions(6, narrative_context=context)
+
+    assert "这三栏收的是**节点 id**" in prompt
+    assert "不是一句描述" in prompt
+    assert "T001、PT001" in prompt
+    # 假键不能出现在 schema 里，否则模型会照抄进契约
+    assert "__这三栏" not in prompt
+
+
+def test_graph_facts_are_not_confirmable_facts():
+    """图上的 fact 节点是全书设计，不等于前面章节建立过的事实。
+
+    模型看见 available_facts 就去 facts_confirmed，实测第 3、4、6、9、10 章都因
+    「引用了尚未建立的事实」重试。
+    """
+    context = _graph_context(active=[], available=["PT001"])
+    context["available_facts"] = [{"id": "T001"}]
+
+    prompt = contract_output_instructions(6, narrative_context=context)
+
+    assert "facts_confirmed 只能沿用" in prompt
+    assert "本章要第一次确立它，用 facts_added" in prompt
+
+
+def test_an_empty_graph_says_nothing_about_reveal_fields():
+    prompt = contract_output_instructions(1, narrative_context=_graph_context([], []))
+    assert "这三栏收的是**节点 id**" not in prompt

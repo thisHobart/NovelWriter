@@ -146,6 +146,10 @@ def contract_output_instructions(
     )
     empty_graph_block = ""
     graph_usage_block = ""
+    _ctx = narrative_context or {}
+    _hint_nodes = [str(i.get("id","")).strip() for i in _ctx.get("available_facts", []) if str(i.get("id","")).strip()]
+    _hint_threads = [str(i.get("id","")).strip() for g in ("active_threads","available_threads") for i in _ctx.get(g, []) if str(i.get("id","")).strip()]
+    node_ids_hint = "、".join(_hint_nodes[:1] + _hint_threads[:1])
     if not graph_is_empty:
         context = narrative_context or {}
         available = [
@@ -212,6 +216,21 @@ def contract_output_instructions(
         lines.append(
             "- 所有节点 id 只能从上面列出的清单里取，不要自己编造——"
             "图上不存在的 id 会让整份契约不合格。"
+        )
+        # 实测模型往这两栏填的是自然语言描述（「正衡律所管委会选择迎合商业利益而
+        # 放弃程序合规防线」），而校验把每一项都当节点 id，于是整章报「引用了不
+        # 存在的叙事图节点」。schema 里它们只写成空数组，没有任何说明。
+        lines.append(
+            "- allowed_reveals、forbidden_reveals、intentionally_silent_threads "
+            "这三栏收的是**节点 id**（例如 " + (node_ids_hint or "T001、PT001") + "），"
+            "不是一句描述。想说明为什么，写进 core_question 或场景规划正文，"
+            "不要写进这三栏。本章没有要特别开放或封禁的，就留空数组。"
+        )
+        # 同理：图上的 fact 节点是设计层的真相，不等于前面章节已经建立过的事实。
+        lines.append(
+            "- facts_confirmed 只能沿用**前面章节 facts_added 建立过**的事实 id"
+            "（见下方「既有事实」）。叙事图上的 fact 节点是全书设计，还没有被任何一章"
+            "写进正文，不能拿来 confirm；本章要第一次确立它，用 facts_added。"
         )
         graph_usage_block = "\n".join(lines) + "\n"
 
