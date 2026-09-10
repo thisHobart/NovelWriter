@@ -10,11 +10,12 @@ the panel and the generator can never disagree.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from glob import glob
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from core.generation.design_contract import DesignContractError, validate_structure_sequence
 from core.generation.planning_contract import (
@@ -121,7 +122,6 @@ def _assess_scenes(output_dir: str, expected: int) -> StageStatus:
     return StageStatus(COMPLETE, f"{planned} 章场景规划已通过跨章校验", planned, total)
 
 
-
 def _written_chapters(output_dir: str) -> List[int]:
     numbers: set[int] = set()
     for directory in ("story/content/chapters", "story/content"):
@@ -130,6 +130,47 @@ def _written_chapters(output_dir: str) -> List[int]:
             if match and _read(path).strip():
                 numbers.add(int(match.group(1)))
     return sorted(numbers)
+
+
+def _unkept_promises(output_dir: str, final_chapter: int) -> List[str]:
+    """结局已经写完，但设计阶段许下的哪些事没有兑现。
+
+    这是全项目唯一一条「这本书有没有把自己开的头收掉」的检查，此前在应用里没有
+    任何调用者——只有 tools/run_e2e_10_chapters.py 会调。于是「计划在结局前了结
+    的悬念仍开着」「计划揭晓的真相始终没揭」这两条写在那里，正常使用中从不发言。
+
+    图是空的就什么都不报，所以在此之前生成的项目状态一个字不变。
+
+    先直接读文件判空，再决定要不要构造图管理器：管理器的构造函数会建目录、写一份
+    空图，还会顺带做一次账本迁移。状态评估是刷新界面时反复调的只读操作，不该有任何
+    落盘副作用——短篇本来就没有图，不能因为看了一眼状态就给它凭空造一份。
+    """
+    graph_path = os.path.join(
+        output_dir, "system", "story_ledgers", "narrative_graph.json"
+    )
+    if not os.path.isfile(graph_path):
+        return []
+    try:
+        with open(graph_path, "r", encoding="utf-8") as handle:
+            graph = json.load(handle)
+        if not isinstance(graph, dict) or not graph.get("nodes"):
+            return []
+    except (OSError, ValueError, TypeError):
+        return []
+
+    from core.generation.narrative_graph import NarrativeGraphManager
+
+    try:
+        return [
+            str(issue.get("message", ""))
+            + (f"（{issue.get('node_id')}）" if issue.get("node_id") else "")
+            for issue in NarrativeGraphManager(output_dir).validate_terminal_state(
+                final_chapter
+            )
+            if issue.get("severity") == "error"
+        ]
+    except (OSError, ValueError, TypeError):
+        return []
 
 
 def _assess_chapters(output_dir: str, expected: int) -> StageStatus:
@@ -141,6 +182,15 @@ def _assess_chapters(output_dir: str, expected: int) -> StageStatus:
         missing = sorted(set(range(1, expected + 1)) - set(written))
         preview = "、".join(str(number) for number in missing[:6])
         return StageStatus(PARTIAL, f"还缺第 {preview} 章正文", len(written), total)
+    # 正文写完不等于故事讲完。报 PARTIAL 而不是 BLOCKED：正文都在，缺的是收尾，
+    # 把这一步锁上帮不了任何忙，说清楚缺哪一条才有用。
+    unkept = _unkept_promises(output_dir, max(written))
+    if unkept:
+        preview = "；".join(unkept[:3])
+        more = f"，另有 {len(unkept) - 3} 条" if len(unkept) > 3 else ""
+        return StageStatus(
+            PARTIAL, f"{len(written)} 章正文已写完，但{preview}{more}", len(written), total
+        )
     return StageStatus(COMPLETE, f"{len(written)} 章正文已写完", len(written), total)
 
 
@@ -161,6 +211,3 @@ def assess_workflow(output_dir: str) -> Dict[str, StageStatus]:
             result[name] = StageStatus(BLOCKED, f"无法读取该阶段产物：{exc}")
     return result
 
-
-def assess_stage(output_dir: str, step_name: str) -> Optional[StageStatus]:
-    return assess_workflow(output_dir).get(step_name)

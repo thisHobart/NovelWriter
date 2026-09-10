@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, List, Sequence
 
 from core.config.story_options import GENDER_BIAS_MAP
 from core.generation.ai_helper import DEFAULT_API_MODEL, set_backend
@@ -273,6 +273,36 @@ def _run_scenes(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
     return {"step": "scenes", "generated_files": files}
 
 
+def _backfill_missing_contract_fields(
+    context: StageContext, chapters: Sequence[int]
+) -> List[int]:
+    """写正文前，先给缺字段的旧契约补上 continuity 与 chapter_function。
+
+    `continuity` 与 `chapter_function` 都是后来才加进契约的，在此之前规划好的章节
+    没有这两栏，写作阶段会当场判契约不合格。补写这条路早就写好了，却只有
+    ``tools/run_sandbox_chapters.py`` 会走——从界面写正文的人撞上同一个缺陷，只能
+    整章重规划，把一份已经过了跨章校验、已经被后面章节依赖的规划整个重掷一次。
+
+    没缺字段就一次调用都不花：补写函数自己先查，无缺陷直接返回。补不上只记日志，
+    让写作阶段照原路报那个契约错误——那里的报错信息比这里准。
+    """
+    logger = logging.getLogger("generation.chapters")
+    pipeline = ScenePipeline(GenerationHost(context, logger))
+    repaired: List[int] = []
+    for number in chapters:
+        try:
+            if pipeline.backfill_chapter_continuity(
+                context.output_dir, number, context.model, context.parameters
+            ):
+                repaired.append(int(number))
+                context.progress(f"第 {number} 章契约补齐衔接字段", -1.0)
+        except Exception as exc:  # noqa: BLE001  真正的契约错误留给写作阶段报
+            logger.warning("第 %s 章契约补写未成功，按原样继续：%s", number, exc)
+    if repaired:
+        logger.info("写正文前补齐了 %s 章的契约字段：%s", len(repaired), repaired)
+    return repaired
+
+
 def _run_long_form_chapters(
     context: StageContext,
     mode: str = "all",
@@ -290,6 +320,7 @@ def _run_long_form_chapters(
     if not chapter_info:
         raise StageGenerationError("没有找到可写作的章节大纲")
     plan = agent.create_writing_plan(chapter_info, batch_size=3)
+    repaired: List[int] = []
     if mode == "next":
         plan.chapters_to_write = plan.chapters_to_write[:1]
         plan.batch_size = 1
@@ -305,6 +336,7 @@ def _run_long_form_chapters(
         ]
         plan.batch_size = 1
     if plan.chapters_to_write:
+        repaired = _backfill_missing_contract_fields(context, plan.chapters_to_write)
         context.progress(f"撰写 {len(plan.chapters_to_write)} 章正文", 0.18)
 
         def chapter_progress(
@@ -338,7 +370,10 @@ def _run_long_form_chapters(
         "章节写作阶段",
         ("story/content/chapters/chapter_*.md",),
     )
-    return {"step": "chapters", "generated_files": files}
+    result: Dict[str, Any] = {"step": "chapters", "generated_files": files}
+    if repaired:
+        result["contract_fields_backfilled"] = repaired
+    return result
 
 
 def _load_pending(output_dir: str, chapter_number: int | None):

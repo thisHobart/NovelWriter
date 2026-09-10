@@ -29,6 +29,19 @@ from core.generation.story_ledger import (
 GRAPH_VERSION = 1
 ALLOWED_NODE_TYPES = frozenset({"thread", "clue", "fact", "reveal"})
 ALLOWED_EDGE_TYPES = frozenset({"belongs_to", "supports", "requires", "advances"})
+
+#: 四种节点类型里，生产代码只造得出这两种——``seed_from_structure`` 从结构契约的
+#: threads_opened 与 truths_introduced 播种。``clue`` 与 ``reveal`` 至今没有任何
+#: 生产来源，只有 ``tools/run_e2e_10_chapters.py`` 会直接让模型写出来。
+#:
+#: 后果是下面这几条检查在正常使用中不可达，读代码时不要把它们当成正在生效的保护：
+#: ``CLUE_WITHOUT_THREAD``、``REVEAL_WITHOUT_PREREQUISITE``、
+#: ``REVEAL_DEPENDENCY_UNSATISFIED``、``THREAD_CLOSED_BEFORE_REQUIRED_REVEALS``，
+#: 以及 ``ready_reveals`` / ``blocked_reveals``（两者恒为空列表）。
+#:
+#: 要让它们真正生效，得让章节规划有能力往图里新增节点，那是另一条写入路径：
+#: 目前章节契约只能引用已有节点、改它们的状态，不能创建。
+SEEDED_NODE_TYPES = frozenset({"thread", "fact"})
 ALLOWED_OPERATIONS = frozenset(
     {
         "add_node",
@@ -638,6 +651,11 @@ class NarrativeGraphManager:
         a stricter boundary: once the declared final chapter reaches a node's
         planned chapter, leaving that milestone open is an error rather than a
         starvation warning.
+
+        fact 节点也算数。播种造出来的是 thread 与 fact——reveal 节点在生产里没有
+        任何来源——所以只查 reveal 与 thread 等于对着播种出来的图漏掉一半：结构
+        阶段声明「这条真相最晚第几部分揭晓」，到了结局却没揭，正是这条检查该说话
+        的时候。「算不算揭过」沿用 ``_node_satisfied`` 的同一套判定，不另立标准。
         """
         graph = self.load()
         ledger = ledger if ledger is not None else self._load_ledger()
@@ -668,6 +686,26 @@ class NarrativeGraphManager:
                                 "planned_reveal_chapter": due,
                                 "final_chapter": final_chapter,
                                 "actual_status": state.get("reveal_status", "not_started"),
+                            },
+                        )
+                    )
+            elif node_type == "fact":
+                try:
+                    due = int(node.get("planned_reveal_chapter", 0) or 0)
+                except (TypeError, ValueError):
+                    due = 0
+                if due and due <= final_chapter and not self._node_satisfied(
+                    node_id, graph, ledger
+                ):
+                    issues.append(
+                        _issue(
+                            "PLANNED_TRUTH_UNREVEALED_AT_END",
+                            "计划在结局前揭晓的真相始终没有揭给读者",
+                            node_id=node_id,
+                            details={
+                                "planned_reveal_chapter": due,
+                                "final_chapter": final_chapter,
+                                "actual_status": state.get("reader_status", "not_started"),
                             },
                         )
                     )
@@ -1211,12 +1249,6 @@ class NarrativeGraphManager:
             for dependency in required
             if not self._node_satisfied(dependency, graph, ledger)
         )
-
-    def dependencies_satisfied(self, node_id: str, ledger: Dict[str, Any]) -> bool:
-        graph = self.load()
-        if node_id not in self._node_map(graph):
-            return False
-        return not self._missing_dependencies(node_id, graph, ledger)
 
     @staticmethod
     def _planned_chapter(node: Dict[str, Any]) -> int:

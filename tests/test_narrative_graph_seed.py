@@ -201,3 +201,19 @@ def test_a_dependency_on_a_truth_no_section_declared_is_skipped(tmp_path):
 
     assert result["added"] == 4
     assert result["edges"] == 1
+
+
+def test_seeding_only_ever_produces_the_two_declared_node_types(tmp_path):
+    """clue 与 reveal 至今没有生产来源，别让代码读者以为相关检查在生效。"""
+    from core.generation.narrative_graph import SEEDED_NODE_TYPES
+
+    manager = NarrativeGraphManager(str(tmp_path))
+    manager.seed_from_structure(SECTIONS, {1: 7, 2: 14, 3: 20})
+
+    produced = {node["type"] for node in manager.load()["nodes"]}
+    assert produced <= SEEDED_NODE_TYPES
+    assert SEEDED_NODE_TYPES == {"thread", "fact"}
+    # 依赖 clue / reveal 的那几条检查因此恒不触发
+    context = manager.planning_context(1, {})
+    assert context["ready_reveals"] == []
+    assert context["blocked_reveals"] == []
