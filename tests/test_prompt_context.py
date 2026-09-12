@@ -78,6 +78,19 @@ def test_chinese_prose_rules_cover_style_and_technical_accuracy():
     assert "法律、法医和技术术语必须准确" in rules
 
 
+def test_the_subtext_rule_gives_a_position_to_check_not_just_a_prohibition():
+    """九章首稿的潜台词维度全是 2.0 分，而规则一直都在，只是没法当场自查。
+
+    「不要发表连续口号」写的时候对不上任何一句具体的话；「每一段和每一场的最后一句
+    必须是动作、对白或可观察的细节」指到了位置，写完扫一眼就能核。评审给的改法反复
+    指向的也正是段末与场末那句替读者总结的话。
+    """
+    rules = "\n".join(CHINESE_PROSE_REQUIREMENTS)
+    assert "最后一句" in rules
+    assert "总结句" in rules
+    assert "不得由旁白点破" in rules
+
+
 def test_style_analyzer_flags_repetition_and_long_sentences():
     prose = "冰冷。冰冷。冰冷。" + ("这是一个塞入了过多动作和解释、没有及时停顿的句子" * 5) + "。"
     warnings = analyze_chinese_prose_style(prose)
