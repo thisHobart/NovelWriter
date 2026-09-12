@@ -50,6 +50,12 @@ GATE_STAGE = re.compile(
 TRACE_CHAPTER = re.compile(r"^chapter_(?P<chapter>\d+)_")
 TRACE_SUFFIX = re.compile(r"_(?:retry|attempt)_\d+$")
 
+#: 旧追踪把「写正文并评审验收」整段只记成 write：`run_sandbox_chapters` 用
+#: `chapter_N_write` 包住了整个成章流程，评审与重修都算在里面。实测一轮 61 次调用
+#: 里评审占 34 次，按字面标成「写正文」会让成本报告谎报正文的开销。归一到两个工具
+#: 里那个说全了的名字，新旧存档才算同一件事。
+TRACE_ACTIVITY_ALIASES = {"write": "write_review_accept"}
+
 #: 分母变动超过这个幅度时，比率的变化就不再是质量信号。
 DENOMINATOR_DRIFT = 0.20
 
@@ -130,7 +136,8 @@ def parse_trace_stage(stage: str) -> Tuple[Optional[int], str]:
     if match:
         chapter = int(match.group("chapter"))
         text = text[match.end():]
-    return chapter, TRACE_SUFFIX.sub("", text) or "未标注"
+    activity = TRACE_SUFFIX.sub("", text) or "未标注"
+    return chapter, TRACE_ACTIVITY_ALIASES.get(activity, activity)
 
 
 def review_root(output_dir: str) -> str:
@@ -609,6 +616,12 @@ METRICS: Tuple[Tuple[str, str], ...] = (
     ("cost.calls", "context_only"),
 )
 
+#: 哪些指标是比率。排版层不能靠数值大小去猜：一个次数刚好变动 1，
+#: 「小于等于 1 就当成比率」这条猜法会把它印成「100 点」。
+RATE_METRICS = frozenset(
+    {"reviewers.*.rate", "gates.*.retry_rate", "gates.*.rerun_rate"}
+)
+
 #: 每个比率对应的分母字段，用来判断变化是不是被分母带出来的。
 DENOMINATORS = {
     "reviewers.*.rate": "reviewed",
@@ -705,6 +718,7 @@ def diff_snapshots(
                 "before": before,
                 "after": after,
                 "polarity": polarity,
+                "unit": "rate" if pattern in RATE_METRICS else "count",
             }
             if before is None:
                 entry["direction"] = "new"
@@ -764,7 +778,7 @@ def _largest_movement(delta: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if not ranked:
         return {}
-    path, entry = max(ranked, key=lambda item: abs(item[1]["delta"]))
+    path, entry = max(ranked, key=lambda item: _movement_magnitude(item[1]))
     parts = path.split(".")
     # reviewers.reader_blind.rate -> reader_blind；hard_failures.total -> hard_failures
     subject = parts[-2] if len(parts) >= 3 else parts[0]
@@ -773,4 +787,18 @@ def _largest_movement(delta: Dict[str, Any]) -> Dict[str, Any]:
         "subject": subject,
         "direction": entry["direction"],
         "delta": entry["delta"],
+        "unit": entry.get("unit", "count"),
     }
+
+
+def _movement_magnitude(entry: Dict[str, Any]) -> float:
+    """把比率和次数换算到同一把尺上再排大小。
+
+    直接比绝对值等于让次数永远胜出：硬失败多了 1 次的绝对值，比未通过率动了 4 个
+    点大得多，于是「变化最大的那一项」永远指向次数。次数改用相对变化。
+    """
+    amount = abs(entry.get("delta") or 0)
+    if entry.get("unit") == "rate":
+        return amount
+    before = entry.get("before") or 0
+    return amount / max(abs(before), 1)

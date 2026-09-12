@@ -179,6 +179,29 @@ def latest_review(sandbox: Path, chapter: int, stage: str) -> Dict[str, Any]:
         return {}
 
 
+def final_chapter_review(sandbox: Path, chapter: int) -> Dict[str, Any]:
+    """这一章最后一次章节级评审，重修那几轮也算在内。
+
+    只认 stage 恰好是 `chapter` 的那份，拿到的是首轮——一章重修过就会出现「验收
+    通过」旁边印着未过的分数和硬失败，读起来像是带着硬伤放行的。
+    """
+    directory = review_dir(sandbox, chapter)
+    if not directory.is_dir():
+        return {}
+    candidates = sorted(
+        path
+        for path in directory.glob("chapter*.json")
+        if (match := REVIEW_STAMP.match(path.stem))
+        and re.fullmatch(r"chapter(?:_retry_\d+)?", match.group("stage"))
+    )
+    if not candidates:
+        return {}
+    try:
+        return json.loads(candidates[-1].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def write_chapter(sandbox: Path, chapter: int) -> Dict[str, Any]:
     agent = ChapterWritingAgent(
         str(sandbox), app_instance=None, use_new_structure=True, model=MODEL
@@ -263,7 +286,7 @@ def run(
         entry["pending_review"] = pending_review.load(str(sandbox), chapter) is not None
         entry["hand_off"] = hand_off_of(sandbox, chapter)
         entry["opening_reuse"] = boilerplate_between(sandbox, chapter)
-        chapter_review = latest_review(sandbox, chapter, "chapter")
+        chapter_review = final_chapter_review(sandbox, chapter)
         entry["chapter_review"] = {
             "passed": chapter_review.get("passed"),
             "waived": chapter_review.get("waived"),

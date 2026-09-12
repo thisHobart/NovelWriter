@@ -68,7 +68,7 @@ DEFECT_LABELS = {
 }
 
 ACTIVITY_LABELS = {
-    "write": "写正文",
+    # 没有 "write"：它在 parse_trace_stage 里已归一到 write_review_accept。
     "write_review_accept": "写正文并评审验收",
     "scene_planning": "场景规划",
     "continuity_backfill": "契约补写",
@@ -137,10 +137,24 @@ def _verdict_line(verdict: Dict[str, Any]) -> str:
     movement = verdict.get("movement") or {}
     if movement:
         verb = DIRECTION_TEXT.get(movement.get("direction", ""), "")
-        amount = abs(movement.get("delta") or 0)
-        scale = f"{amount * 100:.0f} 点" if amount <= 1 else f"{amount:.0f}"
-        body = f"{body}　较上次：{_label(movement.get('subject', ''))} {verb} {scale}"
+        scale = _scale(movement)
+        tail = f"{verb} {scale}".strip() if scale else "几乎持平"
+        body = f"{body}　较上次：{_label(movement.get('subject', ''))} {tail}"
     return body
+
+
+def _scale(entry: Dict[str, Any]) -> str:
+    """变化幅度按它自己的单位印，不按数值大小猜。
+
+    比率印「点」，次数印「次」。曾经靠「绝对值不超过 1 就当比率」去猜，硬失败从
+    61 次变成 62 次就被印成「恶化 100 点」。四舍五入之后归零的，不印数字。
+    """
+    amount = abs(entry.get("delta") or 0)
+    if entry.get("unit") == "rate":
+        points = round(amount * 100)
+        return f"{points} 点" if points else ""
+    count = round(amount)
+    return f"{count} 次" if count else ""
 
 
 def _delta_note(delta: Optional[Dict[str, Any]], path: str) -> str:
@@ -153,12 +167,25 @@ def _delta_note(delta: Optional[Dict[str, Any]], path: str) -> str:
     before = entry.get("before")
     if entry.get("direction") in {"new", "gone"}:
         return f"　← {word}"
-    shown = _pct(before) if isinstance(before, float) and before <= 1 else before
+    shown = _pct(before) if entry.get("unit") == "rate" else before
     if entry.get("direction") in {"same", "incomparable"}:
         return f"　← 上次 {shown}，{word}"
-    amount = abs(entry.get("delta") or 0)
-    scale = f"{amount * 100:.0f} 点" if amount <= 1 else f"{amount:.0f}"
+    scale = _scale(entry)
+    if not scale:
+        return f"　← 上次 {shown}，几乎持平"
     return f"　← 上次 {shown}，{word} {scale}"
+
+
+def _delta_brief(delta: Optional[Dict[str, Any]], path: str) -> str:
+    """同一行上挂着两个比率时用这个：对比紧跟在它说的那个数后面。
+
+    箭头式后缀只能挂在行尾，读的人没法知道它指的是「重修」还是「重跑」——闸门那
+    一行两个数都在动，挂错一个就是反着读。
+    """
+    note = _delta_note(delta, path)
+    if not note:
+        return ""
+    return "（" + note.replace("　← ", "").replace("，", " ") + "）"
 
 
 def render(
@@ -204,8 +231,9 @@ def render(
             out.append(
                 f"  {_pad(label, 10)}共 {entry.get('chapters', 0):>3} 章　"
                 f"重修 {_pct(entry.get('retry_rate')):>5}"
+                f"{_delta_brief(delta, f'gates.{name}.retry_rate')}"
                 f"　重跑 {_pct(entry.get('rerun_rate')):>5}"
-                f"{_delta_note(delta, f'gates.{name}.rerun_rate')}"
+                f"{_delta_brief(delta, f'gates.{name}.rerun_rate')}"
             )
         out.append("")
 

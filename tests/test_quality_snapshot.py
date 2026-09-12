@@ -284,7 +284,8 @@ def test_cost_activity_names_are_normalized(tmp_path):
     )
 
     section = qs.cost_section(str(tmp_path))
-    assert section["by_activity"]["write"]["calls"] == 2
+    assert section["by_activity"]["write_review_accept"]["calls"] == 2
+    assert "write" not in section["by_activity"]
     assert "structure_full" in section["by_activity"]
     assert section["by_activity"]["未标注"]["calls"] == 1
     assert section["failed_calls"] == 1
@@ -467,6 +468,103 @@ def test_render_returns_lines_and_localizes(capsys):
     assert lines[-1].startswith("结论：")
     assert "reader_blind" not in lines[-1]
     assert capsys.readouterr().out == ""
+
+
+def test_the_coarse_write_stage_is_never_labelled_as_prose_only():
+    """`chapter_N_write` 包住的是整个成章流程，评审占大头。
+
+    实测一轮 61 次调用里评审 34 次，正文 27 次。把这一段标成「写正文」，成本报告
+    就会说正文吃掉了九成五的调用，而真相是一半以上花在评审上。
+    """
+    assert qs.parse_trace_stage("chapter_7_write") == (7, "write_review_accept")
+    assert qs.parse_trace_stage("chapter_7_write_retry_2") == (7, "write_review_accept")
+    assert "write" not in diagnose_quality.ACTIVITY_LABELS
+    assert "写正文并评审验收" == diagnose_quality.ACTIVITY_LABELS["write_review_accept"]
+
+
+def test_gate_line_carries_a_comparison_for_both_rates():
+    """闸门那行有两个比率，对比不能只跟着其中一个走。
+
+    箭头式后缀挂在行尾，读的人没法知道它说的是「重修」还是「重跑」；只印一个，
+    另一个的变化就无声消失了。
+    """
+    snapshot = {
+        "project": "x",
+        "corpus": {"expected_chapters": 3, "review_files": 9,
+                   "merged_chapter_reviews": 3, "unreadable": []},
+        "reviewers": {}, "hard_failures": {},
+        "gates": {"plan": {"chapters": 10, "retry_rate": 0.1, "rerun_rate": 0.5}},
+        "planning_rejections": {"available": False, "reason": "没有存档"},
+        "contract_defects": {"available": True, "total": 0, "codes": {}},
+        "cost": {"available": False, "reason": "没有日志"},
+        "verdict": {"code": "clean", "exit": 0},
+    }
+    delta = {
+        "gates.plan.retry_rate": {"direction": "better", "before": 0.3, "after": 0.1,
+                                  "delta": -0.2, "unit": "rate"},
+        "gates.plan.rerun_rate": {"direction": "worse", "before": 0.4, "after": 0.5,
+                                  "delta": 0.1, "unit": "rate"},
+    }
+    line = next(
+        line for line in diagnose_quality.render(snapshot, delta, []) if "场景规划" in line
+    )
+
+    assert line.index("重修") < line.index("好转") < line.index("重跑")
+    assert "恶化" in line[line.index("重跑"):]
+
+
+def test_a_count_that_moves_by_one_is_not_a_hundred_point_swing():
+    """靠数值大小猜单位，次数变动 1 会被印成「恶化 100 点」。
+
+    实测硬失败从 61 次变成 62 次，报告与结论句都印了「恶化 100 点」。单位跟着指标
+    表走，不由数值大小推。
+    """
+    note = diagnose_quality._delta_note(
+        {"hard_failures.total": {"direction": "worse", "before": 61, "after": 62,
+                                 "delta": 1, "unit": "count"}},
+        "hard_failures.total",
+    )
+
+    assert "100" not in note
+    assert "1 次" in note and "上次 61" in note
+
+
+def test_a_change_too_small_to_show_says_so_instead_of_zero():
+    """未通过率动了不到半个点，印成「好转 0 点」是句废话。"""
+    note = diagnose_quality._delta_note(
+        {"reviewers.contract.rate": {"direction": "better", "before": 0.0769,
+                                     "after": 0.0732, "delta": -0.0037,
+                                     "unit": "rate"}},
+        "reviewers.contract.rate",
+    )
+
+    assert "0 点" not in note
+    assert "几乎持平" in note
+
+
+def test_units_come_from_the_metric_table_not_from_magnitude():
+    previous = {"reviewers": {"a": {"rate": 0.5, "reviewed": 10}},
+                "hard_failures": {"total": 61}}
+    current = {"reviewers": {"a": {"rate": 0.4, "reviewed": 10}},
+               "hard_failures": {"total": 62}}
+
+    delta = qs.diff_snapshots(previous, current)
+
+    assert delta["reviewers.a.rate"]["unit"] == "rate"
+    assert delta["hard_failures.total"]["unit"] == "count"
+
+
+def test_the_largest_movement_is_not_always_whichever_metric_counts_things():
+    """比绝对值等于让次数永远胜出：+1 次的绝对值压过动了 10 个点的比率。"""
+    delta = {
+        "reviewers.reader_blind.rate": {"direction": "better", "before": 0.64,
+                                        "after": 0.54, "delta": -0.10,
+                                        "unit": "rate"},
+        "hard_failures.total": {"direction": "worse", "before": 61, "after": 62,
+                                "delta": 1, "unit": "count"},
+    }
+
+    assert qs._largest_movement(delta)["subject"] == "reader_blind"
 
 
 def test_missing_directory_returns_two(tmp_path, capsys):
