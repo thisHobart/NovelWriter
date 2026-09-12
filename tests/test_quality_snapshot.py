@@ -37,6 +37,35 @@ def _merged(components: dict, hard: list | None = None) -> dict:
     }
 
 
+def _scored(scores: dict, stage: str = "chapter") -> dict:
+    """一份合议评审，顶层 scores 用带分项名前缀的形式（reader_blind.subtext）。"""
+    components: dict = {}
+    for key, value in scores.items():
+        name, _, dimension = key.partition(".")
+        child = components.setdefault(
+            name,
+            {
+                "stage": name,
+                "passed": True,
+                "pass_average": 3.2,
+                "average_score": value,
+                "scores": {},
+                "hard_failures": [],
+            },
+        )
+        child["scores"][dimension] = value
+        child["passed"] = child["passed"] and value >= 3.0
+    return {
+        "stage": stage,
+        "passed": all(child["passed"] for child in components.values()),
+        "pass_average": 3.2,
+        "average_score": round(sum(scores.values()) / len(scores), 3),
+        "hard_failures": [],
+        "scores": dict(scores),
+        "component_reviews": components,
+    }
+
+
 def _write_review(root, chapter: int, stage: str, payload, stamp: str = "20260911_120000_000001"):
     directory = root / "quality" / "legal_suspense_reviews" / f"chapter_{chapter}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -442,6 +471,164 @@ def test_verdict_carries_identifiers_not_chinese(tmp_path):
     })
     assert verdict["subject"] == "reader_blind"
     assert verdict["value"] == 0.63
+
+
+# --- 首稿维度分 -------------------------------------------------------------
+
+
+def test_a_waived_or_rerun_review_is_not_the_first_draft(tmp_path):
+    """坑：waived 与 rerun 也是 gate=="chapter"、retry==0，按那两个条件会被当成首稿。
+
+    waived 是重修之后作者放行的那一稿，rerun 是对同一份旧正文补跑的评审，两者都在
+    首稿之后。实测把它们算进来，九章首稿的潜台词均分从 2.000 变成 2.111，
+    「零方差」这个结论就没了。
+    """
+    _write_review(tmp_path, 7, "chapter", _scored({"reader_blind.subtext": 2.0}),
+                  "20260911_120000_000001")
+    _write_review(tmp_path, 7, "chapter_waived", _scored({"reader_blind.subtext": 4.0}),
+                  "20260911_120500_000001")
+    _write_review(tmp_path, 7, "chapter_rerun", _scored({"reader_blind.subtext": 4.0}),
+                  "20260911_121000_000001")
+
+    section = qs.dimension_section(qs.scan_reviews(str(tmp_path)))
+
+    assert section["first_draft"]["reader_blind"]["subtext"]["mean"] == 2.0
+    assert section["first_draft"]["reader_blind"]["subtext"]["chapters"] == 1
+
+
+def test_a_rerun_chapter_pairs_the_last_round_with_its_own_retry(tmp_path):
+    """坑：一章跑了两轮，拿第一轮的首稿减第二轮的重修，两个数不是同一份稿子。
+
+    第 18 章就是这个形状：第一轮首稿 3.0，中途一次契约让位触发整章重生成，
+    第二轮首稿 2.0。按时间序切段、只看最后一段，首稿才和重修配得上对。
+
+    里面还藏着第二个坑：目录列出来的顺序按不得。文件名是「阶段_时间戳」，阶段名排
+    在时间戳前面，于是 chapter_20260911_171937 会排在 chapter_retry_1_20260911_171500
+    之前——照文件名顺序走，第二轮的首稿会跟第一轮的重修配成一对。必须按时间戳排。
+    """
+    _write_review(tmp_path, 18, "chapter", _scored({"reader_blind.subtext": 3.0}),
+                  "20260911_171258_000001")
+    _write_review(tmp_path, 18, "chapter_retry_1", _scored({"reader_blind.subtext": 4.0}),
+                  "20260911_171500_000001")
+    _write_review(tmp_path, 18, "chapter", _scored({"reader_blind.subtext": 2.0}),
+                  "20260911_171937_000001")
+    _write_review(tmp_path, 18, "chapter_retry_1", _scored({"reader_blind.subtext": 3.0}),
+                  "20260911_172005_000001")
+
+    section = qs.dimension_section(qs.scan_reviews(str(tmp_path)))
+
+    assert section["first_draft"]["reader_blind"]["subtext"]["mean"] == 2.0
+    moved = section["retry_gain"]["reader_blind"]["subtext"]
+    assert (moved["before"], moved["after"], moved["gain"]) == (2.0, 3.0, 1.0)
+
+
+def test_bare_dimension_names_from_different_reviewers_do_not_merge(tmp_path):
+    """坑：裸维度名会撞车。
+
+    契约评审有 continuity，读者盲读有 chapter_continuity；契约评审有 chinese_prose，
+    读者盲读有 chinese_readability。合到一起算均分就是两回事相加。
+    """
+    _write_review(tmp_path, 3, "chapter", _scored({
+        "contract.continuity": 4.0,
+        "reader_blind.chapter_continuity": 2.0,
+    }))
+
+    section = qs.dimension_section(qs.scan_reviews(str(tmp_path)))
+
+    assert section["first_draft"]["contract"]["continuity"]["mean"] == 4.0
+    assert section["first_draft"]["reader_blind"]["chapter_continuity"]["mean"] == 2.0
+
+
+def test_old_reviews_without_top_level_scores_still_get_prefixed_keys(tmp_path):
+    """老留档没有顶层 scores，只能按分项现拼，拼出来必须是同一套键。"""
+    payload = _scored({"reader_blind.subtext": 2.0})
+    payload.pop("scores")
+    _write_review(tmp_path, 4, "chapter", payload)
+
+    section = qs.dimension_section(qs.scan_reviews(str(tmp_path)))
+
+    assert section["first_draft"]["reader_blind"]["subtext"]["mean"] == 2.0
+
+
+def test_dimension_denominators_are_counted_per_dimension(tmp_path):
+    """各维度的章数不同：盲读各项 9 章，合理性各项 8 章，接上一章只有 3 章。
+
+    共用一个分母，样本只有 3 份的那一项会被当成有几十份撑着。
+    """
+    _write_review(tmp_path, 1, "chapter", _scored({
+        "reader_blind.subtext": 2.0,
+        "reader_blind.chapter_continuity": 3.0,
+    }))
+    _write_review(tmp_path, 2, "chapter", _scored({"reader_blind.subtext": 2.0}))
+
+    section = qs.dimension_section(qs.scan_reviews(str(tmp_path)))
+    first = section["first_draft"]["reader_blind"]
+
+    assert first["subtext"]["chapters"] == 2
+    assert first["chapter_continuity"]["chapters"] == 1
+    assert qs.DENOMINATORS["dimensions.first_draft.*.*.mean"] == "chapters"
+
+
+def test_a_project_without_merged_reviews_says_so_instead_of_showing_zero(tmp_path):
+    section = qs.dimension_section(qs.scan_reviews(str(tmp_path)))
+    assert section["available"] is False
+    assert section["reason"]
+    assert section["first_draft"] == {}
+
+
+def test_two_wildcards_expand_because_dimensions_nest_twice():
+    """维度要「分项名 + 维度名」两层通配；键里带点的扁平写法会在切路径时碎掉。"""
+    snapshot = {"dimensions": {"first_draft": {
+        "reader_blind": {"subtext": {"mean": 2.0}},
+        "plausibility": {"evidence_handling": {"mean": 2.5}},
+    }}}
+
+    paths = qs._expand("dimensions.first_draft.*.*.mean", snapshot)
+
+    assert sorted(paths) == [
+        "dimensions.first_draft.plausibility.evidence_handling.mean",
+        "dimensions.first_draft.reader_blind.subtext.mean",
+    ]
+
+
+def test_a_score_delta_is_printed_in_points_not_as_a_count():
+    note = diagnose_quality._delta_note(
+        {"dimensions.first_draft.reader_blind.subtext.mean": {
+            "direction": "context", "before": 2.0, "after": 2.5,
+            "delta": 0.5, "unit": "score"}},
+        "dimensions.first_draft.reader_blind.subtext.mean",
+    )
+
+    assert "上次 2.00" in note
+    assert "仅供参考" in note
+    assert diagnose_quality._scale(
+        {"delta": 0.5, "unit": "score"}
+    ) == "0.50 分"
+
+
+def test_dimension_scores_never_take_over_the_verdict_movement():
+    """坑：非比率一律按相对变化排大小，2.0 分动 0.5 会永远压过未通过率动 10 点。
+
+    维度指标标成 context_only 就不会进「变化最大的那一项」的筛选，结论行的
+    「较上次」不会被它长期占住。
+    """
+    previous = {
+        "reviewers": {"reader_blind": {"rate": 0.64, "reviewed": 10}},
+        "dimensions": {"first_draft": {"reader_blind": {
+            "subtext": {"mean": 2.0, "chapters": 10}}}},
+    }
+    current = {
+        "reviewers": {"reader_blind": {"rate": 0.54, "reviewed": 10}},
+        "dimensions": {"first_draft": {"reader_blind": {
+            "subtext": {"mean": 3.0, "chapters": 10}}}},
+    }
+
+    delta = qs.diff_snapshots(previous, current)
+
+    path = "dimensions.first_draft.reader_blind.subtext.mean"
+    assert delta[path]["unit"] == "score"
+    assert delta[path]["direction"] == "context"
+    assert qs._largest_movement(delta)["subject"] == "reader_blind"
 
 
 # --- 排版 -------------------------------------------------------------------

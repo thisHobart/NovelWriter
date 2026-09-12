@@ -77,6 +77,35 @@ ACTIVITY_LABELS = {
     "未标注": "未标注",
 }
 
+DIMENSION_LABELS = {
+    "opening_pull": "开场抓力",
+    "reader_orientation": "读者定位",
+    "character_credibility": "人物可信",
+    "scene_dynamics": "场面推进",
+    "subtext": "潜台词",
+    "narrative_restraint": "叙述克制",
+    "chinese_readability": "中文可读",
+    "chapter_continuity": "接上一章",
+    "behavioral_logic": "行为逻辑",
+    "evidence_handling": "证据处理",
+    "procedural_plausibility": "程序可信",
+    "technical_plausibility": "技术可信",
+    "claim_calibration": "断言分寸",
+    "focus_depth": "聚焦深度",
+    "concrete_detail": "具体细节",
+    "information_gap": "信息落差",
+    "fair_play": "公平线索",
+    "deduction_logic": "推理链条",
+    "suspect_pressure": "嫌疑压力",
+    "personal_cost": "个人代价",
+    "chinese_prose": "中文文笔",
+    "continuity": "衔接",
+    "chapter_purpose": "本章职能",
+}
+
+#: 最弱的几项印出来就够了：二十几个维度全列，该看的那三行就淹了。
+WEAKEST_SHOWN = 8
+
 DIRECTION_TEXT = {
     "better": "好转",
     "worse": "恶化",
@@ -84,7 +113,7 @@ DIRECTION_TEXT = {
     "new": "新增",
     "gone": "已消失",
     "incomparable": "样本变动过大，不作判断",
-    "context": "",
+    "context": "仅供参考",
 }
 
 
@@ -150,9 +179,12 @@ def _scale(entry: Dict[str, Any]) -> str:
     61 次变成 62 次就被印成「恶化 100 点」。四舍五入之后归零的，不印数字。
     """
     amount = abs(entry.get("delta") or 0)
-    if entry.get("unit") == "rate":
+    unit = entry.get("unit")
+    if unit == "rate":
         points = round(amount * 100)
         return f"{points} 点" if points else ""
+    if unit == "score":
+        return f"{amount:.2f} 分" if round(amount, 2) else ""
     count = round(amount)
     return f"{count} 次" if count else ""
 
@@ -167,8 +199,14 @@ def _delta_note(delta: Optional[Dict[str, Any]], path: str) -> str:
     before = entry.get("before")
     if entry.get("direction") in {"new", "gone"}:
         return f"　← {word}"
-    shown = _pct(before) if entry.get("unit") == "rate" else before
-    if entry.get("direction") in {"same", "incomparable"}:
+    unit = entry.get("unit")
+    if unit == "rate":
+        shown = _pct(before)
+    elif unit == "score":
+        shown = f"{before:.2f}" if isinstance(before, (int, float)) else before
+    else:
+        shown = before
+    if entry.get("direction") in {"same", "incomparable", "context"}:
         return f"　← 上次 {shown}，{word}"
     scale = _scale(entry)
     if not scale:
@@ -186,6 +224,20 @@ def _delta_brief(delta: Optional[Dict[str, Any]], path: str) -> str:
     if not note:
         return ""
     return "（" + note.replace("　← ", "").replace("，", " ") + "）"
+
+
+def _weakest_dimensions(dimensions: Dict[str, Any]) -> List[tuple]:
+    """首稿分最低的那几个维度，连同它们在重修那一轮涨了多少。"""
+    gains = dimensions.get("retry_gain") or {}
+    rows = []
+    for component, items in (dimensions.get("first_draft") or {}).items():
+        for dimension, entry in items.items():
+            if entry.get("mean") is None:
+                continue
+            moved = (gains.get(component) or {}).get(dimension) or {}
+            rows.append((component, dimension, entry, moved))
+    rows.sort(key=lambda row: (row[2]["mean"], row[0], row[1]))
+    return rows[:WEAKEST_SHOWN]
 
 
 def render(
@@ -219,6 +271,37 @@ def render(
                 f"{entry.get('reviewed', 0):<4} {_pct(entry.get('rate')):>5}"
                 f"{_delta_note(delta, f'reviewers.{name}.rate')}"
             )
+        out.append("")
+
+    dimensions = snapshot.get("dimensions") or {}
+    if dimensions.get("available"):
+        rows = _weakest_dimensions(dimensions)
+        if rows:
+            out.append(
+                f"首稿最弱的 {len(rows)} 个维度"
+                f"（0-4 分，低于 {dimensions.get('bar', 3.0):g} 分评审直接拦下）："
+            )
+            for component, dimension, entry, moved in rows:
+                label = (
+                    f"{REVIEWER_LABELS.get(component, component)}"
+                    f"·{DIMENSION_LABELS.get(dimension, dimension)}"
+                )
+                after = moved.get("after")
+                gain = moved.get("gain")
+                repaired = (
+                    f"　重修后 {after:.2f}（{gain:+.2f}）"
+                    if after is not None and gain is not None
+                    else ""
+                )
+                out.append(
+                    f"  {_pad(label, 20)}{entry['mean']:.2f}　"
+                    f"{entry['chapters']:>2} 章，其中 {entry['below_bar']:>2} 章不及格"
+                    f"{repaired}"
+                    f"{_delta_note(delta, f'dimensions.first_draft.{component}.{dimension}.mean')}"
+                )
+            out.append("")
+    elif dimensions.get("reason"):
+        out.append(f"首稿维度分：{dimensions['reason']}")
         out.append("")
 
     gates = snapshot.get("gates") or {}
@@ -296,6 +379,15 @@ def render(
         out.append("")
 
     out.append(f"结论：{_verdict_line(snapshot.get('verdict') or {})}")
+    weakest = _weakest_dimensions(snapshot.get("dimensions") or {})
+    if weakest:
+        component, dimension, entry, moved = weakest[0]
+        after = moved.get("after")
+        tail = f"，重修后 {after:.2f}——这一分是重修替首稿挣的" if after is not None else ""
+        out.append(
+            f"　　首稿最弱：{REVIEWER_LABELS.get(component, component)}"
+            f"·{DIMENSION_LABELS.get(dimension, dimension)} {entry['mean']:.2f} 分{tail}"
+        )
     return out
 
 

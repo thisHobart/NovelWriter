@@ -34,7 +34,7 @@ SNAPSHOT_STEM = "quality_snapshot"
 
 #: 文件名形如「阶段_YYYYMMDD_HHMMSS_微秒」。直接用前缀 glob 会让 chapter 把
 #: chapter_retry_1 也算进去，那正是「重修跑了几轮」被算错的原因。
-REVIEW_STAMP = re.compile(r"^(?P<stage>.+)_\d{8}_\d{6}_\d+$")
+REVIEW_STAMP = re.compile(r"^(?P<stage>.+)_(?P<stamp>\d{8}_\d{6}_\d+)$")
 
 #: 闸门名必须整体解析。``chapter_retry_1_scene_2`` 是「整章重修期间的第二场景
 #: 评审」，按 ``_retry_`` 切前缀会把它算到整章那一栏去。
@@ -75,6 +75,9 @@ class ParsedReview:
     stage: GateStage
     raw_stage: str
     payload: Dict[str, Any]
+    #: 文件名里的时间戳。目录列出来的顺序按不得：阶段名排在时间戳前面，
+    #: chapter_20260911_171937 会排在 chapter_retry_1_20260911_171500 之前。
+    stamp: str = ""
 
     @property
     def is_merged(self) -> bool:
@@ -111,6 +114,13 @@ def _rate(hit: int, total: int) -> Optional[float]:
     if not total:
         return None
     return round(hit / total, 4)
+
+
+def _mean(total: float, count: int) -> Optional[float]:
+    """分数的除法入口，与 ``_rate`` 同一个规矩：没有分母返回 None，不返回 0.0。"""
+    if not count:
+        return None
+    return round(total / count, 3)
 
 
 def parse_gate_stage(stage: str) -> Optional[GateStage]:
@@ -179,7 +189,7 @@ def scan_reviews(output_dir: str) -> ReviewCorpus:
             if gate is None:
                 continue
             corpus.chapters.setdefault(chapter, []).append(
-                ParsedReview(chapter, gate, raw_stage, payload)
+                ParsedReview(chapter, gate, raw_stage, payload, stamp.group("stamp"))
             )
     return corpus
 
@@ -216,6 +226,148 @@ def reviewer_section(corpus: ReviewCorpus) -> Dict[str, Any]:
             "threshold": entry["threshold"],
         }
     return result
+
+
+#: 单个维度低于这个分就会被评审列进 blocking_dimensions（见 domain_review_agent
+#: 里合议判定的那段）。这里沿用同一条线，不另立标准。
+DIMENSION_BAR = 3.0
+
+
+def _prefixed_scores(payload: Dict[str, Any]) -> Dict[str, float]:
+    """一份合议评审里「哪个分项的哪个维度得了几分」。
+
+    键必须带分项名。裸维度名会撞车：contract 有 continuity 而 reader_blind 有
+    chapter_continuity，contract 有 chinese_prose 而 reader_blind 有
+    chinese_readability，合到一起算均分就是两回事相加。
+    合议评审的顶层 scores 本来就是这个形式；老留档没有就按分项现拼。
+    """
+    top = payload.get("scores")
+    if isinstance(top, dict) and any("." in str(key) for key in top):
+        return {
+            str(key): float(value)
+            for key, value in top.items()
+            if isinstance(value, (int, float))
+        }
+    scores: Dict[str, float] = {}
+    for name, child in (payload.get("component_reviews") or {}).items():
+        if not isinstance(child, dict):
+            continue
+        for key, value in (child.get("scores") or {}).items():
+            if isinstance(value, (int, float)):
+                scores[f"{name}.{key}"] = float(value)
+    return scores
+
+
+def _last_round(reviews: List[ParsedReview]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """这一章最后一轮的（首稿评审，重修后评审）。没有就各返回空。
+
+    一章里出现多份不带 retry 的 chapter 留档不是重复，是整章跑了多轮——
+    gate_section 早就按「同名裸阶段出现两次以上」把这件事认定为重跑了。第 18 章
+    第一轮首稿 subtext 3.0，中途一次契约让位触发整章重生成，第二轮首稿 2.0；
+    拿第一轮的首稿减第二轮的重修，两个数描述的不是同一份稿子。所以按时间序切段，
+    只看最后一段。
+
+    带 marker 的一概不算首稿：waived 是重修之后作者放行的那一稿，rerun 是对同一份
+    旧正文补跑的评审，两者都在首稿之后。算进来，「九章首稿 subtext 全是 2.0」这个
+    零方差的结论就会变成 2.111。
+    """
+    first: Dict[str, Any] = {}
+    best: Dict[str, Any] = {}
+    best_retry = -1
+    for review in sorted(reviews, key=lambda item: item.stamp):
+        if review.stage.gate != "chapter":
+            continue
+        if not review.stage.retry and not review.stage.marker:
+            first, best, best_retry = review.payload, {}, -1
+        elif review.stage.retry > best_retry and first:
+            best, best_retry = review.payload, review.stage.retry
+    return first, best
+
+
+def dimension_section(corpus: ReviewCorpus) -> Dict[str, Any]:
+    """各维度的首稿得分，以及重修那一轮把它抬高了多少。
+
+    分项的未通过率答不了「改完写作提示词有没有用」：一个维度垮了和八个维度都平庸，
+    在那个合并出来的数上长得一模一样。实测九章首稿的 reader_blind.subtext 全是
+    2.0 分、零方差，而重修一轮就到 3.67——这件事只在维度这一层看得见。
+
+    区块键固定存在：算不出来时 available 为 false 并说明原因，对比逻辑就永远不用
+    处理缺区块的情况。
+    """
+    first_draft: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    gain: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    chapters = 0
+
+    for reviews in corpus.chapters.values():
+        first, best = _last_round(reviews)
+        if not first:
+            continue
+        before = _prefixed_scores(first)
+        if not before:
+            continue
+        chapters += 1
+        after = _prefixed_scores(best) if best else {}
+        for key, score in before.items():
+            component, _, dimension = key.partition(".")
+            if not dimension:
+                continue
+            entry = first_draft.setdefault(component, {}).setdefault(
+                dimension, {"chapters": 0, "score_sum": 0.0, "below_bar": 0}
+            )
+            entry["chapters"] += 1
+            entry["score_sum"] += score
+            if score < DIMENSION_BAR:
+                entry["below_bar"] += 1
+            if key not in after:
+                continue
+            moved = gain.setdefault(component, {}).setdefault(
+                dimension, {"chapters": 0, "before_sum": 0.0, "after_sum": 0.0}
+            )
+            moved["chapters"] += 1
+            moved["before_sum"] += score
+            moved["after_sum"] += after[key]
+
+    if not chapters:
+        return {
+            "available": False,
+            "reason": "没有带分项的首轮整章评审，算不出维度分",
+            "bar": DIMENSION_BAR,
+            "chapters": 0,
+            "first_draft": {},
+            "retry_gain": {},
+        }
+
+    return {
+        "available": True,
+        "reason": "",
+        "bar": DIMENSION_BAR,
+        "chapters": chapters,
+        "first_draft": {
+            component: {
+                dimension: {
+                    "chapters": entry["chapters"],
+                    "below_bar": entry["below_bar"],
+                    "mean": _mean(entry["score_sum"], entry["chapters"]),
+                }
+                for dimension, entry in sorted(items.items())
+            }
+            for component, items in sorted(first_draft.items())
+        },
+        "retry_gain": {
+            component: {
+                dimension: {
+                    "chapters": entry["chapters"],
+                    "before": _mean(entry["before_sum"], entry["chapters"]),
+                    "after": _mean(entry["after_sum"], entry["chapters"]),
+                    "gain": _mean(
+                        entry["after_sum"] - entry["before_sum"], entry["chapters"]
+                    ),
+                }
+                for dimension, entry in sorted(items.items())
+            }
+            for component, items in sorted(gain.items())
+        },
+    }
 
 
 def gate_section(corpus: ReviewCorpus) -> Dict[str, Any]:
@@ -504,6 +656,7 @@ def build_snapshot(output_dir: str) -> Dict[str, Any]:
         },
         "reviewers": reviewer_section(corpus),
         "gates": gate_section(corpus),
+        "dimensions": dimension_section(corpus),
         "hard_failures": hard_failure_section(corpus),
         "planning_rejections": planning_rejection_section(output_dir),
         "contract_defects": contract_defect_section(output_dir, expected),
@@ -612,6 +765,10 @@ METRICS: Tuple[Tuple[str, str], ...] = (
     ("gates.*.rerun_rate", "lower_is_better"),
     ("hard_failures.total", "lower_is_better"),
     ("planning_rejections.attempts", "lower_is_better"),
+    # 维度分只报数字、不下判断。噪声底就是效应量：同一章、同一份提示词、两次独立
+    # 首稿，technical_plausibility 有 3/5 次相差 1 分以上。判「好转/恶化」会让二十
+    # 几个维度里每次都有一两个随机翻牌被印成恶化，对比表的信噪比就没了。
+    ("dimensions.first_draft.*.*.mean", "context_only"),
     ("corpus.merged_chapter_reviews", "context_only"),
     ("cost.calls", "context_only"),
 )
@@ -622,12 +779,26 @@ RATE_METRICS = frozenset(
     {"reviewers.*.rate", "gates.*.retry_rate", "gates.*.rerun_rate"}
 )
 
+#: 哪些指标是 0 到 4 的评分。和比率、次数都不是一把尺，幅度得印「分」。
+SCORE_METRICS = frozenset({"dimensions.first_draft.*.*.mean"})
+
 #: 每个比率对应的分母字段，用来判断变化是不是被分母带出来的。
 DENOMINATORS = {
     "reviewers.*.rate": "reviewed",
     "gates.*.retry_rate": "chapters",
     "gates.*.rerun_rate": "chapters",
+    # 不写这一行，分母漂移判定查不到就退回整体合议份数，于是只有 3 份样本的
+    # reader_blind.chapter_continuity 会被当成有几十份撑着。
+    "dimensions.first_draft.*.*.mean": "chapters",
 }
+
+
+def _unit_of(pattern: str) -> str:
+    if pattern in RATE_METRICS:
+        return "rate"
+    if pattern in SCORE_METRICS:
+        return "score"
+    return "count"
 
 
 def snapshot_paths(output_dir: str) -> Tuple[str, str]:
@@ -696,9 +867,13 @@ def _expand(pattern: str, snapshot: Dict[str, Any]) -> List[str]:
     parent = _dig(snapshot, parts[:index])
     if not isinstance(parent, dict):
         return []
-    return [
-        ".".join(parts[:index] + [name] + parts[index + 1:]) for name in parent
-    ]
+    expanded: List[str] = []
+    for name in parent:
+        # 维度要两层通配（分项名 + 维度名）。每递归一层消掉一个星号，会停。
+        expanded.extend(
+            _expand(".".join(parts[:index] + [name] + parts[index + 1:]), snapshot)
+        )
+    return expanded
 
 
 def diff_snapshots(
@@ -718,7 +893,7 @@ def diff_snapshots(
                 "before": before,
                 "after": after,
                 "polarity": polarity,
-                "unit": "rate" if pattern in RATE_METRICS else "count",
+                "unit": _unit_of(pattern),
             }
             if before is None:
                 entry["direction"] = "new"
