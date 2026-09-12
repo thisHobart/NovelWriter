@@ -881,6 +881,8 @@ class ChapterWritingAgent(BaseAgent):
                 next_scene_plan=kwargs.get("next_scene_plan", ""),
                 chapter_contract=kwargs.get("contract"),
                 profile=kwargs.get("profile"),
+                # 契约重生成走的是这条路，重写的第一场同样要接上一章的开头。
+                continuity_rules=kwargs.get("continuity_rules", ()),
             )
 
         def save_revised_plan(revised_plan: str) -> None:
