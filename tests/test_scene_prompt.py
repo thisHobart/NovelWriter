@@ -182,3 +182,22 @@ def test_the_last_scene_has_nothing_left_to_forbid():
     prompt = _prompt(scene_number=3, contract=STAGED_CONTRACT)
     assert "以下内容属于本章后面的场次" not in prompt
     assert "scene_3: 法官当庭裁决梁浩无罪" in prompt
+
+
+def test_the_four_weakest_review_dimensions_each_get_a_checkable_rule():
+    """四条各对应一个长期低分的维度，判据要能在写的时候当场核。
+
+    抽象禁令写的时候对不上任何一句具体的话。这四条分别给出：物证要有来路、
+    定性要有出处、断言不得越过证据、命令只能由有职权的人下。
+    """
+    from core.generation.domain_profiles import DETECTIVE_MYSTERY
+
+    rules = "\n".join(DETECTIVE_MYSTERY.scene_writing_rules)
+    assert "封签、编号、流转底单、原始数据校验" in rules
+    assert "来自哪一次检测或哪一份报告" in rules
+    assert "不排除" in rules
+    assert "确有此职权的人发出" in rules
+
+    prompt = _prompt(profile=DETECTIVE_MYSTERY)
+    for rule in DETECTIVE_MYSTERY.scene_writing_rules:
+        assert rule in prompt
