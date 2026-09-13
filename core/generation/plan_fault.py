@@ -66,6 +66,24 @@ def plan_mandated_failures(
     return found
 
 
+def plan_fault_asks(failures: Sequence[Dict[str, Any]]) -> List[str]:
+    """每处规划缺陷一条修改要求，可以直接发给规划修订。
+
+    单列出来是因为它有两个去处：写进评审警告给作者看，以及作为 `revise_plan` 的
+    修改清单。两处必须是同一句话——作者在界面上看到的那一条，正是自动修订拿去改
+    的那一条，对不上就没法核对到底改了什么。
+    """
+    return [
+        "【{code}】{problem} → 规划第 {scene} 场里的这句：「{echo}」".format(
+            code=item.get("code", ""),
+            problem=str(item.get("problem", ""))[:120],
+            scene=item.get("plan_scene", "?"),
+            echo=item.get("plan_echo", ""),
+        )
+        for item in failures
+    ]
+
+
 def describe_plan_faults(failures: Sequence[Dict[str, Any]]) -> str:
     """写给作者的一句话：哪几条得回规划里改，对应规划的哪一句。"""
     if not failures:
@@ -74,13 +92,5 @@ def describe_plan_faults(failures: Sequence[Dict[str, Any]]) -> str:
         "以下问题出在场景规划本身，重写正文改不掉——照规划写就过不了评审，"
         "不照规划写就违反契约："
     ]
-    lines.extend(
-        "- 【{code}】{problem} → 规划第 {scene} 场里的这句：「{echo}」".format(
-            code=item.get("code", ""),
-            problem=str(item.get("problem", ""))[:120],
-            scene=item.get("plan_scene", "?"),
-            echo=item.get("plan_echo", ""),
-        )
-        for item in failures
-    )
+    lines.extend(f"- {ask}" for ask in plan_fault_asks(failures))
     return "\n".join(lines)

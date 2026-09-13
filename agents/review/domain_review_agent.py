@@ -1794,13 +1794,20 @@ repair_scope 请写 scene_1、scene_2 等可路由位置，无法判断场次时
         review: DomainReview,
         contract: Dict[str, Any],
         unmet_asks: Optional[List[str]] = None,
+        asks: Optional[List[str]] = None,
     ) -> str:
+        """按评审意见修订场景规划。
+
+        `asks` 显式给出时只修这几条。写正文时才暴露出来的规划缺陷走这条路：那一份
+        整章评审里绝大多数条目说的是正文，把它们一起发过来，模型会顺手把规划改成
+        另一个样子，而真正要动的只有被引文钉住的那一两句。
+        """
         prompt = f"""请只修复下面场景规划中已被评审指出的问题，保持章节核心事件、人物和场景数量不变。不得增加新的决定性信息或支线。
 
 章节契约：
 {compact_json(contract, 8000)}
 
-{self.revision_brief(review, unmet_asks)}
+{self.revision_brief(review, unmet_asks, asks)}
 
 原场景规划：
 {scene_plan}

@@ -38,7 +38,11 @@ from core.generation.chapter_continuity import (
     scene_one_continuity_rules,
 )
 from core.generation.helper_fns import parse_scene_sections, write_file
-from core.generation.plan_fault import describe_plan_faults, plan_mandated_failures
+from core.generation.plan_fault import (
+    describe_plan_faults,
+    plan_fault_asks,
+    plan_mandated_failures,
+)
 from core.generation.narrative_quality import analyze_narrative_quality
 from core.generation.planning_contract import (
     PlanningContractError,
@@ -234,6 +238,7 @@ class ChapterGenerationLoop:
         cancel_token: Optional[CancelToken] = None,
         require_planning_contract: bool = False,
         max_acceptance_retries: int = 2,
+        max_plan_repairs: int = 1,
     ):
         self.output_dir = output_dir
         self.model = model
@@ -251,9 +256,15 @@ class ChapterGenerationLoop:
         self.cancel_token = cancel_token
         self.require_planning_contract = require_planning_contract
         self.max_acceptance_retries = max(0, int(max_acceptance_retries))
+        # 正文改不动的规划缺陷，最多回去改几次规划。一次就要重写整章（约二十次
+        # 调用），给到 2 以上只会让规划与正文来回震荡。
+        self.max_plan_repairs = max(0, int(max_plan_repairs))
         # 手上最新的一稿正文。评审失灵时要连它一起交出去，否则这一遍写出来的
         # 东西一个字都留不下，只能整章重写。
         self._latest_scenes: List[str] = []
+        # 定向重修确认「这一条正文改不动」的那几处规划缺陷。_repair_chapter 里
+        # 认定，_run 末尾据此决定要不要回规划改。
+        self._confirmed_plan_faults: List[Dict[str, Any]] = []
         # 同一场的多轮重修是否走对话；由作品参数决定，绑定档案时读一次。
         self._scene_dialogue = True
 
@@ -538,10 +549,13 @@ class ChapterGenerationLoop:
         lore: str,
         generate_scene: Callable[..., str],
         on_plan_revised: Optional[Callable[[str], None]] = None,
+        plan_repairs_used: int = 0,
     ) -> ChapterLoopResult:
         self.bind_generation_context(
             parameters, lore, generate_scene, on_plan_revised
         )
+        # 每一遍都重新认定：这一遍的规划已经不是上一遍那一份了。
+        self._confirmed_plan_faults = []
         self._check_cancelled()
         self.ledger.initialize(parameters)
         pending_regeneration = self.ledger.pending_chapter_regeneration(chapter_number)
@@ -965,6 +979,25 @@ class ChapterGenerationLoop:
         blocked = [
             review for review in (chapter_review, *scene_reviews) if not review.passed
         ]
+        # 整章仍旧没过，而挡住它的那几条已经被定向重修确认「正文改不动」——那就
+        # 回规划里改，改完把这一章重写一遍。不这么做的话，这几条只能停在待复审
+        # 等人来动手，而人要做的事和这里一模一样。
+        if blocked and self._confirmed_plan_faults and plan_repairs_used < self.max_plan_repairs:
+            rerun = self._repair_plan_and_rerun(
+                chapter_number=chapter_number,
+                current_plan=current_plan,
+                contract=contract,
+                chapter_review=chapter_review,
+                faults=list(self._confirmed_plan_faults),
+                parameters=parameters,
+                lore=lore,
+                generate_scene=generate_scene,
+                on_plan_revised=on_plan_revised,
+                plan_repairs_used=plan_repairs_used,
+            )
+            if rerun is not None:
+                return rerun
+
         if blocked:
             stage_label = f"第 {chapter_number} 章章节级检查"
             reason = (
@@ -996,6 +1029,82 @@ class ChapterGenerationLoop:
             result.scene_reviews = scene_reviews
 
         return result
+
+    def _repair_plan_and_rerun(
+        self,
+        *,
+        chapter_number: int,
+        current_plan: str,
+        contract: Dict[str, Any],
+        chapter_review: DomainReview,
+        faults: List[Dict[str, Any]],
+        parameters: Dict[str, Any],
+        lore: str,
+        generate_scene: Callable[..., str],
+        on_plan_revised: Optional[Callable[[str], None]],
+        plan_repairs_used: int,
+    ) -> Optional[ChapterLoopResult]:
+        """把正文改不动的那几条拿回规划里改，改完整章重写一遍。
+
+        只发被引文钉住的那几条，不发整份评审：一份整章评审里绝大多数条目说的是
+        正文，一起发过去模型会顺手把规划改成另一个样子，而真正要动的只有那一两句。
+
+        任何一步不成就返回 None，退回原来的行为（停在待复审交给作者）。改规划要
+        重写整章、约二十次调用，赌不起——宁可少改一次，也不能把一份能交的现场
+        换成一份更差的。
+        """
+        asks = plan_fault_asks(faults)
+        self.logger.warning(
+            "Chapter %s going back to the scene plan (repair %s/%s):\n%s",
+            chapter_number,
+            plan_repairs_used + 1,
+            self.max_plan_repairs,
+            describe_plan_faults(faults),
+        )
+        try:
+            revised = self.reviewer.revise_plan(
+                current_plan, chapter_review, contract, asks=asks
+            )
+        except DomainReviewError as exc:
+            self.logger.warning("Chapter %s plan repair unavailable: %s", chapter_number, exc)
+            return None
+        revised = (revised or "").strip()
+        if not revised or not parse_scene_sections(revised):
+            self.logger.warning(
+                "Chapter %s plan repair produced no parsable scenes; keeping the old plan",
+                chapter_number,
+            )
+            return None
+        if revised == current_plan.strip():
+            self.logger.warning(
+                "Chapter %s plan repair returned the same plan; not rewriting",
+                chapter_number,
+            )
+            return None
+
+        # 契约要按新规划重存一次。载入契约是拿 source_hash 认人的，不重存，重跑时
+        # 会判成「缺少与当前场景规划匹配的前置契约」，整章直接停机。契约本身不动：
+        # 写正文之前那道规划闸门改完规划也是这么做的，这里跟它一致。
+        try:
+            self.ledger.save_contract(chapter_number, contract, revised)
+        except Exception as exc:  # noqa: BLE001  存不下就退回原行为，别赔掉现场
+            self.logger.warning(
+                "Chapter %s could not rebind the contract to the revised plan: %s",
+                chapter_number,
+                exc,
+            )
+            return None
+        if on_plan_revised:
+            on_plan_revised(revised)
+        return self._run(
+            chapter_number,
+            revised,
+            parameters,
+            lore,
+            generate_scene,
+            on_plan_revised,
+            plan_repairs_used + 1,
+        )
 
     # ------------------------------------------------------------ 复审出口
     def revise_pending(
@@ -1275,6 +1384,11 @@ class ChapterGenerationLoop:
                 if str(fault.get("quote", "")).strip() in reported_fault_quotes
             ]
             requested = self._without_plan_faults(requested, plan_faults)
+            # 撤下来的这几条不是「不用管了」，是「正文这一层管不了」。记下来，
+            # 整章仍旧没过时 _run 会拿它们回规划里改，再重写一遍这一章。
+            for fault in plan_faults:
+                if fault not in self._confirmed_plan_faults:
+                    self._confirmed_plan_faults.append(fault)
             # 引文是稳定的标识：正文那句话没改，下一轮评审还会引同一句。整条修复
             # 说明不行——评审每轮都会把同一个问题换个说法重写，逐字比对永远匹配
             # 不上（四个副本的轨迹里「仍未解决」标记一次都没出现过）。
