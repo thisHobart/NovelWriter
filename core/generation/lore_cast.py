@@ -150,7 +150,7 @@ def _missing_fields(record: Dict[str, Any], required: Sequence[str], label: str)
     return [
         _defect(f"{label} 的 {field} 是空的，必须写实际内容")
         for field in required
-        if not str(record.get(field, "")).strip()
+        if not isinstance(record.get(field), str) or not record[field].strip()
     ]
 
 
@@ -170,6 +170,18 @@ def validate_factions(factions: Sequence[Dict[str, Any]]) -> List[str]:
         name = str(faction.get("name", "")).strip()
         defects.extend(_missing_fields(faction, _REQUIRED_FACTION_FIELDS, label))
         defects.extend(_latin_defects(faction, label))
+        if "resources" in faction and (not isinstance(faction["resources"], list)
+                                       or any(not isinstance(v, str) for v in faction["resources"])):
+            defects.append(f"{label} 的 resources 必须是文本数组")
+        conflicts = faction.get("conflicts", [])
+        if not isinstance(conflicts, list):
+            defects.append(f"{label} 的 conflicts 必须是数组")
+        else:
+            for conflict in conflicts:
+                if not isinstance(conflict, dict):
+                    defects.append(f"{label} 的 conflicts 条目必须是对象")
+                else:
+                    defects.extend(_missing_fields(conflict, ("with", "over"), label + "的冲突"))
 
         if name and name in seen_names:
             defects.append(_defect(f"势力名「{name}」重复了，每个势力必须有唯一的名字"))
@@ -314,7 +326,7 @@ def validate_characters(
             antagonists.append(person)
 
         age = person.get("age")
-        if not isinstance(age, int) or not (0 < age < 120):
+        if isinstance(age, bool) or not isinstance(age, int) or not (0 < age < 120):
             defects.append(_defect(f"{label}（{name}）的 age 必须是 1 到 119 之间的整数"))
 
     if not protagonists:
@@ -368,22 +380,8 @@ def validate_characters(
 # --------------------------------------------------------------------- 生成
 
 def _premise_block(parameters: Dict[str, Any]) -> str:
-    def value(*keys: str) -> str:
-        for key in keys:
-            item = str(parameters.get(key, "") or "").strip()
-            if item:
-                return item
-        return "未指定"
-
-    return "\n".join(
-        [
-            f"题材：{value('Genre', 'genre')} · {value('Subgenre', 'subgenre')}",
-            f"书名：{value('Novel Title', 'title')}",
-            f"主题：{value('Theme', 'theme')}",
-            f"基调：{value('Tone', 'tone')}",
-            f"篇幅：{value('Story Length', 'story_length')}",
-        ]
-    )
+    from core.generation.parameters import requirements_block
+    return requirements_block(parameters)
 
 
 def _parse_json_list(response: str, key: str) -> List[Dict[str, Any]]:
@@ -400,20 +398,37 @@ def _parse_json_list(response: str, key: str) -> List[Dict[str, Any]]:
         except json.JSONDecodeError as inner:
             raise CastError(f"返回的内容不是 JSON：{inner}", code="cast_not_json") from inner
     if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict) and isinstance(data.get(key), list):
-        return [item for item in data[key] if isinstance(item, dict)]
-    raise CastError(f"JSON 里没有 {key} 数组", code="cast_missing_key")
+        items = data
+    elif isinstance(data, dict) and isinstance(data.get(key), list):
+        items = data[key]
+    elif isinstance(data, dict) and key in data:
+        raise CastError(f"JSON 的 {key} 必须是数组", code="cast_field_type")
+    elif not isinstance(data, list):
+        raise CastError(f"JSON 里没有 {key} 数组", code="cast_missing_key")
+    if any(not isinstance(item, dict) for item in items):
+        raise CastError(f"{key} 数组内每个条目必须是对象", code="cast_field_type")
+    return items
 
 
-def _run(send, prompt: str, key: str, validate, on_retry=None):
+def _run(send, prompt: str, key: str, validate, on_retry=None, review=None):
     def parse(response: str):
-        records = _parse_json_list(response, key)
-        defects = validate(records)
-        if defects:
-            raise CastError("；".join(defects[:8]), code="cast_invalid")
+        try:
+            records = _parse_json_list(response, key)
+            defects = validate(records)
+            if defects:
+                raise CastError("；".join(defects[:8]), code="cast_invalid")
+        except DesignContractError as exc:
+            if review is not None:
+                review.invalid(str(exc))
+            raise
+        if review is not None:
+            review(response, records)
         return response, {key: records}
 
+    if review is not None:
+        from core.generation.lore_run import readable_json
+        payload = review.run(prompt, lambda raw: parse(raw)[1], lambda raw: {key: readable_json(raw, key)})
+        return payload[key] if payload is not None else None
     try:
         _, payload = generate_with_contract_retry(
             send, prompt, parse, retry_limit=CAST_RETRY_LIMIT, on_retry=on_retry
@@ -432,37 +447,53 @@ def generate_factions(
     num_factions: int,
     *,
     on_retry: Callable[[int, Exception], None] | None = None,
+    review=None,
 ) -> List[Dict[str, Any]]:
     """按故事前提写出 `num_factions` 张中文势力卡。"""
+    from core.generation.parameters import normalize_parameters
+    num_factions = normalize_parameters({"num_factions": num_factions})["num_factions"]
     prompt = f"""请为下面这部中文小说设计 {num_factions} 个势力（组织、机构或团体）。
 
 {_premise_block(parameters)}
 
 要求：
-- 全部用中文写。名字要像这个题材、这个时代真实存在的机构，不要英文原名，也不要音译。
+- 全部用中文写。名字要符合这个题材、时代和世界规则中的组织，不要英文原名，也不要音译。
 - nature 只能从这几个里选一个：{'、'.join(FACTION_NATURES)}。
   名字必须和 nature 对得上——公权力机关不能叫「××商务调查」或「××咨询」。
 - territory 是这个势力活动的**具体地点**，不是一类事物的统称。
-  「市法院大楼」「北岸三号码头」「棉纺三厂四号筒子楼」是地点；
-  「法院与司法系统」「情报网络」不是。地名写这个地方叫什么就行，不要写成一句
+  「东岸三号码头」「山谷北侧石楼」是地点；
+  「治理体系」「情报网络」不是。地名写这个地方叫什么就行，不要写成一句
   描述，不超过 25 个字。
 - 势力之间要有明确的利害关系：谁挡了谁的路，写进 conflicts。
+- conflicts.with 只能引用本次生成名单中的其他势力；只有一个势力时可写空数组。
 - 每个势力都要和上面的主题、基调有关，不要写成通用模板。
 
 只输出 JSON：
 {{"factions": [
   {{
-    "name": "海陵市公安局刑事侦查支队",
+    "name": "符合题材的组织名称",
     "nature": "公权力机关",
-    "type": "市级刑侦机构",
+    "type": "符合题材的组织类型",
     "description": "一句话说清它是干什么的、现在处境如何",
     "goal": "它在这本书里想达成什么",
     "resources": ["它手上有什么"],
-    "territory": {{"name": "海陵老城区", "kind": "城区"}},
+    "territory": {{"name": "具体地点名称", "kind": "地点类别"}},
     "conflicts": [{{"with": "另一个势力的名字", "over": "为什么冲突"}}]
   }}
 ]}}"""
-    return _run(send, prompt, "factions", validate_factions, on_retry)
+    def validate(items):
+        defects = validate_factions(items)
+        if len(items) != num_factions:
+            defects.append(f"势力数量要求 {num_factions} 个，实际 {len(items)} 个")
+        names = {item.get("name") for item in items if isinstance(item.get("name"), str)}
+        for item in items:
+            conflicts = item.get("conflicts", [])
+            for conflict in conflicts if isinstance(conflicts, list) else []:
+                if isinstance(conflict, dict) and isinstance(conflict.get("with"), str):
+                    if conflict["with"] not in names or conflict["with"] == item.get("name"):
+                        defects.append(f"势力「{item.get('name')}」的冲突引用无效：{conflict['with']}")
+        return defects
+    return _run(send, prompt, "factions", validate, on_retry, review)
 
 
 def _character_prompt(
@@ -485,7 +516,7 @@ def _character_prompt(
 {_premise_block(parameters)}
 
 {faction_block}要求：
-- 全部用中文写，名字是普通的中文姓名。职业、职务要符合这个题材所在的现实体系。
+- 全部用中文写，名字是普通的中文姓名。职业、职务要符合这个题材、时代及作品设定，不得强行套用当代职业体系。
 - role 只能是 protagonist / deuteragonist / antagonist / supporting，
   至少要有一位 protagonist 和一位 antagonist。
 - gender 只写「男」或「女」；女性大约占 {female_percentage:.0f}%。
@@ -502,9 +533,9 @@ def _character_prompt(
     "role": "protagonist",
     "gender": "男",
     "age": 44,
-    "faction": "海陵市公安局刑事侦查支队",
-    "profession": "刑警",
-    "title": "重案队副队长",
+    "faction": "已有势力名称",
+    "profession": "符合主角类型的职业",
+    "title": "符合设定的身份",
     "goal": "他这本书里要达成的具体目标",
     "motivation": "他为什么非做不可",
     "flaw": "会让他付出代价的那个缺陷",
@@ -518,9 +549,9 @@ def _character_prompt(
     "role": "antagonist",
     "gender": "女",
     "age": 35,
-    "faction": "海陵恒正律师事务所",
-    "profession": "辩护律师",
-    "title": "合伙人",
+    "faction": "已有势力名称",
+    "profession": "符合题材的职业",
+    "title": "符合设定的身份",
     "goal": "她要达成什么",
     "motivation": "她为什么非做不可",
     "flaw": "缺陷",
@@ -533,7 +564,7 @@ def _character_prompt(
 ],
  "relationships": [
   {{"character1": "梁浩", "character2": "郑娜敏",
-   "type": "法庭上的对手", "description": "一句话说清他们之间发生过什么"}}
+   "type": "符合故事的关系类型", "description": "一句话说清他们之间发生过什么"}}
  ]}}
 
 人物关系只写真正影响故事的那几对：两端都必须是上面出现过的人，同一对只写一条，
@@ -551,9 +582,14 @@ def generate_characters(
     on_retry: Callable[[int, Exception], None] | None = None,
 ) -> List[Dict[str, Any]]:
     """只要人物卡这一部分；关系另行校验时用 :func:`generate_cast`。"""
+    from core.generation.parameters import normalize_parameters
+    num_characters = normalize_parameters({"num_characters": num_characters})["num_characters"]
 
     def validate(records):
-        return validate_characters(records, female_percentage=female_percentage)
+        defects = validate_characters(records, female_percentage=female_percentage)
+        if len(records) != num_characters:
+            defects.append(f"人物数量要求 {num_characters} 位，实际 {len(records)} 位")
+        return defects
 
     prompt = _character_prompt(parameters, num_characters, female_percentage, factions)
     return _run(send, prompt, "characters", validate, on_retry)
@@ -567,24 +603,48 @@ def generate_cast(
     female_percentage: int = 50,
     factions: Sequence[Dict[str, Any]] = (),
     on_retry: Callable[[int, Exception], None] | None = None,
+    review=None,
 ) -> Dict[str, Any]:
     """一次生成人物与人物关系，返回 characters.json 落盘用的完整内容。"""
+    from core.generation.parameters import normalize_parameters
+    num_characters = normalize_parameters({"num_characters": num_characters})["num_characters"]
     payload: Dict[str, Any] = {}
 
     def parse(response: str):
-        characters = _parse_json_list(response, "characters")
-        defects = validate_characters(characters, female_percentage=female_percentage)
-        relationships = []
         try:
-            relationships = _parse_json_list(response, "relationships")
-        except CastError:
+            characters = _parse_json_list(response, "characters")
+            defects = validate_characters(characters, female_percentage=female_percentage)
+            if len(characters) != num_characters:
+                defects.append(f"人物数量要求 {num_characters} 位，实际 {len(characters)} 位")
             relationships = []
-        defects.extend(validate_relationships(relationships, characters))
-        if defects:
-            raise CastError("；".join(defects[:8]), code="cast_invalid")
+            try:
+                relationships = _parse_json_list(response, "relationships")
+            except CastError as exc:
+                if exc.code != "cast_missing_key":
+                    raise
+            defects.extend(validate_relationships(relationships, characters))
+            faction_names = {str(f.get("name", "")).strip() for f in factions}
+            if factions:
+                for character in characters:
+                    if character.get("faction") and character["faction"] not in faction_names:
+                        defects.append(f"人物「{character['name']}」所属势力不在已有名单中")
+            if defects:
+                raise CastError("；".join(defects[:8]), code="cast_invalid")
+        except DesignContractError as exc:
+            if review is not None:
+                review.invalid(str(exc))
+            raise
+        if review is not None:
+            review(response, {"characters": characters, "relationships": relationships})
         return response, {"characters": characters, "relationships": relationships}
 
     prompt = _character_prompt(parameters, num_characters, female_percentage, factions)
+    if review is not None:
+        from core.generation.lore_run import readable_json
+        def checked(raw):
+            parse(raw)
+            return readable_json(raw, "characters")
+        return review.run(prompt, checked, lambda raw: readable_json(raw, "characters"))
     try:
         _, payload = generate_with_contract_retry(
             send, prompt, parse, retry_limit=CAST_RETRY_LIMIT, on_retry=on_retry

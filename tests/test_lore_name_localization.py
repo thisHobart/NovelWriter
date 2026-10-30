@@ -100,6 +100,8 @@ class _UI(dict):
         super().__init__(values)
         self.output_dir = str(output_dir)
         self.model = "hosted-llm"
+        self.extras = {}
+        self.progress = lambda *args: None
         self.parameters = {
             "genre": "Mystery",
             "subgenre": "Legal Thriller",
@@ -135,6 +137,12 @@ def _stub_model(monkeypatch, replies):
     sent = []
 
     def send_prompt(prompt, model=None, **kwargs):
+        if prompt.startswith("你是作品参数符合性检查员"):
+            params = json.loads(prompt.split("\n## 参数\n", 1)[1].split("\n## 作品要求", 1)[0])
+            return json.dumps({"status": "pass", "checks": [
+                {"parameter_key": key, "status": "pass", "expected": str(value),
+                 "actual": "已核对", "evidence": "", "reason": "未发现偏离"}
+                for key, value in params.items()]}, ensure_ascii=False)
         sent.append(prompt)
         return replies[min(len(sent) - 1, len(replies) - 1)]
 

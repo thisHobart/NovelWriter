@@ -29,81 +29,74 @@ STEP_LABELS = {
 StepFailed = StageGenerationError
 
 
-def step_work(step: str, output_dir: str, model: str = "") -> Callable[[Callable], Dict[str, Any]]:
-    """返回一个 `work(report)`，交给 TaskRunner.run(..., pass_progress=True)。"""
+class GenerationWork:
+    """任务请求先经过主窗口的参数选择，再绑定不可变的输入快照。"""
 
-    def work(report: Callable[[str, float], None]) -> Dict[str, Any]:
-        label = STEP_LABELS.get(step, step)
+    def __init__(self, step, output_dir, model="", *, action=None, parameters=None,
+                 chapter_number=None, options=None, steps=None):
+        from copy import deepcopy
+        self.step, self.output_dir, self.model = step, output_dir, model
+        self.action = action
+        self.parameters = deepcopy(parameters)
+        self.chapter_number, self.options = chapter_number, deepcopy(options)
+        self.steps = list(steps) if steps is not None else None
+        self.lore_action = (action or "full") if step == "lore" else ("full" if step == "workflow" and "lore" in self.steps else None)
+
+    def bind_parameters(self, parameters):
+        from core.generation.parameters import freeze_parameters
+        return GenerationWork(self.step, self.output_dir, self.model, action=self.action,
+                              parameters=freeze_parameters(parameters), chapter_number=self.chapter_number,
+                              options=self.options, steps=self.steps)
+
+    def __call__(self, report):
+        from core.generation.parameters import ParameterSnapshot, freeze_parameters
+        from core.generation.stage_pipeline import load_stage_parameters
+        if self.step == "workflow":
+            snapshot = self.parameters
+            if not isinstance(snapshot, ParameterSnapshot):
+                stored = load_stage_parameters(self.output_dir, overrides=snapshot)
+                if not stored:
+                    raise StageGenerationError("尚未保存作品参数")
+                snapshot = freeze_parameters(stored)
+            results = {}
+            span = 1.0 / len(self.steps)
+            for index, step in enumerate(self.steps):
+                base = index * span
+                label = STEP_LABELS.get(step, step)
+                def scoped(text, fraction, _base=base, _label=label):
+                    report(f"{_label} · {text}", -1.0 if fraction < 0 else _base + fraction * span)
+                results[step] = step_work(step, self.output_dir, self.model, parameters=snapshot)(scoped)
+                if results[step].get("status") == "draft":
+                    report("生成草稿已保留，采用可读取内容后可继续后续阶段", 1.0)
+                    return results
+            report("完整流程已完成", 1.0)
+            return results
+        label = STEP_LABELS.get(self.step, self.step)
         report(f"正在启动{label}…", 0.01)
-        result = run_stage(step, output_dir, model, report=report)
+        if self.action is None:
+            kwargs = {"report": report}
+            if self.parameters is not None:
+                kwargs["parameters"] = self.parameters
+            result = run_stage(self.step, self.output_dir, self.model, **kwargs)
+        else:
+            result = run_stage_action(self.step, self.action, self.output_dir, self.model,
+                                      parameters=self.parameters, report=report,
+                                      chapter_number=self.chapter_number, options=self.options)
         report(f"{label}已完成", 1.0)
         return result
 
-    return work
+
+def step_work(step, output_dir, model="", *, parameters=None):
+    return GenerationWork(step, output_dir, model, parameters=parameters)
 
 
-def action_work(
-    step: str,
-    action: str,
-    output_dir: str,
-    model: str = "",
-    *,
-    parameters: Optional[Dict[str, Any]] = None,
-    chapter_number: Optional[int] = None,
-    options: Optional[Dict[str, Any]] = None,
-) -> Callable[[Callable], Dict[str, Any]]:
-    """Return a worker for one fine-grained action exposed by a stage page.
-
-    `options` 走复审动作：重修带上作者勾选的条目，放行带上理由。
-    """
-
-    def work(report: Callable[[str, float], None]) -> Dict[str, Any]:
-        label = STEP_LABELS.get(step, step)
-        report(f"正在启动{label}…", 0.01)
-        result = run_stage_action(
-            step,
-            action,
-            output_dir,
-            model,
-            parameters=parameters,
-            report=report,
-            chapter_number=chapter_number,
-            options=options,
-        )
-        report(f"{label}已完成", 1.0)
-        return result
-
-    return work
+def action_work(step, action, output_dir, model="", *, parameters=None, chapter_number=None, options=None):
+    return GenerationWork(step, output_dir, model, action=action, parameters=parameters,
+                          chapter_number=chapter_number, options=options)
 
 
 ORDERED_STEPS = ["lore", "structure", "scenes", "chapters"]
 
 
-def full_workflow_work(output_dir: str, model: str = "",
-                       steps: Optional[list] = None) -> Callable[[Callable], Dict[str, Any]]:
-    """依次跑完四个阶段，进度按阶段等分。
-
-    逐阶段跑，而不是一次性交给一个总编排：任一阶段失败时前面的产物都留在磁盘上，
-    状态栏的进度也落在真实的阶段边界上。曾经那个 StoryGenerationOrchestrator 就是
-    因此没有被界面接上，已随本次清理删除。
-    """
-    plan = steps or ORDERED_STEPS
-
-    def work(report: Callable[[str, float], None]) -> Dict[str, Any]:
-        results: Dict[str, Any] = {}
-        span = 1.0 / len(plan)
-        for index, step in enumerate(plan):
-            base = index * span
-            label = STEP_LABELS.get(step, step)
-
-            def scoped(text: str, fraction: float, _base=base, _label=label) -> None:
-                if fraction < 0:
-                    report(f"{_label} · {text}", -1.0)
-                else:
-                    report(f"{_label} · {text}", _base + fraction * span)
-
-            results[step] = step_work(step, output_dir, model)(scoped)
-        report("完整流程已完成", 1.0)
-        return results
-
-    return work
+def full_workflow_work(output_dir, model="", steps=None, *, parameters=None):
+    return GenerationWork("workflow", output_dir, model, steps=steps or ORDERED_STEPS, parameters=parameters)

@@ -178,6 +178,7 @@ class StepRail(QWidget):
     step_selected = Signal(str)
     backend_changed = Signal(str)
     model_changed = Signal(str)
+    configuration_requested = Signal()
 
     STEPS = [
         ("parameters", "作品参数"),
@@ -248,14 +249,21 @@ class StepRail(QWidget):
         foot_layout.setSpacing(11)
 
         self.backend_combo = self._labeled_combo(foot_layout, "运行后端", QComboBox())
-        self.model_combo = self._labeled_combo(foot_layout, "模型", QComboBox())
+        self.model_combo = self._labeled_combo(foot_layout, "模型服务", QComboBox())
         self.backend_combo.currentTextChanged.connect(self.backend_changed)
         self.model_combo.currentTextChanged.connect(self.model_changed)
 
-        from core.gui.widgets.controls import IconLabel
+        from core.gui.widgets.controls import IconLabel, secondary_button
 
         self.key_status = IconLabel("密钥状态未知", "dot", theme.INK_400, 8)
-        foot_layout.addWidget(self.key_status)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.addWidget(self.key_status, 1)
+        self.config_button = secondary_button("配置")
+        self.config_button.setToolTip("配置模型服务的地址、密钥和模型")
+        self.config_button.clicked.connect(self.configuration_requested)
+        status_row.addWidget(self.config_button)
+        foot_layout.addLayout(status_row)
         layout.addWidget(foot)
 
     # -- 对外 --------------------------------------------------------------

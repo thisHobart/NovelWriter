@@ -14,6 +14,9 @@ llm-backends @ git+https://github.com/EdwardAThomson/llm-backends@v0.2.0
 # .env 中的 API 密钥加载（core/generation/ai_helper.py）
 python-dotenv>=1.1.1
 
+# hosted-llm、DeepSeek 官方、千问官方的 OpenAI 兼容接口。
+openai>=2.3.0
+
 # 参数与生成结果的 JSON Schema 校验（core/generation/helper_fns.py）
 jsonschema>=4.25.1
 

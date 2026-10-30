@@ -157,6 +157,13 @@ def trace_model_call(
     model: str,
     invoke: Callable[[], str],
 ) -> str:
+    from core.generation.parameters import record_effective_prompt
+    from core.generation.lore_run import budgeted_call
+    original_invoke = invoke
+    def audited_invoke():
+        record_effective_prompt(prompt, backend, model)
+        return original_invoke()
+    invoke = lambda: budgeted_call(audited_invoke)
     recorder = _ACTIVE_TRACE.get()
     if recorder is None:
         return invoke()

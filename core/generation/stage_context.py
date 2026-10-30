@@ -57,6 +57,9 @@ def context_from_host(host, **extras) -> StageContext:
             parameters = source.get_current_parameters()
         except Exception:  # noqa: BLE001 - a broken optional source means no parameters
             parameters = {}
+    if not parameters and host is not None:
+        from core.generation.stage_pipeline import load_stage_parameters
+        parameters = load_stage_parameters(host.get_output_dir())
     return make_context(
         host.get_output_dir() if host is not None else "current_work",
         host.get_selected_model() if host is not None else "",

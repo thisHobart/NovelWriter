@@ -8,6 +8,7 @@ compatible with existing NovelWriter workspaces.
 from __future__ import annotations
 
 from core.generation.errors import fail
+from core.generation.lore_repository import lore_context
 from core.generation.ai_helper import send_prompt, get_backend
 import re
 from core.generation.helper_fns import (
@@ -266,7 +267,7 @@ class ShortStoryPipeline:
         """Load sanitized lore, tolerating a missing file."""
         lore_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
         if os.path.exists(lore_path):
-            content = sanitize_lore_content(open_file(lore_path))
+            content = lore_context(output_dir) or sanitize_lore_content(open_file(lore_path))
             self.app.logger.info(f"Loaded lore context from {lore_path}")
             return content
         return "Lore context is missing or not loaded."

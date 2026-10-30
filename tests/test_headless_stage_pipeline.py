@@ -391,6 +391,8 @@ def test_stage_entry_methods_have_no_terminal_catch_all_wrapper():
 
 def test_full_workflow_runs_all_headless_stages_in_order(monkeypatch, tmp_path):
     seen = []
+    from core.gui import params_store
+    params_store.save(str(tmp_path), {"genre": "Sci-Fi"})
 
     def fake_run_stage(step, output_dir, model, parameters=None, report=None):
         seen.append(step)

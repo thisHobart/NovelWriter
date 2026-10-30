@@ -77,6 +77,11 @@ def build_qss() -> str:
 }}
 
 QWidget#Root {{ background: {SURFACE}; }}
+QDialog#ModelConfigDialog {{ background: {SURFACE}; }}
+QLabel#FormError {{ color: {DANGER}; font-size: {FS_SM}px; }}
+QLabel#ProbeStatus {{ color: {INK_600}; font-size: {FS_SM}px; }}
+QLabel#ProbeStatus[state="success"] {{ color: {SUCCESS}; }}
+QLabel#ProbeStatus[state="error"] {{ color: {DANGER}; }}
 QWidget#Rail {{ background: {RAIL}; border-right: 1px solid {LINE}; }}
 QWidget#Header {{ background: {CANVAS}; border-bottom: 1px solid {LINE}; }}
 QWidget#StatusBar {{ background: {SURFACE}; border-top: 1px solid {LINE}; }}

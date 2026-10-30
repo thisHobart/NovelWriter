@@ -193,8 +193,8 @@ class StructurePage(StagePage):
             "full": "正在生成结构…",
         }
         self.run_task(
-            step_work("structure", self.output_dir) if action == "full" else
-            action_work("structure", action, self.output_dir),
+            step_work("structure", self.output_dir, self.model) if action == "full" else
+            action_work("structure", action, self.output_dir, self.model),
             busy_button=busy_button or self.step_buttons.get(action, self.primary),
             busy_text=labels[action],
             on_success=lambda _: (self.refresh(), self.artifacts_changed.emit()),

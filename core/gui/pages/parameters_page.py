@@ -72,6 +72,7 @@ class ParametersPage(QWidget):
     saved = Signal(str)               # 写入路径
     work_title_changed = Signal(str)
     operation_failed = Signal(str, str)  # 标题、原始错误信息
+    model_loaded = Signal(str)
 
     CORE_DISPLAY_KEYS = {
         "Output Directory", "Genre", "Subgenre", "Story Length", "Story Structure",
@@ -88,6 +89,8 @@ class ParametersPage(QWidget):
         self._dynamic_widgets: Dict[str, QWidget] = {}
         self._loading = True          # 载入期间不触发 dirty
         self._dirty = False
+        self._saved_source = {}
+        self.generation_counts = {"num_factions": 6, "num_characters": 8}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -356,7 +359,9 @@ class ParametersPage(QWidget):
             widget.stateChanged.connect(self._mark_dirty)
             return widget
         if isinstance(value, (list, tuple)):
-            widget = _combo([str(v) for v in value])
+            widget = _combo()
+            for option in value:
+                widget.addItem(zh_label(str(option)), str(option))
             widget.currentIndexChanged.connect(self._mark_dirty)
             return widget
         widget = QLineEdit(str(value))
@@ -423,10 +428,20 @@ class ParametersPage(QWidget):
             if isinstance(widget, QCheckBox):
                 params[key] = widget.isChecked()
             elif isinstance(widget, QComboBox):
-                params[key] = widget.currentText()
+                params[key] = widget.currentData()
             elif isinstance(widget, QLineEdit):
                 params[key] = widget.text().strip()
-        return params
+        params.update(self.generation_counts)
+        from core.generation.parameters import internal_parameters
+        preserved = internal_parameters(self._saved_source)
+        preserved.update(params)
+        return preserved
+
+    def set_generation_counts(self, factions, characters):
+        counts = {"num_factions": factions, "num_characters": characters}
+        if counts != self.generation_counts:
+            self.generation_counts = counts
+            self._mark_dirty()
 
     def validate(self) -> Dict[str, str]:
         """返回 {字段名: 错误文案}；空字典表示通过。逐字段标红由 save() 施加。"""
@@ -437,6 +452,11 @@ class ParametersPage(QWidget):
             errors["novel_title"] = "作品标题不能为空"
         if not self._internal_structure():
             errors["story_structure"] = "请先选择故事篇幅与结构"
+        try:
+            from core.generation.parameters import normalize_parameters
+            normalize_parameters(self.parameters())
+        except ValueError as exc:
+            errors["generation_counts"] = str(exc)
         return errors
 
     def save(self) -> bool:
@@ -453,6 +473,7 @@ class ParametersPage(QWidget):
             self.operation_failed.emit("保存失败", str(exc) or type(exc).__name__)
             return False
         self._dirty = False
+        self._saved_source = params
         self.dirty_changed.emit(False)
         self.saved.emit(path)
         return True
@@ -469,7 +490,18 @@ class ParametersPage(QWidget):
             self.operation_failed.emit("读取失败", str(exc) or type(exc).__name__)
             return
 
+        from core.generation.parameters import internal_parameters
+        self._saved_source = internal_parameters(loaded)
+        loaded = {key.replace("_", " ").title(): value for key, value in self._saved_source.items()}
         self.output_dir_edit.setText(loaded.get("Output Directory", target))
+        self.generation_counts = {"num_factions": loaded.get("Num Factions", 6),
+                                  "num_characters": loaded.get("Num Characters", loaded.get("Num Chars", 8))}
+        for key, value in self.generation_counts.items():
+            try:
+                if str(int(value)) == str(value).strip():
+                    self.generation_counts[key] = int(value)
+            except (ValueError, TypeError):
+                pass  # 保留无效原值，生成前明确校验，不静默修正。
 
         genre = loaded.get("Genre", "Sci-Fi")
         self._set_combo(self.genre_combo, zh_label(genre))
@@ -511,7 +543,11 @@ class ParametersPage(QWidget):
             if isinstance(widget, QCheckBox):
                 widget.setChecked(str(value).lower() == "true")
             elif isinstance(widget, QComboBox):
-                self._set_combo(widget, str(value))
+                index = widget.findData(str(value))
+                if index < 0:
+                    index = widget.findText(str(value))
+                if index >= 0:
+                    widget.setCurrentIndex(index)
             elif isinstance(widget, QLineEdit):
                 widget.setText(str(value))
 
@@ -519,6 +555,8 @@ class ParametersPage(QWidget):
         self._loading = False
         self._dirty = False
         self.dirty_changed.emit(False)
+        self.loaded_model = loaded.get("Model", "")
+        self.model_loaded.emit(self.loaded_model)
         self.work_title_changed.emit(self.title_edit.text().strip())
 
     # ================================================== 内部

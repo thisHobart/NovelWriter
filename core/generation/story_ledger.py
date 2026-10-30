@@ -377,6 +377,11 @@ class StoryLedgerManager:
 
     def load_design_context(self, max_chars: int = 60000) -> str:
         """Load stable whole-story design sources used to establish case truth."""
+        from core.generation.lore_repository import lore_context
+        lore = lore_context(self.output_dir)
+        # Keep the full-source fingerprint even when the prose is truncated.
+        lore_section = lore[:min(16000, max_chars // 3)]
+        max_chars -= len(lore_section)
         structure_contract = self.load_structure_contract()
         contract_section = ""
         if structure_contract:
@@ -430,7 +435,7 @@ class StoryLedgerManager:
 
         if contract_section:
             sections.append(contract_section[: max_chars - total])
-        return "".join(sections).strip()
+        return (lore_section + "".join(sections)).strip()
 
     def load_structure_contract(self) -> Dict[str, Any]:
         """Load the declarations the structure stage made about the whole story.

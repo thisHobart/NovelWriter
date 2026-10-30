@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QWidget,
+    QLabel,
 )
 
 from core.gui import theme
@@ -35,6 +36,7 @@ class StagePage(QWidget):
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.output_dir = "current_work"
+        self.model = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -42,6 +44,11 @@ class StagePage(QWidget):
 
         self.header = PageHeader(title, subtitle)
         layout.addWidget(self.header)
+        self.lore_review_notice = QLabel()
+        self.lore_review_notice.setWordWrap(True)
+        self.lore_review_notice.setContentsMargins(24, 6, 24, 6)
+        self.lore_review_notice.hide()
+        layout.addWidget(self.lore_review_notice)
 
         body = QWidget()
         self._body = QHBoxLayout(body)

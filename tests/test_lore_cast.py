@@ -35,7 +35,7 @@ def _faction(**overrides):
         "goal": "查清宏升物流的跨境转运链条",
         "resources": ["物证鉴定中心"],
         "territory": {"name": "海陵老城区", "kind": "城区"},
-        "conflicts": [{"with": "海陵宏升物流", "over": "对港区货运的管辖"}],
+        "conflicts": [],
     }
     base.update(overrides)
     return base

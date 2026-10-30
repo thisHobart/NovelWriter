@@ -11,18 +11,21 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 from core.config.story_options import GENDER_BIAS_MAP
 from core.generation.ai_helper import DEFAULT_API_MODEL, set_backend
+from core.generation.api_providers import PROVIDER_LABELS
 from core.generation.lore_pipeline import LorePipeline
 from core.generation.scene_pipeline import ScenePipeline
 from core.generation.short_story_pipeline import ShortStoryPipeline, WritingRequest
 from core.generation.stage_context import ProgressReport, StageContext, make_context
 from core.generation.structure_pipeline import StructurePipeline
+from core.generation.lore_repository import tracked_generation
+from core.generation.parameters import ParameterSnapshot, normalize_parameters, record_run, audit_parameters, freeze_parameters
 
 
 class StageGenerationError(RuntimeError):
     """A stage finished without producing its required durable artifacts."""
 
 
-def load_stage_parameters(output_dir: str) -> Dict[str, Any]:
+def load_stage_parameters(output_dir: str, *, overrides=None) -> Dict[str, Any]:
     """Load parameters.txt as both display keys and internal snake_case keys."""
     candidates = (
         os.path.join(output_dir, "system", "parameters.txt"),
@@ -40,18 +43,7 @@ def load_stage_parameters(output_dir: str) -> Dict[str, Any]:
                 source[key.strip()] = value.strip()
         break
 
-    parameters = dict(source)
-    for display, value in source.items():
-        internal = display.lower().replace(" ", "_")
-        if str(value).lower() in {"true", "false"}:
-            value = str(value).lower() == "true"
-        parameters[internal] = value
-
-    bias = parameters.get("gender_generation_bias_string", "Balanced (50F/50M)")
-    female, male = GENDER_BIAS_MAP.get(str(bias), (50, 50))
-    parameters.setdefault("female_percentage", female)
-    parameters.setdefault("male_percentage", male)
-    return parameters
+    return normalize_parameters(source, overrides) if source or overrides else {}
 
 
 class _ParameterSource:
@@ -110,12 +102,16 @@ def _build_context(
     report: ProgressReport | None,
 ) -> tuple[StageContext, GenerationHost]:
     """Create the shared headless context, merging UI overrides with saved values."""
-    params = load_stage_parameters(output_dir)
-    params.update(parameters or {})
-    if not params:
+    source = parameters if isinstance(parameters, ParameterSnapshot) else load_stage_parameters(output_dir, overrides=parameters)
+    if not source and not parameters:
         raise StageGenerationError("尚未保存作品参数")
+    params = normalize_parameters(source)
     selected_model = model or str(params.get("model") or DEFAULT_API_MODEL)
     backend = str(params.get("backend") or "api")
+    if model in PROVIDER_LABELS:
+        # An explicit desktop API selection overrides old saved CLI settings.
+        backend = "api"
+    params = normalize_parameters(params, {"model": selected_model, "backend": backend})
     set_backend(backend, selected_model)
     context = make_context(
         output_dir,
@@ -125,7 +121,16 @@ def _build_context(
         num_factions=int(params.get("num_factions", 6)),
         num_chars=int(params.get("num_characters", params.get("num_chars", 8))),
     )
+    context.extras["run_directory"] = record_run(output_dir, step, params)
     return context, GenerationHost(context, logging.getLogger(f"generation.{step}"))
+
+
+def _guard_upstream_lore(context):
+    from core.generation.ai_helper import send_prompt
+    from core.generation.lore_repository import LoreRepository
+    from core.generation.parameter_compliance import guard_manual_sources
+    guard_manual_sources(context, list(LoreRepository(context.output_dir)._files()),
+                         lambda prompt: send_prompt(prompt, model=context.model), "upstream_lore")
 
 
 def _run_lore(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
@@ -141,9 +146,12 @@ def _run_lore(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
     ):
         context.progress(label, fraction)
         operation(context)
-    files = _require(
+        outcomes = context.extras.get("lore_results", [])
+        if outcomes and outcomes[-1].get("disposition") == "draft":
+            context.extras.setdefault("parameter_warnings", []).append("当前步骤已交付草稿，采用可读取内容后可继续世界设定生成。")
+            break
+    files = _files(
         context.output_dir,
-        "世界设定阶段",
         (
             "story/lore/factions.json",
             "story/lore/characters.json",
@@ -316,6 +324,7 @@ def _run_long_form_chapters(
         use_new_structure=True,
         model=context.model,
     )
+    agent.parameter_snapshot = freeze_parameters(context.parameters)
     chapter_info, _ = agent.analyze_chapter_structure()
     if not chapter_info:
         raise StageGenerationError("没有找到可写作的章节大纲")
@@ -432,6 +441,7 @@ def _review_pending_chapter(
         use_new_structure=True,
         model=context.model,
     )
+    agent.parameter_snapshot = freeze_parameters(context.parameters)
     result = agent.review_pending_chapter(
         number,
         action,
@@ -471,6 +481,8 @@ def _run_chapters(context: StageContext, host: GenerationHost) -> Dict[str, Any]
     return {"step": "chapters", "generated_files": files}
 
 
+@tracked_generation
+@audit_parameters
 def run_stage_action(
     step: str,
     action: str,
@@ -494,6 +506,9 @@ def run_stage_action(
         raise ValueError(f"未知生成阶段：{step}")
     context, host = _build_context(step, output_dir, model, parameters, report)
 
+    if step != "lore" and action != "waive":
+        _guard_upstream_lore(context)
+
     if action in {"", "full"}:
         operations = {
             "lore": _run_lore,
@@ -516,13 +531,21 @@ def run_stage_action(
             "titles": ("推荐标题", pipeline._suggest_titles,
                        ("story/planning/suggested_titles.md",)),
         }
-        if action not in actions:
+        if action == "repair":
+            pipeline._repair_result(context, (options or {}).get("receipt_id"))
+            result = {"step": step, "action": action, "generated_files": sorted(context.extras.get("generated_lore_files", []))}
+        elif action not in actions:
             raise ValueError(f"世界设定阶段没有动作：{action}")
-        label, operation, patterns = actions[action]
-        context.progress(label, 0.10)
-        operation(context)
-        files = _require(output_dir, label, patterns)
-        result = {"step": step, "action": action, "generated_files": files}
+        else:
+            label, operation, patterns = actions[action]
+            if action == "enhance" and (options or {}).get("subject_name"):
+                context.extras["lore_subject_name"] = options["subject_name"]
+            context.progress(label, 0.10)
+            operation(context)
+            files = sorted(context.extras.get("generated_lore_files", []))
+            if not context.extras.get("lore_results"):
+                files = _require(output_dir, label, patterns)
+            result = {"step": step, "action": action, "generated_files": files}
     elif step == "structure":
         pipeline = StructurePipeline(host)
         actions = {
@@ -585,9 +608,14 @@ def run_stage_action(
         result["action"] = action
 
     context.progress(f"{step} · {action or 'full'} 已完成", 1.0)
+    result["parameter_run_directory"] = context.extras["run_directory"]
+    result["parameter_warnings"] = list(dict.fromkeys(context.extras.get("parameter_warnings", [])))
+    _lore_outcomes(context, result)
     return result
 
 
+@tracked_generation
+@audit_parameters
 def run_stage(
     step: str,
     output_dir: str,
@@ -599,6 +627,8 @@ def run_stage(
     if step not in {"lore", "structure", "scenes", "chapters"}:
         raise ValueError(f"未知生成阶段：{step}")
     context, host = _build_context(step, output_dir, model, parameters, report)
+    if step != "lore":
+        _guard_upstream_lore(context)
     operations = {
         "lore": _run_lore,
         "structure": _run_structure,
@@ -607,4 +637,18 @@ def run_stage(
     }
     result = operations[step](context, host)
     context.progress(f"{step} 阶段已完成", 1.0)
+    result["parameter_run_directory"] = context.extras["run_directory"]
+    result["parameter_warnings"] = list(dict.fromkeys(context.extras.get("parameter_warnings", [])))
+    _lore_outcomes(context, result)
     return result
+
+
+def _lore_outcomes(context, result):
+    outcomes = context.extras.get("lore_results", [])
+    if not outcomes:
+        return
+    result["lore_results"] = outcomes
+    result["model_calls"] = sum(item["calls"] for item in outcomes)
+    result["status"] = ("draft" if any(item["disposition"] == "draft" for item in outcomes)
+                        else "needs_changes" if any(item["status"] == "needs_changes" for item in outcomes)
+                        else "unchecked" if any(item["status"] == "unchecked" for item in outcomes) else "complete")

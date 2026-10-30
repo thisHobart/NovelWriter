@@ -24,13 +24,21 @@ def fake_model(monkeypatch):
     return calls
 
 
-def test_send_prompt_default_model_routes_through_package(fake_model):
-    ai_helper.set_backend("api")  # ensure API backend, default model
+def test_send_prompt_default_model_routes_to_hosted(monkeypatch):
+    calls = {}
+
+    def fake_send(provider, messages, max_tokens):
+        calls.update(provider=provider, messages=messages, max_tokens=max_tokens)
+        return "FAKE RESPONSE"
+
+    monkeypatch.setattr(ai_helper.api_providers, "send_messages", fake_send)
+    ai_helper.set_backend("api", ai_helper.DEFAULT_API_MODEL)
     out = ai_helper.send_prompt("hello world")
     assert out == "FAKE RESPONSE"
-    assert fake_model["prompt"] == "hello world"
+    assert calls["provider"] == "hosted-llm"
+    assert calls["messages"][-1]["content"] == "hello world"
     # NovelWriter's writing workflows keep the 16384 budget of the old layer.
-    assert fake_model["max_tokens"] == ai_helper.DEFAULT_MAX_TOKENS == 16384
+    assert calls["max_tokens"] == ai_helper.DEFAULT_MAX_TOKENS == 16384
 
 
 def test_send_prompt_explicit_model(fake_model):

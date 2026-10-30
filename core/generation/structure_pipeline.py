@@ -8,6 +8,7 @@ compatible with existing NovelWriter workspaces.
 from __future__ import annotations
 
 from core.generation.errors import fail
+from core.generation.lore_repository import lore_context
 from core.generation.ai_helper import send_prompt, get_backend
 import re
 from core.generation.helper_fns import open_file, write_file, read_json, write_json, save_prompt_to_file
@@ -163,7 +164,7 @@ class StructurePipeline:
         # --- End dynamic backstory file path determination ---
 
         try:
-            lore_content = open_file(lore_file_path)
+            lore_content = lore_context(output_dir) or open_file(lore_file_path)
             self.app.logger.info(f"Loaded lore from {lore_file_path}")
         except FileNotFoundError:
             self.app.logger.warning(f"Lore file not found: {lore_file_path}. Arcs might lack context.")
@@ -258,30 +259,14 @@ class StructurePipeline:
         self.app.logger.info(f"Faction Arc Generation & Reconciliation started. Model: {selected_model}, Output Dir: {output_dir}")
 
         # Define file paths consistently using output_dir
-        parameters_file_path = self.dir_manager.get_parameters_path()
         character_arcs_file_path = os.path.join(output_dir, "story", "structure", "character_arcs.md")
         factions_json_file_path = os.path.join(output_dir, "story", "lore", "factions.json")
         lore_file_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
         faction_arcs_output_file_path = os.path.join(output_dir, "story", "structure", "faction_arcs.md")
         reconciled_output_file_path = os.path.join(output_dir, "story", "structure", "reconciled_arcs.md")
         
-        selected_structure = "6-Act Structure" # Default if file/key is missing
-        try:
-            params = {}
-            # Use open_file helper for reading parameters.txt if it's simple text,
-            # or parse manually if open_file isn't suitable for this format.
-            # For now, keeping manual open as it was.
-            if not os.path.exists(parameters_file_path):
-                raise FileNotFoundError
-            with open(parameters_file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        params[key.strip()] = value.strip()
-            selected_structure = params.get("Story Structure", selected_structure)
-            self.app.logger.info(f"Using selected story structure: {selected_structure}")
-        except FileNotFoundError:
-            self.app.logger.warning(f"Parameters file not found: {parameters_file_path}. Using default structure: {selected_structure}")
+        selected_structure = ui.parameters.get("story_structure", ui.parameters.get("Story Structure", "6-Act Structure"))
+        self.app.logger.info(f"Using selected story structure: {selected_structure}")
 
         # --- Step 1: Generate Faction Arcs --- 
         self.app.logger.info("--- Step 1: Generating Faction Arcs ---")
@@ -295,7 +280,7 @@ class StructurePipeline:
             return
         
         try:
-            lore_content = open_file(lore_file_path)
+            lore_content = lore_context(output_dir) or open_file(lore_file_path)
         except FileNotFoundError:
             show_warning("文件缺失", f"找不到世界观文件：{lore_file_path}，势力故事弧可能缺少背景。")
             self.app.logger.warning(f"Lore file not found: {lore_file_path}. Faction arcs might lack context.")
@@ -546,27 +531,10 @@ class StructurePipeline:
         # print(f"Improving structure with model: {selected_model}, output dir: {output_dir}") # Replaced
         self.app.logger.info(f"Improving structure. Model: {selected_model}, Output Dir: {output_dir}")
 
-        # --- Read Parameters to get selected structure --- 
-        parameters_file_path = self.dir_manager.get_parameters_path()
-        selected_structure_name = "6-Act Structure" # Default
-        story_length = "Novel (Standard)" # Default story length for prompt modification
-        params = {}
-        if not os.path.exists(parameters_file_path):
-            self.app.logger.warning(f"Parameters file not found at {parameters_file_path}. Using default structure: {selected_structure_name}")
-        else:
-            with open(parameters_file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        params[key.strip()] = value.strip()
-            loaded_structure = params.get("Story Structure")
-            story_length = params.get("Story Length", story_length)
-            if loaded_structure and loaded_structure.strip():
-                selected_structure_name = loaded_structure
-            else:
-                self.app.logger.warning(f"'Story Structure' not found or empty in {parameters_file_path}. Using default: {selected_structure_name}")
+        params = ui.parameters
+        selected_structure_name = params.get("story_structure", params.get("Story Structure", "6-Act Structure"))
+        story_length = params.get("story_length", params.get("Story Length", "Novel (Standard)"))
         self.app.logger.info(f"Using selected story structure for improvement: {selected_structure_name} (Story Length: {story_length})")
-        # --- End Reading Parameters ---
         domain_profile = resolve_domain_profile(params)
 
         # --- STRUCTURE_SECTIONS_MAP is now imported from parameters.py ---
@@ -755,7 +723,7 @@ class StructurePipeline:
 
         lore_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
         if os.path.exists(lore_path):
-            lore_content = open_file(lore_path)
+            lore_content = lore_context(output_dir) or open_file(lore_path)
             self.app.logger.info(f"Loaded lore from {lore_path}")
 
         arcs_path = os.path.join(output_dir, "story", "planning", "reconciled_locations_arcs.md")

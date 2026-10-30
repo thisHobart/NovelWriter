@@ -39,8 +39,12 @@ import random
 from datetime import datetime
 from core.config.directory_config import get_directory_manager
 
-from core.generation.cancellation import CancelToken
+from core.generation.cancellation import CancelToken, GenerationCancelled
 from core.generation.stage_context import StageContext
+from core.generation.parameters import requirements_block
+from core.generation.parameter_compliance import ComplianceReview, guard_manual_sources
+from core.generation.lore_repository import LoreRepository, BODY, CHARACTERS, FACTIONS, CONTRACT, encode, background_name
+from core.generation.lore_run import readable_world, save_receipt, source_fingerprint, load_receipt, LABELS, RESULTS
 
 
 def _log_notice(level: str, title: str, message: str) -> None:
@@ -61,11 +65,69 @@ def show_error(title: str, message: str, *args, **kwargs) -> None:
     fail(title, message)
 
 
+def _object_rows(value):
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 class LorePipeline:
     def __init__(self, app) -> None:
         self.app = app
         self.cancel_token = CancelToken()
         self.dir_manager = get_directory_manager(app.get_output_dir(), use_new_structure=True)
+
+    def _reviewer(self, ui, kind, subject=None):
+        review = ComplianceReview(ui, kind, lambda request: send_prompt(request, model=ui.model), subject=subject)
+        ui.extras["active_lore_review"] = review
+        return review
+
+    def _guard(self, ui, paths, kind):
+        guard_manual_sources(ui, paths, lambda request: send_prompt(request, model=ui.model), kind, allow_conflicts=True)
+
+    def _publish(self, ui, files):
+        repo = LoreRepository(ui.output_dir)
+        review = ui.extras.get("active_lore_review")
+        try:
+            ui.progress("正在保存" + LABELS.get(review.kind, "设定") if review else "正在保存设定", -1)
+        except GenerationCancelled:
+            if review and review.outcome:
+                review.outcome.update(status="draft", exit_reason="cancelled", issues=["用户停止，候选保留为草稿。"])
+                save_receipt(ui.output_dir, review.outcome)
+            raise
+        with repo.lock():
+            repo._recover()
+            if review and source_fingerprint(ui.output_dir) != review.receipt["source_fingerprint"]:
+                if review.outcome:
+                    review.outcome.update(status="draft", exit_reason="external_change", issues=["生成期间设定文件被外部修改；新候选保留为草稿，未覆盖当前文件。"])
+                    save_receipt(ui.output_dir, review.outcome)
+                    ui.extras.setdefault("parameter_warnings", []).extend(review.outcome["issues"])
+                return
+            try:
+                changes = dict(files)
+                if review and review.outcome:
+                    published = dict(review.outcome, files=list(files), disposition="current",
+                                     source_fingerprint=source_fingerprint(ui.output_dir, files))
+                    changes[f"{RESULTS}/{published['id']}.json"] = encode(published)
+                repo._transaction(changes, "checked_generation")
+            except Exception:
+                if review and review.outcome:
+                    review.outcome.update(status="draft", exit_reason="save_failed", issues=["保存失败，旧文件已回滚，候选保留为草稿。"])
+                    save_receipt(ui.output_dir, review.outcome)
+                raise
+            if review and review.outcome:
+                review.outcome.update(published)
+        ui.extras.setdefault("generated_lore_files", set()).update(files)
+
+    def _repair_result(self, ui, identity):
+        from core.generation.lore_run import current_content
+        receipt = load_receipt(ui.output_dir, identity)
+        ui.extras["lore_repair"] = receipt
+        receipt["current_content"] = current_content(ui.output_dir, receipt)
+        operations = {"characters": self._generate_characters, "factions": self._generate_factions,
+                      "world": self._generate_lore, "background": self._main_character_enhancement,
+                      "titles": self._suggest_titles}
+        if receipt["kind"] not in operations:
+            raise ValueError("此记录没有可修复的设定对象")
+        operations[receipt["kind"]](ui)
 
     def _generate_factions(self, ui):
         """势力卡由模型按故事前提直接用中文写，落盘前做确定性校验。
@@ -93,18 +155,22 @@ class LorePipeline:
                 attempt, CAST_RETRY_LIMIT, error,
             )
 
+        reviewer = self._reviewer(ui, "factions")
         try:
             factions = generate_factions(
-                lambda request: send_prompt(request, model=selected_model),
+                reviewer.generate,
                 params,
                 num_factions,
                 on_retry=_log_retry,
+                review=reviewer,
             )
         except CastError as error:
             self.app.logger.error("Faction generation failed: %s", error, exc_info=True)
             show_error("错误", f"生成势力失败：{error}")
             return
 
+        if factions is None:
+            return
         stored = storage_factions(factions)
         self.app.logger.info(
             "Generated %s factions: %s",
@@ -116,7 +182,7 @@ class LorePipeline:
         lore_full_path = os.path.join(output_dir, lore_dir)
         os.makedirs(lore_full_path, exist_ok=True)
         factions_filepath = os.path.join(lore_full_path, "factions.json")
-        write_json(factions_filepath, stored)
+        self._publish(ui, {FACTIONS: encode(stored)})
         self.app.logger.info(f"Saved factions to {factions_filepath}")
 
     def _generate_characters(self, ui):
@@ -157,25 +223,32 @@ class LorePipeline:
                 attempt, CAST_RETRY_LIMIT, error,
             )
 
+        self._guard(ui, [FACTIONS], "upstream_factions")
+        reviewer = self._reviewer(ui, "characters")
         try:
             cast = generate_cast(
-                lambda request: send_prompt(request, model=selected_model),
+                reviewer.generate,
                 params,
                 num_chars,
                 female_percentage=female_percentage,
                 factions=factions,
                 on_retry=_log_retry,
+                review=reviewer,
             )
         except CastError as error:
             self.app.logger.error("Character generation failed: %s", error, exc_info=True)
             show_error("错误", f"生成人物失败：{error}")
             return
 
+        if cast is None:
+            return
         characters = cast["characters"]
         payload = {
+            **cast,
             "characters": characters,
             "relationships": cast.get("relationships", []),
             "metadata": {
+                **(cast.get("metadata", {}) if isinstance(cast.get("metadata"), dict) else {}),
                 "generation_date": datetime.now().isoformat(),
                 "total_characters": len(characters),
                 "genre": params.get("genre", ""),
@@ -193,7 +266,7 @@ class LorePipeline:
         )
 
         characters_filepath = os.path.join(lore_full_path, "characters.json")
-        write_json(characters_filepath, payload)
+        self._publish(ui, {CHARACTERS: encode(payload)})
         self.app.logger.info(f"Saved characters to {characters_filepath}")
 
     def _generate_lore(self, ui):
@@ -210,20 +283,11 @@ class LorePipeline:
         self.app.logger.info(f"Ensured prompts subdirectory exists at: {prompts_subdir}")
 
         # --- Load necessary data ---
-        parameters_txt_path = os.path.join(output_dir, "system", "parameters.txt")
         characters_json_path = os.path.join(output_dir, "story", "lore", "characters.json")
         factions_json_path = os.path.join(output_dir, "story", "lore", "factions.json")
 
-        story_params = {}
-        if os.path.exists(parameters_txt_path):
-            params_content = open_file(parameters_txt_path)
-            for line in params_content.splitlines():
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    story_params[key.strip()] = value.strip()
-            self.app.logger.info(f"Loaded parameters from {parameters_txt_path}")
-        else:
-            self.app.logger.warning(f"Parameters file not found: {parameters_txt_path}. Proceeding without detailed parameters.")
+        story_params = ui.parameters
+        self._guard(ui, [CHARACTERS, FACTIONS], "upstream_world")
 
 
         characters = []
@@ -275,12 +339,7 @@ class LorePipeline:
             "请确保世界观与所有已提供的信息一致。"
         ]
 
-        prompt_lines.append("\n## 故事参数：")
-        if story_params:
-            for key, value in story_params.items():
-                prompt_lines.append(f"- {key}: {value}")
-        else:
-            prompt_lines.append("- 未加载参数")
+        prompt_lines.append("\n" + requirements_block(story_params))
 
         prompt_lines.append("\n## 人物摘要：")
         if characters:
@@ -292,9 +351,8 @@ class LorePipeline:
             prompt_lines.append("- 未加载人物")
 
         prompt_lines.append("\n## 势力摘要：")
-        prompt_lines.append("\n请重点处理前两个势力，其他势力稍后再处理。\n")
         if factions:
-            prompt_lines.append(format_faction_summary(factions))
+            prompt_lines.append(format_faction_summary(factions, limit=len(factions)))
         else:
             prompt_lines.append("- 未加载势力")
         
@@ -317,7 +375,7 @@ class LorePipeline:
             # Sort characters by role priority
             role_priority = {"protagonist": 0, "deuteragonist": 1, "antagonist": 2}
             # Ensure characters is a list of dicts here when loaded from JSON
-            sorted_chars = sorted(characters, key=lambda x: role_priority.get(x.get("role", "").lower(), 99))
+            sorted_chars = sorted(characters, key=lambda x: role_priority.get(str(x.get("role", "")).lower(), 99))
             
             for char_dict in sorted_chars: # char_dict is a dictionary from characters.json
                 char_name = char_dict.get('name', 'Unknown') # Use .get() for dict
@@ -331,7 +389,7 @@ class LorePipeline:
                     value = char_dict.get(key)
                     if value:
                         if isinstance(value, list):
-                            basic_info.append(f"- {zh_field(key)}：{', '.join(value)}")
+                            basic_info.append(f"- {zh_field(key)}：{', '.join(map(str, value))}")
                         else:
                             basic_info.append(f"- {zh_field(key)}：{value}")
                 
@@ -339,17 +397,17 @@ class LorePipeline:
                 traits = []
                 
                 family_data = char_dict.get('family', {})
-                if family_data:
+                if isinstance(family_data, dict) and family_data:
                     family_info_list = ["- 家庭："]
                     parents = family_data.get('parents', [])
                     if parents:
                         parents_str = ", ".join([f"{p.get('name', '无')} ({p.get('relation', '无')}, {p.get('gender', '无')}, {p.get('status', '无')})"
-                                               for p in parents])
+                                               for p in _object_rows(parents)])
                         family_info_list.append(f"  - 父母：{parents_str}")
                     siblings = family_data.get('siblings', [])
                     if siblings:
                         siblings_str = ", ".join([f"{s.get('name', '无')} ({s.get('relation', '无')}, {s.get('gender', '无')})"
-                                                for s in siblings])
+                                                for s in _object_rows(siblings)])
                         family_info_list.append(f"  - 兄弟姐妹：{siblings_str}")
                     spouse = family_data.get('spouse')
                     if spouse and isinstance(spouse, dict):
@@ -357,7 +415,7 @@ class LorePipeline:
                     children_val = family_data.get('children', [])
                     if children_val:
                         children_str = ", ".join([f"{c.get('name', '无')} ({c.get('relation', '无')}, {c.get('gender', '无')})"
-                                                for c in children_val])
+                                                for c in _object_rows(children_val)])
                         family_info_list.append(f"  - 子女：{children_str}")
                     # Only extend traits if family_info_list has more than just the "- Family:" header
                     if len(family_info_list) > 1:
@@ -365,12 +423,14 @@ class LorePipeline:
                 
                 # Combine all information
                 char_section_detail += "\n".join(basic_info + traits)
+                char_section_detail += "\n完整人物资料（保留待修改字段供核对）：\n" + encode(char_dict)
                 character_section += char_section_detail
 
             # Add the character section to the prompt
             prompt += character_section
             
         prompt += "\n\n## 最终要求：\n请确保生成的世界观与上述人物细节和势力信息一致，尤其注意性别、关系和个人背景。在构建更广阔的世界背景时，应保留并尊重这些属性。"
+        prompt += "\n人物和势力名称登记必须完整对应已有名单，不得遗漏、新增或擅改。作品参数最高优先；如果资料与参数明确冲突，不得偷偷修改人物来掩盖冲突。"
         prompt += "\n\n重要：只生成所需的世界观、背景和初始情节点，不要在本次响应中生成故事标题；标题将单独生成和管理。"
         prompt += "\n\n现在生成世界观设定："
         prompt += "\n\n" + lore_contract_instructions()
@@ -397,14 +457,24 @@ class LorePipeline:
                 error,
             )
 
+        reviewer = self._reviewer(ui, "world")
+        def parse_checked_world(response):
+            try:
+                body, contract = extract_lore_contract(response)
+                for source, field, label in ((characters, "canonical_characters", "人物"),
+                                              (factions, "canonical_factions", "势力")):
+                    if source and {r.get("name") for r in source} != {r.get("name") for r in contract.get(field, [])}:
+                        raise DesignContractError(f"世界观的{label}名称登记必须完整对应已有名单，不得遗漏或擅改", code="registry_roster_mismatch")
+            except DesignContractError as exc:
+                reviewer.invalid(str(exc))
+                raise
+            reviewer(response, contract)
+            return body, contract
         try:
-            lore_text, lore_contract = generate_with_contract_retry(
-                lambda request: send_prompt(request, model=selected_model),
-                prompt,
-                extract_lore_contract,
-                retry_limit=LORE_CONTRACT_RETRY_LIMIT,
-                on_retry=_log_contract_retry,
-            )
+            result = reviewer.run(prompt, parse_checked_world, readable_world)
+            if result is None:
+                return
+            lore_text, lore_contract = result
         except DesignContractError as exc:
             self.app.logger.error("Lore rejected by its own contract: %s", exc)
             show_error("世界观契约未通过", str(exc))
@@ -419,9 +489,8 @@ class LorePipeline:
         lore_full_path = os.path.join(output_dir, lore_dir)
         os.makedirs(lore_full_path, exist_ok=True)
         generated_lore_filepath = os.path.join(lore_full_path, "generated_lore.md")
-        write_file(generated_lore_filepath, lore_text)
         # 人名、地点和势力的规范名登记表：后续阶段据此判断「同一个对象」。
-        write_json(os.path.join(lore_full_path, "lore_contract.json"), lore_contract)
+        self._publish(ui, {BODY: lore_text, **({CONTRACT: encode(lore_contract)} if lore_contract is not None else {})})
 
         self.app.logger.info(f"Lore successfully generated and saved to {generated_lore_filepath}")
         # show_success("Success", f"Lore generated and saved to {generated_lore_filepath}.\n\nPrompt used is in {main_lore_prompt_filepath}")
@@ -435,39 +504,26 @@ class LorePipeline:
         # os.makedirs(os.path.join(output_dir, "prompts"), exist_ok=True) # Ensured by save_prompt_to_file
 
         lore_file_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
-        params_file_path = os.path.join(output_dir, "system", "parameters.txt")
 
         if not os.path.exists(lore_file_path):
             self.app.logger.error(f"Lore file not found at {lore_file_path}. Cannot suggest titles.")
             show_error("错误", f"找不到世界观文件（{lore_file_path}），请先生成世界观。")
             return
-        lore_content = open_file(lore_file_path)
+        from core.generation.lore_repository import lore_context
+        lore_content = lore_context(output_dir) or open_file(lore_file_path)
         self.app.logger.info(f"Loaded lore content from {lore_file_path} for title suggestion.")
 
         # 2. Load Parameters (for genre, subgenre, themes - optional but good context)
-        story_genre = "fiction"  # Default
-        story_subgenre = ""    # Default
-        story_themes = ""      # Default to empty, will be updated if themes are found
-
-        if os.path.exists(params_file_path):
-            params_content = open_file(params_file_path)
-            current_params = {}
-            for line in params_content.splitlines():
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    current_params[key.strip().lower().replace(' ','_')] = value.strip()
-            story_genre = current_params.get('genre', story_genre)
-            story_subgenre = current_params.get('subgenre', story_subgenre)
-            story_themes = current_params.get('theme', '').strip()
-            self.app.logger.info(f"Loaded parameters for title context: Genre='{story_genre}', Subgenre='{story_subgenre}', Theme='{story_themes}'.")
-        else:
-            self.app.logger.warning(f"Parameters file not found at {params_file_path}. Proceeding without theme/genre context for titles.")
+        story_genre = ui.parameters.get('genre', 'fiction')
+        story_subgenre = ui.parameters.get('subgenre', '')
+        story_themes = str(ui.parameters.get('theme', '')).strip()
 
         # 3. Construct the prompt for title suggestions
         # Use full lore content, no truncation
         lore_for_prompt = lore_content
 
         prompt_lines = [
+            requirements_block(ui.parameters),
             f"以下是{zh_label(story_subgenre)}{zh_label(story_genre)}故事的世界观设定。请根据这些设定以及列出的主题（如有），推荐 5—10 个可用标题。",
             "请使用简单的编号列表，每行一个标题。\n\n例如：\n",
             "1. 标题一\n",
@@ -506,7 +562,9 @@ class LorePipeline:
         current_backend = get_backend()
         backend_info = f"{current_backend}" if current_backend != "api" else f"api/{selected_model}"
         self.app.logger.info(f"Sending title suggestion prompt {log_msg_prompt_source} to LLM (backend: {backend_info})...")
-        suggested_titles_text = send_prompt(title_prompt_content, model=selected_model)
+        reviewer = self._reviewer(ui, "titles")
+        suggested_titles_text = reviewer.run(title_prompt_content, lambda value: value,
+                                             lambda value: value.strip(), target="story/planning/suggested_titles.md", max_attempts=1)
 
         if not suggested_titles_text:
             self.app.logger.error("Failed to get title suggestions from LLM.")
@@ -522,17 +580,19 @@ class LorePipeline:
         os.makedirs(planning_full_path, exist_ok=True)
         suggested_titles_filepath = os.path.join(planning_full_path, "suggested_titles.md")
         try:
-            write_file(suggested_titles_filepath, suggested_titles_text)
+            self._publish(ui, {"story/planning/suggested_titles.md": suggested_titles_text})
             self.app.logger.info(f"Suggested titles saved to: {suggested_titles_filepath}")
             # show_success("Success", f"Title suggestions have been saved to:\n{suggested_titles_filepath}\n\nPlease review this file and then update the Novel Title in the Parameters tab.")
         except IOError as e_write:
             self.app.logger.error(f"Failed to write suggested titles to {suggested_titles_filepath}: {e_write}", exc_info=True)
+            raise
 
     def _main_character_enhancement(self, ui):
         self.app.logger.info("Main character enhancement process started.")
         selected_model = ui.model 
         output_dir = ui.output_dir
         os.makedirs(output_dir, exist_ok=True)
+        self._guard(ui, [BODY, CONTRACT, CHARACTERS, FACTIONS], "upstream_background")
 
         self.app.logger.info(f"Using model: {selected_model} for main character enhancement")
         self.app.logger.info(f"Output directory for character files: {output_dir}")
@@ -542,7 +602,8 @@ class LorePipeline:
         generated_lore_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
 
         try:
-            lore_content = open_file(generated_lore_path)
+            from core.generation.lore_repository import lore_context
+            lore_content = lore_context(output_dir) or open_file(generated_lore_path)
             self.app.logger.info(f"Loaded lore content from {generated_lore_path}. Length: {len(lore_content)} chars.")
         except FileNotFoundError:
             self.app.logger.warning(f"Lore file {generated_lore_path} not found. Proceeding without lore context for backstories.")
@@ -569,14 +630,14 @@ class LorePipeline:
 
         # Identify and sort main characters (Protagonist, Deuteragonist, Antagonist)
         main_roles = ["protagonist", "deuteragonist", "antagonist"]
-        main_chars_data = [c for c in characters if c.get("role", "").lower() in main_roles]
+        main_chars_data = [c for c in characters if str(c.get("role", "")).lower() in main_roles]
         role_priority = {"protagonist": 0, "deuteragonist": 1, "antagonist": 2}
-        main_chars_data.sort(key=lambda x: role_priority.get(x.get("role", "").lower(), 99))
+        main_chars_data.sort(key=lambda x: role_priority.get(str(x.get("role", "")).lower(), 99))
 
         if not main_chars_data:
             self.app.logger.warning("No Protagonist, Deuteragonist, or Antagonist found in characters.json for enhancement.")
-            show_warning("警告", "characters.json 中没有找到主角、第二主角或反派。")
-            return
+            ui.extras.setdefault("parameter_warnings", []).append("人物身份尚未规范，暂按现有人物生成背景，请核对身份。")
+            main_chars_data = characters
 
         self.app.logger.info(f"Found main characters for enhancement (Count: {len(main_chars_data)}): {[c.get('name', 'NAME N/A') for c in main_chars_data]}")
         # self.app.logger.debug(f"Full main_chars_data content before loop: {main_chars_data}") # ADDED: Log full list before loop
@@ -585,11 +646,16 @@ class LorePipeline:
         generated_backstories = {} # Store generated backstories
 
         for i, char_data_item in enumerate(main_chars_data): # Changed char_data to char_data_item and used enumerate
+            if ui.extras.get("lore_subject_name") and ui.extras["lore_subject_name"] != char_data_item.get("name"):
+                continue
+            repair = ui.extras.get("lore_repair")
+            if repair and repair.get("subject", {}).get("name") != char_data_item.get("name"):
+                continue
             self.app.logger.info(f"--- Iteration {i} for main character enhancement ---") # ADDED: Iteration log
             self.app.logger.debug(f"Processing char_data_item (type: {type(char_data_item)}): {char_data_item}") # ADDED: Log current item and its type
             
             char_name = char_data_item.get('name', 'Unknown Character') 
-            char_role = char_data_item.get('role', 'Unknown Role')
+            char_role = str(char_data_item.get('role') or 'unknown')
             self.app.logger.info(f"Extracted - Name: '{char_name}', Role: '{char_role}'") # ADDED: Log extracted name/role
 
             self.app.logger.info(f"--- Generating backstory for: {char_name} ({char_role}) ---") # Original log line
@@ -602,6 +668,7 @@ class LorePipeline:
             # Build the prompt
             genre_text = f"{current_subgenre} {current_genre}" if current_subgenre else current_genre
             prompt_lines = [
+                requirements_block(params),
                 f"我正在创作一部{zh_label(current_subgenre)}{zh_label(current_genre)}小说，需要完善关键人物 {char_name}（{zh_label(char_role.capitalize())}）的背景故事。",
                 "请生成详细背景，涵盖其家庭、成长经历、重大人生事件，以及其如何成为故事开始时的自己。",
                 "内容应符合整体世界观和已提供的人物信息，包括年龄、性别和家庭成员。"
@@ -620,24 +687,24 @@ class LorePipeline:
                 value = char_data_item.get(key)
                 if value:
                     if isinstance(value, list):
-                        prompt_lines.append(f"- {zh_field(key)}：{', '.join(value)}")
+                        prompt_lines.append(f"- {zh_field(key)}：{', '.join(map(str, value))}")
                     else:
                         prompt_lines.append(f"- {zh_field(key)}：{value}")
 
             # Add formatted family details using dict.get()
             family_data = char_data_item.get('family', {})
-            if family_data: # Check if family_data itself is not empty
+            if isinstance(family_data, dict) and family_data:
                 prompt_lines.append("- 家庭：")
                 parents = family_data.get('parents', [])
                 if parents:
                     parents_str = ", ".join([f"{p.get('name', '无')} ({p.get('relation', '无')}, {p.get('gender', '无')}, {p.get('status', '无')})"
-                                           for p in parents])
+                                           for p in _object_rows(parents)])
                     prompt_lines.append(f"  - 父母：{parents_str}")
                 
                 siblings = family_data.get('siblings', [])
                 if siblings:
                     siblings_str = ", ".join([f"{s.get('name', '无')} ({s.get('relation', '无')}, {s.get('gender', '无')})"
-                                            for s in siblings])
+                                            for s in _object_rows(siblings)])
                     prompt_lines.append(f"  - 兄弟姐妹：{siblings_str}")
 
                 spouse = family_data.get('spouse') # Can be a dict or None
@@ -647,7 +714,7 @@ class LorePipeline:
                 children = family_data.get('children', [])
                 if children:
                     children_str = ", ".join([f"{c.get('name', '无')} ({c.get('relation', '无')}, {c.get('gender', '无')})"
-                                            for c in children])
+                                            for c in _object_rows(children)])
                     prompt_lines.append(f"  - 子女：{children_str}")
 
             # Add previously generated backstories for context
@@ -682,11 +749,18 @@ class LorePipeline:
             current_backend = get_backend()
             backend_info = f"{current_backend}" if current_backend != "api" else f"api/{selected_model}"
             self.app.logger.info(f"Sending backstory prompt for {char_name} {log_msg_prompt_source} to LLM (backend: {backend_info})...")
-            response = send_prompt(prompt, model=selected_model)
-
-            if not response:
-                self.app.logger.warning(f"Failed to get backstory from LLM for {char_name}. Skipping.")
+            reviewer = self._reviewer(ui, "background", char_data_item)
+            def parse_background(candidate):
+                if not candidate.strip():
+                    reviewer.invalid("人物背景不能为空")
+                    raise DesignContractError("人物背景不能为空", code="empty_background")
+                reviewer(candidate)
+                return candidate, {}
+            target = "story/lore/" + background_name(char_data_item)
+            result = reviewer.run(prompt, parse_background, lambda candidate: (candidate.strip(), {}), target=target)
+            if result is None:
                 continue
+            response, _ = result
             
             self.app.logger.info(f"Received backstory for {char_name}. Length: {len(response)} chars.")
             # Save the generated backstory
@@ -700,7 +774,7 @@ class LorePipeline:
             lore_full_path = os.path.join(output_dir, lore_dir)
             os.makedirs(lore_full_path, exist_ok=True)
             background_filepath = os.path.join(lore_full_path, base_filename)
-            write_file(background_filepath, response)
+            self._publish(ui, {target: response})
             self.app.logger.info(f"Saved background for {char_name} to {background_filepath}")
             
             # Store for next iteration's context

@@ -381,6 +381,10 @@ class ChapterWritingAgent(BaseAgent):
         
     def _load_story_parameters(self, parameters_file: str) -> Dict[str, str]:
         """Load story parameters from file."""
+        snapshot = getattr(self, "parameter_snapshot", None)
+        if snapshot is not None:
+            from copy import deepcopy
+            return deepcopy(snapshot)
         params = {}
         try:
             if os.path.exists(parameters_file):
@@ -1301,7 +1305,8 @@ class ChapterWritingAgent(BaseAgent):
             if not os.path.exists(lore_file):
                 lore_file = os.path.join(self.output_dir, "generated_lore.md")
             if os.path.exists(lore_file):
-                context["lore"] = self._sanitize_lore_content(open_file(lore_file))
+                from core.generation.lore_repository import lore_context
+                context["lore"] = lore_context(self.output_dir) or self._sanitize_lore_content(open_file(lore_file))
             else:
                 context["lore"] = "Lore not available."
                 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from typing import Any, Dict, Tuple
 
 # 稳定顺序即文件里的行序
@@ -58,22 +59,34 @@ def save(output_dir: str, params: Dict[str, Any]) -> str:
     params 用内部 snake_case 键（与 get_current_parameters 一致）；
     未在 CORE_ORDER 中的键作为动态参数追加在后面。
     """
+    from core.generation.parameters import internal_parameters
+    params = internal_parameters(params)
     lines = []
     for display in CORE_ORDER:
         key = display.lower().replace(" ", "_")
         value = params.get(key, "")
-        if value or isinstance(value, bool):
+        if value is not None and value != "":
             lines.append(f"{display}: {value}")
 
     for key, value in params.items():
         if key in CORE_KEYS:
             continue
-        if value or isinstance(value, bool):
+        if value is not None and value != "":
             lines.append(f"{key.replace('_', ' ').title()}: {value}")
 
     system_dir = os.path.join(output_dir, "system")
     os.makedirs(system_dir, exist_ok=True)
     path = parameters_path(output_dir)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines))
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=system_dir,
+                                         prefix=".parameters_", suffix=".tmp", delete=False) as handle:
+            temporary = handle.name
+            handle.write("\n".join(lines))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.remove(temporary)
     return path

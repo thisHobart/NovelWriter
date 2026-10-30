@@ -194,7 +194,7 @@ class WorkflowPage(StagePage):
     # ---------------------------------------------------------------- 行为
     def _run_all(self) -> None:
         self.run_task(
-            full_workflow_work(self.output_dir),
+            full_workflow_work(self.output_dir, self.model),
             busy_button=self.run_all_button,
             busy_text="正在运行完整流程…",
             on_success=lambda _: (self.refresh(), self.artifacts_changed.emit()),
@@ -202,7 +202,7 @@ class WorkflowPage(StagePage):
 
     def _run_single(self, key: str) -> None:
         self.run_task(
-            step_work(key, self.output_dir),
+            step_work(key, self.output_dir, self.model),
             busy_button=self.run_all_button,
             busy_text=f"正在运行{dict((k, n) for k, n, _ in STAGE_META).get(key, key)}…",
             on_success=lambda _: (self.refresh(), self.artifacts_changed.emit()),
@@ -215,7 +215,7 @@ class WorkflowPage(StagePage):
             self.status_message.emit("info", "没有待继续的阶段。")
             return
         self.run_task(
-            full_workflow_work(self.output_dir, steps=pending),
+            full_workflow_work(self.output_dir, self.model, steps=pending),
             busy_button=self.resume_button,
             busy_text="正在继续…",
             on_success=lambda _: (self.refresh(), self.artifacts_changed.emit()),

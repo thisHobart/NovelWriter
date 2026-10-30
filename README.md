@@ -21,33 +21,17 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 ## LLM 后端与模型
 
-应用提供动态的 LLM 模型和后端选择器，可以在**托管 API**与**本地 CLI 工具**之间切换，也可以选择具体的 API 模型。目前支持的模型包括：
+桌面版仅提供三个模型服务：**hosted-llm**、**DeepSeek 官方**、**千问官方**。
+在左侧底部的「模型服务」下拉框选择服务，实际模型名称、地址和密钥通过 `.env` 配置。
+当前选项会立即用于下一次生成任务，保存作品参数后也会记住该选项。
 
-* OpenAI GPT-5.x 系列（gpt-5.5、gpt-5.4、gpt-5.4-mini、gpt-5.2）
-* Claude（Fable 5、Opus 4.8、Sonnet 4.6、Sonnet 4.5、Haiku 4.5）
-* Gemini（3.1 Pro/Flash preview、3 Pro/Flash preview、2.5 Pro/Flash）
-* OpenRouter（便捷密钥以及 `openrouter:<upstream-model-id>` 透传模式）、托管或自托管的 OpenAI 兼容接口，以及 Venice
-* 模型列表来自共享的 [`llm-backends`](https://github.com/EdwardAThomson/llm-backends) 软件包注册表；`core/generation/ai_helper.py` 只是对该接口的轻量封装
-
-以下模型已经从注册表中废弃，不再建议使用：
-
-* OpenAI GPT-4o、o1、o1-mini、o3、o4-mini
-* Gemini 1.5、2.0、2.5 experimental 快照版本
-* Claude 3.5、3.7 Sonnet，以及 Claude 4.5 Opus（已退役且没有静默替换版本，选择后会直接报错）
-
-运行本项目需要为所使用的 LLM 配置对应的 API 密钥，例如 GPT 使用 OpenAI API 密钥，Gemini 使用 Google AI API 密钥，Claude 使用 Anthropic API 密钥。密钥应保存到项目根目录的 `.env` 文件中。
-
-此外，NovelWriter 可以通过统一的 LLM 接口调用多个本地 CLI 工具：
-
-- `codex`：提供 GPT-5 风格补全能力的 Codex CLI
-- `gemini`：用于本地访问 Gemini 2.5 模型的 Gemini CLI
-- `claude`：提供 Claude 风格能力的 Claude Code CLI
-
-如果这些命令已经加入系统 `PATH`，NovelWriter 就可以将 LLM 请求路由到本地工具，而不是托管 API，从而根据项目需要灵活平衡成本、延迟和能力。
-
-应用支持全自动创作，但自动生成的内容也可以作为草稿，由作者继续修改和完善。
+将项目中的 `.env.example` 复制为 `.env`，按需填写后重启程序。
+源码运行时放在项目根目录；EXE 运行时放在 EXE 同目录。
+完整变量说明、千问地域配置及旧 hosted-llm 配置兼容方式见 [模型服务配置](docs/API_CONFIGURATION.md)。
 
 ## 核心功能
+
+世界设定支持[手动编辑](docs/lore_editing.md)，生成入口统一处理未保存作品参数并检查结果是否偏离要求，详见[生成参数一致性](docs/parameter_consistency.md)。
 
 - **多题材支持**：支持 8 种主要题材，并针对不同题材提供相应的世界观构建逻辑
 - **智能人物生成**：生成包含详细背景、关系和家族关系的人物，并支持性别比例配置
@@ -61,8 +45,8 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 - **多级审阅系统**：提供场景级、章节级和批次级质量分析，并追踪质量变化
 - **自动章节写作**：根据场景计划自动生成章节正文并进行质量控制
 - **质量分析**：提供带有可配置阈值和数据面板的质量趋势分析
-- **多后端 LLM 接口**：统一支持 API 后端和本地 CLI 工具（Codex、Gemini、Claude）
-- **后端与模型选择器**：在 GUI 顶部切换 API/CLI 后端，并在运行时选择具体的 API 模型
+- **模型服务**：支持 hosted-llm、DeepSeek 官方和千问官方 API
+- **服务选择器**：在左侧底部切换模型服务，并检查所选服务的配置
 
 ### 独立质量闸与真人盲测
 
@@ -172,25 +156,10 @@ python -m core.evaluation.completion_audit `
    pip install -r requirements.txt
    ```
 
-   或者：
+4. **配置模型服务：**
 
-   ```bash
-   pip install python-dotenv "llm-backends[all] @ git+https://github.com/EdwardAThomson/llm-backends@v0.2.0"
-   ```
-
-4. **配置 API 密钥：**
-
-   * 在项目根目录创建名为 `.env` 的文件。
-   * 按照以下格式填写 API 密钥：
-
-     ```dotenv
-     OPENAI_API_KEY='your_openai_api_key_here'
-     GEMINI_API_KEY='your_gemini_api_key_here'
-     ANTHROPIC_API_KEY='your_anthropic_api_key_here'
-     ```
-
-   * `ANTHROPIC_API_KEY` 是 Anthropic 当前使用的标准密钥名称；历史名称 `CLAUDE_API_KEY` 仍可作为废弃的兼容写法使用。
-   * 将示例中的占位文本替换为真实的 API 密钥。
+   将 `.env.example` 复制为 `.env`，填写所用服务的密钥、实际模型名称及地址。
+   详细说明见 [模型服务配置](docs/API_CONFIGURATION.md)。
 
 5. **运行应用：**
 

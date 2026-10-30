@@ -68,3 +68,20 @@ def test_structure_options_follow_length():
     assert story_options.default_structure_for("Short Story") == "3-Act Structure"
     assert story_options.subgenres_for("Sci-Fi")[0] == "Space Opera"
     assert story_options.subgenres_for("不存在的题材") == ()
+
+
+def test_zero_false_and_aliases_are_saved_once(tmp_path):
+    params_store.save(str(tmp_path), {"Theme": "历史值", "theme": "中文新值", "space_combat": False, "custom_zero": 0})
+    loaded = params_store.load(str(tmp_path))
+    assert loaded["Theme"] == "中文新值" and loaded["Space Combat"] == "False" and loaded["Custom Zero"] == "0"
+    assert (tmp_path / "system/parameters.txt").read_text(encoding="utf-8").count("Theme:") == 1
+
+
+def test_replace_failure_preserves_saved_file(tmp_path, monkeypatch):
+    import pytest
+    path = params_store.save(str(tmp_path), {"theme": "有效旧参数"})
+    monkeypatch.setattr(params_store.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("替换失败")))
+    with pytest.raises(OSError):
+        params_store.save(str(tmp_path), {"theme": "不能部分覆盖"})
+    assert params_store.load(str(tmp_path))["Theme"] == "有效旧参数"
+    assert not list((tmp_path / "system").glob(".parameters_*.tmp"))

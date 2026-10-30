@@ -363,6 +363,7 @@ class ChapterWritingPage(StagePage):
                 "chapters",
                 action,
                 self.output_dir,
+                self.model,
                 chapter_number=chapter_number,
                 options=options,
             ),

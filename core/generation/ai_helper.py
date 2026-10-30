@@ -1,37 +1,18 @@
-# ai_helper.py
-#
-# Backward-compatible LLM facade for NovelWriter, now backed by the shared
-# `llm-backends` package (StoryDaemon docs/LLM_BACKENDS_INVENTORY.md section
-# 7.4, step 4). The GUI and the agents import everything LLM-shaped from here:
-# send_prompt / send_prompt_with_retry, the backend state (set_backend /
-# get_backend / get_model), and the dropdown sources (get_supported_models /
-# get_available_backends / check_cli_availability).
-#
-# What changed at adoption:
-# - ONE model registry (the package's) instead of the two disagreeing local
-#   ones this module and llm_interface/multi_provider_llm.py used to carry.
-#   get_supported_models() now returns the package's primary keys; the old
-#   NovelWriter names are gone from the list. "claude-4-5-sonnet" still works
-#   via the package alias table; "claude-4-5-opus" has no package primary and
-#   deliberately raises ValueError (it must not be silently re-pointed at a
-#   newer Opus).
-# - The default API model is the package's DEFAULT_API_MODEL instead of the
-#   hardcoded "gpt-4o".
-# - The Anthropic key is read by the package: ANTHROPIC_API_KEY is canonical,
-#   with the historical CLAUDE_API_KEY spelling still honored as a deprecated
-#   fallback, so existing .env files keep working.
-# - The CLI backends strip provider API keys from their subprocess env by
-#   default (the billing gotcha; this supersedes the interim _env.py hotfix).
+"""NovelWriter LLM facade.
+
+The desktop offers hosted-llm, DeepSeek and Qwen through api_providers.
+Existing programmatic llm-backends imports remain compatible for scripts.
+"""
 
 import os  # noqa: F401  (kept for callers that reach through this module)
 from typing import Optional
 
 from dotenv import load_dotenv
 
-from llm_backends import DEFAULT_API_MODEL
+from . import api_providers
+from .api_providers import DEFAULT_API_MODEL
 from llm_backends import multi_provider_llm as _mp
 from llm_backends.multi_provider_llm import (  # noqa: F401  back-compat re-exports
-    get_supported_models,
     resolve_model,
     send_prompt_claude,
     send_prompt_gemini,
@@ -40,7 +21,6 @@ from llm_backends.multi_provider_llm import (  # noqa: F401  back-compat re-expo
 
 from .llm_interface import (
     check_cli_availability,  # noqa: F401  re-export (GUI dropdown source)
-    get_available_backends,  # noqa: F401  re-export (GUI dropdown source)
     get_current_backend,
     initialize_llm,
     is_initialized,
@@ -49,7 +29,15 @@ from .llm_interface import (
 from .llm_trace import trace_model_call
 
 
-load_dotenv()  # Load API keys from .env into the environment (app-owned; the package only reads os.environ)
+load_dotenv(api_providers.environment_file())
+
+
+def get_supported_models() -> list[str]:
+    return list(api_providers.PROVIDER_LABELS)
+
+
+def get_available_backends() -> dict[str, str]:
+    return {"api": "托管 API"}
 
 
 # --- Backend State ---
@@ -140,21 +128,16 @@ def send_conversation(messages, model=None) -> str:
     if get_backend() != "api" or len(messages) == 1:
         return send_prompt(_flatten(messages), model=model)
 
-    client = getattr(_mp, "_get_hosted_llm_client", None)
     resolved = model or _current_model
-    if resolved != "hosted-llm" or client is None:
-        # 只有自建的 OpenAI 兼容端点走真正的多轮；其余后端摊平，保持一致行为。
+    if resolved not in api_providers.PROVIDER_LABELS:
         return send_prompt(_flatten(messages), model=model)
 
     def invoke() -> str:
-        response = client().chat.completions.create(
-            model=os.environ.get("HOSTED_LLM_MODEL"),
-            messages=[{"role": "system", "content": ROLE_DESCRIPTION}, *messages],
-            max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=0.7,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        return api_providers.send_messages(
+            resolved,
+            [{"role": "system", "content": ROLE_DESCRIPTION}, *messages],
+            DEFAULT_MAX_TOKENS,
         )
-        return response.choices[0].message.content or ""
 
     return _with_empty_reply_retry(
         resolved,
@@ -209,7 +192,8 @@ def send_prompt(prompt, model=None):
 
     # Validate/resolve against the package registry (raises ValueError with
     # the supported list for unknown names, e.g. the retired claude-4-5-opus).
-    resolve_model(model)
+    if model not in api_providers.PROVIDER_LABELS:
+        resolve_model(model)
 
     print(f"Attempting to use model: {model}")
     _current_model = model
@@ -221,8 +205,14 @@ def send_prompt(prompt, model=None):
                 prompt=prompt,
                 backend=current_backend,
                 model=model,
-                invoke=lambda: _mp.send_prompt(
-                    prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS
+                invoke=lambda: (
+                    api_providers.send_messages(
+                        model,
+                        [{"role": "system", "content": ROLE_DESCRIPTION},
+                         {"role": "user", "content": prompt}],
+                        DEFAULT_MAX_TOKENS,
+                    ) if model in api_providers.PROVIDER_LABELS else
+                    _mp.send_prompt(prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS)
                 ),
             ),
         )

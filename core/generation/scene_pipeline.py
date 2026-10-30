@@ -8,6 +8,7 @@ compatible with existing NovelWriter workspaces.
 from __future__ import annotations
 
 from core.generation.errors import fail
+from core.generation.lore_repository import lore_context
 from core.generation.ai_helper import send_prompt, get_backend
 import json
 from glob import glob
@@ -878,30 +879,8 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             "Generating chapter outlines. Model: %s, Output dir: %s", selected_model, output_dir
         )
 
-        parameters_file_path = dir_manager.get_parameters_path()
-        selected_structure_name = "6-Act Structure"  # Default
-        params = {}
-        if not os.path.exists(parameters_file_path):
-            self.app.logger.warning(
-                "Parameters file not found at %s. Using default structure: %s",
-                parameters_file_path,
-                selected_structure_name,
-            )
-        else:
-            with open(parameters_file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        params[key.strip()] = value.strip()
-            loaded_structure = params.get("Story Structure")
-            if loaded_structure and loaded_structure.strip():
-                selected_structure_name = loaded_structure
-            else:
-                self.app.logger.warning(
-                    "'Story Structure' missing in %s. Using default: %s",
-                    parameters_file_path,
-                    selected_structure_name,
-                )
+        params = ui.parameters
+        selected_structure_name = params.get("story_structure", params.get("Story Structure", "6-Act Structure"))
         story_params = normalize_story_parameters(params)
         genre_label = format_genre_label(story_params)
         location_guidance = build_location_guidance(story_params)
@@ -1081,27 +1060,10 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
         scene_plans_dir = dir_manager.get_full_path("scene_plans_dir")
         self.app.logger.info(f"Planning Long-Form Scenes (Novella/Novel/Epic). Model: {selected_model}, Output Dir: {output_dir}")
 
-        # --- Read Parameters to get selected structure and length ---
-        parameters_file_path = dir_manager.get_parameters_path()
-        selected_structure_name = "6-Act Structure" # Default
-        story_length = "Novel (Standard)" # Default for prompt context
-        params_from_file = {}
-        if not os.path.exists(parameters_file_path):
-            self.app.logger.warning(f"Parameters file not found at {parameters_file_path}. Using defaults for scene planning.")
-        else:
-            with open(parameters_file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        params_from_file[key.strip()] = value.strip()
-            loaded_structure = params_from_file.get("Story Structure")
-            story_length = params_from_file.get("Story Length", story_length)
-            if loaded_structure and loaded_structure.strip():
-                selected_structure_name = loaded_structure
-            else:
-                self.app.logger.warning(f"'Story Structure' not found/empty in {parameters_file_path}. Using default for scene planning: {selected_structure_name}")
+        params_from_file = ui.parameters
+        selected_structure_name = params_from_file.get("story_structure", params_from_file.get("Story Structure", "6-Act Structure"))
+        story_length = params_from_file.get("story_length", params_from_file.get("Story Length", "Novel (Standard)"))
         self.app.logger.info(f"Using structure: {selected_structure_name}, Length: {story_length} for long-form scene planning.")
-        # --- End Reading Parameters ---
         story_params = normalize_story_parameters(params_from_file)
         genre_label = format_genre_label(story_params)
         location_guidance = build_location_guidance(story_params)
@@ -1114,7 +1076,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
 
         lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
         try:
-            lore_content = sanitize_lore_content(open_file(lore_content_path))
+            lore_content = lore_context(output_dir) or sanitize_lore_content(open_file(lore_content_path))
         except FileNotFoundError:
             show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
             self.app.logger.warning(f"Lore file {lore_content_path} not found for scene planning.")
@@ -1365,7 +1327,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
         lore_content = "缺少整体世界观背景。"
         lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
         if os.path.exists(lore_content_path):
-            lore_content = sanitize_lore_content(open_file(lore_content_path))
+            lore_content = lore_context(output_dir) or sanitize_lore_content(open_file(lore_content_path))
             self.app.logger.info(f"Loaded lore context from {lore_content_path}")
 
         # --- Construct the Prompt ---

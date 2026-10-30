@@ -88,10 +88,16 @@ class AppStatusBar(QWidget):
         self._stop.show()
         self._reset_stop()
         self._started_at = time.monotonic()
+        self._step_started_at = self._started_at
+        self._step_label = ""
         self._tick()
         self._timer.start()
 
     def set_progress(self, text: str, fraction: float = -1.0) -> None:
+        label = text.split("｜", 1)[0]
+        if label != getattr(self, "_step_label", ""):
+            self._step_label = label
+            self._step_started_at = time.monotonic()
         self._state.set_text(text)
         if fraction < 0:
             self._progress.setRange(0, 0)
@@ -150,3 +156,6 @@ class AppStatusBar(QWidget):
         self._elapsed.setText(
             f"已用 {minutes} 分 {secs} 秒" if minutes else f"已用 {secs} 秒"
         )
+        if "｜" in self._state._text.text():
+            step_seconds = int(time.monotonic() - getattr(self, "_step_started_at", self._started_at))
+            self._elapsed.setText(f"本步骤 {step_seconds} 秒 · 总用时 {seconds} 秒")

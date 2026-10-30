@@ -5,10 +5,16 @@ __pycache__/
 
 # Environment variables
 .env
+llm_settings.json
+.llm_settings-*.tmp
 
 # Virtual environments
 venv/
 .venv/
+
+# Executable build artifacts
+/build/
+/dist/
 
 /quality/trends/
 # Editor directories and files

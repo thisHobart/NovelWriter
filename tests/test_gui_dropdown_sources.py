@@ -14,15 +14,14 @@ from core.generation.ai_helper import (
 )
 
 
-def test_get_supported_models_is_package_registry():
-    import llm_backends
+def test_get_supported_models_contains_only_desktop_services():
     models = get_supported_models()
     assert models, "model dropdown source must be non-empty"
-    assert models == llm_backends.get_supported_models()
+    assert models == ["hosted-llm", "deepseek", "qwen"]
     # The GUI default selection must be a real registry key.
     assert DEFAULT_API_MODEL in models
     # Spot-check current-generation keys and absence of the 2025 list.
-    assert "claude-sonnet-4-6" in models
+    assert DEFAULT_API_MODEL == "hosted-llm"
     assert "gpt-4o" not in models
     assert "claude-4-5-opus" not in models
 
@@ -35,4 +34,4 @@ def test_check_cli_availability_returns_three_backends():
 
 def test_get_available_backends_keys():
     backends = get_available_backends()
-    assert set(backends.keys()) == {"api", "codex", "gemini-cli", "claude-cli"}
+    assert set(backends.keys()) == {"api"}

@@ -21,7 +21,7 @@ def test_lore_stage_requests_and_enforces_its_contract():
     assert "lore_contract_instructions()" in source, "世界观提示词没有要求产出契约"
     assert "generate_with_contract_retry" in source, "世界观没有接入带反馈的重试"
     assert "extract_lore_contract" in source, "世界观没有校验契约"
-    assert "lore_contract.json" in source, "规范名登记表没有落盘"
+    assert "CONTRACT: encode(lore_contract)" in source, "规范名登记表没有参与原子提交"
     # 旧的「拿到什么就写什么」不能还留着
     assert "lore_text = send_prompt(prompt, model=selected_model)" not in source
 

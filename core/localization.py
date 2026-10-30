@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from core.config.genre_labels import GENRE_ZH_LABELS
+
 
 ZH_LABELS = {
     # 人物卡里的 role 是英文枚举，界面上曾经原样显示成 protagonist。
@@ -155,6 +157,7 @@ SUBGENRE_ZH_LABELS = {
 }
 
 ZH_LABELS.update(SUBGENRE_ZH_LABELS)
+ZH_LABELS.update(GENRE_ZH_LABELS)
 
 
 GENDER_BIAS_ZH_LABELS = {

@@ -220,6 +220,98 @@ def test_missing_output_folder_actions_report_warning(qapp, window):
     assert "目录还不存在" in _status_context(window)
 
 
+@pytest.mark.parametrize("provider", ["hosted-llm", "deepseek", "qwen"])
+def test_every_generation_entry_uses_live_selection_over_saved_model(
+    qapp, window, tmp_path, monkeypatch, provider,
+):
+    from core.generation import ai_helper, stage_pipeline
+    from core.gui.services import step_runner
+
+    params_store.save(str(tmp_path), {
+        "novel_title": "模型路由回归", "backend": "codex", "model": "gpt-5.5",
+    })
+    window.parameters_page.load(str(tmp_path))
+    # 这里专门验证路由，参数选择交互由 test_generation_parameter_ui 覆盖。
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: None)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda box:
+                        next(b for b in box.buttons() if b.text() == "使用已保存参数"))
+    requests = []
+
+    def fake_send(selected, messages, max_tokens):
+        requests.append(selected)
+        return "OK"
+
+    def fake_run(step, output_dir, model, parameters=None, report=None, **kwargs):
+        context, _ = stage_pipeline._build_context(
+            step, output_dir, model, parameters, report,
+        )
+        assert context.model == provider
+        assert context.parameters["model"] == provider
+        assert context.parameters["backend"] == "api"
+        assert ai_helper.send_prompt("模型路由回归", model=context.model) == "OK"
+        return {"step": step, "generated_files": []}
+
+    def fake_action(step, action, output_dir, model, **kwargs):
+        return fake_run(step, output_dir, model, **kwargs)
+
+    monkeypatch.setattr(ai_helper.api_providers, "send_messages", fake_send)
+    monkeypatch.setattr(step_runner, "run_stage", fake_run)
+    monkeypatch.setattr(step_runner, "run_stage_action", fake_action)
+    combo = window.rail.model_combo
+    combo.setCurrentIndex(combo.findData(provider))
+    assert window.selected_model() == provider
+    assert all(page.model == provider for page in window.stage_pages)
+
+    entries = [
+        lambda: window.workflow_page._run_single("lore"),
+        window.workflow_page._run_all,
+        lambda: window.lore_page._run_step("full"),
+        lambda: window.lore_page._run_step("factions"),
+        lambda: window.structure_page._run_stage("full"),
+        lambda: window.structure_page._run_stage("arcs"),
+        lambda: window.scene_page._run_stage("full"),
+        lambda: window.scene_page._run_stage("scenes"),
+        lambda: window.chapter_page._dispatch("next", "测试生成…"),
+    ]
+    for entry in entries:
+        previous = len(requests)
+        entry()
+        assert not combo.isEnabled()
+        _wait_until(qapp, lambda: window.runner.current is None)
+        assert combo.isEnabled()
+        assert len(requests) > previous
+        assert set(requests) == {provider}
+    window.workflow_page.set_states({"lore": StepState("partial", "待继续", True)})
+    previous = len(requests)
+    window.workflow_page._resume()
+    _wait_until(qapp, lambda: window.runner.current is None)
+    assert requests[previous:] == [provider]
+
+
+def test_provider_selection_restores_and_status_checks_selected_service(
+    qapp, window, tmp_path, monkeypatch,
+):
+    combo = window.rail.model_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "hosted-llm", "DeepSeek 官方", "千问官方",
+    ]
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake-key")
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    combo.setCurrentIndex(combo.findData("deepseek"))
+    assert "配置已就绪" in window.rail.key_status.toolTip()
+    combo.setCurrentIndex(combo.findData("qwen"))
+    assert "DASHSCOPE_API_KEY" in window.rail.key_status.toolTip()
+    window.parameters_page.title_edit.setText("配置保存回归")
+    assert window.parameters_page.save()
+    combo.setCurrentIndex(combo.findData("deepseek"))
+    window.parameters_page.load(str(tmp_path))
+    assert window.selected_model() == "qwen"
+    assert all(page.model == "qwen" for page in window.stage_pages)
+    assert not window.parameters_page.dirty
+    params_store.save(str(tmp_path), {"novel_title": "旧配置", "model": "gpt-5.5"})
+    window.parameters_page.load(str(tmp_path))
+    assert window.selected_model() == "hosted-llm"
+
 def test_lore_action_buttons_and_generation_counts(
     qapp, window, tmp_path, monkeypatch,
 ):
@@ -624,7 +716,7 @@ def test_chapter_progress_refreshes_during_a_running_batch(
 def test_failed_background_task_restores_ui_and_shows_error(
     qapp, window, monkeypatch,
 ):
-    def fake_step_work(step, output_dir, model=""):
+    def fake_step_work(step, output_dir, model="", **kwargs):
         def work(report):
             report("准备失败", 0.2)
             raise RuntimeError("集成测试故障")
@@ -682,7 +774,7 @@ def test_artifacts_unlock_pages_and_render_chapter(qapp, window, tmp_path):
 def test_generation_request_updates_artifacts_and_status(
     qapp, window, tmp_path, monkeypatch,
 ):
-    def fake_step_work(step: str, output_dir: str, model: str = ""):
+    def fake_step_work(step: str, output_dir: str, model: str = "", **kwargs):
         assert step == "lore"
         assert output_dir == str(tmp_path)
 
@@ -716,7 +808,7 @@ def test_generation_request_updates_artifacts_and_status(
 
 
 def test_stop_button_cancels_running_ui_task(qapp, window, tmp_path, monkeypatch):
-    def fake_step_work(step: str, output_dir: str, model: str = ""):
+    def fake_step_work(step: str, output_dir: str, model: str = "", **kwargs):
         def work(report):
             for index in range(200):
                 time.sleep(0.005)

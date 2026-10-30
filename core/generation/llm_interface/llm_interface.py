@@ -23,7 +23,9 @@ Backends:
 """
 from typing import Optional
 
-from llm_backends import DEFAULT_API_MODEL
+from core.generation.api_providers import (
+    DEFAULT_API_MODEL, PROVIDER_LABELS, ConfiguredAPIInterface,
+)
 from llm_backends.llm_interface import LLMClient  # re-export, public surface
 from llm_backends.llm_interface import check_cli_availability  # noqa: F401 re-export
 from llm_backends import (
@@ -91,7 +93,9 @@ def initialize_llm(
 
     if backend_normalized in {"api", "openai"}:
         # "openai" kept for backward compatibility
-        _llm_client = MultiProviderInterface(model=model or DEFAULT_API_MODEL)
+        selected = model or DEFAULT_API_MODEL
+        _llm_client = (ConfiguredAPIInterface(selected) if selected in PROVIDER_LABELS
+                       else MultiProviderInterface(model=selected))
         _current_backend = "api"
     elif backend_normalized == "codex":
         _llm_client = CodexInterface(codex_bin)
