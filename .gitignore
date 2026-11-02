@@ -21,6 +21,7 @@ venv/
 .vscode/
 .idea/
 current_work/
+current_video_work/
 temp/
 /experiments/
 /quality_runs/

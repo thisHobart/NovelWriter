@@ -120,6 +120,7 @@ class StageCard(QWidget):
 
 class WorkflowPage(StagePage):
     stage_key = "workflow"
+    video_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("工作流总览", "四个生成阶段的实时状态以磁盘产物为准")
@@ -127,6 +128,9 @@ class WorkflowPage(StagePage):
         self.refresh_button = secondary_button("刷新", "refresh")
         self.scan_button = secondary_button("扫描已有成果", "folder")
         self.run_all_button = primary_button("运行完整流程")
+        self.video_button = secondary_button("切换到短视频脚本")
+        self.header.add_action(self.video_button)
+        self.video_button.clicked.connect(self.video_requested)
         for button in (self.refresh_button, self.scan_button, self.run_all_button):
             self.header.add_action(button)
         self.refresh_button.clicked.connect(self.refresh)

@@ -236,6 +236,8 @@ class StepRail(QWidget):
             steps_layout.addWidget(row)
             self.rows[key] = row
         steps_layout.addStretch(1)
+        self._steps_layout = steps_layout
+        self._overview_key = "workflow"
         layout.addWidget(steps_widget, 1)
 
         layout.addWidget(self._padded(hline()))
@@ -267,6 +269,22 @@ class StepRail(QWidget):
         layout.addWidget(foot)
 
     # -- 对外 --------------------------------------------------------------
+    def set_steps(self, steps, overview_key="workflow") -> None:
+        """Reconfigure only navigation, preserving shared model service controls."""
+        self._overview_key = overview_key
+        self.overview_row.clicked.disconnect()
+        self.overview_row.clicked.connect(lambda: self.step_selected.emit(self._overview_key))
+        for row in self.rows.values():
+            self._steps_layout.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+        self.rows = {}
+        for index, (key, name) in enumerate(steps, 1):
+            row = StepRow(key, index, name)
+            row.clicked.connect(self._on_row_clicked)
+            self._steps_layout.insertWidget(self._steps_layout.count() - 1, row)
+            self.rows[key] = row
+
     def set_work_title(self, title: str) -> None:
         self._work_title.setText(title or "未命名作品")
 
@@ -276,7 +294,7 @@ class StepRail(QWidget):
             row.set_state(state)
 
     def set_active(self, key: str) -> None:
-        self.overview_row.set_active(key == "workflow")
+        self.overview_row.set_active(key == getattr(self, "_overview_key", "workflow"))
         for row_key, row in self.rows.items():
             row.set_active(row_key == key)
 
