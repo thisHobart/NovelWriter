@@ -11,6 +11,7 @@ from .validation import (
     SPEC_FIELDS,
     UNRESOLVED,
     local_issues,
+    validate_generated_asset_prompts,
     view_input_hash,
 )
 
@@ -104,6 +105,22 @@ def compile_asset(kind: str, spec: JsonObject) -> JsonObject:
         view["template_ref"] = "article-asset-compiler-v1"
         view["source_refs"] = deepcopy(value.get("source_refs", []))
         view["content_hash"] = fingerprint([prompt, view["negative_prompt"]])
+        view["spec_input_hash"] = view_input_hash(kind, value, view)
+    value["prompts_generated"] = True
+    return value
+
+
+def finalize_asset_prompts(
+    kind: str, spec: JsonObject, *, expected_view_ids: list[str] | None = None
+) -> JsonObject:
+    """Keep model-authored view text; only order views and bind internal provenance."""
+    validate_generated_asset_prompts(kind, spec, expected_view_ids=expected_view_ids)
+    value = deepcopy(spec)
+    value["views"] = plan_views(kind, value)
+    for view in value["views"]:
+        view["template_ref"] = "asset-prompts-llm-v1"
+        view.setdefault("source_refs", deepcopy(value.get("source_refs", [])))
+        view["content_hash"] = fingerprint([view["positive_prompt"], view["negative_prompt"]])
         view["spec_input_hash"] = view_input_hash(kind, value, view)
     value["prompts_generated"] = True
     return value

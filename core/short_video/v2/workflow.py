@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 
+from openai import APIError
+
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
-from .llm import BudgetExhausted, RequestBudget, ScriptLLM, TextProviderError
+from .llm import BudgetExhausted, RequestBudget, ScriptLLM
 from .models import (
     ASSET_KINDS,
     WorkspaceError,
@@ -24,11 +26,11 @@ from .models import (
     validate_model_snapshot,
 )
 from .project_service import ProjectService
-from .prompt_compiler import compile_asset, compile_shots, plan_views
+from .prompt_compiler import compile_asset, compile_shots, finalize_asset_prompts, plan_views
 from .prompts import INSTRUCTIONS, stage_prompt
 from .repository import ProjectRepository
 from .review import QualityCheckResult, check_candidate
-from .validation import rows, strings, validate_content, view_input_hash
+from .validation import rows, strings, validate_content
 
 PREREQUISITES = {
     "novel_copy": (),
@@ -408,8 +410,6 @@ class WorkflowService:
                         if command["stage"] == "asset_catalog":
                             content = normalize_catalog(content, command.get("previous_catalog"))
                         content = self._validate_output(command, content)
-                        if command["stage"] == "asset_spec":
-                            content = compile_asset(command["kind"], content)
                     except WorkspaceError as exc:
                         if exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}:
                             raise
@@ -491,13 +491,11 @@ class WorkflowService:
                         "CONTEXT_TOO_LARGE",
                         "Agent Loop 修改上下文超限",
                     )
-            except (TextProviderError, BudgetExhausted) as exc:
+            except (APIError, TimeoutError, ConnectionError, BudgetExhausted) as exc:
                 if latest is None:
                     self.repository.record_run_failure(run["id"], exc, cancelled=token.cancelled)
                     raise
-                review_status = (
-                    "unavailable" if isinstance(exc, TextProviderError) else "incomplete"
-                )
+                review_status = "incomplete" if isinstance(exc, BudgetExhausted) else "unavailable"
             except WorkspaceError as exc:
                 if latest is None or exc.code not in {
                     "INVALID_INPUT",
@@ -606,17 +604,9 @@ class WorkflowService:
                         "视图提示词任务不能改写当前设定",
                     )
                     planned = plan_views(kind, original)
-                    require(
-                        [v["view_id"] for v in content["views"]] == [v["view_id"] for v in planned]
-                        and all(
-                            v["positive_prompt"].strip() and v["negative_prompt"].strip()
-                            for v in content["views"]
-                        ),
-                        "INVALID_OUTPUT",
-                        "请补齐全部计划视图的正负提示词",
+                    content = finalize_asset_prompts(
+                        kind, content, expected_view_ids=[view["view_id"] for view in planned]
                     )
-                    for view in content["views"]:
-                        view["spec_input_hash"] = view_input_hash(kind, content, view)
             if command["stage"] == "video_motion_prompt":
 
                 def fixed(shot: JsonObject) -> JsonObject:
@@ -678,11 +668,7 @@ class WorkflowService:
                 "INVALID_OUTPUT",
                 "视觉补充必须与原文事实分开",
             )
-            require(
-                content["views"] == [],
-                "INVALID_OUTPUT",
-                "资产设定阶段 views 必须为空数组，具体视图由后续任务生成",
-            )
+            content = finalize_asset_prompts(kind, content)
         return content
 
     def compile_asset_prompts(self, version_id: str, *, expected_revision: int) -> ArtifactRecord:

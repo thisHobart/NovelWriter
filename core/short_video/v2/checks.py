@@ -194,7 +194,7 @@ class CheckService:
                 if (
                     cancelled
                     or not isinstance(exc, WorkspaceError)
-                    or exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT", "PROVIDER_UNAVAILABLE"}
+                    or exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}
                 ):
                     raise
                 self.repository.save_report(

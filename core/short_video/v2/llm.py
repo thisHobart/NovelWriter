@@ -7,8 +7,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from openai import APIError
-
 from core.generation import api_providers
 from core.generation.cancellation import CancelToken
 
@@ -22,11 +20,6 @@ class BudgetExhausted(RuntimeError):
 
 class RecordingError(RuntimeError):
     """A failed durable write must never trigger another paid request."""
-
-
-class TextProviderError(WorkspaceError):
-    def __init__(self) -> None:
-        super().__init__("PROVIDER_UNAVAILABLE", "文字服务请求失败；请检查配置或网络，已有记录保留")
 
 
 REQUEST_SECONDS = 120.0
@@ -112,11 +105,8 @@ class ScriptLLM:
                 response = ""  # A malformed SDK value must not corrupt the durable text record.
                 raise WorkspaceError("INVALID_OUTPUT", "模型未返回文字")
             return response
-        except (APIError, TimeoutError, ConnectionError) as exc:
-            error = type(exc).__name__
-            raise TextProviderError() from exc
         except Exception as exc:
-            # Record the failure type, then expose programming errors unchanged.
+            # Record only the failure type; preserve the original exception for the caller.
             error = type(
                 exc
             ).__name__  # SDK error strings can contain credentials; never persist them.

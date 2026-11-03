@@ -11,7 +11,7 @@ from openai import OpenAI, AsyncOpenAI
 
 DEFAULT_API_MODEL = "hosted-llm"
 PROVIDER_LABELS = {
-    "hosted-llm": "hosted-llm",
+    "hosted-llm": "第三方 API",
     "deepseek": "DeepSeek 官方",
     "qwen": "千问官方",
 }
@@ -104,10 +104,8 @@ def configuration_status(provider: str) -> tuple[bool, str]:
 
 
 def request_options(provider: str) -> dict:
-    """Use the same non-thinking mode for generation and connection probes."""
-    if provider == "hosted-llm":
-        return {"chat_template_kwargs": {"enable_thinking": False}}
-    elif provider == "qwen":
+    """Only send provider-specific options to the matching official API."""
+    if provider == "qwen":
         return {"enable_thinking": False}
     elif provider == "deepseek":
         return {"thinking": {"type": "disabled"}}

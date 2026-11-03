@@ -67,7 +67,8 @@ def form_values(provider: str) -> dict[str, str]:
     }
 
 
-def validate_provider(provider: str, base_url: str, api_key: str, model: str):
+def validate_provider(provider: str, base_url: str, api_key: str, model: str,
+                      *, require_model: bool = True):
     """Validate the form itself, without reading or changing saved settings."""
     from .api_providers import APIConfig, _validate_url
     if provider not in VARIABLES:
@@ -78,7 +79,7 @@ def validate_provider(provider: str, base_url: str, api_key: str, model: str):
     values["base_url"] = _validate_url(values["base_url"], "接口地址")
     if provider == "deepseek" and values["base_url"] != DEFAULT_URLS[provider]:
         raise ValueError("DeepSeek 官方使用固定接口地址")
-    if not values["model"]:
+    if require_model and not values["model"]:
         raise ValueError("请填写模型名称")
     if provider != "hosted-llm" and not values["api_key"]:
         raise ValueError("请填写 API 密钥")

@@ -11,6 +11,7 @@ from typing import Any
 from .contracts import ArtifactRecord, JsonObject
 from .models import (
     ASSET_KINDS,
+    VIEWS,
     WorkspaceError,
     fingerprint,
     positive_int,
@@ -88,6 +89,38 @@ def view_input_hash(kind: str, spec: JsonObject, view: JsonObject) -> str:
             "view": {key: view.get(key) for key in ("view_id", "camera_view", "composition")},
         }
     )
+
+
+def validate_generated_asset_prompts(
+    kind: str, content: JsonObject, *, expected_view_ids: list[str] | None = None
+) -> None:
+    """Validate new model output without tightening historical/manual save contracts."""
+    require(kind in SPEC_FIELDS, "INVALID_OUTPUT", "不支持的资产设定类型")
+    for field in SPEC_FIELDS[kind]:
+        value = content.get(field)
+        text(value, field)
+        require(
+            not PLACEHOLDER.search(value) and not UNRESOLVED.search(value),
+            "INVALID_OUTPUT",
+            f"{field}需要具体设定，不能包含占位符或未填写内容",
+        )
+    entity_kind = next(key for key, value in ASSET_KINDS.items() if value == kind)
+    expected = expected_view_ids or [view_id for view_id, _ in VIEWS[entity_kind]]
+    views = rows(content.get("views"), "资产视图", key="view_id")
+    require(
+        {view["view_id"] for view in views} == set(expected),
+        "INVALID_OUTPUT",
+        "请完整返回计划视图：" + "、".join(expected) + "，不能缺失或新增视图编号",
+    )
+    for view in views:
+        for field in ("camera_view", "composition", "positive_prompt", "negative_prompt"):
+            value = view.get(field)
+            text(value, f"{view['view_id']}.{field}")
+            require(
+                not PLACEHOLDER.search(value) and not UNRESOLVED.search(value),
+                "INVALID_OUTPUT",
+                f"{view['view_id']}.{field}需要具体内容，不能包含占位符",
+            )
 
 
 def bind_view_prompts(kind: str, content: JsonObject, parent: JsonObject | None = None) -> None:

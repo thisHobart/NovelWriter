@@ -42,11 +42,13 @@ stateDiagram-v2
 ## 可复现的离线验收
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_lore_end_to_end.py -q
+.\venv\Scripts\python.exe -m pytest tests/test_headless_stage_pipeline.py tests/test_lore_repository.py -q
 .\venv\Scripts\python.exe -m pytest tests -q
 ```
 
-端到端文件使用实际 `MainWindow`、Qt 点击/事件循环、`TaskRunner`、任务工厂、生产阶段入口、生产检查修复与事务存储。正常路径只替换 SDK 客户端与配置，不替换上层任务、生成器或仓库。故障场景另注入文件写入故障、事件门闩或时钟。HTTP 墙钟超时场景使用真实 AsyncOpenAI SDK 加 HTTPX 可控传输，确认慢速请求被取消。
+当前自动化测试已精简，仅保留生成入口、设定仓储等核心回归；原界面端到端及 HTTP 故障专项测试已删除。下表和后续真实模型记录属于此前完整验收，不代表当前测试集的覆盖范围；对应 sandbox_*、quality_runs 产物也已按用户要求清理。
+
+此前端到端测试使用实际 `MainWindow`、Qt 点击/事件循环、`TaskRunner`、任务工厂、生产阶段入口、生产检查修复与事务存储，只替换 SDK 客户端与配置；故障场景注入文件写入故障、事件门闩或时钟。
 
 | 功能 / 场景 | 验收证据 |
 |---|---|
@@ -69,7 +71,7 @@ stateDiagram-v2
 | 完整世界设定 | 顺序生成势力、人物、世界观、两份背景与标题；每份独立预算 |
 | 标题兼容 | 一次生成、保存与刷新，无新增模型评审 |
 
-更细的保存校验、歧义映射、文件名冲突、未知字段、关系两端、势力冲突引用、事务恢复、待核对状态、未保存退出和项目切换保护，继续由 `test_lore_repository.py`、`test_lore_editor.py`、`test_generation_parameter_ui.py` 验证；参数链由 `test_parameter_consistency.py` 验证。它们是补充证据，不能代替上表的生产链验收。
+当前保留 `test_lore_repository.py` 的保存、重启读取、引用及事务保护等核心验证；更细的编辑器、参数界面和参数全链路专项测试已经删除。上表仅作为历史生产链验收记录。
 
 2026-10-22 全量离线回归：**1016 项测试、5 项子测试通过**，用时 136.79 秒。其中新增世界设定端到端文件包含 31 个场景；其余测试验证已有功能与模块边界兼容。最后的 API 范围收敛与草稿并发保护分别补跑 46 项、2 项，全部通过。
 

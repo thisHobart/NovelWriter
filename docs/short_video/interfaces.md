@@ -127,13 +127,13 @@ Agent Loop 对通过结果立即结束；未通过且尚有重试次数时，用
 
 ### 7.3 ViewPrompt：每个视图的具体提示词
 
-视图内容至少包含 `view_id,label,camera_view,composition,required,positive_prompt,negative_prompt`；编译补充 `source_refs,template_ref,content_hash,spec_input_hash`。视图嵌入 AssetSpec 的 views，不要求独立 id／spec_version_id；设计补充主要由设定的 inferred_fields 表达，不把概念字段当作所有视图的必需字段。
+视图内容至少包含 `view_id,label,camera_view,composition,required,positive_prompt,negative_prompt`；生成后由代码补充 `source_refs,template_ref,content_hash,spec_input_hash`，不重写模型生成的视角及正负提示词。视图嵌入 AssetSpec 的 views，不要求独立 id／spec_version_id；设计补充主要由设定的 inferred_fields 表达，不把概念字段当作所有视图的必需字段。
 
 `spec_input_hash` 在内部关联设定与视图文本。设定改变时标记旧提示词需要更新；可确定的本地编译自动执行，需要模型生成的部分随下一次生成任务处理。用户可明确导出原有文字并保留旧来源说明。内部哈希不能由界面或聊天直接改写，历史记录不原地改变。
 
 人物四视图共享身份和服装设定，只有视角／构图不同；场景角度共享布局；道具角度共享结构与状态。source_refs 表示原文依据，inferred_fields 表达设计补充，不建立逐项审批记录。
 
-输出应为具体文字；compile_asset 检查 `{age}`、`【道具名称】` 等未填变量，生成路径在预算内修复；无法形成合法候选则保留原稿。用户可直接修正已保存内容，导出时已选资产仍须通过本地结构和完整性检查。正负提示词分别复制，不触发任何外部图片／视频请求。
+模型输出应为具体文字。asset_spec 必须包含当前类型的全部默认视图；view_prompts 必须包含原版本计划的全部视图（包括已有额外视图），且不能更改基础设定。生成专用校验拒绝缺失／重复／新增的视图编号、空字段、`{age}`、`【道具名称】` 等未填变量，沿用现有格式修复及总预算；无法形成合法候选则保留原稿。手动保存与历史读取的契约不收紧，显式 compile_asset 入口保留。导出时已选资产仍须通过本地结构和完整性检查。正负提示词分别复制，不触发任何外部图片／视频请求。
 
 ## 8. 分镜契约与时间轴
 
@@ -237,7 +237,9 @@ head_front 使用正面头部特写；body_front 正面站立全身；body_side 
 
 ### 9.7 按文章生成可用提示词
 
-第 9.4～9.6 节为用户原始模板，不是最终交付。当前 asset_spec 阶段先生成具体人物／场景／道具字段，再由 compile_asset 确定性生成各视图正负提示词；保存 source_refs 与 inferred_fields。compile_shots 根据分镜与已有设定生成镜头提示词。用户优化镜头时才通过 shot_prompts 调用模型。禁止遗留未替换变量，禁止把文章没有的信息伪装成原文事实。可选视频运动文字不调用视频模型。
+第 9.4～9.6 节为用户原始模板，不是最终交付。当前 asset_spec 阶段由 LLM 一次生成具体人物／场景／道具字段及全部计划视图的正负提示词，保存 source_refs 与 inferred_fields；顶层正负提示词为空，具体文字位于 views。finalize_asset_prompts 仅校验完整性、排序并维护内部指纹，不用模板覆盖文字。view_prompts 入口保留，仅优化 views。compile_asset 只用于显式本地编译；compile_shots 仍根据分镜与已有设定生成镜头提示词，用户优化镜头时通过 shot_prompts 调用模型。禁止遗留未替换变量，禁止把文章没有的信息伪装成原文事实。可选视频运动文字不调用视频模型。
+
+review.check_candidate 对资产使用专门的整组提示词检查要求，检查统一设定、单视图及跨视图一致性，不套用文案的开头留钩等规则。输出仍为既有 issues 格式，target_path 指向具体字段；跨视图问题在 explanation 中说明关联视图，suggestion 给出可执行修改。反馈传入现有循环，修订后重新检查；不新增检查报告、UI 或图片调用。
 
 
 
