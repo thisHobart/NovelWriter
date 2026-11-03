@@ -133,7 +133,15 @@ def send_messages(provider: str, messages: list[dict], max_tokens: int = 16384) 
                     model=config.model, messages=messages, max_tokens=max_tokens,
                     temperature=0.7, extra_body=request_options(provider),
                 ), timeout=limit)
-        response = asyncio.run(bounded_request())
+        try:
+            response = asyncio.run(bounded_request())
+        except TimeoutError:
+            # Windows event-loop timers may fire just before monotonic's deadline.
+            # A timeout governed by the remaining total budget is terminal even
+            # when a few clock ticks still remain; a 120s per-request cap is not.
+            if limit < 120.0:
+                budget.deadline_expired = True
+            raise
         return response.choices[0].message.content or ""
     with OpenAI(api_key=config.api_key, base_url=config.base_url, **options) as client:
         response = client.chat.completions.create(

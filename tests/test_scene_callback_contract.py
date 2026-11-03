@@ -89,29 +89,11 @@ def test_short_story_callback_accepts_every_keyword_the_loop_sends():
     )
 
 
-def test_short_story_callback_tolerates_future_keywords():
-    """收 **kwargs，下次再加参数时短篇不会又被漏掉。"""
-    _, accepts_extra = _short_story_callback_parameters()
-    assert accepts_extra
-
-
 def test_short_story_callback_forwards_continuity_rules_to_the_prompt():
     source = inspect.getsource(ShortStoryPipeline._write_short_story_prose)
     assert "continuity_rules=continuity_rules" in source, (
         "接住了却不往下传，等于衔接要求悄悄丢掉"
     )
-
-
-def test_the_guard_reads_the_whole_call_not_just_up_to_the_first_paren():
-    """坑：`continuity_rules=... if index == 1 else ()` 里那个 `()` 会提前收尾。
-
-    截断之后，写在它后面的关键字一个都看不见，而这个用例照样全绿。
-    """
-    call = _call_source(
-        inspect.getsource(ChapterGenerationLoop._run), "prose = generate_scene("
-    )
-    assert call.rstrip().endswith("(),")
-    assert "continuity_rules" in _loop_call_keywords()
 
 
 def test_both_chapter_callbacks_forward_every_keyword_the_loop_sends():

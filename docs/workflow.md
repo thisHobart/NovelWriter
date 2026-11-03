@@ -1,68 +1,24 @@
-# Novel Writer Application: Overall Workflow
+# 当前工作流程
 
-This document outlines the typical end-to-end workflow for generating a story using the Novel Writer application. The process is designed to be iterative and allows for user intervention and customization at various stages.
+更新日期：2026-11-03。界面入口为 `core/gui/app.py` 和 `core/gui/main_window.py`，通过后台任务运行生成，完成后刷新编辑区。
 
-## Core Generation Steps
+## 小说创作
 
-The application guides the user through a series of steps, typically corresponding to the tabs in the UI, to build a story from initial concept to final prose.
+作品参数 → 世界设定 → 故事结构 → 场景规划 → 章节撰写。
 
-1.  **Define Novel Parameters (Parameters)**
-    *   The user begins by specifying core details for their project in the "Novel Parameters" tab:
-        *   Novel Title
-        *   Author Name
-        *   Genre and Subgenre (e.g., Science Fiction - Space Opera)
-        *   Story Length (Short Story, Novella, Novel (Standard), Novel (Epic))
-        *   The desired high-level Story Structure (e.g., 6-Act Structure, Hero's Journey)
-        *   Output Directory (where all generated files will be saved, defaults to `current_work`)
-        *   The LLM Model to be used for generation.
-    *   These parameters are crucial as they guide all subsequent generation steps. They are saved to a `parameters.txt` file in the specified output directory.
+- 页面位于 `core/gui/pages/`，通过 `core/gui/services/step_runner.py` 调用 `core/generation/stage_pipeline.py`。
+- 阶段生成使用任务启动时的参数快照。完整工作流及继续操作依据作品目录、依赖和契约判断下一步，不依赖已删除的多智能体总编排器或 checkpoint 服务。
+- 世界设定生成、直接编辑与恢复见[参数一致性](parameter_consistency.md)和[编辑说明](lore_editing.md)。
+- 章节写作使用现有章节循环、质量闸门及待复审处理，小说功能与短视频工作流分别执行。
 
-2.  **Generate Universe Lore (Generate Lore)**
-    *   Next, in the "Generate Lore" tab, the application assists in creating the foundational background for the story's universe.
-    *   Based on the initial parameters (especially genre, subgenre, and any synopsis provided by the user if that feature is used), the LLM generates:
-        *   Details about the setting's technology.
-        *   A list of major locations (e.g., planets for Sci-Fi, cities for Fantasy) with brief descriptions.
-        *   In-depth profiles for major factions, including their goals, resources, and interrelations.
-        *   A roster of key characters, outlining their physical descriptions, personalities, motivations, goals, strengths, flaws, and summarized backstories.
-        *   A summary of significant relationships between characters.
-    *   This detailed information is saved into structured files, primarily:
-        *   `generated_lore.md`: Contains general world-building, technology, and genre-specific location details.
-        *   `characters.json`: Stores character profiles in a structured format.
-        *   `factions.json`: Stores faction profiles in a structured format.
+## 短视频脚本
 
-3.  **Develop Story Structure (Story Structure)**
-    *   In the "Story Structure" tab, the application expands the chosen high-level story structure framework (from `parameters.txt`) into a more detailed plot.
-    *   The process differs slightly based on the selected "Story Length":
-        *   For **long-form works** (Novella, Novel, Epic): The system generates a detailed plot breakdown for *each major act or section* of the chosen structure. For example, using the "6-Act Structure," it would create separate detailed plans for the "Beginning," "Rising Action," "First Climax," etc. These are saved as individual markdown files (e.g., `6-act_structure_beginning.md`, `6-act_structure_rising_action.md`).
-        *   For **Short Stories**: A single, comprehensive plot outline for the entire short story is generated, adhering to the chosen structure. This is saved as a file like `plot_short_story_[structure_name].md`.
+原文与赛道 → 小说推文 → 视频推广文案 → 分镜 → 人物／场景／道具及镜头提示词 → 导出。
 
-4.  **Plan Chapters and Scenes (Scene Planning)**
-    *   This stage, managed in the "Scene Planning" tab, further refines the plot into actionable scene descriptions.
-    *   For **long-form works**:
-        *   **Generate Chapter Outlines**: First, the user clicks "Generate Chapter Outlines." The system processes each detailed act/section plan (from Step 3) and generates a chapter-by-chapter outline for that specific section. These outlines suggest the number of chapters for the section, their main focus, and key elements like characters and locations. These are saved as `chapter_outlines_[structure]_[section].md` (e.g., `chapter_outlines_6-act_structure_beginning.md`).
-        *   **Plan Scenes**: Next, the user clicks "Plan Scenes." The application then takes each chapter outline and generates detailed scene-by-scene plans for *every chapter* in the story. These detailed plans are saved into a dedicated subdirectory: `detailed_scene_plans/scenes_[structure]_[section]_ch[GlobalChapterNumber].md`.
-    *   For **Short Stories**:
-        *   The user clicks "Plan Scenes." The system uses the overall short story plot (from Step 3, e.g., `plot_short_story_freytags_pyramid.md`) to generate a detailed scene-by-scene plan for the entire story. This is saved as `scenes_short_story_[structure_name].md`.
-    *   Each scene description in these plan files typically includes: setting details, characters present, key actions/events, important dialogue snippets or summaries, and how the scene contributes to plot progression or character development.
+- 界面位于 `core/gui/pages/short_video/`，业务位于 `core/short_video/v2/`。
+- `WorkflowService.execute` 实现 Agent Loop；外部质量检查复用既有规则，只返回是否通过及本轮临时反馈，不自行生成。
+- 默认首次生成后最多重试 2 次，每次保留原始要求、必要上下文、最新候选和反馈。达到上限输出最新候选，不回退、不标记成通过。
+- 下一步先保存可见修改，再冻结实际来源；来源改变不伪造旧稿依赖。分镜和多对象提示词由现有任务协调并共享预算。
+- 左侧讨论不进入质量检查，也不直接修改稿件。保存与导出采用当前内容和实际来源。
 
-5.  **Write Prose (Write Chapters)**
-    *   The "Write Chapters" tab is where the actual narrative prose is generated.
-    *   For **long-form works**:
-        *   The user enters a specific `target_chapter_number_global`.
-        *   The "Write Chapter" button triggers the system to locate the correct detailed scene plan for that chapter from the `detailed_scene_plans` subdirectory.
-        *   The application then processes this chapter scene by scene. For each scene, it constructs a detailed prompt (including the scene's plan, relevant full universe lore, character roster, and faction summaries) and sends it to the selected LLM to generate the prose for that individual scene.
-        *   The prose for all scenes in the chapter is then assembled and saved as a single markdown file in a `chapters` subdirectory (e.g., `chapters/chapter_1.md`).
-    *   For **Short Stories**:
-        *   The "Write Short Story" button is used. The system loads the complete scene plan (e.g., `scenes_short_story_freytags_pyramid.md`).
-        *   Similar to long-form chapters, it generates prose scene by scene, providing full context (lore, characters, factions) in each prompt to the LLM.
-        *   All generated scene prose is concatenated and saved as a single markdown file (e.g., `prose_short_story_my_title.md`) in the main output directory.
-
-6.  **Review and Rewrite (Optional Feature)**
-    *   The "Write Chapters" tab also provides a "Re-Write" button (primarily for long-form works).
-    *   This allows the user to select a previously written chapter (e.g., `chapters/chapter_1.md`), and the system will prompt the LLM to rewrite its content. This can be used to expand scenes, improve descriptions, or change the tone, based on refined instructions within the `rewrite_chapter` method's prompt. The rewritten chapter is saved with a prefix (e.g., `chapters/re_chapter_1.md`).
-
-## Iteration and File Management
-
-The entire process is designed to support iteration. Users can revisit earlier stages (e.g., regenerate lore, modify character details in `characters.json`, adjust a specific act's plot, or replan scenes for a chapter) and then regenerate subsequent parts of the story.
-
-The application heavily relies on a set of markdown (`.md`) and JSON (`.json`) files stored in the user-defined output directory. Understanding the purpose and general structure of these files (which will be detailed in `file_formats.md`) can be beneficial, especially for advanced users who might wish to make manual edits to intermediate outputs. 
+两部分共用[模型配置](API_CONFIGURATION.md)与任务调度。详见[短视频架构](short_video/architecture.md)、[接口](short_video/interfaces.md)与[项目文件](file_formats.md)。

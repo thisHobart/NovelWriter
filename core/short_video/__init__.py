@@ -1,1 +1,1 @@
-"""Independent short-video story creation; importing this package performs no I/O."""
+"""Article-based video adaptation; importing this package performs no I/O."""

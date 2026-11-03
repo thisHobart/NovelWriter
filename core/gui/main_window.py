@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Optional
+
+if TYPE_CHECKING:
+    from core.short_video.v2.contracts import JsonObject, VideoTask
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -37,6 +40,7 @@ from core.gui.widgets import AppStatusBar, StepRail
 from core.gui.widgets.step_rail import StepState
 from core.generation.lore_repository import LoreRepository
 from core.lore_localization import file_label
+from core.short_video.v2.models import WorkspaceError
 from core.gui.services.step_runner import GenerationWork
 from core.generation.parameters import normalize_parameters, creation_parameters
 from core.generation.stage_pipeline import load_stage_parameters
@@ -74,7 +78,7 @@ class MainWindow(QMainWindow):
         self._refreshing = False   # 防止 artifacts_changed 与 refresh_all 互相递归
         self._mode = "novel"
         self.video_workspace = None
-        self._last_pages = {"novel": "workflow", "video": "video_workflow"}
+        self._last_pages = {"novel": "workflow", "video": "video_source"}
 
         root = QWidget()
         root.setObjectName("Root")
@@ -190,6 +194,8 @@ class MainWindow(QMainWindow):
         for page in self.stage_pages:
             page.model = self.selected_model()
         self._refresh_key_status()
+        if self.video_workspace is not None:
+            self.video_workspace.refresh_model_status()
 
     def _on_model_changed(self, _text: str) -> None:
         self._sync_model_selection()
@@ -247,9 +253,10 @@ class MainWindow(QMainWindow):
 
     def _on_task_requested(self, work: Callable, busy_button, busy_text: str,
                            on_success: Optional[Callable]) -> None:
-        from core.short_video.pipeline import ScriptWork
-        if isinstance(work, ScriptWork):
-            self._on_video_task_requested(work, busy_button, busy_text, on_success)
+        from core.short_video.v2.workflow import WorkspaceWork
+        from core.short_video.v2.conversation import ChatWork
+        if isinstance(work, (WorkspaceWork, ChatWork)):
+            self._on_video_task_requested(work, busy_button, busy_text)
             return
         if self.runner.busy:
             self.status.set_dirty("已有任务在运行", "同一时刻只允许一个生成任务，请先等待或点「停止」。")
@@ -366,27 +373,14 @@ class MainWindow(QMainWindow):
             self.chapter_page.handle_generation_progress(text)
 
     def _build_video_pages(self):
-        from core.gui.pages.short_video.workspace import ScriptWorkspace
-        from core.gui.pages.short_video.workflow_page import ShortVideoWorkflowPage
-        from core.gui.pages.short_video.requirements_page import ShortVideoRequirementsPage
-        from core.gui.pages.short_video.outline_page import ShortVideoOutlinePage
-        from core.gui.pages.short_video.script_page import ShortVideoScriptPage
-        from core.gui.pages.short_video.results_page import ShortVideoResultsPage
-        workspace = ScriptWorkspace(self)
-        workspace.repo.load()
-        workspace.repo.recover()
+        from core.gui.pages.short_video.workbench import Workbench
+        workspace = Workbench(self)
         self.video_workspace = workspace
-        for name, page_type in (("workflow", ShortVideoWorkflowPage), ("requirements", ShortVideoRequirementsPage),
-                                ("outline", ShortVideoOutlinePage), ("script", ShortVideoScriptPage),
-                                ("results", ShortVideoResultsPage)):
-            page = page_type(workspace)
-            key = "video_" + name
-            workspace.pages[key] = page
-            self.pages[key] = page
-            self.stack.addWidget(page)
-            page.navigate_requested.connect(self._navigate)
-            page.task_requested.connect(self._on_task_requested)
-            page.status_message.connect(self._on_status_message)
+        restored = workspace.settings.value(workspace.setting_key("page"), "video_source")
+        self._last_pages["video"] = restored if restored in workspace.pages else "video_source"
+        self.stack.addWidget(workspace)
+        for key in workspace.pages:
+            self.pages[key] = workspace
         workspace.changed.connect(self.refresh_all)
 
     def switch_mode(self, mode):
@@ -411,48 +405,54 @@ class MainWindow(QMainWindow):
                 if answer == QMessageBox.Discard:
                     self.parameters_page.load()
         previous_key = next((key for key, page in self.pages.items() if page is self.stack.currentWidget()), None)
-        if previous_key:
+        if previous_key and self._mode != "video":
             self._last_pages[self._mode] = previous_key
         if mode == "video" and self.video_workspace is None:
             try:
                 self._build_video_pages()
-            except (ValueError, OSError) as exc:
+            except (WorkspaceError, OSError) as exc:
                 self.status.set_error("无法打开短视频项目", str(exc))
                 return
         self._mode = mode
         if mode == "video":
-            self.rail.set_steps([("video_requirements", "创作需求"), ("video_outline", "故事大纲"),
-                                 ("video_script", "脚本创作"), ("video_results", "成果与评审")], "video_workflow")
+            self.rail.set_steps(self.video_workspace.STEPS, "video_source")
+            self.rail.hide()
             self.status.set_idle(f"输出目录 {self.output_dir()}")
         else:
+            self.rail.show()
             self.rail.set_steps(self.rail.STEPS)
             self.rail.set_work_title(self.parameters_page.parameters().get("novel_title", ""))
         self._navigate(self._last_pages[mode])
         self.refresh_all()
 
-    def _on_video_task_requested(self, work, busy_button, busy_text, on_success):
+    def _on_video_task_requested(
+        self, work: VideoTask, busy_button: QWidget | None, busy_text: str
+    ) -> None:
         if self._mode != "video" or self.runner.busy:
             self.status.set_dirty("已有任务在运行或当前模式不匹配")
             return
         self.status.set_busy(busy_text, f"输出目录 {work.output_dir}")
-        def success(value):
-            if on_success:
-                on_success(value)
+        def success(value: JsonObject) -> None:
             self.refresh_all()
-            if value["status"] in {"complete", "reviewed"}:
-                self.status.set_done("短视频生成完成", "候选已保存，可继续编辑并人工定稿")
+            if value.get("selected") is False:
+                self.status.set_dirty("已生成候选，当前稿另有修改", "可在更多的历史版本中比较并恢复候选")
+            elif value["status"] == "succeeded" and value.get("review_status") in {"unavailable", "incomplete"}:
+                self.status.set_dirty("已生成，自动检查未完成", "可以直接修改或使用已有内容")
+            elif value["status"] == "succeeded" and value.get("review_status") == "issues":
+                self.status.set_dirty("已生成，自动检查仍未通过", "可以直接修改或使用最新内容")
+            elif value["status"] == "succeeded":
+                self.status.set_done("已保存", "可以继续编辑或进入下一步")
             else:
-                self.status.set_dirty("候选已保留，待检查或修改", "请到成果与评审查看版本和问题")
-        def error(exc):
+                self.status.set_dirty("已保留完成的内容", "可在对应页面继续编辑")
+        def error(exc: Exception) -> None:
             self.refresh_all()
-            self.status.set_error("短视频生成未完成", "已返回的内容保留在成果与评审的运行记录中。")
-            logger.error("Short-video task failed: %s", type(exc).__name__)
-        def cancelled():
+            self.status.set_error("文字任务未完成", f"{type(exc).__name__}: {exc}")
+        def cancelled() -> None:
             self.refresh_all()
             self.status.set_dirty("短视频任务已停止", "已返回内容与运行记录均已保留。")
         self.runner.run(work, pass_progress=True, cancel_token=work.token,
             disable=[self.rail.backend_combo, self.rail.model_combo, self.rail.config_button,
-                     *self.video_workspace.pages.values()], busy_button=busy_button, busy_text=busy_text,
+                     *self.video_workspace.task_controls()], busy_button=busy_button, busy_text=busy_text,
             on_success=success, on_error=error, on_cancelled=cancelled,
             on_done=self.refresh_all)
 
@@ -466,8 +466,9 @@ class MainWindow(QMainWindow):
             if not self.video_workspace.resolve_edits():
                 return
             self.rail.set_active(key)
-            self.stack.setCurrentWidget(self.pages[key])
-            self.pages[key].perform(self.pages[key].refresh)
+            if not self.video_workspace.navigate(key):
+                return
+            self.stack.setCurrentWidget(self.video_workspace)
             self._last_pages["video"] = key
             return
         if self._mode != "novel":
@@ -537,7 +538,7 @@ class MainWindow(QMainWindow):
         self._refreshing = True
         try:
             self._refresh_all()
-        except (OSError, ValueError) as exc:
+        except (OSError, WorkspaceError) as exc:
             if self._mode != "video":
                 raise
             self.status.set_error("无法读取短视频项目", str(exc))
@@ -547,17 +548,6 @@ class MainWindow(QMainWindow):
     def _refresh_all(self) -> None:
         if self._mode == "video":
             self.video_workspace.refresh()
-            state = self.video_workspace.repo.load()
-            ready = self.video_workspace.repo.outline_ready(state)
-            selected = self.video_workspace.repo.version()
-            statuses = {"video_requirements": bool(state["requirements"]), "video_outline": ready,
-                        "video_script": bool(selected and selected["source"] == self.video_workspace.repo.source(state)
-                                              and (selected["status"] == "reviewed" or selected["finalized"])),
-                        "video_results": bool(state["versions"])}
-            for key, complete in statuses.items():
-                self.rail.set_step_state(key, StepState("complete" if complete else "idle",
-                                                        "已完成" if complete else "待处理", True))
-            self.rail.set_work_title((state["requirements"] or {}).get("title", "未命名短视频"))
             return
         output_dir = self.output_dir()
         if not self.runner.busy:

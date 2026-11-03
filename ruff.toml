@@ -1,0 +1,12 @@
+target-version = "py311"
+line-length = 100
+include = [
+    "core/short_video/v2/*.py",
+    "core/gui/pages/short_video/*.py",
+    "core/evaluation/video_v2_probe.py",
+]
+
+[lint]
+select = [
+    "F", "I", "ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN204", "ANN205", "ANN206",
+]

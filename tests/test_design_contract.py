@@ -677,3 +677,64 @@ def test_the_whole_story_check_uses_every_declaration_of_a_dependency():
     with pytest.raises(DesignContractError) as exc_info:
         validate_structure_sequence([first, later])
     assert exc_info.value.code == "dependency_cycle"
+
+
+def test_lore_and_structure_markers_do_not_collide():
+    """两套标记必须互不包含，否则一个阶段的契约会被另一个误提取。"""
+    markers = (
+        LORE_CONTRACT_START,
+        LORE_CONTRACT_END,
+        STRUCTURE_CONTRACT_START,
+        STRUCTURE_CONTRACT_END,
+    )
+    assert len(set(markers)) == len(markers)
+    for outer in markers:
+        for inner in markers:
+            if outer is not inner:
+                assert inner not in outer
+
+
+def test_structure_instructions_carry_open_threads_forward():
+    from core.generation.design_contract import structure_contract_instructions
+
+    text = structure_contract_instructions(
+        section_name="第2幕",
+        section_index=2,
+        total_sections=3,
+        known_threads=[
+            {"id": "PT011", "thread": "沃伦被栽赃", "must_close_by_section": 3}
+        ],
+    )
+
+    assert "PT011" in text
+    assert "沃伦被栽赃" in text
+    # 只有第一段才需要声明全书骨架
+    assert "central_question" not in text
+
+
+def test_first_structure_section_is_asked_for_the_spine():
+    from core.generation.design_contract import structure_contract_instructions
+
+    text = structure_contract_instructions(
+        section_name="第1幕", section_index=1, total_sections=3
+    )
+
+    assert "central_question" in text
+    assert "central_conflict" in text
+    assert "chronology_events" in text
+
+
+def test_structure_instructions_use_the_selected_domain_schema():
+    from core.generation.design_contract import structure_contract_instructions
+    from core.generation.domain_profiles import LEGAL_SUSPENSE
+
+    text = structure_contract_instructions(
+        section_name="第1幕",
+        section_index=1,
+        total_sections=3,
+        central_conflict_schema=LEGAL_SUSPENSE.central_conflict_schema,
+    )
+
+    assert "legal_answer" in text
+    assert "truth_answer" in text
+    assert "moral_question" in text

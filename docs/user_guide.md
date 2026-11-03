@@ -1,213 +1,40 @@
-# User Guide: How to Use NovelWriter
+# 用户指南
 
-This guide will walk you through using the NovelWriter application to generate your science fiction novel. No technical expertise required!
+更新日期：2026-11-03。当前桌面界面使用 PySide6，支持小说创作与短视频脚本两部分。
 
-The overall design is this: click each button in turn. Click once, let the process finish, then go to the next button.
+## 启动与模型
 
-## Getting Started
+在项目虚拟环境中运行：
 
-1. **Launch the Application**
-   - Open your terminal/command prompt
-   - Navigate to the NovelWriter folder
-   - Type `python main.py` and press Enter
-   - The NovelWriter window will appear with several tabs at the top
+```powershell
+python main.py
+```
 
-2. **Select Your AI Model**
-   - At the top of the window, you'll see a dropdown menu labeled "Model"
-   - Choose your preferred AI model (e.g., "gpt-5.5", "claude-sonnet-4-6", "gemini-2.5-pro")
-   - Each model has different strengths, but all will work well for novel generation
+小说创作的侧栏和短视频工作台顶部均可打开“模型配置”。服务商、接口地址、API 密钥、模型名称和连接测试共用同一窗口及配置，保存后用于后续生成与聊天。配置细节见[模型服务配置](API_CONFIGURATION.md)。
 
-## Step-by-Step Novel Generation
+## 小说创作
 
-### Step 1: Set Your Novel Parameters
+1. 在作品参数中填写标题、输出目录、题材、篇幅与创作要求，保存参数。
+2. 按“世界设定 → 故事结构 → 场景规划 → 章节撰写”生成和查看内容；也可在工作流页启动完整流程。
+3. 在对应页面查看产物和状态。世界设定可[直接编辑保存](lore_editing.md)，后续生成使用保存后的内容。
+4. 生成任务运行期间可停止。重新打开作品后，工作流依据磁盘产物与契约判定完成情况；“从断点继续”处理未完成阶段。
+5. 章节未通过原有质量闸门时，在章节页面处理待复审内容；具体交互见[小说界面契约](UI_CONTRACT.md)。
 
-Click on the **"Novel Parameters"** tab to begin.
+## 短视频脚本
 
-**What you'll do:**
-- **Novel Title**: Enter the title of your story
-- **Genre**: Select your desired genre (e.g., Science Fiction, Fantasy, Western, Mystery, Romance, Horror, Thriller, Historical Fiction)
-- **Subgenre**: Choose from options like Space Opera, Cyberpunk, Hard Science Fiction, etc.
-- **Tone**: Select the mood of your story (e.g., Dark, Optimistic, Gritty)
-- **Themes**: Pick themes you want to explore (e.g., Identity, Power, Survival)
-- **Setting Details**: Customize your universe with options specific to your chosen subgenre
+1. 从首页切换到短视频脚本，创建或打开项目。
+2. 在“原文”粘贴文章或导入 TXT／Markdown，选择全文或所选片段，填写赛道与创作要求并保存。
+3. 生成小说推文，阅读后直接编辑；点击“用这版生成视频文案”，再用当前视频文案生成分镜。
+4. 在分镜表或选中镜头详情中编辑时长、动作、对白和提示词。时长、顺序变化会重算时间轴，单镜 5–15 秒为建议。
+5. 生成资产提示词，在人物／场景／道具／镜头标签中阅读、编辑或复制正负提示词。
+6. 使用“导出”选择内容、格式与位置：文案与提示词文字包、分镜 XLSX／CSV。
 
-**Tips:**
-- Don't worry about getting everything perfect - you can experiment with different combinations
-- The subgenre selection will show you relevant setting options
-- Each choice influences how your story will be generated
+生成使用 Agent Loop：默认首次生成后最多再修改生成两次。检查仍未通过时展示最新候选，用户可以手动编辑；检查故障不会冒充通过，也不会被当作内容反馈反复生成。
 
-**When finished:** Click the **"Save Parameters"** button
+左侧“与 AI 讨论”只发送本轮消息和聊天历史，不自动附加项目文档。需要讨论的材料可直接粘贴到消息中。聊天回复不自动改稿；在右侧对应字段手动修改并保存。下一步会先保存可见编辑，保存失败不继续调用模型。
 
-### Step 2: Generate Your Universe Lore
+当前只生成文字及提示词，图片和视频由外部工具制作。完整规则见[短视频交互设计](short_video/interaction.md)。
 
-Click on the **"Generate Lore"** tab.
+## 保存与异常
 
-**What happens here:**
-- The app creates factions, locations (e.g., planets for Sci-Fi, cities for Fantasy), and characters for your universe
-- Main characters (protagonist, deuteragonist, antagonist) are developed with backstories
-- The AI generates rich lore that ties everything together
-
-**What you'll do:**
-1. Click **"Generate Initial Data"** - this creates factions, locations, and characters
-2. Click **"Generate Character Backstories"** - this adds depth to your main characters
-3. Click **"Generate Universe Lore"** - this creates the full background narrative
-
-**What you'll see:**
-- Character profiles with names, roles, and relationships
-- Faction descriptions with their goals and conflicts
-- Rich backstory text that sets up your universe
-
-**Tips:**
-- Each step builds on the previous one, so go in order
-- The generation may take a minute or two - the AI is creating detailed content
-- You can regenerate any step if you want different results
-
-### Step 3: Create Your Story Structure
-
-Click on the **"Story Structure"** tab.
-
-**What happens here:**
-- Character arcs are developed based on the backstories
-- Faction conflicts are mapped out
-- A 6-act story structure is created (Beginning, Rising Action, First Climax, Solution Finding, Second Climax, Resolution)
-
-**What you'll do:**
-1. Click **"Generate Character Arcs"**
-2. Click **"Generate Faction Arcs"**
-3. Click **"Reconcile Character and Faction Arcs"**
-4. Click **"Generate Story Structure"**
-5. Click **"Refine Story Structure"** for more detail
-
-**What you'll see:**
-- Individual character development paths
-- How faction conflicts drive the plot
-- A complete story outline broken into acts
-
-**Tips:**
-- This step is crucial - it's your story's backbone
-- The reconciliation step ensures character and faction goals align properly
-- The refinement step adds important details to each act
-
-### Step 4: Plan Your Scenes
-
-Click on the **"Scene Planning"** tab.
-
-**What happens here:**
-- Your 6-act structure is broken down into individual chapters
-- Each chapter is divided into detailed scenes
-- You get a roadmap for the actual writing
-
-**What you'll do:**
-1. Click **"Generate Chapter Outlines"**
-2. Click **"Generate Scene Plans"**
-
-**What you'll see:**
-- A list of chapters with their purposes and key events
-- Detailed scene breakdowns showing what happens, where, and which characters are involved
-
-**Tips:**
-- This is where your abstract story structure becomes concrete
-- Each scene should advance the plot or develop characters
-- Don't worry if some scenes seem short - they'll expand during writing
-
-### Step 5: Write Your Chapters
-
-Click on the **"Chapter Writing"** tab.
-
-**What happens here:**
-- Individual scenes are converted into full prose
-- The AI writes actual story content based on all your previous work
-
-**What you'll do:**
-1. Select a chapter from the dropdown menu
-2. Click **"Generate Chapter"**
-3. Review the generated text
-4. If you want improvements, click **"Regenerate Chapter"**
-
-**What you'll see:**
-- Full chapter text with dialogue, descriptions, and narrative
-- Professional-quality prose that follows your story structure
-
-**Tips:**
-- Start with Chapter 1 and work sequentially
-- Each chapter takes a few minutes to generate
-- You can regenerate chapters as many times as you want
-- The chapters are saved as individual files in the `current_work/chapters/` folder
-
-## Finishing Your Novel
-
-### Combining Your Chapters
-
-Once you've generated all your chapters:
-
-1. **Option 1: Use the Combine Script**
-   - Open terminal/command prompt
-   - Navigate to your NovelWriter folder
-   - Type `python combine.py` and press Enter
-   - This creates a single file with your complete novel
-
-2. **Option 2: Manual Assembly**
-   - Go to the `current_work/chapters/` folder
-   - Open each chapter file and copy the text into a single document
-
-### Your Final Novel
-
-You'll have:
-- A complete science fiction novel (typically 50,000+ words)
-- Rich characters with development arcs
-- A well-structured plot with proper pacing
-- Detailed world-building and lore
-
-## Tips for Success
-
-### Before You Start
-- **Have your API keys ready**: Make sure your `.env` file is properly configured
-- **Plan your time**: Full novel generation can take 1-2 hours depending on your computer and internet speed
-- **Choose your model wisely**: Different AI models have different writing styles
-
-### During Generation
-- **Be patient**: AI generation takes time, especially for longer content
-- **Save frequently**: Use the save buttons after each major step
-- **Experiment**: Try regenerating sections if you want different results
-- **Review as you go**: Check that each step builds logically on the previous one
-
-### After Generation
-- **Edit and revise**: The generated novel is a strong first draft - feel free to edit
-- **Check consistency**: Make sure character names and details remain consistent
-- **Add personal touches**: Insert your own style and voice where desired
-
-## Troubleshooting
-
-### Common Issues
-
-**"No model selected" error:**
-- Make sure you've chosen a model from the dropdown at the top
-
-**Generation seems stuck:**
-- Check your internet connection
-- Verify your API keys are correct
-- Some models are slower than others
-
-**Generated content seems inconsistent:**
-- Make sure you completed all previous steps in order
-- Try regenerating the problematic section
-
-**App won't start:**
-- Check that you've installed all dependencies: `pip install -r requirements.txt`
-- Verify your Python version is 3.7 or higher
-
-### Getting Help
-
-- Check the detailed documentation in the `docs/` folder
-- Review the README.md file for technical setup issues
-- Make sure your `.env` file contains valid API keys
-
-## What Makes a Good Generated Novel
-
-The best results come from:
-- **Clear parameters**: Be specific about your preferred tone and themes
-- **Interesting subgenre choices**: Each subgenre creates different story possibilities
-- **Patience with the process**: Let each step complete fully before moving on
-- **Willingness to regenerate**: Don't settle for the first result if it doesn't feel right
-
-Remember: NovelWriter creates a strong foundation for your novel. The generated content is designed to be edited, expanded, and personalized to match your vision!
+项目保存在所选输出目录，路径见[项目文件](file_formats.md)。遇到保存冲突时保留编辑，核对当前版本后再处理。删除或移动作品前先停止任务；生成失败后按页面提示检查模型配置、网络或文件权限。

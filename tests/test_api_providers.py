@@ -112,3 +112,29 @@ def test_qwen_region_and_model_override(monkeypatch):
     assert config.model == "qwen-custom"
     assert "ap-southeast-1" in config.base_url
     assert "test-key" not in repr(config)
+
+
+@pytest.mark.parametrize("seconds,exhausted", [(10, True), (300, False)])
+def test_early_event_loop_timeout_exhausts_only_total_deadline(monkeypatch, seconds, exhausted):
+    from types import SimpleNamespace
+    from core.generation.lore_run import RequestBudget, BudgetExhausted
+    class Client:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def create(self, **kwargs):
+            raise TimeoutError("timer fired before monotonic advanced")
+    monkeypatch.setattr(api, "get_config", lambda _: api.APIConfig("hosted-llm", "https://offline/v1", "offline", "unused"))
+    monkeypatch.setattr(api, "AsyncOpenAI", Client)
+    budget = RequestBudget(seconds=seconds, clock=lambda: 0)
+    with budget.activate(), pytest.raises(TimeoutError):
+        api.send_messages("hosted-llm", [{"role": "user", "content": "test"}])
+    assert budget.deadline_expired is exhausted
+    if exhausted:
+        with pytest.raises(BudgetExhausted):
+            budget.check()
+    else:
+        budget.check()

@@ -27,6 +27,7 @@ class RequestBudget:
     seconds: float = 300
     clock: object = time.monotonic
     calls: int = 0
+    deadline_expired: bool = False
     started: float = field(init=False)
 
     def __post_init__(self):
@@ -41,7 +42,7 @@ class RequestBudget:
             self.progress()
         if self.calls >= self.max_calls:
             raise BudgetExhausted(f"已达到 {self.max_calls} 次模型请求预算")
-        if self.remaining <= 0:
+        if self.deadline_expired or self.remaining <= 0:
             raise BudgetExhausted("已达到单份产物 5 分钟的总预算")
 
     @contextmanager

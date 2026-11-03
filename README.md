@@ -31,7 +31,7 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 ## 核心功能
 
-首页新增「切换到短视频脚本」：保留小说流程，独立创作 30–90 秒的中文剧情脚本，先确认大纲，再整篇生成、审阅和有限修订。支持人工编辑、版本记录、定稿和 Markdown 导出，详见[短视频脚本模式](docs/short_video/README.md)。
+首页提供「切换到短视频脚本」：进入 v2 网文视频推广工作台，支持文章导入、小说推文与视频文案两个阶段、可编辑分镜、人物／场景／道具具体提示词、左侧 LLM 对话及 XLSX／CSV／文字包导出。本次不接入图片或视频生成。功能、验证与设计入口见[短视频模块文档](docs/short_video/README.md)，目标模式提示见[编码 Prompt](docs/short_video/coding_prompt.md)。
 
 世界设定支持[手动编辑](docs/lore_editing.md)，生成入口统一处理未保存作品参数并检查结果是否偏离要求，详见[生成参数一致性](docs/parameter_consistency.md)。
 
@@ -232,7 +232,7 @@ python -m core.evaluation.completion_audit `
 
 ## 故事生成流程
 
-NovelWriter 提供两种互补的故事生成方式。
+NovelWriter 提供小说创作与短视频脚本两个工作区。
 
 ### GUI 工作流
 
@@ -244,7 +244,7 @@ NovelWriter 提供两种互补的故事生成方式。
    * 手动设置基础故事参数
 
 2. **生成世界观设定（`core/gui/pages/lore_page.py`）：**
-   * 使用专用生成器创建势力和组织
+   * 根据作品参数生成势力和组织
    * 创建带有详细背景、关系的人物
    * 构建完整的世界观元素
    * 根据题材生成具有叙事作用的人物背景
@@ -262,75 +262,45 @@ NovelWriter 提供两种互补的故事生成方式。
    * 根据场景计划逐步生成章节正文
    * 单独审阅和改进每个章节
 
-### 智能体自动编排工作流
+### 小说生成与检查
 
-通过智能体框架自动完成完整创作流程：
+小说页面通过 `core/gui/services/step_runner.py` 调用现有阶段管线；完整流程和继续操作依据磁盘产物与契约判断进度。章节生成使用 `agents/writing/chapter_writing_agent.py` 和 `core/generation/chapter_generation_loop.py`，复用现有质量检查与待复审处理。
 
-1. **故事生成编排器（`agents/orchestration/story_generation_orchestrator.py`）：**
-   * 协调完整的故事生成过程
-   * 管理各专用智能体之间的工作流
-   * 负责流程决策和质量控制
+### 短视频脚本
 
-2. **一致性智能体（`agents/consistency/consistency_agent.py`）：**
-   * 保证人物和世界观设定的一致性
-   * 追踪情节线索和叙事元素
-   * 根据已经建立的世界观验证故事内容
+从首页切换到短视频脚本，按原文 → 小说推文 → 视频推广文案 → 分镜 → 资产与镜头提示词继续。生成使用 Agent Loop，默认首次生成后最多再修改生成两次；达到上限保留最新候选供手动编辑。左侧为纯聊天，不自动附加项目文档或修改稿件。当前只生成文字与提示词。
 
-3. **质量控制智能体（`agents/quality/quality_agent.py`）：**
-   * 分析内容的连贯性、节奏和文字质量
-   * 提供改进建议
-   * 检查内容是否达到质量标准
-
-4. **章节写作智能体（`agents/writing/chapter_writing_agent.py`）：**
-   * 按场景自动生成章节正文
-   * 执行多级质量审阅：
-     * 场景级：质量、字数、问题和优点
-     * 章节级：连贯性、节奏和人物发展
-     * 批次级：一致性、情节推进和文风
-   * 追踪质量趋势并执行重试逻辑
-   * 生成包含详细指标的质量数据面板
-
-更多项目历史和开发记录，请查看[开发日志与设计笔记](./docs/dev_log.md)以及[智能体实现指南](./docs/agentic_implementation.md)。
+当前说明见[文档索引](./docs/README.md)和[短视频工作台](./docs/short_video/README.md)；开发历史统一见[开发日志](./DEVLOG.md)。
 
 ## 技术架构
 
-NovelWriter 采用模块化架构，主要包含：
-
-- **题材处理器**：处理不同题材的专属需求
-- **配置系统**：根据题材动态加载参数
-- **人物生成器**：生成具有题材适配属性的人物
-- **势力系统**：生成符合题材惯例的组织结构
-- **故事整合**：将世界观设定与叙事结构连接起来
-- **智能体框架**：提供可扩展的基础智能体和专用智能体实现
-- **多代理编排**：协调质量、一致性和写作智能体
-- **工具注册表**：提供可发现、可自描述的智能体工具
-- **质量分析**：追踪质量变化并分析质量趋势
+- `core/gui/`：PySide6 界面、后台任务和页面路由。
+- `core/generation/`：小说各阶段生成、检查与保存。
+- `core/short_video/v2/`：短视频项目、Agent Loop、提示词、聊天及导出。
+- `agents/`：仍在使用的基础、审阅和章节写作智能体。
+- `core/config/`、`core/utils/`：配置与工具函数。
+- `tests/`：当前行为、存储、模型边界及界面回归测试。
 
 ### 目录结构
 
-应用采用以下目录结构：
-
-```
+```text
 NovelWriter/
-├── agents/                  # 智能体框架
-│   ├── base/                # 基础智能体和工具类
-│   ├── consistency/         # 一致性检查智能体
-│   ├── orchestration/       # 多代理编排器
-│   ├── quality/             # 质量控制智能体
-│   ├── review/              # 审阅分析智能体
-│   └── writing/             # 章节写作智能体
-├── core/                   # 核心应用功能
-│   ├── config/             # 配置和设置
-│   ├── generation/         # 内容生成辅助功能
-│   ├── gui/                # 用户界面组件
-│   └── utils/              # 工具函数
-├── current_work/           # 故事内容工作目录
-│   ├── story/              # 故事内容（设定、结构等）
-│   ├── quality/            # 质量分析数据
-│   ├── system/             # 系统文件（日志、提示词等）
-│   └── archive/            # 已归档内容
-└── docs/                   # 项目文档
+├── main.py
+├── agents/
+│   ├── base/
+│   ├── review/
+│   └── writing/
+├── core/
+│   ├── config/
+│   ├── generation/
+│   ├── gui/
+│   ├── short_video/v2/
+│   └── utils/
+├── docs/
+└── tests/
 ```
+
+作品保存在用户选择的输出目录，具体位置与格式见[项目文件](./docs/file_formats.md)。
 
 ### 项目历史
 
