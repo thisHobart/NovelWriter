@@ -31,7 +31,7 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 ## 核心功能
 
-首页提供「切换到短视频脚本」：进入 v2 网文视频推广工作台，支持文章导入、小说推文与视频文案两个阶段、可编辑分镜、人物／场景／道具具体提示词、左侧 LLM 对话及 XLSX／CSV／文字包导出。本次不接入图片或视频生成。功能、验证与设计入口见[短视频模块文档](docs/short_video/README.md)，目标模式提示见[编码 Prompt](docs/short_video/coding_prompt.md)。
+首页提供「切换到短视频脚本」：进入 v2 网文视频推广工作台，支持文章导入、小说推文与视频文案两个阶段、可编辑分镜、人物／场景／道具具体提示词、左侧 LLM 对话及 Markdown 文件导出。本次不接入图片或视频生成。功能、验证与设计入口见[短视频模块文档](docs/short_video/README.md)，目标模式提示见[编码 Prompt](docs/short_video/coding_prompt.md)。
 
 世界设定支持[手动编辑](docs/lore_editing.md)，生成入口统一处理未保存作品参数并检查结果是否偏离要求，详见[生成参数一致性](docs/parameter_consistency.md)。
 

@@ -1,5 +1,6 @@
 """Workspace provenance and atomicity, using real temporary files."""
 from copy import deepcopy
+from pathlib import Path
 import json
 import threading
 
@@ -181,3 +182,196 @@ def test_run_deduplication_and_recovery_honor_live_generation(project):
 def test_result_boundary_returns_structured_error(project):
     result = invoke(ProjectService(project).import_text, "", expected_revision=project.load()["revision"])
     assert result["error"]["code"] == "INVALID_INPUT" and "data" not in result
+
+
+@pytest.fixture
+def prompt_project(project):
+    from core.short_video.v2.prompt_compiler import compile_asset
+    from core.short_video.v2.validation import SPEC_FIELDS
+    from core.short_video.v2.workflow import WorkflowService
+
+    first = novel(project)
+    video = project.save("video_copy", {"blocks": [
+        {"id": "b1", "role": "opening", "narration": "井口有声音", "visible_action": "靠近井口", "dialogue": []},
+        {"id": "b2", "role": "cliffhanger", "narration": "是谁？", "visible_action": "停下脚步", "dialogue": []},
+    ]}, {"novel_copy": first["id"]}, expected_revision=project.load()["revision"])
+    entities = [
+        {"asset_id": "asset_" + kind, "kind": kind, "name": name,
+         "variants": [{"variant_id": "base", "label": "常态"}]}
+        for kind, name in [("character", "寻井人"), ("scene", "老宅"), ("prop", "铜钥匙")]
+    ]
+    catalog = project.save("asset_catalog", {"entities": entities}, {"video_copy": video["id"]},
+                           expected_revision=project.load()["revision"])
+    dependencies = {"asset_catalog": catalog["id"],
+                    **{key: project.current(key)["id"] for key in ("config", "selection")}}
+    for entity in entities:
+        kind = entity["kind"] + "_spec"
+        content = {field: "明确的视觉设定" for field in SPEC_FIELDS[kind]}
+        content.update(asset_id=entity["asset_id"], variant_id="base", source_refs=[])
+        project.save(kind, compile_asset(kind, content), dependencies,
+                     expected_revision=project.load()["revision"])
+    shot = {"shot_id": "shot_1", "order": 1, "duration_ms": 7000, "shot_size": "中景",
+            "camera_movement": "固定镜头", "action": "举起铜钥匙", "visual_prompt_draft": "老宅井边举起铜钥匙",
+            "sound": "风声", "narration": "井里是谁", "dialogue": [], "source_refs": [],
+            "scene_ref": {"asset_id": "asset_scene", "variant_id": "base"},
+            "characters": [{"asset_id": "asset_character", "variant_id": "base"}],
+            "props": [{"asset_id": "asset_prop", "variant_id": "base"}], "video_block_refs": ["b1", "b2"]}
+    project.save("storyboard", {"shots": [shot]},
+                 {"asset_catalog": catalog["id"], "video_copy": video["id"],
+                  **{key: project.current(key)["id"] for key in ("config", "selection")}},
+                 expected_revision=project.load()["revision"])
+    WorkflowService(project).compile_storyboard_prompts(expected_revision=project.load()["revision"])
+    return project
+
+
+@pytest.mark.parametrize("kind", ["character_spec", "scene_spec", "prop_spec"])
+def test_prompt_save_replaces_files_and_rebuilds_only_current_bundle(prompt_project, kind):
+    from core.short_video.v2.exporter import ExportService
+    from core.short_video.v2.workflow import WorkflowService
+
+    repository = prompt_project
+    first = next(record for record in repository.versions() if record["kind"] == kind)
+    previous_bundle = repository.current("prompt_bundle")
+    content = deepcopy(first["content"])
+    content["views"][0]["positive_prompt"] += "，光线柔和"
+    latest = repository.save(kind, content, first["dependency_refs"], parent_id=first["id"],
+                             expected_revision=repository.load()["revision"])
+    assert latest["parent_id"] is None
+    assert len(repository.versions(first["key"])) == 1
+    assert not (repository.root / "artifacts" / f"{first['id']}.json").exists()
+    assert not (repository.root / "artifacts" / f"{previous_bundle['id']}.json").exists()
+    assert repository.current("prompt_bundle") is None
+    rebuilt = WorkflowService(repository).compile_storyboard_prompts(expected_revision=repository.load()["revision"])
+    assert latest["id"] in rebuilt["content"]["asset_spec_refs"]
+    assert len(repository.versions("prompt_bundle")) == 1
+    assert len(repository.versions("storyboard")) == 1
+    result = ExportService(repository).export(repository.root / "exports" / "prompts.md", keys=["prompts"])
+    assert "光线柔和" in Path(result["path"]).read_text(encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="不支持恢复"):
+        repository.select(latest["id"], expected_revision=repository.load()["revision"])
+
+
+def test_prompt_agent_retries_keep_only_final_result_and_do_not_replay_old_results(prompt_project, monkeypatch):
+    from core.short_video.v2.models import PROMPT_KINDS
+    from core.short_video.v2.review import QualityCheckResult
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    repository = prompt_project
+    original = repository.current("prop_spec:asset_prop:base")
+    snapshot = {"provider": "offline", "model": "offline"}
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda provider: snapshot)
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda value: None)
+    calls, checked = [], []
+
+    def send(prompt):
+        calls.append(prompt)
+        value = deepcopy(original["content"])
+        value["views"][0]["positive_prompt"] += f"，第{len(calls)}次生成"
+        return json.dumps(value, ensure_ascii=False)
+
+    def check(command, candidate):
+        checked.append(candidate["id"])
+        return QualityCheckResult(len(checked) == 2, "请改善主体细节")
+
+    service = WorkflowService(repository, transport=send, quality_check=check)
+    command = service.prepare("asset_spec", entity_id="asset_prop", variant_id="base", kind="prop_spec")
+    result = service.execute(command)
+    current = repository.current(original["key"])
+    assert current["id"] == result["version_id"]
+    assert "第2次生成" in current["content"]["views"][0]["positive_prompt"]
+    assert len(repository.versions(original["key"])) == 1
+    assert checked[0] not in repository.load()["records"]
+    assert service.execute(command)["version_id"] == result["version_id"]
+    assert len(calls) == 2
+    run = repository.load()["runs"][-1]
+    assert run["output_refs"] == [current["id"]]
+    assert "command" not in run and "input_refs" not in run["snapshot"]
+    replacement = repository.save(current["kind"], current["content"], current["dependency_refs"],
+                                  expected_revision=repository.load()["revision"])
+    with pytest.raises(WorkspaceError) as error:
+        service.execute(command)
+    assert error.value.code == "PROMPT_REPLACED" and len(calls) == 2
+    assert repository.current(original["key"])["id"] == replacement["id"]
+    assert all(record["parent_id"] is None for record in repository.versions() if record["kind"] in PROMPT_KINDS)
+
+
+def test_interrupted_prompt_candidates_are_removed_without_losing_current_content(prompt_project):
+    repository = prompt_project
+    original = repository.current("prop_spec:asset_prop:base")
+    with repository.generation_lock():
+        run, _ = repository.start_run({"stage": "asset_spec", "request_id": "interrupted-prompts"},
+                                      expected_revision=repository.load()["revision"], snapshot={})
+        with repository.transaction() as state:
+            candidate = repository._save(state, original["kind"], original["content"],
+                                         original["dependency_refs"], select=False)
+            state["runs"][-1]["output_refs"] = [candidate["id"]]
+        assert candidate["id"] in repository.load()["records"]
+    repository.recover()
+    assert repository.current(original["key"])["id"] == original["id"]
+    assert candidate["id"] not in repository.load()["records"]
+    assert not (repository.root / "artifacts" / f"{candidate['id']}.json").exists()
+    assert repository.load()["runs"][-1]["status"] == "interrupted"
+    before = repository.path.read_bytes()
+    repository.recover()
+    assert repository.path.read_bytes() == before
+
+
+def test_failed_prompt_replacement_commit_keeps_original_files(prompt_project, monkeypatch):
+    repository = prompt_project
+    original = repository.current("prop_spec:asset_prop:base")
+    original_manifest = repository.path.read_bytes()
+    actual_atomic = repository_module.atomic_write_text
+
+    def reject_manifest(path, value):
+        if path == repository.path:
+            raise OSError("disk full")
+        actual_atomic(path, value)
+
+    monkeypatch.setattr(repository_module, "atomic_write_text", reject_manifest)
+    with pytest.raises(OSError):
+        repository.save(original["kind"], original["content"], original["dependency_refs"],
+                        expected_revision=repository.load()["revision"])
+    assert repository.path.read_bytes() == original_manifest
+    assert repository.record(original["id"])["content"] == original["content"]
+
+
+def test_current_prompts_remain_usable_after_config_changes(prompt_project):
+    from core.short_video.v2.exporter import ExportService
+
+    repository = prompt_project
+    config = repository.current("config")["content"]
+    config["tone"] = "克制悬疑"
+    ProjectService(repository).save_inputs(config, repository.current("source")["content"],
+                                           expected_revision=repository.load()["revision"])
+    assert not repository.is_current(repository.current("storyboard")["id"])
+    assert repository.is_current(repository.current("prop_spec:asset_prop:base")["id"])
+    assert repository.is_current(repository.current("prompt_bundle")["id"])
+    assert not ExportService(repository).snapshot(keys=["prompts"])["problems"]
+
+
+def test_prompt_generation_conflict_keeps_newer_manual_edit(prompt_project, monkeypatch):
+    from core.short_video.v2.review import QualityCheckResult
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    repository = prompt_project
+    original = repository.current("prop_spec:asset_prop:base")
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda provider: {"provider": "offline", "model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda value: None)
+
+    def check(command, candidate):
+        content = deepcopy(original["content"])
+        content["views"][0]["positive_prompt"] += "，保留人工修改"
+        repository.save(original["kind"], content, original["dependency_refs"],
+                        expected_revision=repository.load()["revision"])
+        return QualityCheckResult(True)
+
+    service = WorkflowService(repository, transport=lambda prompt: json.dumps(original["content"]), quality_check=check)
+    command = service.prepare("asset_spec", entity_id="asset_prop", variant_id="base", kind="prop_spec")
+    with pytest.raises(WorkspaceError) as error:
+        service.execute(command)
+    assert error.value.code == "TARGET_VERSION_CONFLICT"
+    assert len(repository.versions(original["key"])) == 1
+    assert "保留人工修改" in repository.current(original["key"])["content"]["views"][0]["positive_prompt"]
+    assert repository.load()["runs"][-1]["status"] == "failed"

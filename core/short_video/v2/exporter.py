@@ -1,14 +1,11 @@
-"""Snapshot-based text deliverables, with no media prerequisites."""
+"""Snapshot-based Markdown deliverables, with no media prerequisites."""
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from .contracts import JsonObject
 from .models import (
@@ -20,27 +17,8 @@ from .models import (
     timestamp,
 )
 from .repository import ProjectRepository
+from .storyboard_text import render_storyboard_text
 from .validation import local_issues, validate_content
-
-COLUMNS = ["镜号", "时间轴", "景别", "镜头运动", "人物", "动作", "对白", "音效", "画面生成提示词"]
-
-
-def safe_cell(value: Any) -> str:
-    value = str(value)
-    return (
-        "'" + value
-        if value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n"))
-        else value
-    )
-
-
-def timeline(shot: JsonObject) -> str:
-    def stamp(ms: int) -> str:
-        seconds, millis = divmod(ms, 1000)
-        return f"{seconds // 60:02}:{seconds % 60:02}.{millis:03}"
-
-    return f"{stamp(shot['start_ms'])}–{stamp(shot['end_ms'])}"
-
 
 class ExportService:
     def __init__(self, repository: ProjectRepository) -> None:
@@ -160,43 +138,6 @@ class ExportService:
             "provenance": provenance,
         }
 
-    @staticmethod
-    def rows(snapshot: JsonObject) -> list[list[str]]:
-        records = snapshot["records"]
-        names = {
-            e["asset_id"]: e["name"]
-            for e in records.get("asset_catalog", {}).get("content", {}).get("entities", [])
-        }
-        prompts = {
-            s["shot_id"]: s
-            for s in records.get("prompt_bundle", {}).get("content", {}).get("shots", [])
-        }
-        result = []
-        for shot in records.get("storyboard", {}).get("content", {}).get("shots", []):
-            shot_names = {**names, **shot.get("character_labels", {})}
-            dialogue = "\n".join(
-                f"{shot_names.get(l.get('character_id'), l.get('speaker_label', '画外音'))}：{l['text']}"
-                for l in shot["dialogue"]
-            )
-            if shot.get("narration"):
-                dialogue += "\n旁白：" + shot["narration"]
-            result.append(
-                [
-                    str(shot["order"]),
-                    timeline(shot),
-                    shot["shot_size"],
-                    shot["camera_movement"],
-                    "、".join(shot_names[r["asset_id"]] for r in shot["characters"]),
-                    shot["action"],
-                    dialogue.strip(),
-                    shot["sound"],
-                    prompts.get(shot["shot_id"], {}).get(
-                        "resolved_prompt", shot["visual_prompt_draft"]
-                    ),
-                ]
-            )
-        return result
-
     def export(
         self,
         destination: str | Path,
@@ -206,13 +147,12 @@ class ExportService:
         allow_partial: bool = False,
         overwrite: bool = False,
     ) -> JsonObject:
-        snapshot = self.snapshot(keys=keys, allow_stale=allow_stale, allow_partial=allow_partial)
         path = Path(destination).resolve()
         sidecar = path.with_name(path.name + ".manifest.json")
         require(
-            path.suffix.lower() in {".xlsx", ".csv", ".md", ".txt", ".json"},
+            path.suffix.lower() == ".md",
             "INVALID_INPUT",
-            "不支持的导出格式",
+            "仅支持 Markdown（.md）导出",
         )
         require(
             not path.is_relative_to(self.repository.root)
@@ -225,105 +165,58 @@ class ExportService:
             "EXPORT_EXISTS",
             "导出文件已存在，请明确选择覆盖或另存",
         )
-        require(
-            path.suffix.lower() not in {".xlsx", ".csv"}
-            or "storyboard" in snapshot["selected_keys"],
-            "INVALID_INPUT",
-            "表格格式请选中分镜内容",
-        )
-        rows = self.rows(snapshot)
-        suffix = path.suffix.lower()
-        if suffix == ".xlsx":
-            from openpyxl import Workbook
-            from openpyxl.styles import Alignment, Font
-
-            book = Workbook()
-            sheet = book.active
-            sheet.title = "分镜脚本"
-            sheet.append(COLUMNS)
-            for row in rows:
-                sheet.append([safe_cell(c) for c in row])
-            sheet.freeze_panes = "A2"
-            sheet.auto_filter.ref = sheet.dimensions
-            for cell in sheet[1]:
-                cell.font = Font(bold=True)
-            for row in sheet:
-                for cell in row:
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
-            for column, width in zip("ABCDEFGHI", [8, 27, 12, 18, 20, 42, 42, 28, 85]):
-                sheet.column_dimensions[column].width = width
-            meta = book.create_sheet("导出信息")
-            meta.append(["类型", snapshot["mode"]])
-            meta.append(["问题", "；".join(snapshot["problems"])])
-            meta.append(["快照", snapshot["id"]])
-            buffer = io.BytesIO()
-            book.save(buffer)
-            data = buffer.getvalue()
-        elif suffix == ".csv":
-            buffer = io.StringIO(newline="")
-            writer = csv.writer(buffer)
-            writer.writerow(COLUMNS)
-            writer.writerows([[safe_cell(c) for c in row] for row in rows])
-            data = buffer.getvalue().encode("utf-8-sig")
-        elif suffix == ".json":
-            data = encode(snapshot).encode("utf-8")
-        else:
-            lines = ["# 视频推广文字成果", ""]
-            if snapshot["missing"]:
-                lines += ["本次未包含：" + "、".join(snapshot["missing"]), ""]
-            for key in snapshot["selected_keys"]:
-                record = snapshot["records"][key]
-                content = record["content"]
-                if key == "novel_copy":
+        snapshot = self.snapshot(keys=keys, allow_stale=allow_stale, allow_partial=allow_partial)
+        lines = ["# 视频推广文字成果", ""]
+        if snapshot["missing"]:
+            lines += ["本次未包含：" + "、".join(snapshot["missing"]), ""]
+        for key in snapshot["selected_keys"]:
+            record = snapshot["records"][key]
+            content = record["content"]
+            if key == "novel_copy":
+                lines += [
+                    "## 小说推文",
+                    "",
+                    content["opening"]["text"],
+                    "",
+                    *[p["text"] + "\n" for p in content["paragraphs"]],
+                    content["cliffhanger"]["text"],
+                    "",
+                ]
+            elif key == "video_copy":
+                lines += ["## 视频推广文案", ""]
+                for block in content["blocks"]:
                     lines += [
-                        "## 小说推文",
-                        "",
-                        content["opening"]["text"],
-                        "",
-                        *[p["text"] + "\n" for p in content["paragraphs"]],
-                        content["cliffhanger"]["text"],
-                        "",
-                    ]
-                elif key == "video_copy":
-                    lines += ["## 视频推广文案", ""]
-                    for block in content["blocks"]:
-                        lines += [
-                            block["narration"],
-                            "动作：" + block["visible_action"],
-                            *[
-                                line["speaker_label"] + "：" + line["text"]
-                                for line in block["dialogue"]
-                            ],
-                            "",
-                        ]
-                elif key == "storyboard":
-                    lines += [
-                        "## 分镜",
-                        "",
-                        " | ".join(COLUMNS),
-                        " | ".join(["---"] * 9),
+                        block["narration"],
+                        "动作：" + block["visible_action"],
                         *[
-                            " | ".join(
-                                cell.replace("\n", "<br>").replace("|", "\\|") for cell in row
-                            )
-                            for row in rows
+                            line["speaker_label"] + "：" + line["text"]
+                            for line in block["dialogue"]
                         ],
                         "",
                     ]
-                else:
+            elif key == "storyboard":
+                lines += ["## 分镜", ""]
+                lines += [
+                    render_storyboard_text(
+                        content,
+                        snapshot["provenance"][record["dependency_refs"]["asset_catalog"]]["content"],
+                    ),
+                    "",
+                ]
+            else:
+                lines += [
+                    "## " + ("镜头提示词" if key == "prompt_bundle" else "资产提示词"),
+                    "",
+                ]
+                for index, item in enumerate(content.get("shots", content.get("views", []))):
                     lines += [
-                        "## " + ("镜头提示词" if key == "prompt_bundle" else "资产提示词"),
+                        "### " + item.get("label", f"镜头 {index + 1}"),
+                        "正向：" + item.get("resolved_prompt", item.get("positive_prompt", "")),
+                        "",
+                        "负面：" + item["negative_prompt"],
                         "",
                     ]
-                    for index, item in enumerate(content.get("shots", content.get("views", []))):
-                        lines += [
-                            "### " + item.get("label", f"镜头 {index + 1}"),
-                            "正向：" + item.get("resolved_prompt", item.get("positive_prompt", "")),
-                            "",
-                            "负面：" + item["negative_prompt"],
-                            "",
-                        ]
-            data = "\n".join(lines).encode("utf-8")
+        data = "\n".join(lines).encode("utf-8")
         manifest = {k: v for k, v in snapshot.items() if k not in {"records", "provenance"}}
         manifest["provenance"] = {
             ref: {

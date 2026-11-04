@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 from core.short_video.v2.contracts import ArtifactRecord
 from core.short_video.v2.models import require
 from core.short_video.v2.prompts import INSTRUCTIONS
+from core.short_video.v2.storyboard_text import render_storyboard_text
 
 from .ui_helpers import create_action_button, show_text_dialog
 from .v2_editor import CopyEditor, StoryboardEditor
@@ -42,6 +44,8 @@ class ArtifactPage(QWidget):
         self.editor.changed.connect(self.mark_dirty)
         bar = QHBoxLayout()
         create_action_button("查看原文", self.locate_source, bar, workbench)
+        if stage == "storyboard":
+            create_action_button("复制分镜文本", self.copy_storyboard_text, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
         more = QPushButton("更多")
         menu = QMenu(more)
@@ -66,6 +70,13 @@ class ArtifactPage(QWidget):
 
     def key(self) -> str:
         return self.stage
+
+    def copy_storyboard_text(self) -> None:
+        require(self.record is not None, "INVALID_INPUT", "请先生成分镜")
+        catalog = self.workbench.repository.record(self.record["dependency_refs"]["asset_catalog"])
+        value = render_storyboard_text(self.editor.value(), catalog["content"])
+        QApplication.clipboard().setText(value)
+        self.workbench.notice("已复制完整分镜文本，可直接粘贴；未保存的编辑也已包含。")
 
     def mark_dirty(self) -> None:
         self.dirty = True

@@ -10,10 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
-    QMenu,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTabBar,
@@ -22,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.short_video.v2.contracts import JsonObject
-from core.short_video.v2.models import ASSET_KINDS, WorkspaceError, require
+from core.short_video.v2.models import ASSET_KINDS, require
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
 from .ui_helpers import create_action_button
@@ -102,11 +99,6 @@ class PromptPage(QWidget):
         bar = QHBoxLayout()
         self.save_button = create_action_button("保存", self.save, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
-        more = QPushButton("更多")
-        menu = QMenu(more)
-        menu.addAction("历史版本", lambda: workbench.perform(self.restore_version))
-        more.setMenu(menu)
-        bar.addWidget(more)
         bar.addStretch()
         create_action_button("导出", workbench.export, bar, workbench, primary=True)
         layout.addLayout(bar)
@@ -222,13 +214,7 @@ class PromptPage(QWidget):
         self.editor.set_content(
             self.record["content"] if self.record else None, self.displayed_view
         )
-        self.status.setText(
-            "已保存"
-            if self.record and self.workbench.repository.is_current(self.record["id"], state=state)
-            else "基于旧内容，可查看和明确导出。"
-            if self.record
-            else "从分镜页生成资产提示词。"
-        )
+        self.status.setText("已保存" if self.record else "从分镜页生成资产提示词。")
         for combo in (self.objects, self.variants, self.views):
             combo.blockSignals(False)
 
@@ -276,52 +262,18 @@ class PromptPage(QWidget):
         asks = ["根据当前分镜和设定优化所选镜头的画面提示词"]
         shot_ids = [self.record["content"]["shots"][self.editor.index]["shot_id"]]
         service = WorkflowService(self.workbench.repository, self.workbench.model())
-        try:
-            command = service.prepare(
-                "shot_prompts",
-                mode="revise",
-                target_id=self.record["id"],
-                asks=asks,
-                shot_ids=shot_ids,
-            )
-        except WorkspaceError as exc:
-            if exc.code != "STALE_INPUT":
-                raise
-            if (
-                QMessageBox.question(self, "基于旧内容", "沿用当前提示词原有来源进行修订？")
-                != QMessageBox.Yes
-            ):
-                return
-            command = service.prepare(
-                "shot_prompts",
-                mode="revise",
-                target_id=self.record["id"],
-                asks=asks,
-                use_stale=True,
-                shot_ids=shot_ids,
-            )
+        command = service.prepare(
+            "shot_prompts",
+            mode="revise",
+            target_id=self.record["id"],
+            asks=asks,
+            use_stale=True,
+            shot_ids=shot_ids,
+        )
         self.workbench.submit(
             WorkspaceWork(self.workbench.repository, command, transport=self.workbench.transport),
             self.generate_button,
         )
-
-    def restore_version(self) -> None:
-        if not self.workbench.resolve_page(self):
-            return
-        require(self.record is not None, "INVALID_INPUT", "尚无提示词")
-        versions = self.workbench.repository.versions(self.record["key"])
-        labels = [
-            f"第 {i + 1} 版 · {record['created_at'][:19]}" for i, record in enumerate(versions)
-        ]
-        label, ok = QInputDialog.getItem(
-            self, "历史版本", "选择要恢复的提示词", labels, len(labels) - 1, False
-        )
-        if ok:
-            self.workbench.repository.select(
-                versions[labels.index(label)]["id"],
-                expected_revision=self.workbench.repository.load()["revision"],
-            )
-            self.workbench.refresh()
 
     def saved_record(self) -> JsonObject:
         require(self.record is not None and not self.dirty, "EDIT_PENDING", "请先保存当前提示词")

@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.4；日期：2026-11-03；状态：按当前 v2 服务和界面核对。
+文档版本：2.5；日期：2026-11-04；状态：同步分镜文本复制与导出，内部结构契约不变。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。下文保留文字与提示词范围，使用本地 Python 服务，不新增媒体 API。
 
@@ -9,14 +9,15 @@
 | 动作 | 当前实际入口 | 行为 |
 |---|---|---|
 | 保存原文与配置 | ProjectService.save_inputs(config, source, ranges=None, *, expected_revision) | 同一次业务变更保存配置、原文与选区 |
-| 保存稿件／提示词 | ProjectRepository.save(kind, content, dependencies, *, expected_revision, ...) | 本地校验并追加版本，不启动 AI 检查 |
+| 保存稿件／提示词 | ProjectRepository.save(kind, content, dependencies, *, expected_revision, ...) | 稿件追加版本；提示词替换当前内容并删除旧记录，不启动 AI 检查 |
+| 复制分镜文本 | ArtifactPage.copy_storyboard_text → render_storyboard_text(content, catalog) | 使用当前编辑器内容及该稿精确依赖的目录，复制整段文字，不保存或调用模型 |
 | 单阶段生成／重新生成 | WorkflowService.prepare(stage, ...) → WorkspaceWork → execute(command, ...) | 冻结输入并执行生成、检查、有限修改和保存 |
 | 生成分镜 | prepare_storyboard_task → CreationWork | 先 asset_catalog，再 storyboard，共用任务预算 |
 | 生成资产提示词 | prepare_prompt_task → CreationWork | 按待生成实体／状态执行 asset_spec，最后本地编译镜头提示词 |
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 查看／停止 | repository.load()["runs"] / host.runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
-| 导出 | ExportService.snapshot / export(destination, *, keys, allow_stale=False, allow_partial=False, overwrite=False) | 本地验证并输出所选内容，不以 confirmation 为门槛 |
+| 导出 | ExportService.snapshot / export(destination, *, keys, allow_stale=False, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
 | 聊天讨论 | ConversationService.prepare / execute | 仅接收用户消息和历史对话，不接收文章／稿件／镜头／视图引用；保留项目隔离和手动重试 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
@@ -35,7 +36,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有重试次数时，用
 
 检查反馈及中间检查问题仅在本轮内存中使用：不调用 save_report，不写 issues 到任务结果，不写入会话历史，也不持久化检查原文或含反馈的修改请求。已有调用记录仅保留类型、错误类型和时间；共享预算计数回调不传递请求／响应原文。独立历史诊断接口不属于本轮自动生成链路。
 
-上述调用记录限制仅针对阶段 Agent Loop。合法候选在每次检查前保存为不可变版本，尚未选为当前稿；最终提交核对输入快照与 selected_before，冲突时返回 selected=false。初始运行命令仍保留原始上下文；普通聊天会记录实际 prompt／response，分段提取和分段改编也有各自的调用记录。
+上述调用记录限制仅针对阶段 Agent Loop。合法候选在每次检查前保存，尚未选为当前稿；最终提交核对输入快照与 selected_before。文案／分镜冲突时返回 selected=false，保留候选；提示词冲突返回 TARGET_VERSION_CONFLICT，清理候选并保留当前编辑。提示词任务完成后仅保留最终当前结果，删除旧提示词、中间候选及运行命令中的正文副本；旧请求结果被替换后重放返回 PROMPT_REPLACED，不重新请求模型。其他阶段的初始运行命令继续保留原始上下文；普通聊天会记录实际 prompt／response，分段提取和分段改编也有各自的调用记录。
 
 模型异常、检查服务异常及无效检查响应不触发质量修改循环。生成前失败沿用现有异常；已有合法候选时沿用保留可用稿与未完成／不可用状态；取消沿用取消异常和恢复机制。内部编程错误原样暴露。普通聊天不使用 Agent Loop；手改只做本地校验。
 
@@ -163,8 +164,18 @@ Storyboard：`video_copy_version_id,catalog_version_id,shots[]`；每镜字段�
 
 PromptBundle：`storyboard_version_id,asset_spec_refs[],shots[{shot_id,resolved_prompt,negative_prompt,video_motion_prompt?,asset_refs,source_refs}]`。编译时验证资产设定版本和变体，无法解析的引用返回具体内容问题；已生成文字仍可按所选范围导出并说明缺项。video_motion_prompt 可选，基于该镜动作、时长和运镜生成文字，不调用视频模型。
 
+character_spec／scene_spec／prop_spec 按 asset_id＋variant_id、prompt_bundle 按全体镜头，各只保留当前一份。新记录的 parent_id=null，select 不支持恢复提示词，替换后删除旧记录与文件；资产提示词被替换时，依赖旧记录的镜头提示词一并清除并从当前资产重新编排。is_current 对提示词表示是否为当前保留内容，不再递归比较上游历史；生成中的快照与修订冲突校验仍然有效。
+
 
 ## 9. Prompt 契约：保留用户原意，结构化封装
+
+### 分镜对外交付格式
+
+`storyboard_text.render_storyboard_text(content, catalog) -> str` 是无 I/O 的文本编排函数；输入为结构化分镜 content 和对应资产目录 content。重算连续时间轴，以整数毫秒转为精确秒数，按“视觉风格／场景概述／分镜／镜头要求／音频／限制”输出整段中文，不显示内部编号和来源坐标。
+
+时间段、镜号、景别、运镜、人物与状态、场景、道具、画面、动作及各镜音频均保留。无出镜人物与画外对白分开表达，未指定音频不补写音乐。可选 visual_description 缺失时使用已有动作及 visual_prompt_draft。不会调用模型重写或改变保存数据。
+
+分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
 模板库以阶段区分角色与 instruction；自定义模板保存为不可变 prompt_template 版本（content: stage,instruction），默认模板引用为阶段 default-v2。结构约束与负面约束由 prompts.py 和 validation.py 统一定义，任务冻结最终完整 Prompt、输入和具体模型名。原始小说置于清晰分隔的数据区。
 

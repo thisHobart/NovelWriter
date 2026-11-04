@@ -1,4 +1,4 @@
-"""Immutable content records and a small atomically replaced v2 manifest.
+"""Versioned story content and current-only prompts in an atomic manifest.
 
 Opening a repository is read-only.
 """
@@ -21,6 +21,7 @@ from .models import (
     ACTIVE_RUNS,
     ASSET_KINDS,
     ID_PATTERN,
+    PROMPT_KINDS,
     RUN_STATUSES,
     WorkspaceError,
     content_key,
@@ -225,6 +226,8 @@ class ProjectRepository:
         require(record_id not in visited, "INVALID_PROJECT", "发现循环来源依赖")
         visited.add(record_id)
         record = self.record(record_id, state=state)
+        if record["kind"] in PROMPT_KINDS:
+            return state["current"].get(record["key"]) == record_id
         for key, ref in record["dependency_refs"].items():
             if state["current"].get(key) != ref or not self.is_current(
                 ref, state=state, visited=visited
@@ -269,13 +272,58 @@ class ProjectRepository:
                     "项目已被其他操作更新；编辑内容保留，请刷新后比较",
                 )
             before = fingerprint(state)
+            previous_record_ids = set(state["records"])
             yield state
+            previous_record_ids.update(state["records"])
+            self._discard_prompt_history(state)
             if before == fingerprint(state):
                 return
             state["revision"] += 1
             if not state["project_id"]:
                 state["project_id"] = identity("project")
             atomic_write_text(self.path, encode(state))
+            for record_id in previous_record_ids - state["records"].keys():
+                (self.root / "artifacts" / f"{record_id}.json").unlink(missing_ok=True)
+
+    def _discard_prompt_history(self, state: JsonObject) -> None:
+        # In-flight candidates and their original editing target live until the run ends.
+        if any(run["status"] in ACTIVE_RUNS for run in state["runs"]):
+            return
+        discarded = {
+            record_id
+            for record_id, metadata in state["records"].items()
+            if metadata["kind"] in PROMPT_KINDS
+            and state["current"].get(metadata["key"]) != record_id
+        }
+        while True:
+            dependents = set()
+            for record_id in state["records"].keys() - discarded:
+                record = self.record(record_id, state=state)
+                if discarded.intersection(record["dependency_refs"].values()):
+                    require(
+                        record["kind"] in {"prompt_bundle", "check_report"},
+                        "INVALID_PROJECT",
+                        "故事资料不应依赖历史提示词",
+                    )
+                    dependents.add(record_id)
+            if not dependents:
+                break
+            discarded.update(dependents)
+        for record_id in discarded:
+            state["records"].pop(record_id)
+            state["confirmations"].pop(record_id, None)
+            state["reports"].pop(record_id, None)
+        state["current"] = {
+            key: ref for key, ref in state["current"].items() if ref not in discarded
+        }
+        for target, reports in state["reports"].items():
+            state["reports"][target] = [ref for ref in reports if ref not in discarded]
+        for run in state["runs"]:
+            run["output_refs"] = [ref for ref in run["output_refs"] if ref not in discarded]
+            if run["stage"] in {"asset_spec", "view_prompts", "shot_prompts"}:
+                # Completed prompt runs keep task status, not another copy of old prompt text.
+                run.pop("command", None)
+                run["snapshot"].pop("input_refs", None)
 
     def _save(
         self,
@@ -315,7 +363,7 @@ class ProjectRepository:
             "content": value,
             "content_hash": fingerprint(value),
             "dependency_refs": deepcopy(dependencies),
-            "parent_id": parent_id,
+            "parent_id": None if kind in PROMPT_KINDS else parent_id,
             "origin": origin,
             "created_at": timestamp(),
             "metadata": deepcopy(metadata or {}),
@@ -364,6 +412,11 @@ class ProjectRepository:
     def select(self, record_id: str, *, expected_revision: int) -> ArtifactRecord:
         with self.transaction(expected_revision) as state:
             record = self.record(record_id, state=state)
+            require(
+                record["kind"] not in PROMPT_KINDS,
+                "INVALID_INPUT",
+                "提示词只保留当前内容，不支持恢复版本",
+            )
             state["current"][record["key"]] = record_id
         return record
 
@@ -548,8 +601,6 @@ class ProjectRepository:
             return
         try:
             with self.generation_lock():
-                if not any(r["status"] in ACTIVE_RUNS for r in self.load()["runs"]):
-                    return
                 with self.transaction() as state:
                     for run in state["runs"]:
                         if run["status"] in ACTIVE_RUNS:

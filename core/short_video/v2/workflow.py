@@ -13,6 +13,7 @@ from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestReco
 from .llm import BudgetExhausted, RequestBudget, ScriptLLM
 from .models import (
     ASSET_KINDS,
+    PROMPT_KINDS,
     WorkspaceError,
     capture_model_snapshot,
     content_key,
@@ -369,6 +370,11 @@ class WorkflowService:
                 },
             )
             if not created:
+                require(
+                    command["kind"] not in PROMPT_KINDS or bool(run["output_refs"]),
+                    "PROMPT_REPLACED",
+                    "这次任务的提示词已被替换或未完成，请使用当前提示词或重新生成",
+                )
                 return {
                     "run_id": run["id"],
                     "status": run["status"],
@@ -524,6 +530,11 @@ class WorkflowService:
                     select = (
                         unchanged_inputs
                         and state["current"].get(command["key"]) == command["selected_before"]
+                    )
+                    require(
+                        command["kind"] not in PROMPT_KINDS or select,
+                        "TARGET_VERSION_CONFLICT",
+                        "提示词在生成期间已被修改，当前内容保留，请重新生成",
                     )
                     if select:
                         state["current"][command["key"]] = latest["id"]

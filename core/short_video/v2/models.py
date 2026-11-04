@@ -58,6 +58,7 @@ STAGE_LABELS = {
     "prompt_bundle": "镜头提示词",
 }
 ASSET_KINDS = {"character": "character_spec", "scene": "scene_spec", "prop": "prop_spec"}
+PROMPT_KINDS = {*ASSET_KINDS.values(), "prompt_bundle"}
 VIEWS = {
     "character": [
         ("head_front", "正面头部特写"),

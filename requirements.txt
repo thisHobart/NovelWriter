@@ -26,9 +26,6 @@ filelock>=3.17.0
 # GUI（core/gui/，见 docs/UI_MIGRATION.md）使用 PySide6。
 PySide6>=6.6
 
-# 分镜 XLSX 文字导出。
-openpyxl>=3.1.5,<4
-
 # --- 开发依赖 ---
 # pip install -r requirements.txt 会一并安装；仅运行应用可不装。
 pytest>=8.0

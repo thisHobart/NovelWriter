@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QTextBlockFormat,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+    QTextFrameFormat,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -18,6 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.gui import theme
+from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.conversation import ChatWork, ConversationService
 from core.short_video.v2.models import require
 
@@ -50,6 +61,8 @@ class ChatPanel(QWidget):
         self.conversations.hide()
         self.messages = QTextBrowser()
         self.messages.setOpenExternalLinks(False)
+        self.messages.setOpenLinks(False)
+        self.messages.document().setDocumentMargin(theme.SP[3])
         layout.addWidget(self.messages, 2)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("输入消息，与 AI 对话")
@@ -108,19 +121,52 @@ class ChatPanel(QWidget):
         self.conversations.setCurrentIndex(index if index >= 0 else 0)
         self.conversation_id = self.conversations.currentData()
         self.conversations.blockSignals(False)
-        self.messages.clear()
-        if self.conversation_id:
-            for message in self.service().store.get(self.conversation_id)["messages"]:
-                cursor = self.messages.textCursor()
-                cursor.movePosition(QTextCursor.End)
-                cursor.insertText(
-                    f"\n{'你' if message['role'] == 'user' else 'AI'}\n{message['content']}\n"
-                )
+        messages = (
+            self.service().store.get(self.conversation_id)["messages"]
+            if self.conversation_id
+            else []
+        )
+        self.render_messages(messages)
         self.stop_button.setEnabled(
             isinstance(self.workbench.active_work, ChatWork)
             and self.workbench.host.runner.busy
             and self.workbench.active_work.command["conversation_id"] == self.conversation_id
         )
+
+    def render_messages(self, messages: Sequence[JsonObject]) -> None:
+        scrollbar = self.messages.verticalScrollBar()
+        previous_position = scrollbar.value()
+        follow_latest = previous_position == scrollbar.maximum()
+        self.messages.clear()
+        document = self.messages.document()
+        for message in messages:
+            cursor = QTextCursor(document)
+            cursor.movePosition(QTextCursor.End)
+            frame_format = QTextFrameFormat()
+            frame_format.setBottomMargin(theme.SP[4])
+            frame = cursor.insertFrame(frame_format)
+            cursor = frame.firstCursorPosition()
+            sender_format = QTextCharFormat()
+            sender_format.setFontWeight(QFont.Weight.DemiBold)
+            sender_format.setForeground(QColor(theme.ACCENT))
+            cursor.insertText("你" if message["role"] == "user" else "AI", sender_format)
+            content_format = QTextBlockFormat()
+            content_format.setTopMargin(theme.SP[2])
+            cursor.insertBlock(content_format, QTextCharFormat())
+            if message["role"] == "assistant":
+                cursor.insertMarkdown(
+                    message["content"],
+                    QTextDocument.MarkdownDialectGitHub | QTextDocument.MarkdownNoHTML,
+                )
+            else:
+                cursor.insertText(message["content"])
+        block = document.begin()
+        while block.isValid():
+            block_format = block.blockFormat()
+            block_format.setLineHeight(145, QTextBlockFormat.ProportionalHeight.value)
+            QTextCursor(block).setBlockFormat(block_format)
+            block = block.next()
+        scrollbar.setValue(scrollbar.maximum() if follow_latest else previous_position)
 
     def stop(self) -> None:
         if (

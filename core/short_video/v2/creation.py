@@ -54,6 +54,13 @@ class CreationWork:
                 "任务编号不能用于不同内容",
             )
             if previous["status"] == "succeeded":
+                if self.command["stage"] == "prompt_task":
+                    state = repository.load()
+                    require(
+                        all(ref in state["records"] for ref in previous["outputs"]),
+                        "PROMPT_REPLACED",
+                        "这次任务的提示词已被替换，请使用当前提示词或重新生成",
+                    )
                 return previous["result"]
             raise WorkspaceError(
                 "TASK_STOPPED", "这个任务已经停止，已完成内容保留；请从当前页面重新生成未完成内容"

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Literal
 from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -261,7 +260,7 @@ class Workbench(QWidget):
             return WorkspaceWork(self.repository, command, transport=self.transport)
 
         try:
-            work = prepare(False)
+            work = prepare(stage == "prompts")
         except WorkspaceError as exc:
             if exc.code == "INPUT_TOO_LARGE":
                 if (
@@ -297,11 +296,11 @@ class Workbench(QWidget):
 
     def update_shot_prompts(self) -> None:
         board = self.repository.current("storyboard")
-        if not board or not self.repository.is_current(board["id"]):
+        if not board:
             return
         try:
             WorkflowService(self.repository).compile_storyboard_prompts(
-                expected_revision=self.repository.load()["revision"]
+                expected_revision=self.repository.load()["revision"], use_stale=True
             )
         except WorkspaceError as exc:
             if exc.code not in {"EXPORT_INCOMPLETE", "STALE_INPUT"}:
@@ -340,9 +339,6 @@ class Workbench(QWidget):
             )
             choices[key] = check
             layout.addWidget(check)
-        formats = QComboBox()
-        formats.addItems(["Markdown (*.md)", "Excel (*.xlsx)", "CSV (*.csv)"])
-        layout.addWidget(formats)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -374,10 +370,8 @@ class Workbench(QWidget):
                     allow_stale = True
                 else:
                     raise
-        file_filter = formats.currentText()
-        suffix = [".md", ".xlsx", ".csv"][formats.currentIndex()]
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存导出", str(Path(self.output_dir) / ("视频推广" + suffix)), file_filter
+            self, "保存导出", str(Path(self.output_dir) / "视频推广.md"), "Markdown (*.md)"
         )
         if not path:
             return

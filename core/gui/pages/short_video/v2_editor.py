@@ -23,9 +23,21 @@ from PySide6.QtWidgets import (
 )
 
 from core.short_video.v2.contracts import JsonObject
-from core.short_video.v2.exporter import COLUMNS, timeline
 from core.short_video.v2.models import identity, require
 from core.short_video.v2.validation import recalculate_timeline
+
+
+STORYBOARD_COLUMNS = [
+    "镜号", "时间轴", "景别", "镜头运动", "人物", "动作", "对白", "音效", "画面生成提示词"
+]
+
+
+def format_shot_timeline(shot: JsonObject) -> str:
+    def format_timestamp(milliseconds: int) -> str:
+        seconds, millis = divmod(milliseconds, 1000)
+        return f"{seconds // 60:02}:{seconds % 60:02}.{millis:03}"
+
+    return f"{format_timestamp(shot['start_ms'])}–{format_timestamp(shot['end_ms'])}"
 
 
 class CopyEditor(QWidget):
@@ -194,7 +206,7 @@ class StoryboardEditor(QWidget):
         self.content, self.loading, self.names, self.catalog = None, False, {}, []
         layout = QVBoxLayout(self)
         self.table = ShotTable()
-        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.table.setHorizontalHeaderLabels(STORYBOARD_COLUMNS)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_row_menu)
@@ -316,7 +328,7 @@ class StoryboardEditor(QWidget):
             labels = {**self.names, **shot.get("character_labels", {})}
             values = [
                 str(row + 1),
-                timeline(shot),
+                format_shot_timeline(shot),
                 shot["shot_size"],
                 shot["camera_movement"],
                 shot.get(
@@ -415,7 +427,7 @@ class StoryboardEditor(QWidget):
         self.content = recalculate_timeline(self.content)
         row = self.table.currentRow()
         for index, current in enumerate(self.content["shots"]):
-            self.table.item(index, 1).setText(timeline(current))
+            self.table.item(index, 1).setText(format_shot_timeline(current))
         for col, field in [(5, "action"), (8, "visual_prompt_draft")]:
             self.table.item(row, col).setText(shot[field])
         if sender is self.detail_fields["action"]:
