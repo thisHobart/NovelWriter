@@ -1,8 +1,8 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.9；日期：2026-11-14；状态：已实现手动导图经内置 MCP 调用 ComfyUI 图生视频；图片生成仅保留配置与图片导入接口。
+文档版本：2.10；日期：2026-11-15；状态：已实现固定 API JSON 多工作流、参考图与首尾帧输入、内置 MCP 视频生成；图片生成仅保留图片导入接口。
 
-关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的单图视频服务和内置 MCP 工具；资产生图仍未实现。
+关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
 ## 1. 用户动作对应接口
 
@@ -270,10 +270,10 @@ review.check_candidate 对资产使用专门的整组提示词检查要求，检
 
 | 入口 | 输入与行为 |
 |---|---|
-| MediaConfig.load / save | 按项目读取／保存 base_url、video_workflow、image_workflow；最后一项只预留配置 |
-| load_video_workflow(path) | 读取 API JSON，找到单个 SaveVideo 的实际依赖、一个 LoadImage 和 MiniMax H3 的文字入口 |
+| MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。旧 image_workflow 值保留但不执行、不显示 |
+| load_video_workflow(path) | 读取 API JSON，调用 parse_video_workflow(graph) 适配有效图片、提示词、参数和唯一 SaveVideo |
 | MediaRepository.import_image(path, source=None) | 导入 PNG／JPEG／WebP，保存独立文件、哈希、原文件名及来源；供手动导图与后续图片工作流共用 |
-| MediaService.prepare_video(image_id, prompt, target=None, request_id=None) | 只读检查配置和图片，冻结实际提示词、工作流、节点与可选目标镜头；不提交 GPU 工作 |
+| MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为 LoadImage 节点标识到 image_id 的映射，parameters 为参数键到类型值；只读校验并冻结输入与可选目标镜头；不提交 GPU 工作 |
 | MediaWork(output_dir, command) | 符合 VideoTask 调用约定，通过现有 TaskRunner 执行并报告状态 |
 | MediaWork(output_dir, job_id=...) | 查询同一远程任务或重新取回结果，不再次提交 |
 | MediaRepository.images / jobs / image / job | 读取本地图片与任务记录；读取不创建媒体目录 |
@@ -284,9 +284,13 @@ review.check_candidate 对资产使用专门的整组提示词检查要求，检
 
 ### 10.2 工作流与 MCP 工具
 
-当前适配单图 MiniMax H3 参考转视频：输出为一个 SaveVideo；实际连通一个 LoadImage；文字为 MiniMaxH3ReferenceToVideo.prompt 的直接文本或其 PrimitiveString 节点。多图或其他模型的节点结构明确报不支持，不猜测映射。
+MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析 JSON 并验证支持的模板；新增时生成标识，更新时保留标识。save 将整个列表原子写入项目；旧 video_workflow 路径配置在读取时转为 JSON 快照，不覆盖旧任务。
 
-用户提供模板的输入图片为 137.image、提示词为 138.value、输出为 92。模板内孤立节点不提交。上传后使用 ComfyUI 返回的 subfolder/name 写入输入；执行时复制模板、替换可见提示词和独立 filename_prefix，保留其他参数与模型连线。提示词出现 Picture 2 等未接入引用时提交前报错。
+parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters 与 kind。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧按 first_frame／last_frame 的明确关系显示；图片均须直接连接独立的 LoadImage。支持一个 SaveVideo 以及 MiniMaxH3ReferenceToVideo 或 MiniMaxH3ImageToVideo；不推测未知节点映射。
+
+WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
+
+VideoWorkflow.bind(image_names, prompt, job_id, parameters) 核对完整图片集合、参数键、数值类型及范围，再复制模板并替换值。参考图提示词中 Picture N 必须在实际输入数量范围内。后端逐张上传，以返回的 subfolder/name 替换对应 LoadImage.image，不向 ComfyUI 发送桌面绝对路径；原配置 JSON 不修改。
 
 内置 MCPServer 使用官方 Python SDK 2.x，与 Client 在进程内连接；不占端口，不启动子进程。服务端工具由本项目实现，名称并非 ComfyUI 或 MCP 的内置标准：
 
@@ -303,7 +307,7 @@ review.check_candidate 对资产使用专门的整组提示词检查要求，检
 
 ### 10.3 实际数据与文件
 
-MediaCommand 保存 request_id、base_url、image 记录、prompt、target、workflow、workflow_hash，以及 image_node／output_node／prompt_node／prompt_input。此处均为项目契约中的 JSON 对象；内部字段由 prepare 构造，不由用户填写。
+MediaCommand 保存 request_id、base_url、workflow_id、workflow_name、images（节点标识到图片记录）、parameters、prompt、target、workflow、workflow_hash 及 output_node。此处均为项目契约中的 JSON 对象；内部字段由 prepare 构造，不由用户填写。
 
 MediaJob 保存 job_id、request_id、command_hash、input_snapshot、status、remote_job_id、created_at／updated_at、outputs；提交前保存 submitted_workflow，失败另记 error.type/message。相同 request_id 与相同命令复用已有任务，不同输入报冲突；主动重新生成使用新请求编号。
 
@@ -318,7 +322,7 @@ short_video/media/
   videos/<job_id>_<index>.mp4|mov|webm|mkv
 ```
 
-文件先写临时文件再原子改名，数据路径限制在项目媒体目录内；视频只接受支持的容器和对应文件头，不将空文件、网页或 GIF 冒充视频。独立文件不会覆盖其他任务产物。媒体没有单独的 current 指针或 index.json，界面按当前图片展示最新任务；文字 schema 仍为 2。
+文件先写临时文件再原子改名，数据路径限制在项目媒体目录内；视频只接受支持的容器和对应文件头，不将空文件、网页或 GIF 冒充视频。独立文件不会覆盖其他任务产物。媒体没有单独的 current 指针或 index.json，界面按当前工作流及全部图片输入展示最新任务；文字 schema 仍为 2。
 
 ### 10.4 状态与恢复
 
