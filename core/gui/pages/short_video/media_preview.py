@@ -10,18 +10,25 @@ from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork
+from core.short_video.v2.media_workflows import MediaConfig, parse_video_workflow
 from core.short_video.v2.models import require
 
 if TYPE_CHECKING:
@@ -45,30 +52,34 @@ class MediaPreview(QWidget):
         layout.setContentsMargins(8, 0, 0, 0)
         layout.addWidget(QLabel("ComfyUI 图生视频"))
         bar = QHBoxLayout()
-        self.images = QComboBox()
-        self.import_button = QPushButton("导入图片")
-        bar.addWidget(self.images, 1)
-        bar.addWidget(self.import_button)
+        self.workflows = QComboBox()
+        self.config_button = QPushButton("配置")
+        bar.addWidget(QLabel("工作流"))
+        bar.addWidget(self.workflows, 1)
+        bar.addWidget(self.config_button)
         layout.addLayout(bar)
-        self.image_preview = QLabel("导入一张 PNG／JPEG／WebP 参考图片")
-        self.image_preview.setAlignment(Qt.AlignCenter)
-        self.image_preview.setMinimumHeight(90)
-        self.image_preview.setMaximumHeight(120)
-        layout.addWidget(self.image_preview)
-        layout.addWidget(QLabel("视频提示词（可直接修改，不写回分镜）"))
+        self.input_area = QScrollArea()
+        self.input_area.setWidgetResizable(True)
+        self.input_area.setMaximumHeight(240)
+        layout.addWidget(self.input_area)
+        self.image_fields = {}
+        self.parameter_fields = {}
+        self.drafts = {}
+        self.loaded_workflow_id = None
+        layout.addWidget(QLabel("视频提示词"))
         self.prompt = QPlainTextEdit()
-        self.prompt.setPlaceholderText("描述动作与运镜，使用 <Picture 1> 引用当前图片。")
         self.prompt.setMaximumHeight(130)
         layout.addWidget(self.prompt, 1)
+        self.parameter_area = QWidget()
+        self.parameter_form = QFormLayout(self.parameter_area)
+        layout.addWidget(self.parameter_area)
         bar = QHBoxLayout()
         self.generate_button = QPushButton("生成视频")
         self.query_button = QPushButton("查询原任务")
-        self.config_button = QPushButton("工作流配置")
         bar.addWidget(self.generate_button)
         bar.addWidget(self.query_button)
-        bar.addWidget(self.config_button)
         layout.addLayout(bar)
-        self.status = QLabel("图片生成暂未接入；可直接导入图片测试视频工作流。")
+        self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.video = QVideoWidget()
@@ -86,8 +97,7 @@ class MediaPreview(QWidget):
         bar.addWidget(self.open_button)
         bar.addStretch()
         layout.addLayout(bar)
-        self.images.currentIndexChanged.connect(lambda: workbench.perform(self.refresh_result))
-        self.import_button.clicked.connect(lambda: workbench.perform(self.choose_images))
+        self.workflows.currentIndexChanged.connect(lambda: workbench.perform(self.select_workflow))
         self.generate_button.clicked.connect(lambda: workbench.perform(self.generate))
         self.query_button.clicked.connect(lambda: workbench.perform(self.query))
         self.config_button.clicked.connect(lambda: workbench.perform(workbench.configure_comfy))
@@ -96,60 +106,170 @@ class MediaPreview(QWidget):
 
     def task_controls(self) -> list[QWidget]:
         return [
-            self.images,
-            self.import_button,
+            self.workflows,
+            self.input_area,
+            self.parameter_area,
+            self.prompt,
             self.generate_button,
             self.query_button,
             self.config_button,
         ]
 
-    def choose_images(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "导入参考图片", "", "图片 (*.png *.jpg *.jpeg *.webp)"
+    def choose_image(self, node_id: str) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.webp)"
         )
-        if paths:
-            self.import_images(paths)
+        if path:
+            self.import_images([path], node_id)
 
-    def import_images(self, paths: list[str]) -> None:
+    def import_images(self, paths: list[str], node_id: str | None = None) -> None:
+        if self.project_dir != self.workbench.output_dir:
+            self.refresh()
         repository = MediaRepository(self.workbench.output_dir)
         last_id = None
         for path in paths:
             require(not QPixmap(path).isNull(), "INVALID_INPUT", f"图片无法解码：{Path(path).name}")
             last_id = repository.import_image(path)["image_id"]
-        self.refresh()
-        self.images.setCurrentIndex(self.images.findData(last_id))
+        if node_id is None:
+            node_id = self.template.image_inputs[0].node_id
+        self.remember_draft()
+        self.drafts[self.loaded_workflow_id]["images"][node_id] = last_id
+        self.load_workflow()
+
+    def image_selection(self) -> dict[str, str]:
+        return {node_id: fields[0].currentData() for node_id, fields in self.image_fields.items()}
+
+    def parameter_values(self, *, raw: bool = False) -> dict:
+        values = {}
+        for key, control in self.parameter_fields.items():
+            if isinstance(control, QCheckBox):
+                values[key] = control.isChecked()
+            elif isinstance(control, QLineEdit):
+                values[key] = control.text() if raw else int(control.text())
+            else:
+                values[key] = control.value()
+        return values
+
+    def remember_draft(self) -> None:
+        if self.loaded_workflow_id is not None:
+            self.drafts[self.loaded_workflow_id] = {
+                "images": self.image_selection(),
+                "prompt": self.prompt.toPlainText(),
+                "parameters": self.parameter_values(raw=True),
+            }
 
     def refresh(self) -> None:
         if self.project_dir != self.workbench.output_dir:
             self.project_dir = self.workbench.output_dir
-            self.prompt.setPlainText(DEFAULT_VIDEO_PROMPT)
+            self.loaded_workflow_id = None
+            self.drafts.clear()
             self.player.stop()
             self.player.setSource(QUrl())
             self.video_path = None
-        selected = self.images.currentData()
-        self.images.blockSignals(True)
-        self.images.clear()
-        for image in MediaRepository(self.workbench.output_dir).images():
-            self.images.addItem(image["name"], image["image_id"])
-        if selected:
-            self.images.setCurrentIndex(max(0, self.images.findData(selected)))
-        self.images.blockSignals(False)
+        self.remember_draft()
+        self.catalog = MediaConfig.load(self.workbench.output_dir)
+        self.workflows.blockSignals(True)
+        self.workflows.clear()
+        for workflow in self.catalog.workflows:
+            self.workflows.addItem(workflow["name"], workflow["workflow_id"])
+        self.workflows.setCurrentIndex(self.workflows.findData(self.catalog.selected_workflow_id))
+        self.workflows.blockSignals(False)
+        self.load_workflow()
+
+    def select_workflow(self) -> None:
+        self.remember_draft()
+        self.catalog.selected_workflow_id = self.workflows.currentData()
+        self.catalog.save(self.workbench.output_dir)
+        self.load_workflow()
+
+    def load_workflow(self) -> None:
+        selected = self.catalog.selected(self.workflows.currentData())
+        self.template = parse_video_workflow(selected["graph"])
+        self.loaded_workflow_id = selected["workflow_id"]
+        draft = self.drafts.get(self.loaded_workflow_id, {})
+        self.image_fields = {}
+        container = QWidget()
+        form = QFormLayout(container)
+        repository = MediaRepository(self.workbench.output_dir)
+        images = repository.images()
+        for image_input in self.template.image_inputs:
+            row = QWidget()
+            bar = QHBoxLayout(row)
+            combo = QComboBox()
+            combo.addItem("请选择图片", None)
+            for image in images:
+                combo.addItem(image["name"], image["image_id"])
+            selected_id = draft.get("images", {}).get(image_input.node_id)
+            combo.setCurrentIndex(max(0, combo.findData(selected_id)))
+            choose = QPushButton("选图")
+            preview = QLabel()
+            preview.setFixedSize(110, 64)
+            bar.addWidget(combo, 1)
+            bar.addWidget(choose)
+            bar.addWidget(preview)
+            form.addRow(image_input.label, row)
+            self.image_fields[image_input.node_id] = (combo, choose, preview)
+            choose.clicked.connect(
+                lambda checked=False, node_id=image_input.node_id: self.workbench.perform(
+                    lambda: self.choose_image(node_id)
+                )
+            )
+            combo.currentIndexChanged.connect(lambda: self.workbench.perform(self.refresh_result))
+        self.input_area.setWidget(container)
+        self.prompt.setPlainText(
+            draft.get(
+                "prompt",
+                DEFAULT_VIDEO_PROMPT if self.template.kind == "reference" else self.template.prompt,
+            )
+        )
+        while self.parameter_form.rowCount():
+            self.parameter_form.removeRow(0)
+        form = self.parameter_form
+        self.parameter_fields = {}
+        for parameter in self.template.parameters:
+            value = draft.get("parameters", {}).get(parameter.key, parameter.default)
+            if type(parameter.default) is bool:
+                control = QCheckBox()
+                control.setChecked(value)
+            elif parameter.input_name == "noise_seed":
+                control = QLineEdit(str(value))
+            elif type(parameter.default) is int:
+                control = QSpinBox()
+                control.setRange(int(parameter.minimum), int(parameter.maximum))
+                control.setValue(value)
+            else:
+                control = QDoubleSpinBox()
+                control.setRange(parameter.minimum, parameter.maximum)
+                control.setValue(value)
+            form.addRow(parameter.label, control)
+            self.parameter_fields[parameter.key] = control
         self.refresh_result()
 
     def refresh_result(self) -> None:
         repository = MediaRepository(self.workbench.output_dir)
-        image_id = self.images.currentData()
-        if image_id:
-            image = repository.image(image_id)
-            pixmap = QPixmap(str(repository.resolve(image["relative_path"])))
-            self.image_preview.setPixmap(
-                pixmap.scaled(340, 115, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-        else:
-            self.image_preview.setText("导入一张 PNG／JPEG／WebP 参考图片")
+        selection = self.image_selection()
+        for node_id, (combo, choose, preview) in self.image_fields.items():
+            image_id = selection[node_id]
+            if image_id:
+                image = repository.image(image_id)
+                pixmap = QPixmap(str(repository.resolve(image["relative_path"])))
+                preview.setPixmap(
+                    pixmap.scaled(110, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+            else:
+                preview.clear()
         self.current_job = None
         for job in reversed(repository.jobs()):
-            if job["input_snapshot"]["image"]["image_id"] == image_id:
+            snapshot = job["input_snapshot"]
+            if "images" in snapshot:
+                job_images = {
+                    node_id: image["image_id"] for node_id, image in snapshot["images"].items()
+                }
+                workflow_id = snapshot["workflow_id"]
+            else:
+                job_images = {snapshot["image_node"]: snapshot["image"]["image_id"]}
+                workflow_id = "minimax-reference"
+            if workflow_id == self.loaded_workflow_id and job_images == selection:
                 self.current_job = job
                 break
         states = {
@@ -175,7 +295,7 @@ class MediaPreview(QWidget):
                 text += f"；{job['error']['type']}: {job['error']['message']}"
             self.status.setText(text)
         else:
-            self.status.setText("每次使用一张参考图片生成一个视频；不需要先生成分镜或资产提示词。")
+            self.status.setText("")
         path = (
             repository.resolve(job["outputs"][0]["relative_path"])
             if job and job["outputs"]
@@ -186,7 +306,7 @@ class MediaPreview(QWidget):
             self.player.setSource(QUrl.fromLocalFile(str(path)) if path else QUrl())
             self.video_path = path
         busy = self.workbench.host.runner.busy
-        self.generate_button.setEnabled(bool(image_id) and not busy)
+        self.generate_button.setEnabled(all(selection.values()) and bool(selection) and not busy)
         self.query_button.setEnabled(
             bool(job and job["status"] not in {"succeeded", "cancelled", "failed"}) and not busy
         )
@@ -196,12 +316,11 @@ class MediaPreview(QWidget):
     def generate(self) -> None:
         require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
         prompt = self.prompt.toPlainText().strip()
-        if not prompt:
-            prompt = DEFAULT_VIDEO_PROMPT
-            self.prompt.setPlainText(prompt)
         command = MediaService(self.workbench.output_dir).prepare_video(
-            self.images.currentData(),
+            self.image_selection(),
             prompt,
+            workflow_id=self.loaded_workflow_id,
+            parameters=self.parameter_values(),
             target=self.target,
         )
         self.player.stop()

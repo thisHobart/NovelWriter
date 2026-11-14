@@ -143,6 +143,7 @@ class Workbench(QWidget):
 
         require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改工作流配置")
         ComfySettingsDialog(self.output_dir, self).exec()
+        self.specs.media.refresh()
 
     def add_page(self, key: str, widget: QWidget) -> None:
         self.pages[key] = widget

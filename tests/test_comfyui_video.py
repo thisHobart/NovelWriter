@@ -15,6 +15,7 @@ from core.short_video.v2.media_workflows import (
     DEFAULT_VIDEO_WORKFLOW,
     MediaConfig,
     load_video_workflow,
+    parse_video_workflow,
 )
 from core.short_video.v2.models import WorkspaceError
 
@@ -50,14 +51,22 @@ class ComfyServer:
             return httpx.Response(200, json={"system": {"comfyui_version": "test"}})
         if path == "/object_info":
             nodes = {}
-            for node in load_video_workflow(DEFAULT_VIDEO_WORKFLOW).graph.values():
-                nodes[node["class_type"]] = {"input": {"required": {}}}
+            for record in MediaConfig().workflows:
+                for node in parse_video_workflow(record["graph"]).graph.values():
+                    nodes[node["class_type"]] = {"input": {"required": {}}}
+            nodes["LoadImage"] = {
+                "input": {"required": {"image": [["unrelated-server-file.png"], {}]}}
+            }
             return httpx.Response(200, json=nodes)
         if path == "/upload/image":
             self.uploads.append(request.content)
             return httpx.Response(
                 200,
-                json={"name": "server-renamed.png", "subfolder": "NovelWriter", "type": "input"},
+                json={
+                    "name": f"server-renamed{len(self.uploads) if len(self.uploads) > 1 else ''}.png",
+                    "subfolder": "NovelWriter",
+                    "type": "input",
+                },
             )
         if path == "/prompt":
             self.submissions.append(json.loads(request.content))
@@ -106,11 +115,11 @@ class ComfyServer:
 
 def test_api_workflow_uses_only_connected_image_and_preserves_template():
     template = load_video_workflow(DEFAULT_VIDEO_WORKFLOW)
-    assert template.image_node == "137"
+    assert [image.node_id for image in template.image_inputs] == ["137"]
     assert template.output_node == "92"
     assert not {"139", "147", "149"} & template.graph.keys()
     original = template.graph["137"]["inputs"]["image"]
-    bound = template.bind("NovelWriter/input.png", "Use <Picture 1>.", "job")
+    bound = template.bind({"137": "NovelWriter/input.png"}, "Use <Picture 1>.", "job", {})
     assert bound["137"]["inputs"]["image"] == "NovelWriter/input.png"
     assert bound["138"]["inputs"]["value"] == "Use <Picture 1>."
     assert template.graph["137"]["inputs"]["image"] == original
@@ -128,21 +137,18 @@ def test_generated_image_provider_can_reuse_import_contract(tmp_path):
     assert not (tmp_path / "short_video/project_v2.json").exists()
 
 
-def test_default_workflow_reopens_after_packaged_resource_directory_changes(tmp_path, monkeypatch):
+def test_saved_catalog_keeps_json_when_original_resource_moves(tmp_path, monkeypatch):
     from core.short_video.v2 import media_workflows
 
     MediaConfig().save(tmp_path)
-    relocated = tmp_path / "next-launch-template.json"
-    relocated.write_bytes(DEFAULT_VIDEO_WORKFLOW.read_bytes())
-    monkeypatch.setattr(media_workflows, "DEFAULT_VIDEO_WORKFLOW", relocated)
+    monkeypatch.setattr(media_workflows, "WORKFLOW_DIRECTORY", tmp_path / "missing")
     reopened = MediaConfig.load(tmp_path)
-    assert reopened.video_workflow == str(relocated)
-    assert load_video_workflow(reopened.video_workflow).image_node == "137"
+    assert parse_video_workflow(reopened.selected()["graph"]).image_inputs[0].node_id == "137"
 
 
 def test_video_runs_through_mcp_upload_submission_download_and_replay(tmp_path, image):
     server = ComfyServer()
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     transport = httpx.MockTransport(server.request)
     result = MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
     assert result["status"] == "succeeded"
@@ -161,7 +167,7 @@ def test_video_runs_through_mcp_upload_submission_download_and_replay(tmp_path, 
 def test_lost_submission_response_queries_original_job_without_resubmission(tmp_path, image):
     server = ComfyServer()
     server.drop_response = True
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     transport = httpx.MockTransport(server.request)
     with pytest.raises(httpx.ReadTimeout, match="response lost"):
         MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
@@ -176,7 +182,7 @@ def test_lost_submission_response_queries_original_job_without_resubmission(tmp_
 def test_failed_download_only_fetches_existing_video_again(tmp_path, image):
     server = ComfyServer()
     server.fail_download = True
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     transport = httpx.MockTransport(server.request)
     with pytest.raises(httpx.HTTPStatusError):
         MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
@@ -196,7 +202,7 @@ def test_rejected_submission_is_failed_instead_of_remote_status_unknown(tmp_path
             return httpx.Response(400, json={"error": "invalid workflow"})
         return server.request(request)
 
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     with pytest.raises(httpx.HTTPStatusError):
         MediaWork(str(tmp_path), command, transport=httpx.MockTransport(reject_workflow))(
             lambda *_: None
@@ -214,14 +220,14 @@ def test_reserved_image_workflow_does_not_block_video_preparation(tmp_path, imag
             "image_workflow": str(tmp_path / "not-implemented.json"),
         },
     )
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
-    assert command["image"]["image_id"] == image["image_id"]
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    assert command["images"]["137"]["image_id"] == image["image_id"]
 
 
 def test_local_cancel_never_sends_global_comfy_interrupt(tmp_path, image):
     server = ComfyServer()
     server.running = True
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     work = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))
 
     def cancel_when_running(message, fraction):
@@ -239,7 +245,7 @@ def test_local_cancel_never_sends_global_comfy_interrupt(tmp_path, image):
 def test_mcp_preserves_programming_error_without_retry(tmp_path, image):
     server = ComfyServer()
     server.failure = TypeError("internal transport defect")
-    command = MediaService(tmp_path).prepare_video(image["image_id"], "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     with pytest.raises(TypeError, match="internal transport defect") as caught:
         MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(
             lambda *_: None
@@ -259,11 +265,11 @@ def test_missing_model_is_reported_before_gpu_submission():
 
 def test_changed_image_or_invalid_reference_is_rejected(tmp_path, image):
     service = MediaService(tmp_path)
-    with pytest.raises(WorkspaceError, match="只连接一张"):
-        service.prepare_video(image["image_id"], "Use <Picture 2>.")
+    with pytest.raises(WorkspaceError, match="引用超出范围"):
+        service.prepare_video({"137": image["image_id"]}, "Use <Picture 2>.")
     MediaRepository(tmp_path).resolve(image["relative_path"]).write_bytes(PNG + b"changed")
     with pytest.raises(WorkspaceError, match="已被修改"):
-        service.prepare_video(image["image_id"], "Use <Picture 1>.")
+        service.prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
 
 
 def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
@@ -296,6 +302,232 @@ def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
     panel.generate_button.click()
     app.processEvents()
     assert len(submitted) == 2
-    assert submitted[1].command["image"]["name"] == "ui-reference.png"
+    assert submitted[1].command["images"]["137"]["name"] == "ui-reference.png"
     assert submitted[1].command["prompt"].endswith("slow camera push.")
+    panel.close()
+
+
+def reference_graph(count):
+    graph = json.loads(DEFAULT_VIDEO_WORKFLOW.read_text(encoding="utf-8"))
+    for index in range(count):
+        node_id = f"image-{index}"
+        graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": "original.png"}}
+        graph["136"]["inputs"][f"ref_images.ref_image_{index}"] = [node_id, 0]
+    return graph
+
+
+def test_catalog_add_replace_and_reopen_preserves_workflow_identity(tmp_path):
+    config = MediaConfig()
+    workflow_id = config.put_workflow("三图参考", json.dumps(reference_graph(3)))
+    config.save(tmp_path)
+    loaded = MediaConfig.load(tmp_path)
+    assert loaded.selected()["workflow_id"] == workflow_id
+    assert len(parse_video_workflow(loaded.selected()["graph"]).image_inputs) == 3
+    loaded.put_workflow("四图参考", json.dumps(reference_graph(4)), workflow_id)
+    loaded.save(tmp_path)
+    updated = MediaConfig.load(tmp_path)
+    assert len(updated.workflows) == 3
+    assert len(parse_video_workflow(updated.selected()["graph"]).image_inputs) == 4
+    assert updated.selected()["workflow_id"] == workflow_id
+    assert (
+        len(parse_video_workflow(updated.selected("minimax-first-last")["graph"]).image_inputs) == 2
+    )
+
+
+@pytest.mark.parametrize("workflow_id,count", [("four-images", 4), ("minimax-first-last", 2)])
+def test_all_images_parameters_and_selected_graph_reach_comfy(tmp_path, workflow_id, count):
+    config = MediaConfig()
+    if workflow_id == "four-images":
+        workflow_id = config.put_workflow("四图参考", json.dumps(reference_graph(count)))
+    config.selected_workflow_id = workflow_id
+    config.save(tmp_path)
+    template = parse_video_workflow(config.selected()["graph"])
+    repository = MediaRepository(tmp_path)
+    images = {}
+    for index, image_input in enumerate(template.image_inputs):
+        path = tmp_path / f"input-{index}.png"
+        path.write_bytes(PNG + str(index).encode())
+        images[image_input.node_id] = repository.import_image(path)["image_id"]
+    parameters = {}
+    for parameter in template.parameters:
+        if parameter.label == "时长（秒）":
+            parameters[parameter.key] = 5.5
+        elif parameter.input_name == "noise_seed":
+            parameters[parameter.key] = 12345678901234567890
+        elif type(parameter.default) is bool:
+            parameters[parameter.key] = True
+    command = MediaService(tmp_path).prepare_video(
+        images, "保持连贯，缓慢推进。", parameters=parameters
+    )
+    server = ComfyServer()
+    result = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(
+        lambda *_: None
+    )
+    assert result["status"] == "succeeded"
+    assert len(server.uploads) == count
+    graph = server.submissions[0]["prompt"]
+    for index, image_input in enumerate(template.image_inputs, 1):
+        suffix = index if index > 1 else ""
+        assert (
+            graph[image_input.node_id]["inputs"]["image"]
+            == f"NovelWriter/server-renamed{suffix}.png"
+        )
+    for parameter in template.parameters:
+        assert graph[parameter.node_id]["inputs"][parameter.input_name] == parameters.get(
+            parameter.key, parameter.default
+        )
+    assert result["input_snapshot"]["workflow_id"] == workflow_id
+    assert result["input_snapshot"]["images"].keys() == images.keys()
+    assert config.selected()["graph"] == MediaConfig.load(tmp_path).selected()["graph"]
+    if template.kind == "first_last":
+        assert graph["136"]["inputs"]["first_frame"] == [template.image_inputs[0].node_id, 0]
+        assert graph["136"]["inputs"]["last_frame"] == [template.image_inputs[1].node_id, 0]
+
+
+def test_missing_image_wrong_parameter_or_unknown_template_is_explicit(tmp_path, image):
+    config = MediaConfig()
+    config.selected_workflow_id = "minimax-first-last"
+    config.save(tmp_path)
+    service = MediaService(tmp_path)
+    with pytest.raises(WorkspaceError, match="每个工作流图片输入"):
+        service.prepare_video({"137": image["image_id"]}, "camera movement")
+    with pytest.raises(WorkspaceError, match="类型或范围"):
+        service.prepare_video(
+            {"137": image["image_id"], "139": image["image_id"]},
+            "camera movement",
+            parameters={"132.value": "five"},
+        )
+    graph = reference_graph(1)
+    graph["136"]["class_type"] = "UnknownVideoGenerator"
+    with pytest.raises(WorkspaceError, match="已适配"):
+        config.put_workflow("未知", json.dumps(graph))
+    with pytest.raises(json.JSONDecodeError):
+        config.put_workflow("错误", "{broken")
+
+
+def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from core.gui.pages.short_video.media_preview import MediaPreview
+    from core.gui.pages.short_video.comfy_settings import ComfySettingsDialog
+
+    app = QApplication.instance() or QApplication([])
+    config = MediaConfig()
+    custom_id = config.put_workflow("三图参考", json.dumps(reference_graph(3)))
+    config.save(tmp_path)
+    submitted = []
+    workbench = SimpleNamespace(
+        output_dir=str(tmp_path),
+        host=SimpleNamespace(runner=SimpleNamespace(busy=False)),
+        perform=lambda operation: operation(),
+        configure_comfy=lambda: None,
+        submit=lambda work, button: submitted.append(work),
+    )
+    panel = MediaPreview(workbench)
+    panel.refresh()
+    assert len(panel.image_fields) == 3
+    config.put_workflow("四图参考", json.dumps(reference_graph(4)), custom_id)
+    config.save(tmp_path)
+    panel.refresh()
+    assert len(panel.image_fields) == 4
+    panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
+    assert [entry.label for entry in panel.template.image_inputs] == ["首帧图片", "尾帧图片"]
+    from PySide6.QtGui import QImage
+
+    path = tmp_path / "ui-image.png"
+    ui_image = QImage(8, 8, QImage.Format_RGB32)
+    ui_image.fill(0xFF0088)
+    assert ui_image.save(str(path))
+    panel.import_images([str(path)], "137")
+    assert not panel.generate_button.isEnabled()
+    panel.import_images([str(path)], "139")
+    panel.parameter_fields["132.value"].setValue(5.5)
+    panel.parameter_fields["129.noise_seed"].setText("18446744073709551615")
+    panel.prompt.setPlainText("首尾衔接")
+    panel.generate_button.click()
+    app.processEvents()
+    assert len(submitted) == 1
+    command = submitted[0].command
+    assert command["workflow_id"] == "minimax-first-last"
+    assert command["parameters"]["132.value"] == 5.5
+    assert command["parameters"]["129.noise_seed"] == 2**64 - 1
+    assert command["images"]["137"]["image_id"] != command["images"]["139"]["image_id"]
+    dialog = ComfySettingsDialog(str(tmp_path))
+    dialog.new_button.click()
+    dialog.name.setText("粘贴工作流")
+    dialog.api_json.setPlainText(json.dumps(reference_graph(4)))
+    dialog.save_button.click()
+    from PySide6.QtCore import QElapsedTimer
+
+    timer = QElapsedTimer()
+    timer.start()
+    while dialog.runner.busy and timer.elapsed() < 5000:
+        app.processEvents()
+    app.processEvents()
+    assert MediaConfig.load(tmp_path).selected()["name"] == "粘贴工作流"
+    assert len(MediaConfig.load(tmp_path).workflows) == 4
+    panel.refresh()
+    assert len(panel.image_fields) == 4
+    panel.close()
+    dialog.close()
+
+
+def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QElapsedTimer
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+    from core.gui.task_runner import TaskRunner
+    from core.gui.pages.short_video.media_preview import MediaPreview
+
+    app = QApplication.instance() or QApplication([])
+    runner = TaskRunner()
+    failures = []
+    workbench = SimpleNamespace(
+        output_dir=str(tmp_path),
+        host=SimpleNamespace(runner=runner),
+        perform=lambda operation: operation(),
+        configure_comfy=lambda: None,
+    )
+    panel = MediaPreview(workbench)
+    panel.refresh()
+    path = tmp_path / "input.png"
+    image = QImage(8, 8, QImage.Format_RGB32)
+    image.fill(0x001188)
+    assert image.save(str(path))
+    panel.import_images([str(path)])
+    selection = panel.image_selection()
+    server = ComfyServer()
+
+    def submit(work, button):
+        work.transport = httpx.MockTransport(server.request)
+        runner.run(
+            work,
+            disable=panel.task_controls(),
+            pass_progress=True,
+            on_success=lambda _: panel.refresh(),
+            on_error=failures.append,
+            on_done=panel.refresh_result,
+        )
+
+    workbench.submit = submit
+    panel.generate_button.click()
+    timer = QElapsedTimer()
+    timer.start()
+    while runner.busy and timer.elapsed() < 5000:
+        app.processEvents()
+    app.processEvents()
+    assert not runner.busy
+    assert failures == []
+    assert panel.generate_button.isEnabled()
+    assert panel.current_job["status"] == "succeeded"
+    config = MediaConfig.load(tmp_path)
+    other_id = config.put_workflow("相同模板另一个工作流", json.dumps(config.selected()["graph"]))
+    config.save(tmp_path)
+    panel.refresh()
+    for node_id, image_id in selection.items():
+        combo = panel.image_fields[node_id][0]
+        combo.setCurrentIndex(combo.findData(image_id))
+    assert panel.loaded_workflow_id == other_id
+    assert panel.current_job is None
     panel.close()

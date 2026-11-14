@@ -1,4 +1,4 @@
-"""Single-image reference-to-video tasks, separate from the text Agent Loop."""
+"""Fixed-workflow video tasks, separate from the text Agent Loop."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from core.generation.cancellation import CancelToken, GenerationCancelled
 from .comfy_mcp import ComfyMCPClient
 from .contracts import JsonObject, ProgressReporter
 from .media_repository import MediaRepository
-from .media_workflows import MediaConfig, VideoWorkflow, load_video_workflow
+from .media_workflows import MediaConfig, parse_video_workflow
 from .models import encode, fingerprint, require, timestamp
 
 
@@ -25,6 +25,9 @@ def validate_nodes(workflow: JsonObject, nodes: JsonObject) -> None:
         require(kind in nodes, "INVALID_INPUT", f"ComfyUI 缺少节点 {node_id}：{kind}")
         required = nodes[kind]["input"].get("required", {})
         for name, definition in required.items():
+            # 模板内的旧文件名会在上传后替换，不能用服务器现有文件列表提前拒绝。
+            if kind == "LoadImage" and name == "image":
+                continue
             if name not in node["inputs"]:
                 continue
             value = node["inputs"][name]
@@ -42,41 +45,49 @@ class MediaService:
 
     def prepare_video(
         self,
-        image_id: str,
+        images: dict[str, str],
         prompt: str,
         *,
+        workflow_id: str | None = None,
+        parameters: JsonObject | None = None,
         target: JsonObject | None = None,
         request_id: str | None = None,
     ) -> JsonObject:
         config = MediaConfig.load(self.output_dir)
         config.validate()
-        template = load_video_workflow(config.video_workflow)
-        require(bool(prompt.strip()), "INVALID_INPUT", "请填写视频提示词")
-        for number in re.findall(r"<Picture\s+(\d+)>", prompt, flags=re.IGNORECASE):
+        selected = config.selected(workflow_id)
+        template = parse_video_workflow(selected["graph"])
+        # 在本地确认所有输入完整且参数类型正确，再进行外部上传与提交。
+        template.bind(images, prompt, "validation", parameters or {})
+        if template.kind == "reference":
+            for number in re.findall(r"<Picture\s+(\d+)>", prompt, flags=re.IGNORECASE):
+                require(
+                    1 <= int(number) <= len(template.image_inputs),
+                    "INVALID_INPUT",
+                    f"当前工作流连接 {len(template.image_inputs)} 张图片，提示词引用超出范围",
+                )
+        records = {}
+        for node_id, image_id in images.items():
+            image = self.repository.image(image_id)
+            data = self.repository.resolve(image["relative_path"]).read_bytes()
             require(
-                number == "1",
+                hashlib.sha256(data).hexdigest() == image["sha256"],
                 "INVALID_INPUT",
-                "当前工作流只连接一张图片，请将视频提示词改为仅引用 <Picture 1>",
+                "图片已被修改，请重新导入",
             )
-        image = self.repository.image(image_id)
-        data = self.repository.resolve(image["relative_path"]).read_bytes()
-        require(
-            hashlib.sha256(data).hexdigest() == image["sha256"],
-            "INVALID_INPUT",
-            "图片已被修改，请重新导入",
-        )
+            records[node_id] = image
         return {
             "request_id": request_id or uuid4().hex,
             "base_url": config.base_url,
-            "image": image,
+            "workflow_id": selected["workflow_id"],
+            "workflow_name": selected["name"],
+            "images": records,
+            "parameters": parameters or {},
             "prompt": prompt,
             "target": target or {},
             "workflow": template.graph,
             "workflow_hash": fingerprint(template.graph),
-            "image_node": template.image_node,
             "output_node": template.output_node,
-            "prompt_node": template.prompt_node,
-            "prompt_input": template.prompt_input,
         }
 
 
@@ -136,18 +147,26 @@ class MediaWork:
                     information = await client.call("comfy_status")
                     validate_nodes(command["workflow"], information["nodes"])
                     report("正在上传参考图片…", -1)
-                    uploaded = await client.call(
-                        "comfy_upload_image", {"image_id": command["image"]["image_id"]}
-                    )
+                    if "images" in command:
+                        images = command["images"]
+                    else:
+                        # 已提交的旧单图任务仍可按原始快照继续执行。
+                        images = {command["image_node"]: command["image"]}
+                    uploaded_images = {}
+                    for node_id, image in images.items():
+                        self.token.raise_if_cancelled()
+                        uploaded = await client.call(
+                            "comfy_upload_image", {"image_id": image["image_id"]}
+                        )
+                        uploaded_images[node_id] = uploaded["image"]
                     self.token.raise_if_cancelled()
-                    template = VideoWorkflow(
-                        command["workflow"],
-                        command["image_node"],
-                        command["output_node"],
-                        command["prompt_node"],
-                        command["prompt_input"],
+                    template = parse_video_workflow(command["workflow"])
+                    workflow = template.bind(
+                        uploaded_images,
+                        command["prompt"],
+                        job["job_id"],
+                        command.get("parameters", {}),
                     )
-                    workflow = template.bind(uploaded["image"], command["prompt"], job["job_id"])
                     job["submitted_workflow"] = workflow
                     job["status"] = "submitting"
                     repository.save_job(job)
