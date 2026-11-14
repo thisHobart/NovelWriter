@@ -9,7 +9,7 @@ from pathlib import Path
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import JsonObject, OperationResult, ProgressReporter, TextTransport
-from .llm import RequestBudget, ScriptLLM
+from .llm import ScriptLLM
 from .models import (
     WorkspaceError,
     capture_model_snapshot,
@@ -30,7 +30,7 @@ from .repository import ProjectRepository
 from .source import validate_source_ref
 from .storage import atomic_write_text
 from .validation import rows, validate_content
-from .workflow import STAGE_MAX_CALLS, WorkflowService
+from .workflow import WorkflowService
 
 
 class BatchPlanService:
@@ -72,8 +72,6 @@ class BatchPlanService:
                 "model_snapshot",
                 "input_refs",
                 "input_hash",
-                "max_calls",
-                "seconds",
                 "selected_before",
                 "calls_used",
                 "status",
@@ -98,13 +96,9 @@ class BatchPlanService:
             "计划输入绑定或模型无效",
         )
         require(
-            type(value["seconds"]) is int
-            and 0 < value["seconds"] <= 1800
-            and type(value["max_calls"]) is int
-            and type(value["calls_used"]) is int
-            and 0 <= value["calls_used"] <= value["max_calls"],
+            type(value["calls_used"]) is int and value["calls_used"] >= 0,
             "INVALID_PLAN",
-            "计划调用预算无效",
+            "计划调用记录无效",
         )
         if value["mode"] == "chunks":
             require(
@@ -143,16 +137,18 @@ class BatchPlanService:
     def hash_plan_inputs(plan: JsonObject) -> str:
         data = {
             key: plan[key]
-            for key in ("project_id", "mode", "model", "model_snapshot", "input_refs", "max_calls")
+            for key in ("project_id", "mode", "model", "model_snapshot", "input_refs")
         }
         data.update(
-            seconds=plan["seconds"],
             selected_before=plan["selected_before"],
             chunks=[
                 {key: chunk[key] for key in ("id", "source_id", "start", "end", "text")}
                 for chunk in plan["chunks"]
             ],
         )
+        # 旧计划的冻结哈希包含这两个字段；仅兼容核验，不用于限制执行。
+        if "max_calls" in plan and "seconds" in plan:
+            data.update(max_calls=plan["max_calls"], seconds=plan["seconds"])
         return fingerprint(data)
 
     def save_plan(self, plan: JsonObject) -> None:
@@ -231,8 +227,6 @@ class ChunkService(BatchPlanService):
             "model_snapshot": capture_model_snapshot(self.model),
             "input_refs": {"selection": article["selection_id"], "config": config["id"]},
             "chunks": chunks,
-            "max_calls": 4 * len(chunks) + STAGE_MAX_CALLS,
-            "seconds": min(1800, 300 * (2 * len(chunks) + 1)),
             "calls_used": 0,
             "attempts": [],
             "output_ref": None,
@@ -262,7 +256,6 @@ class ChunkService(BatchPlanService):
                 return {"status": "succeeded", "version_id": plan["output_ref"]}
             plan["status"] = "running"
             self.save_plan(plan)
-            budget = RequestBudget(plan["max_calls"] - plan["calls_used"], seconds=plan["seconds"])
             try:
                 config = self.repository.record(plan["input_refs"]["config"])["content"]
                 for index, chunk in enumerate(plan["chunks"]):
@@ -300,7 +293,7 @@ class ChunkService(BatchPlanService):
                         return facts
 
                     chunk["facts"] = self.request_chunk_content(
-                        plan, prompt, validate_facts, token, "facts:" + chunk["id"], budget
+                        plan, prompt, validate_facts, token, "facts:" + chunk["id"]
                     )
                     chunk["facts_hash"] = fingerprint(chunk["facts"])
                     self.save_plan(plan)
@@ -359,7 +352,7 @@ class ChunkService(BatchPlanService):
                         (len(plan["chunks"]) + index) / (len(plan["chunks"]) * 2 + 1),
                     )
                     chunk["output"] = self.request_chunk_content(
-                        plan, prompt, validate_copy, token, "copy:" + chunk["id"], budget
+                        plan, prompt, validate_copy, token, "copy:" + chunk["id"]
                     )
                     chunk["output_hash"] = fingerprint(chunk["output"])
                     self.save_plan(plan)
@@ -385,7 +378,7 @@ class ChunkService(BatchPlanService):
                     self.save_plan(plan)
 
                 result = service.execute(
-                    command, token=token, report=report, budget=budget, on_request=record_merge
+                    command, token=token, report=report, on_request=record_merge
                 )
                 plan.update(output_ref=result["version_id"], status="succeeded")
                 self.save_plan(plan)
@@ -406,21 +399,14 @@ class ChunkService(BatchPlanService):
         validate: Callable[[JsonObject], OperationResult],
         token: CancelToken,
         item_id: str,
-        budget: RequestBudget,
     ) -> OperationResult:
         validate_model_snapshot(plan["model_snapshot"])
         require(
             len(prompt) <= 48000, "INPUT_TOO_LARGE", "分块任务上下文超限；已完成块保留，请调整计划"
         )
-        require(
-            plan["calls_used"] < plan["max_calls"],
-            "BUDGET_EXCEEDED",
-            "分块计划请求预算已用尽，已保存结果不会重发",
-        )
         attempt = {"id": identity("attempt"), "item_id": item_id, "calls": [], "status": "running"}
         plan["attempts"].append(attempt)
         self.save_plan(plan)
-        call_limit = min(budget.calls + 2, budget.max_calls)
 
         def record_call(sent: str, response: str, error: str | None) -> None:
             plan["calls_used"] += 1
@@ -428,11 +414,11 @@ class ChunkService(BatchPlanService):
             self.save_plan(plan)
 
         send = ScriptLLM(
-            plan["model"], budget, token=token, transport=self.transport, record=record_call
+            plan["model"], token=token, transport=self.transport, record=record_call
         )
         current = prompt
         try:
-            while True:
+            for attempt_index in range(2):
                 token.raise_if_cancelled()
                 raw = send(current)
                 try:
@@ -444,11 +430,8 @@ class ChunkService(BatchPlanService):
                     if exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}:
                         raise
                     token.raise_if_cancelled()
-                    require(
-                        budget.calls < call_limit and budget.can_spend(),
-                        "INVALID_OUTPUT",
-                        "分块输出未通过校验；回复已保存",
-                    )
+                    if attempt_index == 1:
+                        raise WorkspaceError("INVALID_OUTPUT", "分块输出未通过校验；回复已保存") from exc
                     current = (
                         prompt
                         + "\n仅修复格式和引文："

@@ -88,9 +88,12 @@ class Workbench(QWidget):
             button.setCheckable(True)
             self.navigation[key] = button
         top.addStretch()
-        self.model_config_button = create_action_button(
-            "模型配置", self.host._configure_model, top, self
-        )
+        self.model_config_button = QPushButton("服务配置")
+        service_menu = QMenu(self.model_config_button)
+        service_menu.addAction("文字模型配置", self.host._configure_model)
+        service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
+        self.model_config_button.setMenu(service_menu)
+        top.addWidget(self.model_config_button)
         self.chat_toggle = create_action_button("收起对话", self.toggle_chat, top, self)
         self.export_button = create_action_button("导出", self.export, top, self)
         layout.addLayout(top)
@@ -129,11 +132,17 @@ class Workbench(QWidget):
     def refresh_model_status(self) -> None:
         provider = self.model()
         _, detail = configuration_status(provider)
-        self.model_config_button.setText("模型配置 · " + PROVIDER_LABELS[provider])
+        self.model_config_button.setText("服务配置 · " + PROVIDER_LABELS[provider])
         self.model_config_button.setToolTip(detail)
 
     def setting_key(self, field: str) -> str:
         return fingerprint(self.output_dir)[:20] + "/" + field
+
+    def configure_comfy(self) -> None:
+        from .comfy_settings import ComfySettingsDialog
+
+        require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改工作流配置")
+        ComfySettingsDialog(self.output_dir, self).exec()
 
     def add_page(self, key: str, widget: QWidget) -> None:
         self.pages[key] = widget
@@ -170,6 +179,7 @@ class Workbench(QWidget):
                 )
             ],
             self.chat.send_button,
+            *self.specs.media.task_controls(),
         ]
 
     def artifact_pages(self) -> list[ArtifactPage | PromptPage]:
@@ -475,7 +485,7 @@ class Workbench(QWidget):
             QMessageBox.question(
                 self,
                 "分段处理全文",
-                f"将全文分为 {len(plan['chunks'])} 段，总请求上限 {plan['max_calls']} 次。继续？",
+                f"将全文分为 {len(plan['chunks'])} 段，提取事实并改编，最后合并全文。继续？",
             )
             == QMessageBox.Yes
         ):

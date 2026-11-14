@@ -91,9 +91,7 @@ def view_input_hash(kind: str, spec: JsonObject, view: JsonObject) -> str:
     )
 
 
-def validate_generated_asset_prompts(
-    kind: str, content: JsonObject, *, expected_view_ids: list[str] | None = None
-) -> None:
+def validate_generated_asset_prompts(kind: str, content: JsonObject) -> None:
     """Validate new model output without tightening historical/manual save contracts."""
     require(kind in SPEC_FIELDS, "INVALID_OUTPUT", "不支持的资产设定类型")
     for field in SPEC_FIELDS[kind]:
@@ -105,7 +103,7 @@ def validate_generated_asset_prompts(
             f"{field}需要具体设定，不能包含占位符或未填写内容",
         )
     entity_kind = next(key for key, value in ASSET_KINDS.items() if value == kind)
-    expected = expected_view_ids or [view_id for view_id, _ in VIEWS[entity_kind]]
+    expected = [view_id for view_id, _ in VIEWS[entity_kind]]
     views = rows(content.get("views"), "资产视图", key="view_id")
     require(
         {view["view_id"] for view in views} == set(expected),
@@ -491,15 +489,25 @@ def local_issues(
     if kind == "storyboard":
         lower, upper = (config or {}).get("shot_duration_range_ms", [5000, 15000])
         for index, shot in enumerate(content["shots"]):
-            if not lower <= shot["duration_ms"] <= upper:
+            if not lower <= shot["duration_ms"] <= upper and not shot.get("duration_exception_reason"):
                 result.append(
                     issue(
                         "SHOT-003",
                         f"shots.{index}.duration_ms",
-                        "镜头超出建议的5–15秒范围",
-                        "按叙事节奏酌情调整时长",
+                        f"镜头超出项目参考区间 {lower / 1000:g}–{upper / 1000:g} 秒，需结合内容判断",
+                        "核对动作和声音是否匹配；合理短镜头或长镜头可以保留，不为满足区间拉伸时长",
                     )
                 )
+        shots = content["shots"]
+        if len(shots) >= 4 and len({shot["duration_ms"] for shot in shots}) == 1:
+            result.append(
+                issue(
+                    "SHOT-004",
+                    "shots",
+                    "所有镜头时长相同，需核对是否按不同动作和声音需求机械均分",
+                    "逐镜核对内容所需时间；合理同长可以保留，不通过随机改数字制造差异",
+                )
+            )
     if kind in SPEC_FIELDS:
         for field in SPEC_FIELDS[kind]:
             value = content.get(field, "")

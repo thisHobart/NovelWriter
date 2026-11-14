@@ -428,12 +428,20 @@ class MainWindow(QMainWindow):
     def _on_video_task_requested(
         self, work: VideoTask, busy_button: QWidget | None, busy_text: str
     ) -> None:
+        from core.short_video.v2.media_service import MediaWork
+
         if self._mode != "video" or self.runner.busy:
             self.status.set_dirty("已有任务在运行或当前模式不匹配")
             return
         self.status.set_busy(busy_text, f"输出目录 {work.output_dir}")
         def success(value: JsonObject) -> None:
             self.refresh_all()
+            if isinstance(work, MediaWork):
+                if value["status"] == "succeeded":
+                    self.status.set_done("视频已保存", "可在镜头页播放或打开视频位置")
+                else:
+                    self.status.set_dirty("远程视频状态待确认", "可在镜头页查询原任务，不会自动重新提交")
+                return
             if value.get("selected") is False:
                 self.status.set_dirty("已生成候选，当前稿另有修改", "可在更多的历史版本中比较并恢复候选")
             elif value["status"] == "succeeded" and value.get("review_status") in {"unavailable", "incomplete"}:
@@ -446,10 +454,15 @@ class MainWindow(QMainWindow):
                 self.status.set_dirty("已保留完成的内容", "可在对应页面继续编辑")
         def error(exc: Exception) -> None:
             self.refresh_all()
-            self.status.set_error("文字任务未完成", f"{type(exc).__name__}: {exc}")
+            self.status.set_error("短视频任务未完成", f"{type(exc).__name__}: {exc}")
         def cancelled() -> None:
             self.refresh_all()
-            self.status.set_dirty("短视频任务已停止", "已返回内容与运行记录均已保留。")
+            detail = (
+                "已停止本地等待，ComfyUI 可能仍在运行；可查询原任务。"
+                if isinstance(work, MediaWork)
+                else "已返回内容与运行记录均已保留。"
+            )
+            self.status.set_dirty("短视频任务已停止", detail)
         self.runner.run(work, pass_progress=True, cancel_token=work.token,
             disable=[self.rail.backend_combo, self.rail.model_combo, self.rail.config_button,
                      *self.video_workspace.task_controls()], busy_button=busy_button, busy_text=busy_text,

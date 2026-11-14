@@ -88,3 +88,59 @@ def test_refresh_is_not_reentrant(app):
     window._stage_states = lambda: (calls.append(1), original())[1]
     window.refresh_all()
     assert len(calls) == 1, "一次 refresh_all 只应做一次磁盘评估"
+
+
+def test_model_configuration_read_failure_keeps_controls_disabled_and_shows_type(app, monkeypatch, caplog):
+    from unittest.mock import Mock
+    from core.gui import model_config_dialog
+
+    failure = PermissionError("configuration access denied")
+    monkeypatch.setattr(model_config_dialog, "form_values", Mock(side_effect=failure))
+    dialog = model_config_dialog.ModelConfigDialog()
+
+    assert dialog._load_error is True
+    assert not dialog.save_button.isEnabled()
+    assert not dialog.test_button.isEnabled()
+    assert "PermissionError: configuration access denied" in dialog.error_label.text()
+    assert caplog.records[-1].exc_info[1] is failure
+    dialog.close()
+
+
+def test_model_configuration_save_failure_preserves_error_type_in_feedback(app, monkeypatch, caplog):
+    from unittest.mock import Mock
+    from core.gui import model_config_dialog
+
+    monkeypatch.setattr(model_config_dialog, "form_values", lambda provider: {
+        "base_url": "https://example.test/v1", "api_key": "", "model": "test-model",
+    })
+    dialog = model_config_dialog.ModelConfigDialog()
+    failure = PermissionError("configuration write denied")
+    monkeypatch.setattr(model_config_dialog, "save_provider", Mock(side_effect=failure))
+
+    dialog._save()
+
+    assert "PermissionError: configuration write denied" in dialog.error_label.text()
+    assert dialog.result() == model_config_dialog.QDialog.DialogCode.Rejected.value
+    assert caplog.records[-1].exc_info[1] is failure
+    dialog.close()
+
+
+def test_background_task_reports_the_original_exception_and_full_traceback(app, caplog):
+    import logging
+    from unittest.mock import Mock
+    from core.generation.cancellation import CancelToken
+    from core.gui.task_runner import BackgroundTask
+
+    failure = AttributeError("internal task defect")
+    task = BackgroundTask(Mock(side_effect=failure), CancelToken(), False, logging.getLogger("test.task"))
+    errors = []
+    finished = []
+    task.signals.failed.connect(errors.append)
+    task.signals.finished.connect(lambda: finished.append(True))
+
+    task.run()
+
+    assert errors == [failure]
+    assert not task.running
+    assert finished == [True]
+    assert caplog.records[-1].exc_info[1] is failure

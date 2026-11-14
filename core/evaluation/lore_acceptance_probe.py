@@ -2,7 +2,7 @@
 
 不会被 pytest 自动调用。示例（可能产生模型费用）：
 python -m core.evaluation.lore_acceptance_probe --run-live --output sandbox_verify_lore/characters
-每份产物仍受生产管线的 6 次请求 / 300 秒预算约束。
+每份产物沿用生产管线的质量修复流程，不设置调用次数或总时长预算。
 """
 from __future__ import annotations
 

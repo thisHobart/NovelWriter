@@ -22,6 +22,7 @@ from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.models import ASSET_KINDS, require
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
+from .media_preview import MediaPreview
 from .ui_helpers import create_action_button
 
 if TYPE_CHECKING:
@@ -57,7 +58,9 @@ class PromptEditor(QWidget):
         item["negative_prompt"] = self.negative.toPlainText()
         return value
 
-    def set_content(self, content: JsonObject | None, index: int = 0) -> None:
+    def set_content(
+        self, content: JsonObject | None, index: int = 0, *, readonly: bool = False
+    ) -> None:
         self.content, self.index = deepcopy(content), index
         self.bundle = bool(content and "shots" in content)
         items = (content or {}).get("shots" if self.bundle else "views", [])
@@ -68,6 +71,7 @@ class PromptEditor(QWidget):
             edit.blockSignals(True)
             edit.setPlainText(items[index][field] if items else "")
             edit.setEnabled(bool(items))
+            edit.setReadOnly(readonly)
             edit.blockSignals(False)
 
 
@@ -75,7 +79,7 @@ class PromptPage(QWidget):
     def __init__(self, workbench: Workbench) -> None:
         super().__init__()
         self.workbench, self.dirty, self.record = workbench, False, None
-        self.displayed_key, self.displayed_view = None, None
+        self.displayed_view = None
         self.displayed_selection = (0, None, None)
         layout = QVBoxLayout(self)
         self.tabs = QTabBar()
@@ -83,11 +87,13 @@ class PromptPage(QWidget):
             self.tabs.addTab(title)
         layout.addWidget(self.tabs)
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("对象"))
+        self.object_label = QLabel("对象")
+        bar.addWidget(self.object_label)
         self.objects, self.variants, self.views = QComboBox(), QComboBox(), QComboBox()
         bar.addWidget(self.objects, 2)
         bar.addWidget(self.variants, 1)
-        bar.addWidget(QLabel("视图"))
+        self.view_label = QLabel("视图")
+        bar.addWidget(self.view_label)
         bar.addWidget(self.views, 1)
         layout.addLayout(bar)
         self.status = QLabel("从分镜页生成资产提示词。")
@@ -95,7 +101,12 @@ class PromptPage(QWidget):
         layout.addWidget(self.status)
         self.editor = PromptEditor()
         self.editor.changed.connect(self.mark_dirty)
-        layout.addWidget(self.editor, 1)
+        body = QHBoxLayout()
+        body.addWidget(self.editor, 1)
+        self.media = MediaPreview(workbench)
+        self.media.hide()
+        body.addWidget(self.media, 1)
+        layout.addLayout(body, 1)
         bar = QHBoxLayout()
         self.save_button = create_action_button("保存", self.save, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
@@ -154,6 +165,8 @@ class PromptPage(QWidget):
         self.variants.clear()
         self.views.clear()
         kind = ["character", "scene", "prop", "shot"][self.tabs.currentIndex()]
+        self.media.setVisible(kind == "shot")
+        self.media.refresh()
         records = [
             self.workbench.repository.record(ref, state=state)
             for key, ref in state["current"].items()
@@ -167,9 +180,27 @@ class PromptPage(QWidget):
             for entity in catalog["content"]["entities"]:
                 entities[entity["asset_id"]] = entity
         if kind == "shot":
+            board = self.workbench.repository.current("storyboard", state=state)
             bundle = self.workbench.repository.current("prompt_bundle", state=state)
-            self.record = bundle
-            for index, shot in enumerate((bundle or {}).get("content", {}).get("shots", [])):
+            self.record = (
+                bundle
+                if bundle and board and bundle["content"]["storyboard_version_id"] == board["id"]
+                else None
+            )
+            editor_content = self.record["content"] if self.record else None
+            if board and not self.record:
+                # A failed asset task must not hide the storyboard's usable image drafts.
+                editor_content = {
+                    "shots": [
+                        {
+                            "shot_id": shot["shot_id"],
+                            "resolved_prompt": shot["visual_prompt_draft"],
+                            "negative_prompt": "",
+                        }
+                        for shot in board["content"]["shots"]
+                    ]
+                }
+            for index, shot in enumerate((editor_content or {}).get("shots", [])):
                 self.objects.addItem(f"镜头 {index + 1:02}", shot["shot_id"])
             self.objects.setCurrentIndex(max(0, self.objects.findData(entity_id)))
             self.displayed_view = max(0, self.objects.currentIndex())
@@ -204,17 +235,52 @@ class PromptPage(QWidget):
             )
             self.displayed_view = max(0, self.views.currentIndex())
             self.views.show()
+            editor_content = self.record["content"] if self.record else None
         self.variants.setVisible(self.variants.count() > 1)
-        self.displayed_key = self.record["key"] if self.record else None
+        self.view_label.setVisible(kind != "shot")
         self.displayed_selection = (
             self.tabs.currentIndex(),
             self.objects.currentData(),
             self.variants.currentData(),
         )
         self.editor.set_content(
-            self.record["content"] if self.record else None, self.displayed_view
+            editor_content, self.displayed_view, readonly=kind == "shot" and not self.record
         )
-        self.status.setText("已保存" if self.record else "从分镜页生成资产提示词。")
+        show_text_editor = kind != "shot" or bool(editor_content)
+        self.editor.setVisible(show_text_editor)
+        self.objects.setVisible(show_text_editor)
+        self.object_label.setVisible(show_text_editor)
+        self.save_button.setVisible(show_text_editor)
+        self.generate_button.setVisible(show_text_editor)
+        if kind == "shot":
+            self.media.target = {
+                "storyboard_version_id": board["id"] if board else None,
+                "shot_id": self.objects.currentData(),
+            }
+        self.save_button.setEnabled(self.record is not None)
+        self.generate_button.setText(
+            "生成镜头提示词" if kind == "shot" and not self.record else "重新生成"
+        )
+        if kind == "shot" and board and not self.record:
+            required = {
+                f"{asset_kind}_spec:{ref['asset_id']}:{ref['variant_id']}"
+                for shot in board["content"]["shots"]
+                for asset_kind, refs in (
+                    ("scene", [shot["scene_ref"]]),
+                    ("character", shot["characters"]),
+                    ("prop", shot["props"]),
+                )
+                for ref in refs
+            }
+            missing = len(required - state["current"].keys())
+            detail = f"缺少 {missing} 项资产设定；" if missing else ""
+            self.status.setText(
+                "当前显示分镜画面草稿，可查看和复制，修改请到分镜页。"
+                + detail
+                + "点击“生成镜头提示词”补齐资产并编排完整提示词。"
+            )
+        else:
+            self.status.setText("已保存" if self.record else "从分镜页生成资产提示词。")
         for combo in (self.objects, self.variants, self.views):
             combo.blockSignals(False)
 
@@ -274,7 +340,3 @@ class PromptPage(QWidget):
             WorkspaceWork(self.workbench.repository, command, transport=self.workbench.transport),
             self.generate_button,
         )
-
-    def saved_record(self) -> JsonObject:
-        require(self.record is not None and not self.dirty, "EDIT_PENDING", "请先保存当前提示词")
-        return self.record

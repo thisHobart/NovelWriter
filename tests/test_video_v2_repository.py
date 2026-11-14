@@ -186,7 +186,8 @@ def test_result_boundary_returns_structured_error(project):
 
 @pytest.fixture
 def prompt_project(project):
-    from core.short_video.v2.prompt_compiler import compile_asset
+    from core.short_video.v2.models import VIEWS
+    from core.short_video.v2.prompt_compiler import finalize_asset_prompts
     from core.short_video.v2.validation import SPEC_FIELDS
     from core.short_video.v2.workflow import WorkflowService
 
@@ -208,7 +209,14 @@ def prompt_project(project):
         kind = entity["kind"] + "_spec"
         content = {field: "明确的视觉设定" for field in SPEC_FIELDS[kind]}
         content.update(asset_id=entity["asset_id"], variant_id="base", source_refs=[])
-        project.save(kind, compile_asset(kind, content), dependencies,
+        content["views"] = [
+            {"view_id": view_id, "label": label, "camera_view": label,
+             "composition": "完整主体", "required": True,
+             "positive_prompt": f"{entity['name']}的{label}，保持造型与状态一致",
+             "negative_prompt": "避免身份漂移和空间结构矛盾"}
+            for view_id, label in VIEWS[entity["kind"]]
+        ]
+        project.save(kind, finalize_asset_prompts(kind, content), dependencies,
                      expected_revision=project.load()["revision"])
     shot = {"shot_id": "shot_1", "order": 1, "duration_ms": 7000, "shot_size": "中景",
             "camera_movement": "固定镜头", "action": "举起铜钥匙", "visual_prompt_draft": "老宅井边举起铜钥匙",
@@ -296,6 +304,138 @@ def test_prompt_agent_retries_keep_only_final_result_and_do_not_replay_old_resul
     assert all(record["parent_id"] is None for record in repository.versions() if record["kind"] in PROMPT_KINDS)
 
 
+def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project, monkeypatch):
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    content = prompt_project.current("storyboard")["content"]
+    calls = []
+
+    def send(prompt):
+        calls.append(prompt)
+        position = (len(calls) - 1) % 4
+        if position < 2:
+            return "invalid JSON"
+        if position == 2:
+            return encode(content)
+        if len(calls) < 12:
+            return encode({"issues": [{"rule_id": "SHOT-TIMING-001", "severity": "warning",
+                "target_path": "shots.0.duration_ms", "explanation": "动作节奏需要调整",
+                "suggestion": "结合动作重新安排节奏", "quote": None, "source_refs": []}]})
+        return '{"issues":[]}'
+
+    service = WorkflowService(prompt_project, transport=send)
+    result = service.execute(service.prepare("storyboard"))
+
+    assert len(calls) == 12
+    assert result["review_status"] == "passed"
+    assert result["retries_used"] == 2
+    assert "budget" not in prompt_project.load()["runs"][-1]["snapshot"]
+
+
+def test_invalid_output_still_stops_after_finite_format_repairs(prompt_project, monkeypatch):
+    from unittest.mock import Mock
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    original = prompt_project.current("storyboard")["id"]
+    send = Mock(return_value="invalid JSON")
+    service = WorkflowService(prompt_project, transport=send)
+
+    with pytest.raises(WorkspaceError, match="未取得可用稿件"):
+        service.execute(service.prepare("storyboard"))
+
+    assert send.call_count == 3
+    assert prompt_project.current("storyboard")["id"] == original
+    assert prompt_project.load()["runs"][-1]["status"] == "failed"
+
+
+def test_cancelled_format_repair_stops_without_replacing_the_current_storyboard(prompt_project, monkeypatch):
+    from core.generation.cancellation import CancelToken, GenerationCancelled
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    original = prompt_project.current("storyboard")["id"]
+    token = CancelToken()
+    calls = []
+
+    def send(prompt):
+        calls.append(prompt)
+        token.cancel()
+        return "invalid JSON"
+
+    service = WorkflowService(prompt_project, transport=send)
+    with pytest.raises(GenerationCancelled):
+        service.execute(service.prepare("storyboard"), token=token)
+
+    assert len(calls) == 1
+    assert prompt_project.current("storyboard")["id"] == original
+    assert prompt_project.load()["runs"][-1]["status"] == "cancelled"
+
+
+def test_creation_task_uses_request_counts_only_for_recording(prompt_project, monkeypatch):
+    from unittest.mock import Mock
+    from core.short_video.v2 import creation, workflow
+    from core.short_video.v2.models import encode
+
+    snapshot = {"provider": "hosted-llm", "model": "offline"}
+    for module in (creation, workflow):
+        monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
+        monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
+    original = prompt_project.current("prop_spec:asset_prop:base")
+    command = creation.prepare_prompt_task(prompt_project, "hosted-llm", asset_key=original["key"])
+    assert "max_calls" not in command and "seconds" not in command
+    send = Mock(side_effect=[encode(original["content"]), '{"issues":[]}'])
+    work = creation.CreationWork(prompt_project, command, transport=send)
+
+    result = work(lambda *args: None)
+
+    assert result["status"] == "succeeded" and result["review_status"] == "passed"
+    assert result["calls"] == 2
+    assert work(lambda *args: None) == result
+    assert send.call_count == 2
+
+
+def test_legacy_exhausted_chunk_plan_can_resume_without_budget_checks(project, monkeypatch):
+    from unittest.mock import Mock
+    from core.short_video.v2 import batches, workflow
+    from core.short_video.v2.models import encode, fingerprint
+
+    snapshot = {"provider": "hosted-llm", "model": "offline"}
+    for module in (batches, workflow):
+        monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
+        monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
+    content = novel(project)["content"]
+    send = Mock(side_effect=['{"facts":[]}', encode(content), encode(content), '{"issues":[]}'])
+    service = batches.ChunkService(project, transport=send)
+    plan = service.create_plan()
+    assert "max_calls" not in plan and "seconds" not in plan
+    plan.update(max_calls=0, seconds=0, calls_used=100, status="failed")
+    frozen = {key: plan[key] for key in (
+        "project_id", "mode", "model", "model_snapshot", "input_refs", "max_calls", "seconds", "selected_before",
+    )}
+    frozen["chunks"] = [
+        {key: chunk[key] for key in ("id", "source_id", "start", "end", "text")} for chunk in plan["chunks"]
+    ]
+    plan["input_hash"] = fingerprint(frozen)
+    service.save_plan(plan)
+
+    result = service.execute(plan["id"])
+
+    assert result["status"] == "succeeded"
+    assert result["review_status"] == "passed"
+    assert service.load_plan(plan["id"])["calls_used"] == 104
+    assert service.execute(plan["id"])["version_id"] == result["version_id"]
+    assert send.call_count == 4
+
+
 def test_interrupted_prompt_candidates_are_removed_without_losing_current_content(prompt_project):
     repository = prompt_project
     original = repository.current("prop_spec:asset_prop:base")
@@ -375,3 +515,177 @@ def test_prompt_generation_conflict_keeps_newer_manual_edit(prompt_project, monk
     assert len(repository.versions(original["key"])) == 1
     assert "保留人工修改" in repository.current(original["key"])["content"]["views"][0]["positive_prompt"]
     assert repository.load()["runs"][-1]["status"] == "failed"
+
+
+def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_project, monkeypatch):
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    repository = prompt_project
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    base = repository.current("storyboard")["content"]["shots"][0]
+    first, revised = {"shots": []}, {"shots": []}
+    actions = ["靠近井口", "俯看井口", "听见声音后停住", "看向铜钥匙"]
+    for index, duration in enumerate([2000, 4500, 7000, 1500]):
+        shot = {**deepcopy(base), "shot_id": f"s{index}", "action": actions[index],
+                "narration": "井口有声音" if index == 1 else "", "duration_ms": 10000}
+        first["shots"].append(shot)
+        revised["shots"].append({**deepcopy(shot), "duration_ms": duration})
+    calls = []
+    feedback = "第一镜只需完成靠近井口，缩短后把旁白安排在俯看井口的镜头。"
+
+    def send(prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return encode(first)
+        if len(calls) == 2:
+            task = json.loads(prompt[prompt.index("\n{") + 1:])
+            assert task["task"]["requirements"]["instruction"] == command["requirements"]["instruction"]
+            assert any(i["rule_id"] == "SHOT-004" for i in task["code_issues"])
+            return encode({"issues": [{"rule_id": "SHOT-TIMING-001", "severity": "warning",
+                "target_path": "shots.0.duration_ms", "explanation": "短动作被拉长",
+                "suggestion": feedback, "quote": None, "source_refs": []}]})
+        if len(calls) == 3:
+            assert prompt.startswith(command["prompt"])
+            assert feedback in prompt and '"duration_ms":10000' in prompt.replace(" ", "")
+            return encode(revised)
+        assert len(calls) == 4
+        return '{"issues":[]}'
+
+    service = WorkflowService(repository, transport=send)
+    command = service.prepare("storyboard")
+    assert "short-video-storyboard" in command["requirements"]["instruction"]
+    monkeypatch.setattr(workflow_module, "load_storyboard_skill",
+                        lambda: pytest.fail("执行与重试不能重新加载已冻结的Skill"))
+    result = service.execute(command)
+    shots = repository.record(result["version_id"])["content"]["shots"]
+    assert result["review_status"] == "passed" and result["retries_used"] == 1
+    assert [s["duration_ms"] for s in shots] == [2000, 4500, 7000, 1500]
+    assert [(s["start_ms"], s["end_ms"]) for s in shots] == [
+        (0, 2000), (2000, 6500), (6500, 13500), (13500, 15000)]
+    assert len(calls) == 4
+
+
+def test_storyboard_equal_short_shots_can_pass_without_forced_retiming(prompt_project, monkeypatch):
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    repository = prompt_project
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    base = repository.current("storyboard")["content"]["shots"][0]
+    content = {"shots": [{**deepcopy(base), "shot_id": f"s{i}", "duration_ms": 1500,
+                          "narration": "", "dialogue": []} for i in range(4)]}
+    responses = iter([encode(content), '{"issues":[]}'])
+    service = WorkflowService(repository, transport=lambda _: next(responses))
+    result = service.execute(service.prepare("storyboard"))
+    assert result["review_status"] == "passed" and result["retries_used"] == 0
+    record = repository.current("storyboard")
+    assert [s["duration_ms"] for s in record["content"]["shots"]] == [1500] * 4
+    # A manual save also accepts short shots without a mandatory exception reason.
+    saved = repository.save("storyboard", record["content"], record["dependency_refs"],
+                            expected_revision=repository.load()["revision"])
+    assert saved["content"]["shots"][-1]["end_ms"] == 6000
+
+
+def test_storyboard_review_uses_project_duration_range(prompt_project):
+    from core.short_video.v2.review import build_review_prompt
+
+    record = prompt_project.current("storyboard")  # 7 seconds, inside the old default range.
+    prompt = build_review_prompt(ProjectService(prompt_project).context(), record,
+                                task={"context": {"config": {"shot_duration_range_ms": [1000, 4000]}}})
+    data = json.loads(prompt[prompt.index("\n{") + 1:])
+    assert [i["rule_id"] for i in data["code_issues"]] == ["SHOT-003"]
+    assert data["code_issues"][0]["target_path"] == "shots.0.duration_ms"
+
+
+@pytest.fixture
+def prompt_page(prompt_project):
+    import os
+    from types import SimpleNamespace
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from core.gui.pages.short_video.prompt_page import PromptPage
+
+    app = QApplication.instance() or QApplication([])
+    started = []
+    workbench = SimpleNamespace(repository=prompt_project, output_dir=prompt_project.output_dir,
+        host=SimpleNamespace(runner=SimpleNamespace(busy=False)), configure_comfy=lambda: None,
+        perform=lambda operation: operation(),
+        resolve_page=lambda page: page.save() if page.dirty else True, export=lambda: None,
+        start_creation=lambda stage, button, **kwargs: started.append((stage, kwargs)))
+    page = PromptPage(workbench)
+    workbench.refresh = page.refresh
+    yield page, started
+    page.close()
+    page.deleteLater()
+    app.processEvents()
+
+
+def test_missing_shot_bundle_shows_copyable_drafts_and_can_start_generation(prompt_project, prompt_page):
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    repository = prompt_project
+    page, started = prompt_page
+    content = deepcopy(repository.current("storyboard")["content"])
+    content["shots"].append({**deepcopy(content["shots"][0]), "shot_id": "shot_2",
+                             "visual_prompt_draft": "井口的铜钥匙特写"})
+    repository.save("storyboard", content, repository.current("storyboard")["dependency_refs"],
+                    expected_revision=repository.load()["revision"])
+    with repository.transaction() as state:
+        state["current"].pop("scene_spec:asset_scene:base")
+    assert repository.current("prompt_bundle") is None
+    before = repository.path.read_bytes()
+    page.tabs.setCurrentIndex(3)
+    assert page.objects.count() == 2
+    assert page.editor.positive.toPlainText() == content["shots"][0]["visual_prompt_draft"]
+    assert page.editor.positive.isReadOnly() and page.editor.positive.isEnabled()
+    assert not page.save_button.isEnabled() and "缺少 1 项" in page.status.text()
+    page.objects.setCurrentIndex(1)
+    assert page.editor.positive.toPlainText() == "井口的铜钥匙特写"
+    copy = next(button for button in page.findChildren(QPushButton) if button.text() == "复制正向")
+    copy.click()
+    assert QApplication.clipboard().text() == "井口的铜钥匙特写"
+    page.generate_button.click()
+    assert started == [("prompts", {"asset_key": None})]
+    assert not page.dirty and repository.path.read_bytes() == before
+
+
+def test_shot_page_switches_from_draft_to_compiled_prompt_after_assets_complete(prompt_project, prompt_page):
+    from core.short_video.v2.workflow import WorkflowService
+
+    repository = prompt_project
+    page, _ = prompt_page
+    with repository.transaction() as state:
+        state["current"].pop("prompt_bundle")
+    page.tabs.setCurrentIndex(3)
+    assert page.editor.positive.isReadOnly() and page.record is None
+    bundle = WorkflowService(repository).compile_storyboard_prompts(
+        expected_revision=repository.load()["revision"])
+    page.refresh()
+    assert page.record["id"] == bundle["id"]
+    assert page.editor.positive.toPlainText() == bundle["content"]["shots"][0]["resolved_prompt"]
+    assert not page.editor.positive.isReadOnly() and page.save_button.isEnabled()
+    assert page.generate_button.text() == "重新生成"
+    page.editor.positive.setPlainText("完整镜头画面的新编辑")
+    assert page.save()
+    assert repository.current("prompt_bundle")["content"]["shots"][0]["resolved_prompt"] == "完整镜头画面的新编辑"
+
+
+def test_shot_page_does_not_show_bundle_from_another_storyboard(prompt_project, prompt_page):
+    repository = prompt_project
+    page, _ = prompt_page
+    old_bundle = repository.current("prompt_bundle")
+    board = repository.current("storyboard")
+    content = deepcopy(board["content"])
+    content["shots"][0]["visual_prompt_draft"] = "当前分镜的井口全景"
+    repository.save("storyboard", content, board["dependency_refs"],
+                    expected_revision=repository.load()["revision"])
+    page.tabs.setCurrentIndex(3)
+    assert page.editor.positive.toPlainText() == "当前分镜的井口全景"
+    assert page.record is None and page.editor.positive.isReadOnly()
+    assert repository.current("prompt_bundle")["id"] == old_bundle["id"]

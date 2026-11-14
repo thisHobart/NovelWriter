@@ -40,12 +40,8 @@ from core.generation.story_ledger import StoryLedgerManager
 
 RUN_ID = "live_fixed_mystery_3ch_v1"
 LIVE_MODEL = "hosted-llm"
-MAX_MODEL_CALLS = 24
-MAX_RESUME_CALLS = 10
 
 
-class ModelCallBudgetExceeded(RuntimeError):
-    pass
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -227,22 +223,17 @@ def run_live_story(output_dir: str | Path) -> tuple[int, Dict[str, Any]]:
         if isinstance(item, dict) and item.get("chapter")
     )
     resuming = bool(previous_report and (accepted or historical_calls))
-    attempt_budget = MAX_RESUME_CALLS if resuming else MAX_MODEL_CALLS
     call_counter = 0
 
-    def budgeted_send(prompt: str, model: str | None = None) -> str:
+    def recorded_send(prompt: str, model: str | None = None) -> str:
         nonlocal call_counter
-        if call_counter >= attempt_budget:
-            raise ModelCallBudgetExceeded(
-                f"本次真实模型调用达到上限 {attempt_budget}，已停止后续生成"
-            )
         call_counter += 1
         return send_prompt(prompt, model=model)
 
     reviewer = DomainReviewAgent(
         model=LIVE_MODEL,
         profile=profile,
-        send_prompt_fn=budgeted_send,
+        send_prompt_fn=recorded_send,
     )
     roster = json.dumps(CHARACTERS, ensure_ascii=False)
     factions = json.dumps(FACTIONS, ensure_ascii=False)
@@ -307,7 +298,7 @@ def run_live_story(output_dir: str | Path) -> tuple[int, Dict[str, Any]]:
                         scene_sources.append("cached_live_trace")
                     else:
                         with trace_stage(generation_stage):
-                            scene = budgeted_send(prompt, model=LIVE_MODEL).strip()
+                            scene = recorded_send(prompt, model=LIVE_MODEL).strip()
                         scene_sources.append("new_live_call")
                     if not scene:
                         raise ValueError(
@@ -525,13 +516,8 @@ def run_live_story(output_dir: str | Path) -> tuple[int, Dict[str, Any]]:
         "status": "passed" if success else "quality_failed",
         "configured_model": LIVE_MODEL,
         "fixed_seed": SEED,
-        "call_budget": {
-            "initial": MAX_MODEL_CALLS,
-            "resume": MAX_RESUME_CALLS,
-            "this_attempt": attempt_budget,
-        },
         "attempted_model_calls": len(trace_calls),
-        "budgeted_send_attempts_this_attempt": call_counter,
+        "send_attempts_this_attempt": call_counter,
         "resumed_from_previous_failure": resuming,
         "schema_retry_calls": sum(
             "不符合 schema" in call["prompt"] for call in trace_calls

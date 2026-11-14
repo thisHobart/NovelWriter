@@ -351,7 +351,7 @@ class StoryboardEditor(QWidget):
         if shots:
             self.table.selectRow(selected)
         self.summary.setText(
-            f"共 {len(shots)} 镜 · 预计 {sum(s['duration_ms'] for s in shots) / 1000:g} 秒；每镜建议 5–15 秒"
+            f"共 {len(shots)} 镜 · 预计 {sum(s['duration_ms'] for s in shots) / 1000:g} 秒；按动作与声音安排时长"
         )
         self.loading = False
         self.select_shot()
@@ -437,7 +437,7 @@ class StoryboardEditor(QWidget):
             prompt_edit.blockSignals(False)
         self.loading = False
         self.summary.setText(
-            f"共 {len(self.content['shots'])} 镜 · 预计 {self.content['shots'][-1]['end_ms'] / 1000:g} 秒；每镜建议 5–15 秒"
+            f"共 {len(self.content['shots'])} 镜 · 预计 {self.content['shots'][-1]['end_ms'] / 1000:g} 秒；按动作与声音安排时长"
         )
         self.changed.emit()
 

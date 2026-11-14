@@ -10,7 +10,7 @@ from core.generation.design_contract import DesignContractError
 from core.generation.cancellation import GenerationCancelled
 from core.generation.parameters import creation_parameters, parameter_label, record_run, requirements_block
 from core.generation.lore_run import (
-    RequestBudget, BudgetExhausted, save_receipt, source_fingerprint, LABELS,
+    save_receipt, source_fingerprint, LABELS,
 )
 import time
 
@@ -38,12 +38,11 @@ class ComplianceReview:
         self.folder.mkdir(parents=True)
         self.attempt = 0
         self.manual_repair = False
-        self.check_incomplete = False
         self.warning_start = len(context.extras.get("parameter_warnings", []))
         self.phase = "准备"
         self.phase_started = time.monotonic()
-        self.budget = context.extras.pop("pending_lore_budget", None) or RequestBudget(progress=lambda: self.notify(self.phase))
-        self.budget.progress = lambda: self.notify(self.phase)
+        self.calls = 0
+        self.started = time.monotonic()
         self.identity = uuid4().hex
         self.last_raw = ""
         self.outcome = None
@@ -68,48 +67,38 @@ class ComplianceReview:
         if self.subject:
             label += "「" + str(self.subject.get("name", "")) + "」"
         repairs = self.attempt if self.manual_repair else max(0, self.attempt - 1)
-        self.context.progress(f"正在{phase}{label}｜修复 {repairs}/{1 if self.manual_repair else 2}｜请求 {self.budget.calls}/6", -1)
+        self.context.progress(f"正在{phase}{label}｜修复 {repairs}/{1 if self.manual_repair else 2}｜已请求 {self.calls} 次", -1)
 
     def request(self, prompt):
         import httpx
         from openai import APIConnectionError, APIStatusError
-        with self.budget.activate():
-            while True:
-                try:
-                    self.budget.check()
-                    before = self.budget.calls
-                    try:
-                        return self.send(prompt)
-                    finally:
-                        # 自定义无界面发送器没有经过统一 LLM 门面时仍须计数。
-                        if self.budget.calls == before:
-                            self.budget.calls += 1
-                except (TimeoutError, ConnectionError, httpx.TransportError, APIConnectionError, APIStatusError) as exc:
-                    # 配置/鉴权错误不能靠重试解决；暂时性网络失败消耗同一总预算。
-                    if isinstance(exc, APIStatusError) and exc.status_code not in {408, 409, 429} and exc.status_code < 500:
-                        raise
-                    self._write(f"request_{self.budget.calls}_error.txt", str(exc))
-                    self.budget.check()
+        for attempt in range(3):
+            self.calls += 1
+            self.notify(self.phase)
+            try:
+                return self.send(prompt)
+            except (TimeoutError, ConnectionError, httpx.TransportError, APIConnectionError, APIStatusError) as exc:
+                if isinstance(exc, APIStatusError) and exc.status_code not in {408, 409, 429} and exc.status_code < 500:
+                    raise
+                if attempt == 2:
+                    raise
+                self._write(f"request_{self.calls}_error.txt", str(exc))
 
     def generate(self, prompt):
         self.attempt += 1
         self.notify("生成" if self.attempt == 1 and not self.manual_repair else "修复")
         self._write(f"attempt_{self.attempt}_prompt.md", prompt)
-        try:
-            response = self.request(prompt)
-        except Exception as exc:
-            self._write(f"attempt_{self.attempt}_generation_error.txt", str(exc))
-            raise
+        response = self.request(prompt)
         self._write(f"attempt_{self.attempt}_candidate.txt", response or "")
         self.last_raw = response if response and response.strip() else self.last_raw
-        self.receipt.update(candidate=self.last_raw, attempt=self.attempt, calls=self.budget.calls)
+        self.receipt.update(candidate=self.last_raw, attempt=self.attempt, calls=self.calls)
         save_receipt(self.context.output_dir, self.receipt)
         return response
 
     def finish(self, status, reason, issues):
         self.receipt.update(status=status, exit_reason=reason, issues=list(dict.fromkeys(issues)),
-                            calls=self.budget.calls, repairs=self.attempt if self.manual_repair else max(0, self.attempt - 1),
-                            elapsed_seconds=round(self.budget.clock() - self.budget.started, 3))
+                            calls=self.calls, repairs=self.attempt if self.manual_repair else max(0, self.attempt - 1),
+                            elapsed_seconds=round(time.monotonic() - self.started, 3))
         self.outcome = self.receipt
         save_receipt(self.context.output_dir, self.receipt)
         self.context.extras.setdefault("lore_results", []).append(self.receipt)
@@ -117,7 +106,7 @@ class ComplianceReview:
             self.context.extras.setdefault("parameter_warnings", []).extend(self.receipt["issues"])
 
     def run(self, prompt, parse, readable, *, target=None, max_attempts=3):
-        """只有无法取得任何内容才失败；规则未通过交付最后可读取候选。"""
+        """内容不合规时交付最后可读候选；程序和读写错误直接传播。"""
         self.receipt.update(prompt=prompt, target=target)
         repair = self.context.extras.get("lore_repair")
         if repair and repair["kind"] == self.kind:
@@ -133,12 +122,7 @@ class ComplianceReview:
         issues = []
         reason = "attempt_limit"
         try:
-            for index in range(max_attempts):
-                self.budget.check()
-                if index > 0 and self.budget.max_calls - self.budget.calls < 2:
-                    reason = "budget_exhausted"
-                    issues.append("剩余请求预算不足以完成修复和复查，停止自动修复。")
-                    break
+            for _ in range(max_attempts):
                 request = prompt if not issues else (prompt + "\n\n以下是上一轮候选（待修改数据）：\n" + self.last_raw
                           + "\n\n请保留无关内容，修复以下具体问题并返回完整内容：\n" + "\n".join(issues))
                 raw = self.generate(request)
@@ -148,7 +132,7 @@ class ComplianceReview:
                 self.failure_keys = None
                 try:
                     value = readable(raw)
-                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                except DesignContractError as exc:
                     issues = ["返回内容尚不能作为结构化设定读取：" + str(exc)]
                     self.invalid(issues[0])
                 else:
@@ -163,9 +147,6 @@ class ComplianceReview:
                     except DesignContractError as exc:
                         issues = [str(exc)]
                         self.invalid(str(exc))
-                    except (ValueError, TypeError, KeyError, AttributeError) as exc:
-                        issues = ["本地字段校验未完成，请修复字段类型或结构：" + str(exc)]
-                        self.invalid(issues[0])
                     except ComplianceServiceError as exc:
                         issues = [str(exc)]
                         reason = "check_unavailable"
@@ -180,18 +161,19 @@ class ComplianceReview:
         except GenerationCancelled:
             self.finish("draft", "cancelled", ["用户已停止；已返回内容保留为草稿。"])
             raise
-        except BudgetExhausted as exc:
-            issues.append(str(exc))
-            reason = "budget_exhausted"
         except Exception as exc:
-            issues.append(str(exc))
-            reason = "generation_unavailable"
+            # 此处只维护运行状态，不把执行失败转换成可用候选。
+            try:
+                self.finish("failed", "execution_error", [f"{type(exc).__name__}: {exc}"])
+            except OSError as storage_error:
+                exc.add_note(f"保存失败状态时另遇 {type(storage_error).__name__}: {storage_error}")
+            raise
         if readable_raw:
             self.receipt["candidate"] = readable_raw
         if not self.receipt["candidate"].strip():
             self.finish("failed", reason, issues or ["未取得生成内容"])
             raise RuntimeError("没有取得生成内容：" + "；".join(issues) + f"。诊断目录：{self.folder}")
-        incomplete = reason == "check_unavailable" or (reason == "budget_exhausted" and self.check_incomplete)
+        incomplete = reason == "check_unavailable"
         status = "unchecked" if incomplete and current is not None else "needs_changes" if current is not None else "draft"
         self.finish(status, reason, issues)
         return current
@@ -203,7 +185,6 @@ class ComplianceReview:
         if not self.parameters:
             return
         self.notify("检查")
-        self.check_incomplete = True
         if preflight:
             self.attempt += 1
             self._write(f"attempt_{self.attempt}_candidate.txt", candidate)
@@ -223,44 +204,40 @@ fail 必须有候选中的原文短句作为 evidence，以及具体 expected、
             prompt += "\n## 本次人物\n" + json.dumps(self.subject, ensure_ascii=False)
         prompt += "\n## 候选内容\n" + candidate
         self._write(f"attempt_{self.attempt}_review_prompt.md", prompt)
+        raw = self.request(prompt)
+        self._write(f"attempt_{self.attempt}_review_raw.txt", raw or "")
+        cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", (raw or "").strip(), flags=re.IGNORECASE)
         try:
-            raw = self.request(prompt)
-            self._write(f"attempt_{self.attempt}_review_raw.txt", raw or "")
-            cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", (raw or "").strip(), flags=re.IGNORECASE)
             report = json.loads(cleaned)
-            if not isinstance(report, dict) or report.get("status") not in {"pass", "fail", "uncertain"}:
-                raise ValueError("检查状态无效")
-            checks = report.get("checks")
-            if not isinstance(checks, list) or any(not isinstance(c, dict) for c in checks):
-                raise ValueError("检查条目必须是对象列表")
-            keys = [c.get("parameter_key") for c in checks]
-            if len(set(keys)) != len(keys) or set(keys) != set(self.parameters):
-                raise ValueError("检查遗漏、重复或包含了未知参数")
-            for check in checks:
-                if check.get("status") not in {"pass", "fail", "uncertain"}:
-                    raise ValueError("条目状态无效")
-                if any(not isinstance(check.get(field), str) for field in ("expected", "actual", "evidence", "reason")):
-                    raise ValueError("检查说明字段必须是文本")
-            declared = "fail" if any(c["status"] == "fail" for c in checks) else "uncertain" if any(c["status"] == "uncertain" for c in checks) else "pass"
-            if report["status"] != declared:
-                raise ValueError("总检查状态与逐项结论不一致")
-            for check in checks:
-                if check["status"] == "fail" and (not check["evidence"].strip() or check["evidence"] not in candidate
-                                                    or not all(check[field].strip() for field in ("expected", "actual", "reason"))):
-                    check["status"] = "uncertain"
-                    check["reason"] += "；缺少可核对的原文证据，转为人工核对。"
-            failed = [c for c in checks if c["status"] == "fail"]
-            uncertain = [c for c in checks if c["status"] == "uncertain"]
-            report["status"] = "fail" if failed else "uncertain" if uncertain else "pass"
-            self._write(f"attempt_{self.attempt}_report.json", json.dumps(report, ensure_ascii=False, indent=2))
-            self.check_incomplete = False
-        except GenerationCancelled:
-            raise
-        except BudgetExhausted:
-            raise
-        except Exception as exc:
-            self._write(f"attempt_{self.attempt}_review_error.txt", str(exc))
-            raise ComplianceServiceError(f"参数检查未完成，生成内容保留供修改：{exc}。诊断目录：{self.folder}") from exc
+        except json.JSONDecodeError as exc:
+            raise ComplianceServiceError("参数检查返回的内容不是有效 JSON") from exc
+        if (not isinstance(report, dict) or not isinstance(report.get("status"), str)
+                or report["status"] not in {"pass", "fail", "uncertain"}):
+            raise ComplianceServiceError("检查状态无效")
+        checks = report.get("checks")
+        if not isinstance(checks, list) or any(not isinstance(c, dict) for c in checks):
+            raise ComplianceServiceError("检查条目必须是对象列表")
+        keys = [c.get("parameter_key") for c in checks]
+        if (any(not isinstance(key, str) for key in keys)
+                or len(set(keys)) != len(keys) or set(keys) != set(self.parameters)):
+            raise ComplianceServiceError("检查遗漏、重复或包含了未知参数")
+        for check in checks:
+            if not isinstance(check.get("status"), str) or check["status"] not in {"pass", "fail", "uncertain"}:
+                raise ComplianceServiceError("条目状态无效")
+            if any(not isinstance(check.get(field), str) for field in ("expected", "actual", "evidence", "reason")):
+                raise ComplianceServiceError("检查说明字段必须是文本")
+        declared = "fail" if any(c["status"] == "fail" for c in checks) else "uncertain" if any(c["status"] == "uncertain" for c in checks) else "pass"
+        if report["status"] != declared:
+            raise ComplianceServiceError("总检查状态与逐项结论不一致")
+        for check in checks:
+            if check["status"] == "fail" and (not check["evidence"].strip() or check["evidence"] not in candidate
+                                                or not all(check[field].strip() for field in ("expected", "actual", "reason"))):
+                check["status"] = "uncertain"
+                check["reason"] += "；缺少可核对的原文证据，转为人工核对。"
+        failed = [c for c in checks if c["status"] == "fail"]
+        uncertain = [c for c in checks if c["status"] == "uncertain"]
+        report["status"] = "fail" if failed else "uncertain" if uncertain else "pass"
+        self._write(f"attempt_{self.attempt}_report.json", json.dumps(report, ensure_ascii=False, indent=2))
         if uncertain and not failed:
             messages = [f"参数「{parameter_label(c['parameter_key'])}」需人工核对：{c['reason']}" for c in uncertain]
             self.context.extras.setdefault("parameter_warnings", []).extend(messages)
@@ -287,19 +264,11 @@ def guard_manual_sources(context, paths, send, kind, *, allow_conflicts=False):
     if sources:
         review = ComplianceReview(context, kind, send)
         try:
-            if allow_conflicts:
-                # 预检不能耗尽本次生成的预算；至少留出取得候选的机会。
-                review.budget.max_calls = 1
-            with review.budget.activate():
-                review("\n".join(sources), preflight=True)
-        except (UpstreamParameterConflict, ComplianceServiceError, BudgetExhausted) as exc:
+            review("\n".join(sources), preflight=True)
+        except (UpstreamParameterConflict, ComplianceServiceError) as exc:
             if not allow_conflicts:
                 raise
             context.extras.setdefault("parameter_warnings", []).append(str(exc))
-        finally:
-            if allow_conflicts:
-                review.budget.max_calls = 6
-                context.extras["pending_lore_budget"] = review.budget
 
 
 def collect_parameter_warnings(result):

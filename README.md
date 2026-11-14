@@ -31,7 +31,7 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 ## 核心功能
 
-首页提供「切换到短视频脚本」：进入 v2 网文视频推广工作台，支持文章导入、小说推文与视频文案两个阶段、可编辑分镜、人物／场景／道具具体提示词、左侧 LLM 对话及 Markdown 文件导出。本次不接入图片或视频生成。功能、验证与设计入口见[短视频模块文档](docs/short_video/README.md)，目标模式提示见[编码 Prompt](docs/short_video/coding_prompt.md)。
+首页提供「切换到短视频脚本」：进入 v2 网文视频推广工作台，支持文章导入、两阶段改写、可编辑分镜、资产提示词、左侧 LLM 对话及 Markdown 导出。在“提示词 → 镜头”可手动导图，经内置 MCP 调用本地 ComfyUI 生成并播放视频；资产生图暂只保留配置。功能、验证与设计入口见[短视频模块文档](docs/short_video/README.md)，维护约定见[编码 Prompt](docs/short_video/coding_prompt.md)。
 
 世界设定支持[手动编辑](docs/lore_editing.md)，生成入口统一处理未保存作品参数并检查结果是否偏离要求，详见[生成参数一致性](docs/parameter_consistency.md)。
 
@@ -98,8 +98,8 @@ python -m core.evaluation.live_chapter_probe --output-dir quality_runs\live_sing
 python -m core.evaluation.live_story_quality --output-dir quality_runs\live_fixed_mystery_3ch
 ```
 
-三章运行器初次最多调用 24 次；若预算恰好用在第三章生成结束，可重复同一命令，程序会
-从已验收 ledger 和真实 trace 继续，只补缺失审阅，绝不重生成已存在的场景。若最终正文
+三章运行器不设置总调用次数上限；中断后可重复同一命令，从已验收 ledger 和真实 trace
+继续，只补缺失审阅，不重生成已存在的场景。若最终正文
 触发身体反应套语饱和，可在不改变事实、时间、人物知识或证据状态的前提下做语言收敛：
 
 ```powershell
@@ -268,7 +268,7 @@ NovelWriter 提供小说创作与短视频脚本两个工作区。
 
 ### 短视频脚本
 
-从首页切换到短视频脚本，按原文 → 小说推文 → 视频推广文案 → 分镜 → 资产与镜头提示词继续。生成使用 Agent Loop，默认首次生成后最多再修改生成两次；达到上限保留最新候选供手动编辑。左侧为纯聊天，不自动附加项目文档或修改稿件。当前只生成文字与提示词。
+从首页切换到短视频脚本，按原文 → 小说推文 → 视频推广文案 → 分镜 → 资产与镜头提示词继续。文字生成使用 Agent Loop，默认首次生成后最多再修改生成两次；达到上限保留最新候选供手动编辑。左侧为纯聊天，不自动附加项目文档或修改稿件。图生视频另由媒体任务执行，可直接手动导图，不依赖文字阶段完成；默认连接本地 ComfyUI 8188，工作流设置位于顶部“服务配置”。
 
 当前说明见[文档索引](./docs/README.md)和[短视频工作台](./docs/short_video/README.md)；开发历史统一见[开发日志](./DEVLOG.md)。
 

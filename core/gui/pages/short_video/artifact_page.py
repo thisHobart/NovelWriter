@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.short_video.v2.contracts import ArtifactRecord
 from core.short_video.v2.models import require
 from core.short_video.v2.prompts import INSTRUCTIONS
 from core.short_video.v2.storyboard_text import render_storyboard_text
@@ -140,16 +139,6 @@ class ArtifactPage(QWidget):
             self.workbench.update_shot_prompts()
         self.workbench.refresh()
         return True
-
-    def saved_record(self) -> ArtifactRecord:
-        require(not self.dirty, "EDIT_PENDING", "请先保存编辑")
-        require(self.record is not None, "INVALID_INPUT", "请先生成稿件")
-        require(
-            self.workbench.repository.current(self.key())["id"] == self.record["id"],
-            "TARGET_VERSION_CONFLICT",
-            "当前稿已变化，请核对历史版本",
-        )
-        return self.record
 
     def continue_creation(self) -> None:
         if not self.save():

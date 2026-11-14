@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -26,11 +27,10 @@ def settings_file() -> Path:
 
 def _read() -> dict:
     try:
-        document = json.loads(settings_file().read_text(encoding="utf-8"))
+        content = settings_file().read_text(encoding="utf-8")
     except FileNotFoundError:
         return {"version": 1, "providers": {}}
-    except (OSError, ValueError):
-        raise ValueError("无法读取模型配置文件 llm_settings.json，请检查文件权限或格式") from None
+    document = json.loads(content)
     if (not isinstance(document, dict) or document.get("version") != 1
             or not isinstance(document.get("providers"), dict)):
         raise ValueError("模型配置文件 llm_settings.json 格式不正确")
@@ -102,8 +102,12 @@ def save_provider(provider: str, base_url: str, api_key: str, model: str) -> Non
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-    except OSError:
-        raise ValueError("无法保存模型配置，请检查程序所在文件夹的写入权限") from None
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            failure = sys.exception()
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                if failure is None:
+                    raise
+                failure.add_note(f"清理临时配置文件失败：{type(cleanup_error).__name__}: {cleanup_error}")

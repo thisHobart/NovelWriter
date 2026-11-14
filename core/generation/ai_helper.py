@@ -8,6 +8,7 @@ import os  # noqa: F401  (kept for callers that reach through this module)
 from typing import Optional
 
 from dotenv import load_dotenv
+from openai import APIConnectionError, APIStatusError
 
 from . import api_providers
 from .api_providers import DEFAULT_API_MODEL
@@ -198,36 +199,32 @@ def send_prompt(prompt, model=None):
     print(f"Attempting to use model: {model}")
     _current_model = model
 
-    try:
-        return _with_empty_reply_retry(
-            model,
-            lambda: trace_model_call(
-                prompt=prompt,
-                backend=current_backend,
-                model=model,
-                invoke=lambda: (
-                    api_providers.send_messages(
-                        model,
-                        [{"role": "system", "content": ROLE_DESCRIPTION},
-                         {"role": "user", "content": prompt}],
-                        DEFAULT_MAX_TOKENS,
-                    ) if model in api_providers.PROVIDER_LABELS else
-                    _mp.send_prompt(prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS)
-                ),
+    return _with_empty_reply_retry(
+        model,
+        lambda: trace_model_call(
+            prompt=prompt,
+            backend=current_backend,
+            model=model,
+            invoke=lambda: (
+                api_providers.send_messages(
+                    model,
+                    [{"role": "system", "content": ROLE_DESCRIPTION},
+                     {"role": "user", "content": prompt}],
+                    DEFAULT_MAX_TOKENS,
+                ) if model in api_providers.PROVIDER_LABELS else
+                _mp.send_prompt(prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS)
             ),
-        )
-    except Exception as e:
-        print(f"Error calling model '{model}': {e}")
-        raise
+        ),
+    )
 
 
 def send_prompt_with_retry(prompt, model=None, max_retries=3):
-    """Send a prompt with automatic retry on failure.
+    """Send a prompt with bounded retries for temporary API failures.
 
     Args:
         prompt: The text prompt to send.
         model: Model name (used for API backend). If None, uses current model.
-        max_retries: Maximum number of retry attempts.
+        max_retries: Maximum total number of attempts, including the first call.
 
     Returns:
         Generated text from the LLM.
@@ -235,20 +232,16 @@ def send_prompt_with_retry(prompt, model=None, max_retries=3):
     if model is None:
         model = get_model()
 
-    last_error: Optional[Exception] = None
-
+    if max_retries <= 0:
+        raise ValueError("max_retries 必须大于 0")
     for attempt in range(max_retries):
         try:
             return send_prompt(prompt, model=model)
-        except Exception as e:
-            last_error = e
-            print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
-            if attempt < max_retries - 1:
-                continue
-
-    raise RuntimeError(
-        f"Model '{model}' failed after {max_retries} attempts. Last error: {last_error}"
-    )
+        except (APIConnectionError, APIStatusError) as exc:
+            if isinstance(exc, APIStatusError) and exc.status_code not in {408, 409, 429} and exc.status_code < 500:
+                raise
+            if attempt == max_retries - 1:
+                raise
 
 
 # --- Provider-specific functions (backward compatibility) ---

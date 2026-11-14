@@ -19,7 +19,6 @@ from core.generation.locks import project_lock
 from .contracts import ArtifactRecord, JsonObject, OperationResult
 from .models import (
     ACTIVE_RUNS,
-    ASSET_KINDS,
     ID_PATTERN,
     PROMPT_KINDS,
     RUN_STATUSES,
@@ -33,7 +32,7 @@ from .models import (
     timestamp,
 )
 from .storage import atomic_write_text
-from .validation import SPEC_FIELDS, bind_view_prompts, local_issues, validate_content
+from .validation import SPEC_FIELDS, bind_view_prompts, validate_content
 
 logger = logging.getLogger(__name__)
 
@@ -235,31 +234,6 @@ class ProjectRepository:
                 return False
         return True
 
-    def is_confirmed(self, record_id: str, *, state: JsonObject | None = None) -> bool:
-        state = self.load() if state is None else state
-        record = self.record(record_id, state=state)
-        confirmation = state["confirmations"].get(record_id)
-        reports = self.latest_reports(record_id, state=state)
-        if any(r["content"]["status"] == "unavailable" for r in reports):
-            return False
-        problems = [i for r in reports for i in r["content"].get("issues", [])]
-        if any(i["severity"] == "error" for i in problems):
-            return False
-        acknowledged = set((confirmation or {}).get("acknowledged_issue_ids", []))
-        if any(
-            i["severity"] == "warning"
-            and i.get("disposition", "open") == "open"
-            and i["id"] not in acknowledged
-            for i in problems
-        ):
-            return False
-        return bool(
-            confirmation
-            and confirmation.get("artifact_hash") == record["content_hash"]
-            and confirmation.get("input_binding_hash") == fingerprint(record["dependency_refs"])
-            and self.is_current(record_id, state=state)
-        )
-
     @contextmanager
     def transaction(self, expected_revision: int | None = None) -> Iterator[JsonObject]:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -321,7 +295,7 @@ class ProjectRepository:
         for run in state["runs"]:
             run["output_refs"] = [ref for ref in run["output_refs"] if ref not in discarded]
             if run["stage"] in {"asset_spec", "view_prompts", "shot_prompts"}:
-                # Completed prompt runs keep task status, not another copy of old prompt text.
+                # Include the retired view stage when cleaning existing project history.
                 run.pop("command", None)
                 run["snapshot"].pop("input_refs", None)
 
@@ -419,97 +393,6 @@ class ProjectRepository:
             )
             state["current"][record["key"]] = record_id
         return record
-
-    def confirm(
-        self,
-        record_id: str,
-        *,
-        expected_revision: int,
-        acknowledged: list[str] | None = None,
-        reason: str = "",
-    ) -> JsonObject:
-        acknowledged = acknowledged or []
-        with self.transaction(expected_revision) as state:
-            record = self.record(record_id, state=state)
-            require(
-                state["current"].get(record["key"]) == record_id
-                and self.is_current(record_id, state=state),
-                "STALE_INPUT",
-                "只能确认已查看的当前有效版本",
-            )
-            config = self.current("config", state=state)
-            from .validation import walk_source_refs
-
-            if record["kind"] in {
-                "novel_copy",
-                "video_copy",
-                "asset_catalog",
-                "storyboard",
-                *ASSET_KINDS.values(),
-            }:
-                require(
-                    bool(list(walk_source_refs(record["content"]))),
-                    "CHECK_BLOCKED",
-                    "请先补充可定位的原文依据",
-                )
-            issues = local_issues(
-                record["kind"], record["content"], config["content"] if config else None
-            )
-            for report in self.latest_reports(record_id, state=state):
-                require(
-                    report["content"]["status"] != "unavailable",
-                    "CHECK_BLOCKED",
-                    "检查不可用，请重新检查后确认；不会显示为已通过",
-                )
-                issues.extend(report["content"].get("issues", []))
-            require(
-                not any(i["severity"] == "error" for i in issues),
-                "CHECK_BLOCKED",
-                "请先修复结构或引用错误",
-            )
-            warnings = {
-                i["id"]
-                for i in issues
-                if i["severity"] == "warning" and i.get("disposition", "open") == "open"
-            }
-            require(
-                warnings <= set(acknowledged) and (not warnings or bool(reason.strip())),
-                "CHECK_BLOCKED",
-                "请核对提醒项，填写接受理由后再确认",
-            )
-            confirmation = {
-                "artifact_id": record_id,
-                "artifact_hash": record["content_hash"],
-                "input_binding_hash": fingerprint(record["dependency_refs"]),
-                "actor": "human",
-                "acknowledged_issue_ids": acknowledged,
-                "reason": reason,
-                "created_at": timestamp(),
-            }
-            state["confirmations"][record_id] = confirmation
-        return confirmation
-
-    def latest_reports(
-        self, target_id: str, *, state: JsonObject | None = None
-    ) -> list[ArtifactRecord]:
-        state = self.load() if state is None else state
-        latest = {}
-        for report_id in state["reports"].get(target_id, []):
-            report = self.record(report_id, state=state)
-            latest[report["content"]["engine"]] = report
-        return list(latest.values())
-
-    def save_report(
-        self, target_id: str, content: JsonObject, *, expected_revision: int
-    ) -> ArtifactRecord:
-        with self.transaction(expected_revision) as state:
-            target = self.record(target_id, state=state)
-            value = {**deepcopy(content), "target_version_id": target_id}
-            report = self._save(
-                state, "check_report", value, {target["key"]: target_id}, select=False
-            )
-            state["reports"].setdefault(target_id, []).append(report["id"])
-        return report
 
     @contextmanager
     def generation_lock(self) -> Iterator[None]:

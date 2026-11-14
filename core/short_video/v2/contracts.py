@@ -13,25 +13,6 @@ RequestRecorder: TypeAlias = Callable[[str, str, str | None], None]
 OperationResult = TypeVar("OperationResult")
 OperationParameters = ParamSpec("OperationParameters")
 
-READ_ONLY_CONTENT_FIELDS = {
-    "id",
-    "asset_id",
-    "variant_id",
-    "shot_id",
-    "view_id",
-    "source_id",
-    "spec_version_id",
-    "storyboard_version_id",
-    "order",
-    "start_ms",
-    "end_ms",
-    "content_hash",
-    "spec_input_hash",
-    "template_ref",
-    "prompts_generated",
-}
-
-
 class VideoTask(Protocol):
     token: CancelToken
     output_dir: str

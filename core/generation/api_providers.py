@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from openai import OpenAI, AsyncOpenAI
+from openai import OpenAI, AsyncOpenAI, APIConnectionError, APIStatusError
 
 DEFAULT_API_MODEL = "hosted-llm"
 PROVIDER_LABELS = {
@@ -116,32 +116,8 @@ def send_messages(provider: str, messages: list[dict], max_tokens: int = 16384) 
     config = get_config(provider)
     # Explicit credentials and endpoint prevent OpenAI environment settings
     # from redirecting requests for a different service.
-    from core.generation.lore_run import ACTIVE_BUDGET
-    budget = ACTIVE_BUDGET.get()
-    options = {}
-    if budget is not None:
-        import asyncio
-        limit = max(0.001, min(120.0, budget.remaining))
-        options.update(timeout=limit, max_retries=0)
-        async def bounded_request():
-            async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, **options) as client:
-                # SDK 的 read timeout 按网络分段计时；另外限制整次请求的墙钟时间，
-                # 避免持续慢速返回绕过 120 秒 / 剩余总时间。
-                return await asyncio.wait_for(client.chat.completions.create(
-                    model=config.model, messages=messages, max_tokens=max_tokens,
-                    temperature=0.7, extra_body=request_options(provider),
-                ), timeout=limit)
-        try:
-            response = asyncio.run(bounded_request())
-        except TimeoutError:
-            # Windows event-loop timers may fire just before monotonic's deadline.
-            # A timeout governed by the remaining total budget is terminal even
-            # when a few clock ticks still remain; a 120s per-request cap is not.
-            if limit < 120.0:
-                budget.deadline_expired = True
-            raise
-        return response.choices[0].message.content or ""
-    with OpenAI(api_key=config.api_key, base_url=config.base_url, **options) as client:
+    # 重试由显式调用方管理，不叠加 SDK 自动重试。
+    with OpenAI(api_key=config.api_key, base_url=config.base_url, max_retries=0) as client:
         response = client.chat.completions.create(
             model=config.model,
             messages=messages,
@@ -163,10 +139,13 @@ class ConfiguredAPIInterface:
 
     def generate_with_retry(self, prompt: str, max_tokens: int = 16384,
                             max_retries: int = 3) -> str:
+        if max_retries <= 0:
+            raise ValueError("max_retries 必须大于 0")
         for attempt in range(max_retries):
             try:
                 return self.generate(prompt, max_tokens)
-            except Exception:
+            except (APIConnectionError, APIStatusError) as exc:
+                if isinstance(exc, APIStatusError) and exc.status_code not in {408, 409, 429} and exc.status_code < 500:
+                    raise
                 if attempt == max_retries - 1:
                     raise
-        raise ValueError("max_retries 必须大于 0")

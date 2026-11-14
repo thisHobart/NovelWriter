@@ -30,11 +30,8 @@ from core.generation.story_ledger import StoryLedgerManager
 
 RUN_ID = "live_style_polish_v1"
 LIVE_MODEL = "hosted-llm"
-MAX_CALLS = 8
 
 
-class PolishCallBudgetExceeded(RuntimeError):
-    pass
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -267,19 +264,15 @@ def run_style_polish(
     set_backend("api", LIVE_MODEL)
     calls = 0
 
-    def budgeted_send(prompt: str, model: str | None = None) -> str:
+    def recorded_send(prompt: str, model: str | None = None) -> str:
         nonlocal calls
-        if calls >= MAX_CALLS:
-            raise PolishCallBudgetExceeded(
-                f"语言修订真实调用达到上限 {MAX_CALLS}，未改写正式章节"
-            )
         calls += 1
         return send_prompt(prompt, model=model)
 
     reviewer = DomainReviewAgent(
         model=LIVE_MODEL,
         profile=get_domain_profile("legal_suspense"),
-        send_prompt_fn=budgeted_send,
+        send_prompt_fn=recorded_send,
     )
     started = time.perf_counter()
     previous_merged_data = (

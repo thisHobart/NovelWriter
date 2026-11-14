@@ -1,9 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Windows single-file desktop build: python -m PyInstaller NovelWriter.spec."""
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 datas, binaries, hiddenimports = collect_all("llm_backends")
+datas += [(str(Path(SPECPATH) / "core/short_video/v2/skills/short-video-storyboard/SKILL.md"),
+           "core/short_video/v2/skills/short-video-storyboard")]
+datas += [(str(Path(SPECPATH) / "core/short_video/v2/workflows/minimax_h3_reference.json"),
+           "core/short_video/v2/workflows")]
+hiddenimports += collect_submodules("mcp")
+datas += copy_metadata("mcp") + copy_metadata("mcp-types")
 hiddenimports += collect_submodules("core.config.genre_configs")
 
 a = Analysis(

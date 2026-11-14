@@ -10,7 +10,7 @@ from openai import APIError
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
-from .llm import BudgetExhausted, RequestBudget, ScriptLLM
+from .llm import ScriptLLM
 from .models import (
     ASSET_KINDS,
     PROMPT_KINDS,
@@ -27,10 +27,11 @@ from .models import (
     validate_model_snapshot,
 )
 from .project_service import ProjectService
-from .prompt_compiler import compile_asset, compile_shots, finalize_asset_prompts, plan_views
+from .prompt_compiler import compile_shots, finalize_asset_prompts
 from .prompts import INSTRUCTIONS, stage_prompt
 from .repository import ProjectRepository
 from .review import QualityCheckResult, check_candidate
+from .storyboard_skill import load_storyboard_skill
 from .validation import rows, strings, validate_content
 
 PREREQUISITES = {
@@ -42,7 +43,7 @@ PREREQUISITES = {
 }
 MAX_CONTEXT_CHARS = 48000
 DEFAULT_MAX_RETRIES = 2
-STAGE_MAX_CALLS = 2 * (1 + DEFAULT_MAX_RETRIES)
+MAX_FORMAT_RETRIES = 2
 
 
 def normalize_catalog(content: JsonObject, previous: ArtifactRecord | None = None) -> JsonObject:
@@ -152,13 +153,11 @@ class WorkflowService:
             }
         context = {"article": article, "config": config["content"]}
         candidate = self.repository.record(target_id, state=state) if target_id else None
-        if stage in {"view_prompts", "video_motion_prompt", "shot_prompts"}:
+        if stage == "shot_prompts":
             require(candidate is not None, "INVALID_INPUT", "请选择需补充提示词的版本")
             kind = candidate["kind"]
             require(
-                (stage == "view_prompts" and kind in ASSET_KINDS.values())
-                or (stage == "video_motion_prompt" and kind == "storyboard")
-                or (stage == "shot_prompts" and kind == "prompt_bundle"),
+                kind == "prompt_bundle",
                 "INVALID_INPUT",
                 "提示词目标类型不匹配",
             )
@@ -168,22 +167,21 @@ class WorkflowService:
                 "目标内容基于旧来源，请重新生成或明确沿用",
             )
             deps = deepcopy(candidate["dependency_refs"])
-            if stage == "shot_prompts":
-                board = self.repository.record(deps["storyboard"], state=state)
-                article = ProjectService(self.repository).context(
-                    state=state, selection_id=board["dependency_refs"]["selection"]
-                )
-                context = {
-                    "article": article,
-                    "storyboard": board,
-                    "asset_specs": [
-                        self.repository.record(ref, state=state)
-                        for ref in candidate["content"]["asset_spec_refs"]
-                    ],
-                    "config": self.repository.record(
-                        board["dependency_refs"]["config"], state=state
-                    )["content"],
-                }
+            board = self.repository.record(deps["storyboard"], state=state)
+            article = ProjectService(self.repository).context(
+                state=state, selection_id=board["dependency_refs"]["selection"]
+            )
+            context = {
+                "article": article,
+                "storyboard": board,
+                "asset_specs": [
+                    self.repository.record(ref, state=state)
+                    for ref in candidate["content"]["asset_spec_refs"]
+                ],
+                "config": self.repository.record(
+                    board["dependency_refs"]["config"], state=state
+                )["content"],
+            }
         else:
             for key in PREREQUISITES[stage]:
                 record = (
@@ -290,11 +288,11 @@ class WorkflowService:
         )
         custom = self.repository.current(f"prompt_template:{stage}", state=state)
         instruction = custom["content"]["instruction"] if custom else INSTRUCTIONS[stage]
+        if stage == "storyboard":
+            # Freeze once: generation, review and retries use the same skill text.
+            instruction += "\n\n专业分镜 Skill：\n" + load_storyboard_skill()
         if shot_ids:
             context["selected_shot_ids"] = shot_ids
-        if stage == "view_prompts":
-            candidate = deepcopy(candidate)
-            candidate["content"]["views"] = plan_views(kind, candidate["content"])
         prompt = stage_prompt(
             stage,
             context,
@@ -340,7 +338,6 @@ class WorkflowService:
         *,
         token: CancelToken | None = None,
         report: ProgressReporter | None = None,
-        budget: RequestBudget | None = None,
         on_request: RequestRecorder | None = None,
     ) -> JsonObject:
         """Run the Agent Loop; max_retries excludes the initial generation."""
@@ -350,9 +347,6 @@ class WorkflowService:
         require(
             type(max_retries) is int and max_retries >= 0, "INVALID_INPUT", "重试次数必须为非负整数"
         )
-        stage_max_calls = 2 * (1 + max_retries)
-        budget = budget or RequestBudget(max_calls=stage_max_calls)
-        call_limit = min(budget.max_calls, budget.calls + stage_max_calls)
         with self.repository.generation_lock():
             run, created = self.repository.start_run(
                 command,
@@ -362,11 +356,6 @@ class WorkflowService:
                     "model": command["model"],
                     "prompt_ref": command["prompt_ref"],
                     "model_snapshot": command["model_snapshot"],
-                    "budget": {
-                        "stage_max_calls": call_limit - budget.calls,
-                        "task_max_calls": budget.max_calls,
-                        "remaining_seconds": budget.remaining,
-                    },
                 },
             )
             if not created:
@@ -402,13 +391,13 @@ class WorkflowService:
                     on_request("", "", error)
 
             send = ScriptLLM(
-                command["model"], budget, token=token, transport=self.transport, record=record_call
+                command["model"], token=token, transport=self.transport, record=record_call
             )
             candidates = []
 
             def generate_candidate(prompt: str) -> ArtifactRecord:
                 generation_prompt = prompt
-                while budget.calls < call_limit:
+                for format_attempt in range(MAX_FORMAT_RETRIES + 1):
                     report("正在生成…" if not candidates else "正在调整…", -1)
                     raw = send(prompt)
                     try:
@@ -420,7 +409,7 @@ class WorkflowService:
                         if exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}:
                             raise
                         token.raise_if_cancelled()
-                        if budget.calls >= call_limit or not budget.can_spend():
+                        if format_attempt == MAX_FORMAT_RETRIES:
                             raise WorkspaceError(
                                 "INVALID_OUTPUT", "未取得可用稿件：" + str(exc) + "；原稿保留"
                             ) from exc
@@ -459,7 +448,6 @@ class WorkflowService:
                         ]
                     token.raise_if_cancelled()
                     return version
-                raise BudgetExhausted("本阶段请求预算已耗尽")
 
             latest = None
             retries_used = 0
@@ -473,8 +461,6 @@ class WorkflowService:
                     latest = generate_candidate(prompt)
                     retries_used = attempt
                     call_type = "quality_check"
-                    if budget.calls >= call_limit:
-                        raise BudgetExhausted("没有剩余检查预算")
                     result = (
                         self.quality_check(command, latest)
                         if self.quality_check is not None
@@ -483,9 +469,6 @@ class WorkflowService:
                     token.raise_if_cancelled()
                     review_status = "passed" if result.passed else "issues"
                     if result.passed or attempt == max_retries:
-                        break
-                    if call_limit - budget.calls < 2 or not budget.can_spend(2):
-                        review_status = "incomplete"
                         break
                     prompt = (
                         command["prompt"]
@@ -497,11 +480,11 @@ class WorkflowService:
                         "CONTEXT_TOO_LARGE",
                         "Agent Loop 修改上下文超限",
                     )
-            except (APIError, TimeoutError, ConnectionError, BudgetExhausted) as exc:
+            except (APIError, TimeoutError, ConnectionError) as exc:
                 if latest is None:
                     self.repository.record_run_failure(run["id"], exc, cancelled=token.cancelled)
                     raise
-                review_status = "incomplete" if isinstance(exc, BudgetExhausted) else "unavailable"
+                review_status = "unavailable"
             except WorkspaceError as exc:
                 if latest is None or exc.code not in {
                     "INVALID_INPUT",
@@ -604,30 +587,6 @@ class WorkflowService:
                     "INVALID_OUTPUT",
                     "修订不能改变资产身份或状态编号",
                 )
-                if command["stage"] == "view_prompts":
-                    require(
-                        all(
-                            content.get(field) == value
-                            for field, value in original.items()
-                            if field != "views"
-                        ),
-                        "INVALID_OUTPUT",
-                        "视图提示词任务不能改写当前设定",
-                    )
-                    planned = plan_views(kind, original)
-                    content = finalize_asset_prompts(
-                        kind, content, expected_view_ids=[view["view_id"] for view in planned]
-                    )
-            if command["stage"] == "video_motion_prompt":
-
-                def fixed(shot: JsonObject) -> JsonObject:
-                    return {k: v for k, v in shot.items() if k != "video_motion_prompt"}
-
-                require(
-                    [fixed(s) for s in content["shots"]] == [fixed(s) for s in original["shots"]],
-                    "INVALID_OUTPUT",
-                    "视频动作提示词任务不能改写镜头其他字段",
-                )
             if kind == "prompt_bundle":
                 require(
                     all(
@@ -681,24 +640,6 @@ class WorkflowService:
             )
             content = finalize_asset_prompts(kind, content)
         return content
-
-    def compile_asset_prompts(self, version_id: str, *, expected_revision: int) -> ArtifactRecord:
-        record = self.repository.record(version_id)
-        require(
-            self.repository.is_current(version_id)
-            and self.repository.current(record["key"])["id"] == version_id,
-            "STALE_INPUT",
-            "资产设定不是当前有效版本",
-        )
-        content = compile_asset(record["kind"], record["content"])
-        return self.repository.save(
-            record["kind"],
-            content,
-            record["dependency_refs"],
-            parent_id=version_id,
-            expected_revision=expected_revision,
-            metadata={"compiler": "article-asset-v1"},
-        )
 
     def compile_storyboard_prompts(
         self, *, expected_revision: int, use_stale: bool = False

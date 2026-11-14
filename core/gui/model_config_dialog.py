@@ -1,6 +1,8 @@
 """Four-field model-service settings in the desktop application's visual style."""
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QCompleter, QDialog, QGridLayout, QHBoxLayout, QLabel,
@@ -149,10 +151,11 @@ class ModelConfigDialog(QDialog):
             values = self._drafts.get(self._current)
             if values is None:
                 values = form_values(self._current)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).error("读取模型配置失败", exc_info=True)
             values = {"base_url": "", "api_key": "", "model": ""}
             self._load_error = True
-            self._show_error(str(exc))
+            self._show_error(f"{type(exc).__name__}: {exc}")
         self.save_button.setEnabled(not self._load_error)
         self.test_button.setEnabled(not self._load_error)
         self.fetch_models_button.setEnabled(not self._load_error)
@@ -226,8 +229,9 @@ class ModelConfigDialog(QDialog):
             return
         try:
             save_provider(self.selected_provider(), **self._values())
-        except ValueError as exc:
-            self._show_error(str(exc))
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).error("保存模型配置失败", exc_info=True)
+            self._show_error(f"{type(exc).__name__}: {exc}")
             return
         self.accept()
 
@@ -264,7 +268,7 @@ class ModelConfigDialog(QDialog):
             disable=self._request_controls(),
             busy_button=self.test_button, busy_text="测试中…",
             on_success=success,
-            on_error=lambda exc: self._set_test_status("error", f"连接测试失败：{exc}"),
+            on_error=lambda exc: self._set_test_status("error", f"连接测试失败：{type(exc).__name__}: {exc}"),
         )
 
     def reject(self):

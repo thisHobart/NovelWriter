@@ -221,12 +221,8 @@ class ChapterWritingAgent(BaseAgent):
         # Initialize review agent if available
         self.review_agent = None
         if REVIEW_AVAILABLE:
-            try:
-                self.review_agent = ReviewAndRetryAgent()
-                self.logger.info("Review system initialized")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize review system: {e}")
-                self.review_agent = None
+            self.review_agent = ReviewAndRetryAgent()
+            self.logger.info("Review system initialized")
 
     @staticmethod
     def _detect_structured_workspace(output_dir: str) -> bool:
@@ -260,73 +256,64 @@ class ChapterWritingAgent(BaseAgent):
     
     def process_task(self, task_data: Dict[str, Any]) -> AgentResult:
         """Process different types of chapter writing tasks."""
-        try:
-            task_type = task_data.get("task_type")
-            
-            if task_type == "analyze_structure":
-                chapter_info_list, story_params = self.analyze_chapter_structure()
-                return AgentResult(
-                    success=True,
-                    data={
-                        "chapter_info_list": [asdict(info) for info in chapter_info_list],
-                        "story_parameters": story_params,
-                        "total_chapters": len(chapter_info_list)
-                    },
-                    messages=[f"结构分析完成：找到 {len(chapter_info_list)} 章"],
-                    metrics={}
-                )
-                
-            elif task_type == "write_chapters":
-                chapter_info_list = task_data.get("chapter_info_list", [])
-                if not chapter_info_list:
-                    # Generate chapter info if not provided
-                    chapter_info_list, _ = self.analyze_chapter_structure()
-                
-                batch_size = task_data.get("batch_size", 1)
-                plan = self.create_writing_plan(chapter_info_list, batch_size)
-                
-                return self.write_chapters_batch(chapter_info_list, plan)
-                
-            elif task_type == "write_single_chapter":
-                chapter_number = task_data.get("chapter_number")
-                chapter_info_list = task_data.get("chapter_info_list", [])
-                
-                if not chapter_info_list:
-                    chapter_info_list, _ = self.analyze_chapter_structure()
-                
-                # Find the specific chapter
-                target_chapter = None
-                for chapter_info in chapter_info_list:
-                    if chapter_info.chapter_number == chapter_number:
-                        target_chapter = chapter_info
-                        break
-                
-                if not target_chapter:
-                    return AgentResult(
-                        success=False,
-                        data={},
-                        messages=[f"在故事结构中找不到第 {chapter_number} 章"],
-                        metrics={}
-                    )
-                
-                return self._write_single_chapter(target_chapter)
-                
-            else:
+        task_type = task_data.get("task_type")
+
+        if task_type == "analyze_structure":
+            chapter_info_list, story_params = self.analyze_chapter_structure()
+            return AgentResult(
+                success=True,
+                data={
+                    "chapter_info_list": [asdict(info) for info in chapter_info_list],
+                    "story_parameters": story_params,
+                    "total_chapters": len(chapter_info_list)
+                },
+                messages=[f"结构分析完成：找到 {len(chapter_info_list)} 章"],
+                metrics={}
+            )
+
+        elif task_type == "write_chapters":
+            chapter_info_list = task_data.get("chapter_info_list", [])
+            if not chapter_info_list:
+                # Generate chapter info if not provided
+                chapter_info_list, _ = self.analyze_chapter_structure()
+
+            batch_size = task_data.get("batch_size", 1)
+            plan = self.create_writing_plan(chapter_info_list, batch_size)
+
+            return self.write_chapters_batch(chapter_info_list, plan)
+
+        elif task_type == "write_single_chapter":
+            chapter_number = task_data.get("chapter_number")
+            chapter_info_list = task_data.get("chapter_info_list", [])
+
+            if not chapter_info_list:
+                chapter_info_list, _ = self.analyze_chapter_structure()
+
+            # Find the specific chapter
+            target_chapter = None
+            for chapter_info in chapter_info_list:
+                if chapter_info.chapter_number == chapter_number:
+                    target_chapter = chapter_info
+                    break
+
+            if not target_chapter:
                 return AgentResult(
                     success=False,
                     data={},
-                    messages=[f"未知任务类型：{task_type}"],
+                    messages=[f"在故事结构中找不到第 {chapter_number} 章"],
                     metrics={}
                 )
-                
-        except Exception as e:
-            self.logger.error(f"Error processing task: {e}")
+
+            return self._write_single_chapter(target_chapter)
+
+        else:
             return AgentResult(
                 success=False,
                 data={},
-                messages=[f"任务处理失败：{str(e)}"],
+                messages=[f"未知任务类型：{task_type}"],
                 metrics={}
             )
+
         
     def analyze_chapter_structure(self) -> Tuple[List[ChapterInfo], Dict[str, Any]]:
         """
@@ -386,15 +373,12 @@ class ChapterWritingAgent(BaseAgent):
             from copy import deepcopy
             return deepcopy(snapshot)
         params = {}
-        try:
-            if os.path.exists(parameters_file):
-                with open(parameters_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if ":" in line:
-                            key, value = line.split(":", 1)
-                            params[key.strip()] = value.strip()
-        except Exception as e:
-            self.logger.error(f"Error loading parameters: {e}")
+        if os.path.exists(parameters_file):
+            with open(parameters_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        params[key.strip()] = value.strip()
             
         return params
 
@@ -531,52 +515,49 @@ class ChapterWritingAgent(BaseAgent):
                 outline_path = legacy_outline_path
         
         chapters = []
-        try:
-            if os.path.exists(outline_path):
-                content = open_file(outline_path)
-                chapter_numbers, numbering_warning = resolve_section_chapter_numbers(
-                    parse_chapter_numbers(content),
-                    start_chapter,
-                    claimed_chapters or (),
+        if os.path.exists(outline_path):
+            content = open_file(outline_path)
+            chapter_numbers, numbering_warning = resolve_section_chapter_numbers(
+                parse_chapter_numbers(content),
+                start_chapter,
+                claimed_chapters or (),
+            )
+            if numbering_warning:
+                self.logger.warning(
+                    "Section '%s' chapter numbering: %s", section_name, numbering_warning
                 )
-                if numbering_warning:
-                    self.logger.warning(
-                        "Section '%s' chapter numbering: %s", section_name, numbering_warning
-                    )
 
-                for chapter_num in chapter_numbers:
-                    
-                    # Determine scene plan file using directory manager
-                    scene_plans_dir = self.dir_manager.get_scene_plans_dir()
-                    scene_plan_file = f"{scene_plans_dir}/scenes_{safe_struct}_{safe_section}_ch{chapter_num}.md"
-                    scene_plan_path = os.path.join(self.output_dir, scene_plan_file)
-                    if not os.path.exists(scene_plan_path):
-                        legacy_scene_path = os.path.join(
-                            self.output_dir,
-                            "detailed_scene_plans",
-                            os.path.basename(scene_plan_file),
-                        )
-                        if os.path.exists(legacy_scene_path):
-                            scene_plan_path = legacy_scene_path
-                            scene_plan_file = os.path.relpath(legacy_scene_path, self.output_dir)
-                    
-                    # Determine output file using directory manager
-                    chapters_dir = self.dir_manager.get_chapters_dir()
-                    output_file = f"{chapters_dir}/chapter_{chapter_num}.md"
-                    output_path = os.path.join(self.output_dir, output_file)
-                    
-                    chapter_info = ChapterInfo(
-                        chapter_number=chapter_num,
-                        section_name=section_name,
-                        scene_plan_file=scene_plan_file,
-                        output_file=output_file,
-                        exists=self._is_completed_chapter(output_path, chapter_num),
-                        plan_exists=os.path.isfile(scene_plan_path),
+            for chapter_num in chapter_numbers:
+
+                # Determine scene plan file using directory manager
+                scene_plans_dir = self.dir_manager.get_scene_plans_dir()
+                scene_plan_file = f"{scene_plans_dir}/scenes_{safe_struct}_{safe_section}_ch{chapter_num}.md"
+                scene_plan_path = os.path.join(self.output_dir, scene_plan_file)
+                if not os.path.exists(scene_plan_path):
+                    legacy_scene_path = os.path.join(
+                        self.output_dir,
+                        "detailed_scene_plans",
+                        os.path.basename(scene_plan_file),
                     )
-                    chapters.append(chapter_info)
-                    
-        except Exception as e:
-            self.logger.error(f"Error analyzing section {section_name}: {e}")
+                    if os.path.exists(legacy_scene_path):
+                        scene_plan_path = legacy_scene_path
+                        scene_plan_file = os.path.relpath(legacy_scene_path, self.output_dir)
+
+                # Determine output file using directory manager
+                chapters_dir = self.dir_manager.get_chapters_dir()
+                output_file = f"{chapters_dir}/chapter_{chapter_num}.md"
+                output_path = os.path.join(self.output_dir, output_file)
+
+                chapter_info = ChapterInfo(
+                    chapter_number=chapter_num,
+                    section_name=section_name,
+                    scene_plan_file=scene_plan_file,
+                    output_file=output_file,
+                    exists=self._is_completed_chapter(output_path, chapter_num),
+                    plan_exists=os.path.isfile(scene_plan_path),
+                )
+                chapters.append(chapter_info)
+
             
         return chapters
         
@@ -735,14 +716,6 @@ class ChapterWritingAgent(BaseAgent):
                     # 已写完的章节保留，未开始的章节直接放弃。
                     cancellation_message = str(cancelled)
                     self.logger.info("Chapter batch cancelled before Chapter %s", chapter_num)
-                    break
-                except Exception as e:
-                    error_msg = f"第 {chapter_num} 章：{str(e)}"
-                    errors.append(error_msg)
-                    blocked_chapter, blocked_reason = chapter_num, str(e)
-                    self.logger.error(
-                        f"Error writing Chapter {chapter_num}: {e}", exc_info=True
-                    )
                     break
             
             # Perform batch-level review if we have chapter reviews
@@ -995,329 +968,315 @@ class ChapterWritingAgent(BaseAgent):
 
     def _write_single_chapter(self, chapter_info: ChapterInfo) -> AgentResult:
         """Write a single chapter or short story using the existing writing logic."""
-        try:
-            # Check if scene plan exists
-            scene_plan_path = os.path.join(self.output_dir, chapter_info.scene_plan_file)
-            if not os.path.exists(scene_plan_path):
-                return AgentResult(
-                    success=False,
-                    data={},
-                    messages=[f"找不到场景规划：{chapter_info.scene_plan_file}"],
-                    metrics={}
-                )
-                
-            # Load required context
-            context = self._load_writing_context()
-            
-            # Determine if this is a short story
-            is_short_story = chapter_info.section_name == "Complete Short Story"
-            
-            # Load scene plan
-            scenes_content = open_file(scene_plan_path)
-            if not scenes_content.strip():
-                return AgentResult(
-                    success=False,
-                    data={},
-                    messages=[f"场景规划为空：{chapter_info.scene_plan_file}"],
-                    metrics={}
-                )
-
-            # Legacy domain prompts demonstrated C001/E001 in every chapter.
-            # Repair a colliding contract before spending calls on prose; the
-            # creative scene Markdown remains unchanged.
-            manager = StoryLedgerManager(self.output_dir)
-            contract = manager.load_contract(chapter_info.chapter_number, scenes_content)
-            if contract is not None:
-                try:
-                    profile = manager.locked_profile()
-                except (FileNotFoundError, OSError, ValueError):
-                    profile = None
-                profile = profile or resolve_domain_profile(context.get("parameters", {}))
-                if has_domain_id_collision(
-                    contract,
-                    self.output_dir,
-                    chapter_info.chapter_number,
-                    profile=profile,
-                ):
-                    resolution = resolve_domain_identities(
-                        contract,
-                        self.output_dir,
-                        chapter_info.chapter_number,
-                        self._get_selected_model(),
-                        send_prompt,
-                        profile=profile,
-                    )
-                    for warning in resolution.warnings:
-                        self.logger.warning(
-                            "Chapter %s semantic contract warning: %s",
-                            chapter_info.chapter_number,
-                            warning,
-                        )
-                    if resolution.contract != contract:
-                        manager.save_contract(
-                            chapter_info.chapter_number,
-                            resolution.contract,
-                            scenes_content,
-                        )
-                        self.logger.info(
-                            "Normalised legacy domain IDs in Chapter %s before prose generation",
-                            chapter_info.chapter_number,
-                        )
-                
-            # Parse scenes
-            scenes = self._parse_scenes(scenes_content)
-            if not scenes:
-                return AgentResult(
-                    success=False,
-                    data={},
-                    messages=[f"规划中没有找到场景：{chapter_info.scene_plan_file}"],
-                    metrics={}
-                )
-                
-            # 所有题材（含短篇）都走同一条设计-生成-审阅闭环；具体的评分维度、
-            # 契约字段和门槛由领域档案决定。未通过闸门的正文不会落到稿件目录。
-            scene_reviews = []
-            quality_loop = ChapterGenerationLoop(
-                output_dir=self.output_dir,
-                model=self._get_selected_model(),
-                logger=self.logger,
-                cancel_token=self.cancel_token,
-                require_planning_contract=self.require_planning_contract,
-            )
-
-            def generate_scene(**kwargs):
-                return self._generate_scene_prose(
-                    chapter_info.chapter_number,
-                    kwargs["scene_number"],
-                    kwargs["scene_plan"],
-                    context,
-                    is_short_story=is_short_story,
-                    previous_scene_tail=kwargs.get("previous_scene_tail", ""),
-                    next_scene_plan=kwargs.get("next_scene_plan", ""),
-                    chapter_contract=kwargs.get("contract"),
-                    profile=kwargs.get("profile"),
-                    continuity_rules=kwargs.get("continuity_rules", ()),
-                )
-
-            def save_revised_plan(revised_plan: str) -> None:
-                archive_dir = os.path.join(
-                    self.output_dir,
-                    "archive",
-                    "quality_loop",
-                    "scene_plans",
-                )
-                os.makedirs(archive_dir, exist_ok=True)
-                base_name = os.path.splitext(os.path.basename(scene_plan_path))[0]
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                archive_path = os.path.join(
-                    archive_dir,
-                    f"{base_name}_before_{timestamp}.md",
-                )
-                write_file(archive_path, scenes_content)
-                write_file(scene_plan_path, revised_plan)
-                self.logger.info("Quality loop revised scene plan; original archived at %s", archive_path)
-
-            try:
-                domain_loop_result = quality_loop.run(
-                    chapter_number=chapter_info.chapter_number,
-                    plan_content=scenes_content,
-                    parameters=context.get("parameters", {}),
-                    lore=context.get("lore", ""),
-                    generate_scene=generate_scene,
-                    on_plan_revised=save_revised_plan,
-                )
-            except QualityGateError as gate_error:
-                archived = archive_failed_generation(
-                    self.output_dir,
-                    chapter_info.chapter_number,
-                    gate_error.partial_scenes,
-                    label="short_story" if is_short_story else "chapter",
-                )
-                self.logger.error(
-                    "Chapter %s failed the quality gate: %s%s",
-                    chapter_info.chapter_number,
-                    gate_error,
-                    f" Partial prose archived at {archived}." if archived else "",
-                )
-                # 闸门手上的结论收成一份待复审记录：这一稿正文、按严重程度排好的
-                # 问题清单、以及重修与放行要用的现场，全在一个文件里。此前这些散
-                # 在归档目录和评审目录两处，作者得自己对时间戳才能拼出问题是什么。
-                record = pending_review.build(
-                    chapter_info.chapter_number,
-                    message=str(gate_error),
-                    review=gate_error.review,
-                    prose="\n\n---\n\n".join(gate_error.partial_scenes),
-                    prose_path=archived,
-                    stage=(
-                        pending_review.STAGE_CHAPTER
-                        if gate_error.snapshot
-                        else pending_review.STAGE_SCENE
-                    ),
-                    snapshot=gate_error.snapshot,
-                    verdict_unavailable=gate_error.verdict_unavailable,
-                )
-                record_path = pending_review.save(record, self.output_dir)
-                message = str(gate_error)
-                if record.components:
-                    message += f"（{record.verdict}）"
-                message += f"；{record.headline}，已标为待复审"
-                return AgentResult(
-                    success=False,
-                    data={
-                        "archived_partial_prose": archived,
-                        "pending_review": record_path,
-                        "pending_review_chapter": chapter_info.chapter_number,
-                    },
-                    messages=[message],
-                    metrics={},
-                )
-
-            for waiver in domain_loop_result.gate_waivers:
-                self.logger.warning(
-                    "Chapter %s passed on a waiver: %s",
-                    chapter_info.chapter_number,
-                    waiver,
-                )
-
-            generated_scenes = domain_loop_result.scenes
-            scenes = self._parse_scenes(domain_loop_result.plan_content)
-
-            # Keep the existing generic review records as a secondary report,
-            # but run them only on text accepted by the domain loop.
-            if self.review_agent:
-                for i, prose in enumerate(generated_scenes, 1):
-                    scene_review = self._review_scene(prose, i, chapter_info.chapter_number)
-                    if scene_review:
-                        scene_reviews.append(scene_review)
-                
-            # Combine scenes into final content
-            final_content = "\n\n---\n\n".join(generated_scenes)
-            
-            # Save to appropriate location
-            output_path = os.path.join(self.output_dir, chapter_info.output_file)
-            
-            # For chapters, create subdirectory; for short stories, save directly
-            output_directory = os.path.dirname(output_path)
-            if output_directory:
-                os.makedirs(output_directory, exist_ok=True)
-            
-            try:
-                acceptance_result = publish_chapter_with_acceptance(
-                    self.output_dir,
-                    chapter_info.chapter_number,
-                    output_path,
-                    final_content,
-                    lambda saved_path: quality_loop.accept_result(
-                        chapter_info.chapter_number,
-                        domain_loop_result,
-                        chapter_path=saved_path,
-                    ),
-                )
-            except ChapterAcceptanceError as acceptance_error:
-                # Batch writing has nobody to ask, and one open conflict blocks
-                # every later chapter too — so carry the decision the author
-                # will have to make into the result rather than a bare repr.
-                return self._acceptance_conflict_result(
-                    chapter_info.chapter_number, acceptance_error
-                )
-            # 这一章过了闸门也过了验收，之前那次失败的待复审记录不再成立。
-            pending_review.clear(self.output_dir, chapter_info.chapter_number)
-            final_content = domain_loop_result.chapter_content
-            
-            # Perform chapter-level review if enabled
-            chapter_review = None
-            if self.review_agent:
-                chapter_review = self._review_chapter(
-                    chapter_content=final_content,
-                    scene_reviews=scene_reviews,
-                    chapter_number=chapter_info.chapter_number,
-                    section_name=chapter_info.section_name,
-                )
-            
-            # Prepare result data
-            result_data = {
-                "output_file": chapter_info.output_file, 
-                "scenes_count": len(scenes), 
-                "is_short_story": is_short_story,
-                "scene_reviews_count": len(scene_reviews)
-            }
-            if acceptance_result:
-                result_data["story_revision"] = acceptance_result.committed_revision
-                result_data["chapter_delta_file"] = acceptance_result.delta_path
-
-            if domain_loop_result:
-                result_data["legal_suspense_review"] = {
-                    "enabled": True,
-                    "retry_count": domain_loop_result.retry_count,
-                    "plan_revised": domain_loop_result.plan_revised,
-                    "chapter_review": domain_loop_result.chapter_review.to_dict(),
-                }
-            
-            # Add review data if available
-            if chapter_review:
-                result_data["chapter_review"] = {
-                    "quality_score": chapter_review.overall_quality,
-                    "coherence_score": chapter_review.coherence_score,
-                    "pacing_score": chapter_review.pacing_score,
-                    "issues_count": len(chapter_review.issues),
-                    "suggestions_count": len(chapter_review.suggestions)
-                }
-            
-            # Return appropriate success message
-            if is_short_story:
-                success_msg = "短篇小说已成功写完"
-            else:
-                success_msg = f"第 {chapter_info.chapter_number} 章已成功写完"
-                if chapter_review:
-                    success_msg += f"（质量：{chapter_review.overall_quality:.2f}）"
-            
-            return AgentResult(
-                success=True,
-                data=result_data,
-                messages=[success_msg],
-                metrics={"scenes_count": len(scenes), "scene_reviews": len(scene_reviews)}
-            )
-            
-        except GenerationCancelled:
-            # 取消不是章节级失败，交给批量循环终止整轮。
-            raise
-        except Exception as e:
+        # Check if scene plan exists
+        scene_plan_path = os.path.join(self.output_dir, chapter_info.scene_plan_file)
+        if not os.path.exists(scene_plan_path):
             return AgentResult(
                 success=False,
                 data={},
-                messages=[f"撰写章节时出错：{str(e)}"],
+                messages=[f"找不到场景规划：{chapter_info.scene_plan_file}"],
                 metrics={}
             )
+
+        # Load required context
+        context = self._load_writing_context()
+
+        # Determine if this is a short story
+        is_short_story = chapter_info.section_name == "Complete Short Story"
+
+        # Load scene plan
+        scenes_content = open_file(scene_plan_path)
+        if not scenes_content.strip():
+            return AgentResult(
+                success=False,
+                data={},
+                messages=[f"场景规划为空：{chapter_info.scene_plan_file}"],
+                metrics={}
+            )
+
+        # Legacy domain prompts demonstrated C001/E001 in every chapter.
+        # Repair a colliding contract before spending calls on prose; the
+        # creative scene Markdown remains unchanged.
+        manager = StoryLedgerManager(self.output_dir)
+        contract = manager.load_contract(chapter_info.chapter_number, scenes_content)
+        if contract is not None:
+            try:
+                profile = manager.locked_profile()
+            except (FileNotFoundError, OSError, ValueError):
+                profile = None
+            profile = profile or resolve_domain_profile(context.get("parameters", {}))
+            if has_domain_id_collision(
+                contract,
+                self.output_dir,
+                chapter_info.chapter_number,
+                profile=profile,
+            ):
+                resolution = resolve_domain_identities(
+                    contract,
+                    self.output_dir,
+                    chapter_info.chapter_number,
+                    self._get_selected_model(),
+                    send_prompt,
+                    profile=profile,
+                )
+                for warning in resolution.warnings:
+                    self.logger.warning(
+                        "Chapter %s semantic contract warning: %s",
+                        chapter_info.chapter_number,
+                        warning,
+                    )
+                if resolution.contract != contract:
+                    manager.save_contract(
+                        chapter_info.chapter_number,
+                        resolution.contract,
+                        scenes_content,
+                    )
+                    self.logger.info(
+                        "Normalised legacy domain IDs in Chapter %s before prose generation",
+                        chapter_info.chapter_number,
+                    )
+
+        # Parse scenes
+        scenes = self._parse_scenes(scenes_content)
+        if not scenes:
+            return AgentResult(
+                success=False,
+                data={},
+                messages=[f"规划中没有找到场景：{chapter_info.scene_plan_file}"],
+                metrics={}
+            )
+
+        # 所有题材（含短篇）都走同一条设计-生成-审阅闭环；具体的评分维度、
+        # 契约字段和门槛由领域档案决定。未通过闸门的正文不会落到稿件目录。
+        scene_reviews = []
+        quality_loop = ChapterGenerationLoop(
+            output_dir=self.output_dir,
+            model=self._get_selected_model(),
+            logger=self.logger,
+            cancel_token=self.cancel_token,
+            require_planning_contract=self.require_planning_contract,
+        )
+
+        def generate_scene(**kwargs):
+            return self._generate_scene_prose(
+                chapter_info.chapter_number,
+                kwargs["scene_number"],
+                kwargs["scene_plan"],
+                context,
+                is_short_story=is_short_story,
+                previous_scene_tail=kwargs.get("previous_scene_tail", ""),
+                next_scene_plan=kwargs.get("next_scene_plan", ""),
+                chapter_contract=kwargs.get("contract"),
+                profile=kwargs.get("profile"),
+                continuity_rules=kwargs.get("continuity_rules", ()),
+            )
+
+        def save_revised_plan(revised_plan: str) -> None:
+            archive_dir = os.path.join(
+                self.output_dir,
+                "archive",
+                "quality_loop",
+                "scene_plans",
+            )
+            os.makedirs(archive_dir, exist_ok=True)
+            base_name = os.path.splitext(os.path.basename(scene_plan_path))[0]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            archive_path = os.path.join(
+                archive_dir,
+                f"{base_name}_before_{timestamp}.md",
+            )
+            write_file(archive_path, scenes_content)
+            write_file(scene_plan_path, revised_plan)
+            self.logger.info("Quality loop revised scene plan; original archived at %s", archive_path)
+
+        try:
+            domain_loop_result = quality_loop.run(
+                chapter_number=chapter_info.chapter_number,
+                plan_content=scenes_content,
+                parameters=context.get("parameters", {}),
+                lore=context.get("lore", ""),
+                generate_scene=generate_scene,
+                on_plan_revised=save_revised_plan,
+            )
+        except QualityGateError as gate_error:
+            archived = archive_failed_generation(
+                self.output_dir,
+                chapter_info.chapter_number,
+                gate_error.partial_scenes,
+                label="short_story" if is_short_story else "chapter",
+            )
+            self.logger.error(
+                "Chapter %s failed the quality gate: %s%s",
+                chapter_info.chapter_number,
+                gate_error,
+                f" Partial prose archived at {archived}." if archived else "",
+            )
+            # 闸门手上的结论收成一份待复审记录：这一稿正文、按严重程度排好的
+            # 问题清单、以及重修与放行要用的现场，全在一个文件里。此前这些散
+            # 在归档目录和评审目录两处，作者得自己对时间戳才能拼出问题是什么。
+            record = pending_review.build(
+                chapter_info.chapter_number,
+                message=str(gate_error),
+                review=gate_error.review,
+                prose="\n\n---\n\n".join(gate_error.partial_scenes),
+                prose_path=archived,
+                stage=(
+                    pending_review.STAGE_CHAPTER
+                    if gate_error.snapshot
+                    else pending_review.STAGE_SCENE
+                ),
+                snapshot=gate_error.snapshot,
+                verdict_unavailable=gate_error.verdict_unavailable,
+            )
+            record_path = pending_review.save(record, self.output_dir)
+            message = str(gate_error)
+            if record.components:
+                message += f"（{record.verdict}）"
+            message += f"；{record.headline}，已标为待复审"
+            return AgentResult(
+                success=False,
+                data={
+                    "archived_partial_prose": archived,
+                    "pending_review": record_path,
+                    "pending_review_chapter": chapter_info.chapter_number,
+                },
+                messages=[message],
+                metrics={},
+            )
+
+        for waiver in domain_loop_result.gate_waivers:
+            self.logger.warning(
+                "Chapter %s passed on a waiver: %s",
+                chapter_info.chapter_number,
+                waiver,
+            )
+
+        generated_scenes = domain_loop_result.scenes
+        scenes = self._parse_scenes(domain_loop_result.plan_content)
+
+        # Keep the existing generic review records as a secondary report,
+        # but run them only on text accepted by the domain loop.
+        if self.review_agent:
+            for i, prose in enumerate(generated_scenes, 1):
+                scene_review = self._review_scene(prose, i, chapter_info.chapter_number)
+                if scene_review:
+                    scene_reviews.append(scene_review)
+
+        # Combine scenes into final content
+        final_content = "\n\n---\n\n".join(generated_scenes)
+
+        # Save to appropriate location
+        output_path = os.path.join(self.output_dir, chapter_info.output_file)
+
+        # For chapters, create subdirectory; for short stories, save directly
+        output_directory = os.path.dirname(output_path)
+        if output_directory:
+            os.makedirs(output_directory, exist_ok=True)
+
+        try:
+            acceptance_result = publish_chapter_with_acceptance(
+                self.output_dir,
+                chapter_info.chapter_number,
+                output_path,
+                final_content,
+                lambda saved_path: quality_loop.accept_result(
+                    chapter_info.chapter_number,
+                    domain_loop_result,
+                    chapter_path=saved_path,
+                ),
+            )
+        except ChapterAcceptanceError as acceptance_error:
+            # Batch writing has nobody to ask, and one open conflict blocks
+            # every later chapter too — so carry the decision the author
+            # will have to make into the result rather than a bare repr.
+            return self._acceptance_conflict_result(
+                chapter_info.chapter_number, acceptance_error
+            )
+        # 这一章过了闸门也过了验收，之前那次失败的待复审记录不再成立。
+        pending_review.clear(self.output_dir, chapter_info.chapter_number)
+        final_content = domain_loop_result.chapter_content
+
+        # Perform chapter-level review if enabled
+        chapter_review = None
+        if self.review_agent:
+            chapter_review = self._review_chapter(
+                chapter_content=final_content,
+                scene_reviews=scene_reviews,
+                chapter_number=chapter_info.chapter_number,
+                section_name=chapter_info.section_name,
+            )
+
+        # Prepare result data
+        result_data = {
+            "output_file": chapter_info.output_file,
+            "scenes_count": len(scenes),
+            "is_short_story": is_short_story,
+            "scene_reviews_count": len(scene_reviews)
+        }
+        if acceptance_result:
+            result_data["story_revision"] = acceptance_result.committed_revision
+            result_data["chapter_delta_file"] = acceptance_result.delta_path
+
+        if domain_loop_result:
+            result_data["legal_suspense_review"] = {
+                "enabled": True,
+                "retry_count": domain_loop_result.retry_count,
+                "plan_revised": domain_loop_result.plan_revised,
+                "chapter_review": domain_loop_result.chapter_review.to_dict(),
+            }
+
+        # Add review data if available
+        if chapter_review:
+            result_data["chapter_review"] = {
+                "quality_score": chapter_review.overall_quality,
+                "coherence_score": chapter_review.coherence_score,
+                "pacing_score": chapter_review.pacing_score,
+                "issues_count": len(chapter_review.issues),
+                "suggestions_count": len(chapter_review.suggestions)
+            }
+
+        # Return appropriate success message
+        if is_short_story:
+            success_msg = "短篇小说已成功写完"
+        else:
+            success_msg = f"第 {chapter_info.chapter_number} 章已成功写完"
+            if chapter_review:
+                success_msg += f"（质量：{chapter_review.overall_quality:.2f}）"
+
+        return AgentResult(
+            success=True,
+            data=result_data,
+            messages=[success_msg],
+            metrics={"scenes_count": len(scenes), "scene_reviews": len(scene_reviews)}
+        )
+
             
     def _load_writing_context(self) -> Dict[str, Any]:
         """Load context needed for chapter writing."""
         context = {}
         
-        try:
-            # Load story parameters
-            params_file = self.dir_manager.get_parameters_path()
-            context["parameters"] = self._load_story_parameters(params_file)
-            
-            # Load lore
-            lore_file = os.path.join(
-                self.output_dir, "story", "lore", "generated_lore.md"
-            )
-            if not os.path.exists(lore_file):
-                lore_file = os.path.join(self.output_dir, "generated_lore.md")
-            if os.path.exists(lore_file):
-                from core.generation.lore_repository import lore_context
-                context["lore"] = lore_context(self.output_dir) or self._sanitize_lore_content(open_file(lore_file))
-            else:
-                context["lore"] = "Lore not available."
-                
-            # Load character roster
-            context["characters"] = self._load_character_roster()
-            
-            # Load faction summary
-            context["factions"] = self._load_faction_summary()
-            
-        except Exception as e:
-            self.logger.error(f"Error loading writing context: {e}")
+        # Load story parameters
+        params_file = self.dir_manager.get_parameters_path()
+        context["parameters"] = self._load_story_parameters(params_file)
+
+        # Load lore
+        lore_file = os.path.join(
+            self.output_dir, "story", "lore", "generated_lore.md"
+        )
+        if not os.path.exists(lore_file):
+            lore_file = os.path.join(self.output_dir, "generated_lore.md")
+        if os.path.exists(lore_file):
+            from core.generation.lore_repository import lore_context
+            context["lore"] = lore_context(self.output_dir) or self._sanitize_lore_content(open_file(lore_file))
+        else:
+            context["lore"] = "Lore not available."
+
+        # Load character roster
+        context["characters"] = self._load_character_roster()
+
+        # Load faction summary
+        context["factions"] = self._load_faction_summary()
+
             
         return context
 
@@ -1328,71 +1287,65 @@ class ChapterWritingAgent(BaseAgent):
         
     def _load_character_roster(self) -> str:
         """Load character roster summary."""
-        try:
-            characters_file = os.path.join(
-                self.output_dir, "story", "lore", "characters.json"
-            )
-            if not os.path.exists(characters_file):
-                characters_file = os.path.join(self.output_dir, "characters.json")
-            if os.path.exists(characters_file):
-                characters_data = read_json(characters_file)
-                if characters_data and "characters" in characters_data:
-                    summaries = []
-                    for char in characters_data["characters"]:
-                        details = [
-                            f"\n\n姓名：{char.get('name', '无')}",
-                            f"角色：{char.get('role', '无')}",
-                            f"性别：{char.get('gender', '无')}",
-                            f"年龄：{char.get('age', '无')}",
-                            f"外貌：{first_field(char, 'appearance_summary', 'description') or '无'}",
-                        ]
-                        # 新卡是单数 goal/flaw/strength，旧项目是复数数组；两种都读。
-                        # 只读复数会让新项目的人物名单除了姓名年龄之外全是空的，而这
-                        # 份名单是写作时唯一能看到人物想要什么、怕什么的地方。
-                        for label, keys in (
-                            ("所属", ("faction",)),
-                            ("职业", ("profession",)),
-                            ("职务", ("title",)),
-                            ("主要目标", ("goals", "goal")),
-                            ("动机", ("motivations", "motivation")),
-                            ("主要优点", ("strengths", "strength")),
-                            ("主要缺点", ("flaws", "flaw")),
-                            ("人物弧光", ("arc",)),
-                            ("背景故事", ("backstory_summary", "background")),
-                        ):
-                            value = first_field(char, *keys)
-                            if value:
-                                details.append(f"{label}：{value}")
+        characters_file = os.path.join(
+            self.output_dir, "story", "lore", "characters.json"
+        )
+        if not os.path.exists(characters_file):
+            characters_file = os.path.join(self.output_dir, "characters.json")
+        if os.path.exists(characters_file):
+            characters_data = read_json(characters_file)
+            if characters_data and "characters" in characters_data:
+                summaries = []
+                for char in characters_data["characters"]:
+                    details = [
+                        f"\n\n姓名：{char.get('name', '无')}",
+                        f"角色：{char.get('role', '无')}",
+                        f"性别：{char.get('gender', '无')}",
+                        f"年龄：{char.get('age', '无')}",
+                        f"外貌：{first_field(char, 'appearance_summary', 'description') or '无'}",
+                    ]
+                    # 新卡是单数 goal/flaw/strength，旧项目是复数数组；两种都读。
+                    # 只读复数会让新项目的人物名单除了姓名年龄之外全是空的，而这
+                    # 份名单是写作时唯一能看到人物想要什么、怕什么的地方。
+                    for label, keys in (
+                        ("所属", ("faction",)),
+                        ("职业", ("profession",)),
+                        ("职务", ("title",)),
+                        ("主要目标", ("goals", "goal")),
+                        ("动机", ("motivations", "motivation")),
+                        ("主要优点", ("strengths", "strength")),
+                        ("主要缺点", ("flaws", "flaw")),
+                        ("人物弧光", ("arc",)),
+                        ("背景故事", ("backstory_summary", "background")),
+                    ):
+                        value = first_field(char, *keys)
+                        if value:
+                            details.append(f"{label}：{value}")
 
-                        opposes = char.get("opposes")
-                        if isinstance(opposes, dict) and opposes.get("character"):
-                            details.append(
-                                f"对抗：挡住「{opposes['character']}」的"
-                                f"{opposes.get('blocked_goal', '目标')}"
-                            )
+                    opposes = char.get("opposes")
+                    if isinstance(opposes, dict) and opposes.get("character"):
+                        details.append(
+                            f"对抗：挡住「{opposes['character']}」的"
+                            f"{opposes.get('blocked_goal', '目标')}"
+                        )
 
-                        summaries.append("\n".join(details))
+                    summaries.append("\n".join(details))
 
-                    return "主要人物：\n" + "\n".join(summaries)
-        except Exception as e:
-            self.logger.error(f"Error loading character roster: {e}")
+                return "主要人物：\n" + "\n".join(summaries)
             
         return "没有可用的人物名单。"
         
     def _load_faction_summary(self) -> str:
         """Load faction summary."""
-        try:
-            factions_file = os.path.join(
-                self.output_dir, "story", "lore", "factions.json"
-            )
-            if not os.path.exists(factions_file):
-                factions_file = os.path.join(self.output_dir, "factions.json")
-            if os.path.exists(factions_file):
-                factions_data = read_json(factions_file)
-                if factions_data:
-                    return format_faction_summary(factions_data)
-        except Exception as e:
-            self.logger.error(f"Error loading faction summary: {e}")
+        factions_file = os.path.join(
+            self.output_dir, "story", "lore", "factions.json"
+        )
+        if not os.path.exists(factions_file):
+            factions_file = os.path.join(self.output_dir, "factions.json")
+        if os.path.exists(factions_file):
+            factions_data = read_json(factions_file)
+            if factions_data:
+                return format_faction_summary(factions_data)
             
         return "没有可用的势力信息。"
         
@@ -1455,62 +1408,53 @@ class ChapterWritingAgent(BaseAgent):
         )
 
         # Use genuine NovelWriter AI helper functions
+        from core.generation.ai_helper import DEFAULT_API_MODEL, send_prompt
+        from core.generation.helper_fns import save_prompt_to_file
+
+        # Prefer the live GUI selection. Agentic/non-GUI callers pass the
+        # orchestrator's model into this agent, so they retain the selected
+        # provider and its matching credentials (for hosted-llm, the
+        # HOSTED_LLM_* variables loaded by ai_helper).
+        model = self._get_selected_model()
+
+        # Save prompt to file (following existing pattern)
+        prompt_filename = scene_prompt_filename(
+            scene_num, None if is_short_story else chapter_num
+        )
+
         try:
-            from core.generation.ai_helper import DEFAULT_API_MODEL, send_prompt
-            from core.generation.helper_fns import save_prompt_to_file
+            save_prompt_to_file(self.output_dir, prompt_filename, prompt)
+        except OSError as e:
+            self.logger.warning(f"Could not save prompt to file: {e}", exc_info=True)
 
-            # Prefer the live GUI selection. Agentic/non-GUI callers pass the
-            # orchestrator's model into this agent, so they retain the selected
-            # provider and its matching credentials (for hosted-llm, the
-            # HOSTED_LLM_* variables loaded by ai_helper).
-            model = self._get_selected_model()
-                
-            # Save prompt to file (following existing pattern)
-            prompt_filename = scene_prompt_filename(
-                scene_num, None if is_short_story else chapter_num
-            )
+        # Call the genuine NovelWriter AI helper
+        current_backend = get_backend()
+        backend_info = f"{current_backend}" if current_backend != "api" else f"api/{model}"
 
-            try:
-                save_prompt_to_file(self.output_dir, prompt_filename, prompt)
-            except Exception as e:
-                self.logger.warning(f"Could not save prompt to file: {e}")
-            
-            # Call the genuine NovelWriter AI helper
-            current_backend = get_backend()
-            backend_info = f"{current_backend}" if current_backend != "api" else f"api/{model}"
-            
-            if is_short_story:
-                self.logger.info(f"Generating prose for Scene {scene_num} of short story using LLM ({backend_info})")
-            else:
-                self.logger.info(f"Generating prose for Chapter {chapter_num}, Scene {scene_num} using LLM ({backend_info})")
-                
-            label = (
-                f"短篇第 {scene_num} 个场景"
-                if is_short_story
-                else f"第 {chapter_num} 章第 {scene_num} 个场景"
-            )
-            response = generate_prose_with_style_retry(
-                lambda text: send_prompt(text, model=model),
-                prompt,
-                logger=self.logger,
-                label=label,
-            )
-            
-            if is_short_story:
-                self.logger.info(f"Generated prose for Scene {scene_num} of short story. Length: {len(response)} chars")
-            else:
-                self.logger.info(f"Generated prose for Chapter {chapter_num}, Scene {scene_num}. Length: {len(response)} chars")
-                
-            return response
-            
-        except ImportError as e:
-            error_msg = f"Could not import NovelWriter AI functions: {e}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
-        except Exception as e:
-            error_msg = f"Error calling LLM for scene generation: {e}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
+        if is_short_story:
+            self.logger.info(f"Generating prose for Scene {scene_num} of short story using LLM ({backend_info})")
+        else:
+            self.logger.info(f"Generating prose for Chapter {chapter_num}, Scene {scene_num} using LLM ({backend_info})")
+
+        label = (
+            f"短篇第 {scene_num} 个场景"
+            if is_short_story
+            else f"第 {chapter_num} 章第 {scene_num} 个场景"
+        )
+        response = generate_prose_with_style_retry(
+            lambda text: send_prompt(text, model=model),
+            prompt,
+            logger=self.logger,
+            label=label,
+        )
+
+        if is_short_story:
+            self.logger.info(f"Generated prose for Scene {scene_num} of short story. Length: {len(response)} chars")
+        else:
+            self.logger.info(f"Generated prose for Chapter {chapter_num}, Scene {scene_num}. Length: {len(response)} chars")
+
+        return response
+
             
     def get_progress_report(self, chapter_info_list: List[ChapterInfo]) -> Dict[str, Any]:
         """Get a progress report on chapter writing status."""
@@ -1555,948 +1499,809 @@ class ChapterWritingAgent(BaseAgent):
     
     def _review_scene(self, scene_content: str, scene_number: int, chapter_number: int, retry_attempt: int = 0) -> SceneReview:
         """Perform scene-level review using local analysis."""
-        try:
-            # Default values
-            quality_score = 0.7  # Default quality score
-            word_count = len(scene_content.split())
-            issues = []
-            strengths = []
-            suggestions = []
-            confidence = 0.8
-            
-            # Use review agent if available
-            if self.review_agent:
-                try:
-                    review_result = self.review_agent.review_step_output(
-                        "scene",
-                        scene_content,
-                        context={
-                            "chapter_number": chapter_number,
-                            "scene_number": scene_number,
-                        },
-                    )
-                    if review_result:
-                        quality_score = review_result.quality_score
-                        issues = review_result.issues_found
-                        strengths = review_result.strengths_found
-                        suggestions = review_result.improvement_suggestions
-                        confidence = review_result.confidence
-                except Exception as e:
-                    self.logger.warning(f"Error using review agent: {e}")
-            
-            # Fallback to basic analysis if no review agent or it failed
-            if not issues and not strengths:
-                # Basic analysis - word count based quality
-                if word_count < 300:
-                    issues.append("Scene is too short")
-                    quality_score = 0.5
-                elif word_count > 2000:
-                    issues.append("Scene may be too long")
-                    quality_score = 0.6
-                    
-                # Add generic strengths/suggestions
-                strengths.append("Scene completed successfully")
-                suggestions.append("Consider reviewing for pacing and character development")
-            
-            # Phase 3: Record quality trend data
-            self.record_quality_trend(
-                chapter_number=chapter_number,
-                scene_number=scene_number,
-                quality_score=quality_score,
-                review_type="scene",
-                retry_attempt=retry_attempt
+        # Default values
+        quality_score = 0.7  # Default quality score
+        word_count = len(scene_content.split())
+        issues = []
+        strengths = []
+        suggestions = []
+        confidence = 0.8
+
+        # Use review agent if available
+        if self.review_agent:
+            review_result = self.review_agent.review_step_output(
+                "scene",
+                scene_content,
+                context={
+                    "chapter_number": chapter_number,
+                    "scene_number": scene_number,
+                },
             )
-            
-            # Phase 3: Check if retry is recommended based on thresholds
-            should_retry = self.should_retry_based_on_thresholds(
-                quality_score=quality_score,
-                review_type="scene",
-                retry_attempt=retry_attempt
-            )
-            
-            if should_retry:
-                suggestions.insert(0, f"Quality score {quality_score:.2f} below threshold "
-                                  f"{self.quality_thresholds.minimum_scene_quality:.2f}. Retry recommended.")
-            
-            # Create scene review
-            scene_review = SceneReview(
-                scene_number=scene_number,
-                chapter_number=chapter_number,
-                quality_score=quality_score,
-                word_count=word_count,
-                issues=issues,
-                strengths=strengths,
-                suggestions=suggestions,
-                timestamp=datetime.now().isoformat(),
-                confidence=confidence
-            )
-            
-            return scene_review
-            
-        except Exception as e:
-            self.logger.error(f"Error reviewing scene: {e}")
-            # Return default review on error
-            return SceneReview(
-                scene_number=scene_number,
-                chapter_number=chapter_number,
-                quality_score=0.5,
-                word_count=len(scene_content.split()),
-                issues=[f"Error during review: {str(e)}"],
-                strengths=[],
-                suggestions=["Retry scene review"],
-                timestamp=datetime.now().isoformat(),
-                confidence=0.3
-            )
+            if review_result:
+                quality_score = review_result.quality_score
+                issues = review_result.issues_found
+                strengths = review_result.strengths_found
+                suggestions = review_result.improvement_suggestions
+                confidence = review_result.confidence
+
+        # Basic analysis when no detailed review is available
+        if not issues and not strengths:
+            # Basic analysis - word count based quality
+            if word_count < 300:
+                issues.append("Scene is too short")
+                quality_score = 0.5
+            elif word_count > 2000:
+                issues.append("Scene may be too long")
+                quality_score = 0.6
+
+            # Add generic strengths/suggestions
+            strengths.append("Scene completed successfully")
+            suggestions.append("Consider reviewing for pacing and character development")
+
+        # Phase 3: Record quality trend data
+        self.record_quality_trend(
+            chapter_number=chapter_number,
+            scene_number=scene_number,
+            quality_score=quality_score,
+            review_type="scene",
+            retry_attempt=retry_attempt
+        )
+
+        # Phase 3: Check if retry is recommended based on thresholds
+        should_retry = self.should_retry_based_on_thresholds(
+            quality_score=quality_score,
+            review_type="scene",
+            retry_attempt=retry_attempt
+        )
+
+        if should_retry:
+            suggestions.insert(0, f"Quality score {quality_score:.2f} below threshold "
+                              f"{self.quality_thresholds.minimum_scene_quality:.2f}. Retry recommended.")
+
+        # Create scene review
+        scene_review = SceneReview(
+            scene_number=scene_number,
+            chapter_number=chapter_number,
+            quality_score=quality_score,
+            word_count=word_count,
+            issues=issues,
+            strengths=strengths,
+            suggestions=suggestions,
+            timestamp=datetime.now().isoformat(),
+            confidence=confidence
+        )
+
+        return scene_review
+
     
     def _review_chapter(self, chapter_content: str, scene_reviews: List[SceneReview], 
                       chapter_number: int, section_name: str, retry_attempt: int = 0) -> ChapterReview:
         """Perform chapter-level review using local analysis."""
-        try:
-            # Calculate overall quality from scene reviews
-            scene_quality_scores = [scene.quality_score for scene in scene_reviews]
-            overall_quality = sum(scene_quality_scores) / len(scene_quality_scores) if scene_quality_scores else 0.7
-            
-            # Calculate total word count
-            total_word_count = sum(scene.word_count for scene in scene_reviews)
-            
-            # Analyze chapter coherence
-            coherence_score = self._analyze_chapter_coherence(scene_reviews)
-            
-            # Analyze chapter pacing
-            pacing_score = self._analyze_chapter_pacing(chapter_content, scene_reviews)
-            
-            # Analyze character development
-            character_development_score = self._analyze_character_development(chapter_content)
-            
-            # Aggregate issues and suggestions
-            all_issues = []
-            all_strengths = []
-            all_suggestions = []
-            
-            # Add scene-level issues/strengths/suggestions
-            for scene in scene_reviews:
-                for issue in scene.issues:
-                    if issue not in all_issues:
-                        all_issues.append(issue)
-                        
-                for strength in scene.strengths:
-                    if strength not in all_strengths:
-                        all_strengths.append(strength)
-                        
-                for suggestion in scene.suggestions:
-                    if suggestion not in all_suggestions:
-                        all_suggestions.append(suggestion)
-            
-            # Add chapter-level issues
-            if coherence_score < self.quality_thresholds.coherence_threshold:
-                all_issues.append("Low scene-to-scene coherence")
-                all_suggestions.append("Improve transitions between scenes")
-                
-            if pacing_score < self.quality_thresholds.pacing_threshold:
-                all_issues.append("Uneven pacing across scenes")
-                all_suggestions.append("Balance scene lengths and tension")
-                
-            if character_development_score < self.quality_thresholds.character_development_threshold:
-                all_issues.append("Limited character development")
-                all_suggestions.append("Add more character moments and growth")
-            
-            # Calculate confidence
-            confidence = min(0.9, sum(scene.confidence for scene in scene_reviews) / len(scene_reviews))
-            
-            # Phase 3: Record quality trend data
-            self.record_quality_trend(
-                chapter_number=chapter_number,
-                scene_number=None,
-                quality_score=overall_quality,
-                review_type="chapter",
-                retry_attempt=retry_attempt
-            )
-            
-            # Phase 3: Check if retry is recommended based on thresholds
-            should_retry = self.should_retry_based_on_thresholds(
-                quality_score=overall_quality,
-                review_type="chapter",
-                retry_attempt=retry_attempt
-            )
-            
-            if should_retry:
-                all_suggestions.insert(0, f"Chapter quality score {overall_quality:.2f} below threshold "
-                                     f"{self.quality_thresholds.minimum_chapter_quality:.2f}. Retry recommended.")
-            
-            # Create chapter review
-            chapter_review = ChapterReview(
-                chapter_number=chapter_number,
-                section_name=section_name,
-                overall_quality=overall_quality,
-                scene_reviews=scene_reviews,
-                coherence_score=coherence_score,
-                pacing_score=pacing_score,
-                character_development_score=character_development_score,
-                total_word_count=total_word_count,
-                issues=all_issues,
-                strengths=all_strengths,
-                suggestions=all_suggestions,
-                timestamp=datetime.now().isoformat(),
-                confidence=confidence
-            )
-            
-            return chapter_review
-            
-        except Exception as e:
-            self.logger.error(f"Error reviewing chapter: {e}")
-            # Return default review on error
-            return ChapterReview(
-                chapter_number=chapter_number,
-                section_name=section_name,
-                overall_quality=0.5,
-                scene_reviews=scene_reviews,
-                coherence_score=0.5,
-                pacing_score=0.5,
-                character_development_score=0.5,
-                total_word_count=sum(scene.word_count for scene in scene_reviews),
-                issues=[f"Error during chapter review: {str(e)}"],
-                strengths=[],
-                suggestions=["Retry chapter review"],
-                timestamp=datetime.now().isoformat(),
-                confidence=0.3
-            )
+        # Calculate overall quality from scene reviews
+        scene_quality_scores = [scene.quality_score for scene in scene_reviews]
+        overall_quality = sum(scene_quality_scores) / len(scene_quality_scores) if scene_quality_scores else 0.7
+
+        # Calculate total word count
+        total_word_count = sum(scene.word_count for scene in scene_reviews)
+
+        # Analyze chapter coherence
+        coherence_score = self._analyze_chapter_coherence(scene_reviews)
+
+        # Analyze chapter pacing
+        pacing_score = self._analyze_chapter_pacing(chapter_content, scene_reviews)
+
+        # Analyze character development
+        character_development_score = self._analyze_character_development(chapter_content)
+
+        # Aggregate issues and suggestions
+        all_issues = []
+        all_strengths = []
+        all_suggestions = []
+
+        # Add scene-level issues/strengths/suggestions
+        for scene in scene_reviews:
+            for issue in scene.issues:
+                if issue not in all_issues:
+                    all_issues.append(issue)
+
+            for strength in scene.strengths:
+                if strength not in all_strengths:
+                    all_strengths.append(strength)
+
+            for suggestion in scene.suggestions:
+                if suggestion not in all_suggestions:
+                    all_suggestions.append(suggestion)
+
+        # Add chapter-level issues
+        if coherence_score < self.quality_thresholds.coherence_threshold:
+            all_issues.append("Low scene-to-scene coherence")
+            all_suggestions.append("Improve transitions between scenes")
+
+        if pacing_score < self.quality_thresholds.pacing_threshold:
+            all_issues.append("Uneven pacing across scenes")
+            all_suggestions.append("Balance scene lengths and tension")
+
+        if character_development_score < self.quality_thresholds.character_development_threshold:
+            all_issues.append("Limited character development")
+            all_suggestions.append("Add more character moments and growth")
+
+        # Calculate confidence
+        confidence = min(0.9, sum(scene.confidence for scene in scene_reviews) / len(scene_reviews))
+
+        # Phase 3: Record quality trend data
+        self.record_quality_trend(
+            chapter_number=chapter_number,
+            scene_number=None,
+            quality_score=overall_quality,
+            review_type="chapter",
+            retry_attempt=retry_attempt
+        )
+
+        # Phase 3: Check if retry is recommended based on thresholds
+        should_retry = self.should_retry_based_on_thresholds(
+            quality_score=overall_quality,
+            review_type="chapter",
+            retry_attempt=retry_attempt
+        )
+
+        if should_retry:
+            all_suggestions.insert(0, f"Chapter quality score {overall_quality:.2f} below threshold "
+                                 f"{self.quality_thresholds.minimum_chapter_quality:.2f}. Retry recommended.")
+
+        # Create chapter review
+        chapter_review = ChapterReview(
+            chapter_number=chapter_number,
+            section_name=section_name,
+            overall_quality=overall_quality,
+            scene_reviews=scene_reviews,
+            coherence_score=coherence_score,
+            pacing_score=pacing_score,
+            character_development_score=character_development_score,
+            total_word_count=total_word_count,
+            issues=all_issues,
+            strengths=all_strengths,
+            suggestions=all_suggestions,
+            timestamp=datetime.now().isoformat(),
+            confidence=confidence
+        )
+
+        return chapter_review
+
             
     def _review_batch(self, chapter_reviews: List[ChapterReview], batch_number: int, retry_attempt: int = 0) -> BatchReview:
         """Perform batch-level review across multiple chapters."""
-        try:
-            # Extract chapter numbers
-            chapter_numbers = [review.chapter_number for review in chapter_reviews]
-            
-            # Calculate average quality
-            chapter_quality_scores = [review.overall_quality for review in chapter_reviews]
-            average_quality = sum(chapter_quality_scores) / len(chapter_quality_scores) if chapter_quality_scores else 0.7
-            
-            # Calculate total word count
-            total_word_count = sum(review.total_word_count for review in chapter_reviews)
-            
-            # Analyze batch consistency
-            consistency_score = self._analyze_batch_consistency(chapter_reviews)
-            
-            # Analyze story progression
-            progression_score = self._analyze_story_progression(chapter_reviews)
-            
-            # Analyze style consistency
-            style_consistency_score = self._analyze_style_consistency(chapter_reviews)
-            
-            # Aggregate issues and suggestions
-            all_issues = []
-            all_strengths = []
-            all_suggestions = []
-            
-            # Add chapter-level issues/strengths/suggestions
-            for review in chapter_reviews:
-                for issue in review.issues:
-                    if issue not in all_issues:
-                        all_issues.append(issue)
-                        
-                for strength in review.strengths:
-                    if strength not in all_strengths:
-                        all_strengths.append(strength)
-                        
-                for suggestion in review.suggestions:
-                    if suggestion not in all_suggestions:
-                        all_suggestions.append(suggestion)
-            
-            # Add batch-level issues
-            if consistency_score < self.quality_thresholds.consistency_threshold:
-                all_issues.append("Inconsistent quality across chapters")
-                all_suggestions.append("Standardize chapter quality and structure")
-                
-            if progression_score < self.quality_thresholds.progression_threshold:
-                all_issues.append("Limited story progression across chapters")
-                all_suggestions.append("Strengthen narrative arc across chapters")
-                
-            if style_consistency_score < self.quality_thresholds.style_consistency_threshold:
-                all_issues.append("Inconsistent writing style")
-                all_suggestions.append("Harmonize tone and style across chapters")
-            
-            # Calculate confidence
-            confidence = min(0.9, sum(review.confidence for review in chapter_reviews) / len(chapter_reviews))
-            
-            # Phase 3: Record quality trend data
-            # Use first chapter number as reference for the batch
-            reference_chapter = chapter_numbers[0] if chapter_numbers else 0
-            self.record_quality_trend(
-                chapter_number=reference_chapter,
-                scene_number=None,
-                quality_score=average_quality,
-                review_type="batch",
-                retry_attempt=retry_attempt
-            )
-            
-            # Phase 3: Check if retry is recommended based on thresholds
-            should_retry = self.should_retry_based_on_thresholds(
-                quality_score=average_quality,
-                review_type="batch",
-                retry_attempt=retry_attempt
-            )
-            
-            if should_retry:
-                all_suggestions.insert(0, f"Batch quality score {average_quality:.2f} below threshold "
-                                     f"{self.quality_thresholds.minimum_batch_quality:.2f}. Retry recommended.")
-            
-            # Create batch review
-            batch_review = BatchReview(
-                batch_number=batch_number,
-                chapter_numbers=chapter_numbers,
-                chapter_reviews=chapter_reviews,
-                consistency_score=consistency_score,
-                progression_score=progression_score,
-                style_consistency_score=style_consistency_score,
-                total_word_count=total_word_count,
-                average_quality=average_quality,
-                issues=all_issues,
-                strengths=all_strengths,
-                suggestions=all_suggestions,
-                timestamp=datetime.now().isoformat(),
-                confidence=confidence
-            )
-            
-            return batch_review
-            
-        except Exception as e:
-            self.logger.error(f"Error reviewing batch: {e}")
-            # Return default review on error
-            return BatchReview(
-                batch_number=batch_number,
-                chapter_numbers=chapter_numbers,
-                chapter_reviews=chapter_reviews,
-                consistency_score=0.5,
-                progression_score=0.5,
-                style_consistency_score=0.5,
-                total_word_count=sum(review.total_word_count for review in chapter_reviews),
-                average_quality=0.5,
-                issues=[f"Error during batch review: {str(e)}"],
-                strengths=[],
-                suggestions=["Retry batch review"],
-                timestamp=datetime.now().isoformat(),
-                confidence=0.3
-            )
+        # Extract chapter numbers
+        chapter_numbers = [review.chapter_number for review in chapter_reviews]
+
+        # Calculate average quality
+        chapter_quality_scores = [review.overall_quality for review in chapter_reviews]
+        average_quality = sum(chapter_quality_scores) / len(chapter_quality_scores) if chapter_quality_scores else 0.7
+
+        # Calculate total word count
+        total_word_count = sum(review.total_word_count for review in chapter_reviews)
+
+        # Analyze batch consistency
+        consistency_score = self._analyze_batch_consistency(chapter_reviews)
+
+        # Analyze story progression
+        progression_score = self._analyze_story_progression(chapter_reviews)
+
+        # Analyze style consistency
+        style_consistency_score = self._analyze_style_consistency(chapter_reviews)
+
+        # Aggregate issues and suggestions
+        all_issues = []
+        all_strengths = []
+        all_suggestions = []
+
+        # Add chapter-level issues/strengths/suggestions
+        for review in chapter_reviews:
+            for issue in review.issues:
+                if issue not in all_issues:
+                    all_issues.append(issue)
+
+            for strength in review.strengths:
+                if strength not in all_strengths:
+                    all_strengths.append(strength)
+
+            for suggestion in review.suggestions:
+                if suggestion not in all_suggestions:
+                    all_suggestions.append(suggestion)
+
+        # Add batch-level issues
+        if consistency_score < self.quality_thresholds.consistency_threshold:
+            all_issues.append("Inconsistent quality across chapters")
+            all_suggestions.append("Standardize chapter quality and structure")
+
+        if progression_score < self.quality_thresholds.progression_threshold:
+            all_issues.append("Limited story progression across chapters")
+            all_suggestions.append("Strengthen narrative arc across chapters")
+
+        if style_consistency_score < self.quality_thresholds.style_consistency_threshold:
+            all_issues.append("Inconsistent writing style")
+            all_suggestions.append("Harmonize tone and style across chapters")
+
+        # Calculate confidence
+        confidence = min(0.9, sum(review.confidence for review in chapter_reviews) / len(chapter_reviews))
+
+        # Phase 3: Record quality trend data
+        # Use first chapter number as reference for the batch
+        reference_chapter = chapter_numbers[0] if chapter_numbers else 0
+        self.record_quality_trend(
+            chapter_number=reference_chapter,
+            scene_number=None,
+            quality_score=average_quality,
+            review_type="batch",
+            retry_attempt=retry_attempt
+        )
+
+        # Phase 3: Check if retry is recommended based on thresholds
+        should_retry = self.should_retry_based_on_thresholds(
+            quality_score=average_quality,
+            review_type="batch",
+            retry_attempt=retry_attempt
+        )
+
+        if should_retry:
+            all_suggestions.insert(0, f"Batch quality score {average_quality:.2f} below threshold "
+                                 f"{self.quality_thresholds.minimum_batch_quality:.2f}. Retry recommended.")
+
+        # Create batch review
+        batch_review = BatchReview(
+            batch_number=batch_number,
+            chapter_numbers=chapter_numbers,
+            chapter_reviews=chapter_reviews,
+            consistency_score=consistency_score,
+            progression_score=progression_score,
+            style_consistency_score=style_consistency_score,
+            total_word_count=total_word_count,
+            average_quality=average_quality,
+            issues=all_issues,
+            strengths=all_strengths,
+            suggestions=all_suggestions,
+            timestamp=datetime.now().isoformat(),
+            confidence=confidence
+        )
+
+        return batch_review
+
     
     def _analyze_chapter_coherence(self, scene_reviews: List[SceneReview]) -> float:
         """Analyze chapter coherence based on scene transitions and flow."""
-        try:
-            # Basic coherence analysis
-            scenes_count = len(scene_reviews)
-            if scenes_count == 0:
-                return 0.5
-            
-            # Check for scene length variance (high variance = lower coherence)
-            scene_lengths = [scene.word_count for scene in scene_reviews]
-            if not scene_lengths:
-                return 0.5
-                
-            avg_length = sum(scene_lengths) / len(scene_lengths)
-            variance = sum((length - avg_length) ** 2 for length in scene_lengths) / len(scene_lengths)
-            normalized_variance = min(1.0, variance / (avg_length * 0.5))
-            
-            # Higher variance = lower coherence
-            coherence_base = 0.8 - (normalized_variance * 0.3)
-            
-            # Penalize for very few scenes (less than 3)
-            if scenes_count < 3:
-                coherence_base -= 0.1
-                
-            # Penalize for very short scenes
-            if any(length < 200 for length in scene_lengths):
-                coherence_base -= 0.1
-                
-            return max(0.1, min(0.9, coherence_base))
-            
-            # Average scene quality as coherence indicator
-            avg_scene_quality = sum(review.quality_score for review in scene_reviews) / scenes_count
-            
-            # Adjust based on scene count (more scenes = potentially more complex)
-            coherence_bonus = min(0.1, scenes_count * 0.02)
-            
-            return min(1.0, avg_scene_quality + coherence_bonus)
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing chapter coherence: {e}")
+        # Basic coherence analysis
+        scenes_count = len(scene_reviews)
+        if scenes_count == 0:
             return 0.5
-    
+
+        # Check for scene length variance (high variance = lower coherence)
+        scene_lengths = [scene.word_count for scene in scene_reviews]
+        if not scene_lengths:
+            return 0.5
+
+        avg_length = sum(scene_lengths) / len(scene_lengths)
+        variance = sum((length - avg_length) ** 2 for length in scene_lengths) / len(scene_lengths)
+        normalized_variance = min(1.0, variance / (avg_length * 0.5))
+
+        # Higher variance = lower coherence
+        coherence_base = 0.8 - (normalized_variance * 0.3)
+
+        # Penalize for very few scenes (less than 3)
+        if scenes_count < 3:
+            coherence_base -= 0.1
+
+        # Penalize for very short scenes
+        if any(length < 200 for length in scene_lengths):
+            coherence_base -= 0.1
+
+        return max(0.1, min(0.9, coherence_base))
+
     def _analyze_chapter_pacing(self, chapter_content: str, scene_reviews: List[SceneReview]) -> float:
         """Analyze chapter pacing based on scene lengths and variety."""
-        try:
-            if not scene_reviews:
-                return 0.5
-            
-            # Calculate scene length variance (good pacing has variety)
-            scene_lengths = [review.word_count for review in scene_reviews]
-            if len(scene_lengths) < 2:
-                return 0.6  # Single scene, decent pacing
-            
-            avg_length = sum(scene_lengths) / len(scene_lengths)
-            variance = sum((length - avg_length) ** 2 for length in scene_lengths) / len(scene_lengths)
-            
-            # Normalize variance to 0-1 scale (some variance is good)
-            normalized_variance = min(1.0, variance / (avg_length ** 2))
-            
-            # Good pacing has moderate variance (not too uniform, not too chaotic)
-            if 0.1 <= normalized_variance <= 0.4:
-                pacing_score = 0.8
-            elif normalized_variance < 0.1:
-                pacing_score = 0.6  # Too uniform
-            else:
-                pacing_score = 0.5  # Too chaotic
-            
-            return pacing_score
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing chapter pacing: {e}")
+        if not scene_reviews:
             return 0.5
+
+        # Calculate scene length variance (good pacing has variety)
+        scene_lengths = [review.word_count for review in scene_reviews]
+        if len(scene_lengths) < 2:
+            return 0.6  # Single scene, decent pacing
+
+        avg_length = sum(scene_lengths) / len(scene_lengths)
+        variance = sum((length - avg_length) ** 2 for length in scene_lengths) / len(scene_lengths)
+
+        # Normalize variance to 0-1 scale (some variance is good)
+        normalized_variance = min(1.0, variance / (avg_length ** 2))
+
+        # Good pacing has moderate variance (not too uniform, not too chaotic)
+        if 0.1 <= normalized_variance <= 0.4:
+            pacing_score = 0.8
+        elif normalized_variance < 0.1:
+            pacing_score = 0.6  # Too uniform
+        else:
+            pacing_score = 0.5  # Too chaotic
+
+        return pacing_score
+
     
     def _analyze_character_development(self, chapter_content: str) -> float:
         """Analyze character development indicators in the chapter."""
-        try:
-            # Simple heuristics for character development
-            content_lower = chapter_content.lower()
-            
-            # Look for dialogue (character interaction)
-            dialogue_count = content_lower.count('"') + content_lower.count("'")
-            dialogue_score = min(0.3, dialogue_count * 0.01)
-            
-            # Look for emotional/internal words
-            emotion_words = ['felt', 'thought', 'realized', 'wondered', 'hoped', 'feared', 'remembered']
-            emotion_count = sum(content_lower.count(word) for word in emotion_words)
-            emotion_score = min(0.3, emotion_count * 0.05)
-            
-            # Look for action/decision words
-            action_words = ['decided', 'chose', 'determined', 'resolved', 'acted', 'moved']
-            action_count = sum(content_lower.count(word) for word in action_words)
-            action_score = min(0.2, action_count * 0.05)
-            
-            # Base score for having content
-            base_score = 0.2
-            
-            total_score = base_score + dialogue_score + emotion_score + action_score
-            return min(1.0, total_score)
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing character development: {e}")
-            return 0.5
+        # Simple heuristics for character development
+        content_lower = chapter_content.lower()
+
+        # Look for dialogue (character interaction)
+        dialogue_count = content_lower.count('"') + content_lower.count("'")
+        dialogue_score = min(0.3, dialogue_count * 0.01)
+
+        # Look for emotional/internal words
+        emotion_words = ['felt', 'thought', 'realized', 'wondered', 'hoped', 'feared', 'remembered']
+        emotion_count = sum(content_lower.count(word) for word in emotion_words)
+        emotion_score = min(0.3, emotion_count * 0.05)
+
+        # Look for action/decision words
+        action_words = ['decided', 'chose', 'determined', 'resolved', 'acted', 'moved']
+        action_count = sum(content_lower.count(word) for word in action_words)
+        action_score = min(0.2, action_count * 0.05)
+
+        # Base score for having content
+        base_score = 0.2
+
+        total_score = base_score + dialogue_score + emotion_score + action_score
+        return min(1.0, total_score)
+
     
     def _analyze_batch_consistency(self, chapter_reviews: List[ChapterReview]) -> float:
         """Analyze consistency across chapters in a batch."""
-        try:
-            if len(chapter_reviews) < 2:
-                return 0.8  # Single chapter is consistent with itself
-            
-            # Check quality consistency
-            qualities = [review.overall_quality for review in chapter_reviews]
-            quality_variance = sum((q - sum(qualities)/len(qualities))**2 for q in qualities) / len(qualities)
-            quality_consistency = max(0.0, 1.0 - quality_variance * 2)
-            
-            # Check word count consistency
-            word_counts = [review.total_word_count for review in chapter_reviews]
-            avg_words = sum(word_counts) / len(word_counts)
-            word_variance = sum((w - avg_words)**2 for w in word_counts) / len(word_counts)
-            word_consistency = max(0.0, 1.0 - (word_variance / (avg_words**2)))
-            
-            # Weighted average
-            consistency = (quality_consistency * 0.7) + (word_consistency * 0.3)
-            return min(1.0, consistency)
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing batch consistency: {e}")
-            return 0.5
+        if len(chapter_reviews) < 2:
+            return 0.8  # Single chapter is consistent with itself
+
+        # Check quality consistency
+        qualities = [review.overall_quality for review in chapter_reviews]
+        quality_variance = sum((q - sum(qualities)/len(qualities))**2 for q in qualities) / len(qualities)
+        quality_consistency = max(0.0, 1.0 - quality_variance * 2)
+
+        # Check word count consistency
+        word_counts = [review.total_word_count for review in chapter_reviews]
+        avg_words = sum(word_counts) / len(word_counts)
+        word_variance = sum((w - avg_words)**2 for w in word_counts) / len(word_counts)
+        word_consistency = max(0.0, 1.0 - (word_variance / (avg_words**2)))
+
+        # Weighted average
+        consistency = (quality_consistency * 0.7) + (word_consistency * 0.3)
+        return min(1.0, consistency)
+
     
     def _analyze_story_progression(self, chapter_reviews: List[ChapterReview]) -> float:
         """Analyze story progression across chapters."""
-        try:
-            if len(chapter_reviews) < 2:
-                return 0.7  # Single chapter, assume decent progression
-            
-            # Check if chapters are in sequence
-            chapter_numbers = [review.chapter_number for review in chapter_reviews]
-            is_sequential = all(chapter_numbers[i] == chapter_numbers[i-1] + 1 
-                              for i in range(1, len(chapter_numbers)))
-            
-            if is_sequential:
-                progression_score = 0.8
-            else:
-                progression_score = 0.6  # Non-sequential, but still valid
-            
-            # Bonus for variety in sections
-            sections = set(review.section_name for review in chapter_reviews)
-            if len(sections) > 1:
-                progression_score += 0.1
-            
-            return min(1.0, progression_score)
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing story progression: {e}")
-            return 0.5
+        if len(chapter_reviews) < 2:
+            return 0.7  # Single chapter, assume decent progression
+
+        # Check if chapters are in sequence
+        chapter_numbers = [review.chapter_number for review in chapter_reviews]
+        is_sequential = all(chapter_numbers[i] == chapter_numbers[i-1] + 1
+                          for i in range(1, len(chapter_numbers)))
+
+        if is_sequential:
+            progression_score = 0.8
+        else:
+            progression_score = 0.6  # Non-sequential, but still valid
+
+        # Bonus for variety in sections
+        sections = set(review.section_name for review in chapter_reviews)
+        if len(sections) > 1:
+            progression_score += 0.1
+
+        return min(1.0, progression_score)
+
     
     def _analyze_style_consistency(self, chapter_reviews: List[ChapterReview]) -> float:
         """Analyze style consistency across chapters."""
-        try:
-            if len(chapter_reviews) < 2:
-                return 0.8  # Single chapter is consistent with itself
-            
-            # Use character development scores as style indicator
-            char_dev_scores = [review.character_development_score for review in chapter_reviews]
-            avg_char_dev = sum(char_dev_scores) / len(char_dev_scores)
-            char_dev_variance = sum((s - avg_char_dev)**2 for s in char_dev_scores) / len(char_dev_scores)
-            
-            # Use pacing scores as another style indicator
-            pacing_scores = [review.pacing_score for review in chapter_reviews]
-            avg_pacing = sum(pacing_scores) / len(pacing_scores)
-            pacing_variance = sum((s - avg_pacing)**2 for s in pacing_scores) / len(pacing_scores)
-            
-            # Lower variance = higher consistency
-            char_consistency = max(0.0, 1.0 - char_dev_variance * 4)
-            pacing_consistency = max(0.0, 1.0 - pacing_variance * 4)
-            
-            # Average the consistency measures
-            style_consistency = (char_consistency + pacing_consistency) / 2
-            return min(1.0, style_consistency)
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing style consistency: {e}")
-            return 0.5
+        if len(chapter_reviews) < 2:
+            return 0.8  # Single chapter is consistent with itself
+
+        # Use character development scores as style indicator
+        char_dev_scores = [review.character_development_score for review in chapter_reviews]
+        avg_char_dev = sum(char_dev_scores) / len(char_dev_scores)
+        char_dev_variance = sum((s - avg_char_dev)**2 for s in char_dev_scores) / len(char_dev_scores)
+
+        # Use pacing scores as another style indicator
+        pacing_scores = [review.pacing_score for review in chapter_reviews]
+        avg_pacing = sum(pacing_scores) / len(pacing_scores)
+        pacing_variance = sum((s - avg_pacing)**2 for s in pacing_scores) / len(pacing_scores)
+
+        # Lower variance = higher consistency
+        char_consistency = max(0.0, 1.0 - char_dev_variance * 4)
+        pacing_consistency = max(0.0, 1.0 - pacing_variance * 4)
+
+        # Average the consistency measures
+        style_consistency = (char_consistency + pacing_consistency) / 2
+        return min(1.0, style_consistency)
+
     
     # ========== REVIEW DATA PERSISTENCE METHODS ==========
     
     def _save_scene_review(self, scene_review: SceneReview) -> None:
         """Save scene review data to the quality directory."""
-        try:
-            # Create quality/reviews directory if it doesn't exist
-            reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
-            os.makedirs(reviews_dir, exist_ok=True)
-            
-            # Save scene review
-            filename = f"scene_ch{scene_review.chapter_number}_sc{scene_review.scene_number}_review.json"
-            filepath = os.path.join(reviews_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(asdict(scene_review), f, indent=2, ensure_ascii=False)
-                
-            self.logger.debug(f"Saved scene review: {filename}")
-            
-        except Exception as e:
-            self.logger.error(f"Error saving scene review: {e}")
+        # Create quality/reviews directory if it doesn't exist
+        reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
+        os.makedirs(reviews_dir, exist_ok=True)
+
+        # Save scene review
+        filename = f"scene_ch{scene_review.chapter_number}_sc{scene_review.scene_number}_review.json"
+        filepath = os.path.join(reviews_dir, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(asdict(scene_review), f, indent=2, ensure_ascii=False)
+
+        self.logger.debug(f"Saved scene review: {filename}")
+
     
     def _save_chapter_review(self, chapter_review: ChapterReview) -> None:
         """Save chapter review data to the quality directory."""
-        try:
-            # Create quality/reviews directory if it doesn't exist
-            reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
-            os.makedirs(reviews_dir, exist_ok=True)
-            
-            # Save chapter review
-            filename = f"chapter_{chapter_review.chapter_number}_review.json"
-            filepath = os.path.join(reviews_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(asdict(chapter_review), f, indent=2, ensure_ascii=False)
-                
-            self.logger.debug(f"Saved chapter review: {filename}")
-            
-        except Exception as e:
-            self.logger.error(f"Error saving chapter review: {e}")
+        # Create quality/reviews directory if it doesn't exist
+        reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
+        os.makedirs(reviews_dir, exist_ok=True)
+
+        # Save chapter review
+        filename = f"chapter_{chapter_review.chapter_number}_review.json"
+        filepath = os.path.join(reviews_dir, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(asdict(chapter_review), f, indent=2, ensure_ascii=False)
+
+        self.logger.debug(f"Saved chapter review: {filename}")
+
     
     def _save_batch_review(self, batch_review: BatchReview) -> None:
         """Save batch review data to the quality directory."""
-        try:
-            # Create quality/reviews directory if it doesn't exist
-            reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
-            os.makedirs(reviews_dir, exist_ok=True)
-            
-            # Save batch review
-            filename = f"batch_{batch_review.batch_number}_review.json"
-            filepath = os.path.join(reviews_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(asdict(batch_review), f, indent=2, ensure_ascii=False)
-                
-            self.logger.debug(f"Saved batch review: {filename}")
-            
-            # Also save summary metrics
-            self._save_batch_metrics_summary(batch_review)
-            
-        except Exception as e:
-            self.logger.error(f"Error saving batch review: {e}")
+        # Create quality/reviews directory if it doesn't exist
+        reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
+        os.makedirs(reviews_dir, exist_ok=True)
+
+        # Save batch review
+        filename = f"batch_{batch_review.batch_number}_review.json"
+        filepath = os.path.join(reviews_dir, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(asdict(batch_review), f, indent=2, ensure_ascii=False)
+
+        self.logger.debug(f"Saved batch review: {filename}")
+
+        # Also save summary metrics
+        self._save_batch_metrics_summary(batch_review)
+
     
     def _save_batch_metrics_summary(self, batch_review: BatchReview) -> None:
         """Save batch metrics summary for dashboard/reporting."""
-        try:
-            # Create quality/metrics directory if it doesn't exist
-            metrics_dir = os.path.join(self.dir_manager.get_quality_dir(), "metrics")
-            os.makedirs(metrics_dir, exist_ok=True)
-            
-            # Create metrics summary
-            metrics_summary = {
-                "batch_number": batch_review.batch_number,
-                "timestamp": batch_review.timestamp,
-                "chapters_count": len(batch_review.chapter_numbers),
-                "total_word_count": batch_review.total_word_count,
-                "average_quality": batch_review.average_quality,
-                "consistency_score": batch_review.consistency_score,
-                "progression_score": batch_review.progression_score,
-                "style_consistency_score": batch_review.style_consistency_score,
-                "issues_count": len(batch_review.issues),
-                "suggestions_count": len(batch_review.suggestions),
-                "confidence": batch_review.confidence,
-                "chapter_details": [
-                    {
-                        "chapter_number": ch.chapter_number,
-                        "section_name": ch.section_name,
-                        "quality_score": ch.overall_quality,
-                        "word_count": ch.total_word_count,
-                        "scene_count": len(ch.scene_reviews)
-                    }
-                    for ch in batch_review.chapter_reviews
-                ]
-            }
-            
-            # Save metrics summary
-            filename = f"batch_{batch_review.batch_number}_metrics.json"
-            filepath = os.path.join(metrics_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(metrics_summary, f, indent=2, ensure_ascii=False)
-                
-            self.logger.debug(f"Saved batch metrics: {filename}")
-            
-        except Exception as e:
-            self.logger.error(f"Error saving batch metrics: {e}")
+        # Create quality/metrics directory if it doesn't exist
+        metrics_dir = os.path.join(self.dir_manager.get_quality_dir(), "metrics")
+        os.makedirs(metrics_dir, exist_ok=True)
+
+        # Create metrics summary
+        metrics_summary = {
+            "batch_number": batch_review.batch_number,
+            "timestamp": batch_review.timestamp,
+            "chapters_count": len(batch_review.chapter_numbers),
+            "total_word_count": batch_review.total_word_count,
+            "average_quality": batch_review.average_quality,
+            "consistency_score": batch_review.consistency_score,
+            "progression_score": batch_review.progression_score,
+            "style_consistency_score": batch_review.style_consistency_score,
+            "issues_count": len(batch_review.issues),
+            "suggestions_count": len(batch_review.suggestions),
+            "confidence": batch_review.confidence,
+            "chapter_details": [
+                {
+                    "chapter_number": ch.chapter_number,
+                    "section_name": ch.section_name,
+                    "quality_score": ch.overall_quality,
+                    "word_count": ch.total_word_count,
+                    "scene_count": len(ch.scene_reviews)
+                }
+                for ch in batch_review.chapter_reviews
+            ]
+        }
+
+        # Save metrics summary
+        filename = f"batch_{batch_review.batch_number}_metrics.json"
+        filepath = os.path.join(metrics_dir, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(metrics_summary, f, indent=2, ensure_ascii=False)
+
+        self.logger.debug(f"Saved batch metrics: {filename}")
+
     
     def _load_chapter_review(self, chapter_number: int) -> Optional[ChapterReview]:
         """Load chapter review from file."""
-        try:
-            reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
-            filename = f"chapter_{chapter_number}_review.json"
-            filepath = os.path.join(reviews_dir, filename)
-            
-            if not os.path.exists(filepath):
-                return None
-                
-            with open(filepath, 'r', encoding='utf-8') as f:
-                review_data = json.load(f)
-                
-            # Convert scene reviews back to objects
-            scene_reviews = []
-            for scene_data in review_data.get('scene_reviews', []):
-                scene_review = SceneReview(**scene_data)
-                scene_reviews.append(scene_review)
-            
-            # Create chapter review object
-            review_data['scene_reviews'] = scene_reviews
-            chapter_review = ChapterReview(**review_data)
-            
-            return chapter_review
-            
-        except Exception as e:
-            self.logger.error(f"Error loading chapter review for chapter {chapter_number}: {e}")
+        reviews_dir = os.path.join(self.dir_manager.get_quality_dir(), "reviews")
+        filename = f"chapter_{chapter_number}_review.json"
+        filepath = os.path.join(reviews_dir, filename)
+
+        if not os.path.exists(filepath):
             return None
+
+        with open(filepath, 'r', encoding='utf-8') as f:
+            review_data = json.load(f)
+
+        # Convert scene reviews back to objects
+        scene_reviews = []
+        for scene_data in review_data.get('scene_reviews', []):
+            scene_review = SceneReview(**scene_data)
+            scene_reviews.append(scene_review)
+
+        # Create chapter review object
+        review_data['scene_reviews'] = scene_reviews
+        chapter_review = ChapterReview(**review_data)
+
+        return chapter_review
+
     
     # Phase 3: Advanced Analytics & Optimization Methods
     
     def record_quality_trend(self, chapter_number: int, scene_number: Optional[int], 
                            quality_score: float, review_type: str, retry_attempt: int = 0) -> None:
         """Record quality trend data for analytics."""
-        try:
-            timestamp = datetime.now().isoformat()
-            
-            # Calculate improvement from previous attempt
-            improvement = self._calculate_quality_improvement(
-                chapter_number, scene_number, quality_score, review_type, retry_attempt
-            )
-            
-            trend = QualityTrend(
-                timestamp=timestamp,
-                chapter_number=chapter_number,
-                scene_number=scene_number,
-                quality_score=quality_score,
-                review_type=review_type,
-                improvement_from_previous=improvement,
-                retry_attempt=retry_attempt
-            )
-            
-            # Save trend data
-            self._save_quality_trend(trend)
-            
-            # Update cache
-            self._quality_trends_cache.append(trend)
-            self._last_cache_update = datetime.now()
-            
-        except Exception as e:
-            self.logger.error(f"Error recording quality trend: {e}")
+        timestamp = datetime.now().isoformat()
+
+        # Calculate improvement from previous attempt
+        improvement = self._calculate_quality_improvement(
+            chapter_number, scene_number, quality_score, review_type, retry_attempt
+        )
+
+        trend = QualityTrend(
+            timestamp=timestamp,
+            chapter_number=chapter_number,
+            scene_number=scene_number,
+            quality_score=quality_score,
+            review_type=review_type,
+            improvement_from_previous=improvement,
+            retry_attempt=retry_attempt
+        )
+
+        # Save trend data
+        self._save_quality_trend(trend)
+
+        # Update cache
+        self._quality_trends_cache.append(trend)
+        self._last_cache_update = datetime.now()
+
     
     def _calculate_quality_improvement(self, chapter_number: int, scene_number: Optional[int],
                                      current_score: float, review_type: str, retry_attempt: int) -> Optional[float]:
         """Calculate quality improvement from previous attempt or similar content."""
-        try:
-            # Load previous trends for comparison
-            trends = self.get_quality_trends()
-            
-            # Find most recent similar review
-            previous_score = None
-            for trend in reversed(trends):
-                if (trend.chapter_number == chapter_number and 
-                    trend.scene_number == scene_number and
-                    trend.review_type == review_type and
-                    trend.retry_attempt == retry_attempt - 1):
-                    previous_score = trend.quality_score
-                    break
-            
-            if previous_score is not None:
-                return current_score - previous_score
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating quality improvement: {e}")
-            return None
+        # Load previous trends for comparison
+        trends = self.get_quality_trends()
+
+        # Find most recent similar review
+        previous_score = None
+        for trend in reversed(trends):
+            if (trend.chapter_number == chapter_number and
+                trend.scene_number == scene_number and
+                trend.review_type == review_type and
+                trend.retry_attempt == retry_attempt - 1):
+                previous_score = trend.quality_score
+                break
+
+        if previous_score is not None:
+            return current_score - previous_score
+
+        return None
+
     
     def _save_quality_trend(self, trend: QualityTrend) -> None:
         """Save quality trend data to file."""
-        try:
-            trends_dir = os.path.join(self.dir_manager.get_quality_dir(), "trends")
-            os.makedirs(trends_dir, exist_ok=True)
-            
-            # Create filename based on trend type and identifiers
-            if trend.scene_number is not None:
-                filename = f"trend_ch{trend.chapter_number}_sc{trend.scene_number}_{trend.review_type}.json"
-            else:
-                filename = f"trend_ch{trend.chapter_number}_{trend.review_type}.json"
-            
-            filepath = os.path.join(trends_dir, filename)
-            
-            # Load existing trends or create new list
-            trends_list = []
-            if os.path.exists(filepath):
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    trends_list = json.load(f)
-            
-            # Add new trend
-            trends_list.append(asdict(trend))
-            
-            # Save updated trends
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(trends_list, f, indent=2, ensure_ascii=False)
-                
-        except Exception as e:
-            self.logger.error(f"Error saving quality trend: {e}")
+        trends_dir = os.path.join(self.dir_manager.get_quality_dir(), "trends")
+        os.makedirs(trends_dir, exist_ok=True)
+
+        # Create filename based on trend type and identifiers
+        if trend.scene_number is not None:
+            filename = f"trend_ch{trend.chapter_number}_sc{trend.scene_number}_{trend.review_type}.json"
+        else:
+            filename = f"trend_ch{trend.chapter_number}_{trend.review_type}.json"
+
+        filepath = os.path.join(trends_dir, filename)
+
+        # Load existing trends or create new list
+        trends_list = []
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                trends_list = json.load(f)
+
+        # Add new trend
+        trends_list.append(asdict(trend))
+
+        # Save updated trends
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(trends_list, f, indent=2, ensure_ascii=False)
+
     
     def get_quality_trends(self, chapter_number: Optional[int] = None, 
                           review_type: Optional[str] = None) -> List[QualityTrend]:
         """Get quality trends with optional filtering."""
-        try:
-            # Check cache first (performance optimization)
-            if (self._last_cache_update and 
-                (datetime.now() - self._last_cache_update).total_seconds() < self._cache_ttl_seconds):
-                trends = self._quality_trends_cache.copy()
-            else:
-                # Load from files
-                trends = self._load_all_quality_trends()
-                self._quality_trends_cache = trends.copy()
-                self._last_cache_update = datetime.now()
-            
-            # Apply filters
-            if chapter_number is not None:
-                trends = [t for t in trends if t.chapter_number == chapter_number]
-            
-            if review_type is not None:
-                trends = [t for t in trends if t.review_type == review_type]
-            
-            return sorted(trends, key=lambda t: t.timestamp)
-            
-        except Exception as e:
-            self.logger.error(f"Error getting quality trends: {e}")
-            return []
+        # Check cache first (performance optimization)
+        if (self._last_cache_update and
+            (datetime.now() - self._last_cache_update).total_seconds() < self._cache_ttl_seconds):
+            trends = self._quality_trends_cache.copy()
+        else:
+            # Load from files
+            trends = self._load_all_quality_trends()
+            self._quality_trends_cache = trends.copy()
+            self._last_cache_update = datetime.now()
+
+        # Apply filters
+        if chapter_number is not None:
+            trends = [t for t in trends if t.chapter_number == chapter_number]
+
+        if review_type is not None:
+            trends = [t for t in trends if t.review_type == review_type]
+
+        return sorted(trends, key=lambda t: t.timestamp)
+
     
     def _load_all_quality_trends(self) -> List[QualityTrend]:
         """Load all quality trends from files."""
         trends = []
-        try:
-            trends_dir = os.path.join(self.dir_manager.get_quality_dir(), "trends")
-            
-            if not os.path.exists(trends_dir):
-                return trends
-            
-            # Load all trend files
-            for filename in os.listdir(trends_dir):
-                if filename.endswith('.json'):
-                    filepath = os.path.join(trends_dir, filename)
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        trend_data_list = json.load(f)
-                    
-                    for trend_data in trend_data_list:
-                        trend = QualityTrend(**trend_data)
-                        trends.append(trend)
-            
+        trends_dir = os.path.join(self.dir_manager.get_quality_dir(), "trends")
+
+        if not os.path.exists(trends_dir):
             return trends
-            
-        except Exception as e:
-            self.logger.error(f"Error loading quality trends: {e}")
-            return trends
+
+        # Load all trend files
+        for filename in os.listdir(trends_dir):
+            if filename.endswith('.json'):
+                filepath = os.path.join(trends_dir, filename)
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    trend_data_list = json.load(f)
+
+                for trend_data in trend_data_list:
+                    trend = QualityTrend(**trend_data)
+                    trends.append(trend)
+
+        return trends
+
     
     def analyze_quality_trends(self, chapter_number: Optional[int] = None) -> Dict[str, Any]:
         """Analyze quality trends and provide insights."""
-        try:
-            trends = self.get_quality_trends(chapter_number)
-            
-            if not trends:
-                return {
-                    "total_reviews": 0,
-                    "average_quality": 0.0,
-                    "quality_trend": "no_data",
-                    "improvement_rate": 0.0,
-                    "retry_rate": 0.0
-                }
-            
-            # Calculate basic statistics
-            total_reviews = len(trends)
-            average_quality = sum(t.quality_score for t in trends) / total_reviews
-            
-            # Calculate improvement trend
-            improvements = [t.improvement_from_previous for t in trends if t.improvement_from_previous is not None]
-            improvement_rate = sum(improvements) / len(improvements) if improvements else 0.0
-            
-            # Calculate retry rate
-            retries = [t for t in trends if t.retry_attempt > 0]
-            retry_rate = len(retries) / total_reviews if total_reviews > 0 else 0.0
-            
-            # Determine overall trend
-            if len(trends) >= 3:
-                recent_scores = [t.quality_score for t in trends[-3:]]
-                early_scores = [t.quality_score for t in trends[:3]]
-                recent_avg = sum(recent_scores) / len(recent_scores)
-                early_avg = sum(early_scores) / len(early_scores)
-                
-                if recent_avg > early_avg + 0.05:
-                    quality_trend = "improving"
-                elif recent_avg < early_avg - 0.05:
-                    quality_trend = "declining"
-                else:
-                    quality_trend = "stable"
-            else:
-                quality_trend = "insufficient_data"
-            
+        trends = self.get_quality_trends(chapter_number)
+
+        if not trends:
             return {
-                "total_reviews": total_reviews,
-                "average_quality": round(average_quality, 3),
-                "quality_trend": quality_trend,
-                "improvement_rate": round(improvement_rate, 3),
-                "retry_rate": round(retry_rate, 3),
-                "latest_quality": trends[-1].quality_score if trends else 0.0,
-                "best_quality": max(t.quality_score for t in trends),
-                "worst_quality": min(t.quality_score for t in trends)
+                "total_reviews": 0,
+                "average_quality": 0.0,
+                "quality_trend": "no_data",
+                "improvement_rate": 0.0,
+                "retry_rate": 0.0
             }
-            
-        except Exception as e:
-            self.logger.error(f"Error analyzing quality trends: {e}")
-            return {"error": str(e)}
+
+        # Calculate basic statistics
+        total_reviews = len(trends)
+        average_quality = sum(t.quality_score for t in trends) / total_reviews
+
+        # Calculate improvement trend
+        improvements = [t.improvement_from_previous for t in trends if t.improvement_from_previous is not None]
+        improvement_rate = sum(improvements) / len(improvements) if improvements else 0.0
+
+        # Calculate retry rate
+        retries = [t for t in trends if t.retry_attempt > 0]
+        retry_rate = len(retries) / total_reviews if total_reviews > 0 else 0.0
+
+        # Determine overall trend
+        if len(trends) >= 3:
+            recent_scores = [t.quality_score for t in trends[-3:]]
+            early_scores = [t.quality_score for t in trends[:3]]
+            recent_avg = sum(recent_scores) / len(recent_scores)
+            early_avg = sum(early_scores) / len(early_scores)
+
+            if recent_avg > early_avg + 0.05:
+                quality_trend = "improving"
+            elif recent_avg < early_avg - 0.05:
+                quality_trend = "declining"
+            else:
+                quality_trend = "stable"
+        else:
+            quality_trend = "insufficient_data"
+
+        return {
+            "total_reviews": total_reviews,
+            "average_quality": round(average_quality, 3),
+            "quality_trend": quality_trend,
+            "improvement_rate": round(improvement_rate, 3),
+            "retry_rate": round(retry_rate, 3),
+            "latest_quality": trends[-1].quality_score if trends else 0.0,
+            "best_quality": max(t.quality_score for t in trends),
+            "worst_quality": min(t.quality_score for t in trends)
+        }
+
     
     def should_retry_based_on_thresholds(self, quality_score: float, review_type: str, 
                                        retry_attempt: int = 0) -> bool:
         """Determine if content should be retried based on configurable thresholds."""
-        try:
-            if not self.quality_thresholds.retry_below_threshold:
-                return False
-            
-            if retry_attempt >= self.quality_thresholds.max_retries:
-                return False
-            
-            # Check against appropriate threshold
-            if review_type == "scene":
-                return quality_score < self.quality_thresholds.minimum_scene_quality
-            elif review_type == "chapter":
-                return quality_score < self.quality_thresholds.minimum_chapter_quality
-            elif review_type == "batch":
-                return quality_score < self.quality_thresholds.minimum_batch_quality
-            
+        if not self.quality_thresholds.retry_below_threshold:
             return False
-            
-        except Exception as e:
-            self.logger.error(f"Error checking retry thresholds: {e}")
+
+        if retry_attempt >= self.quality_thresholds.max_retries:
             return False
+
+        # Check against appropriate threshold
+        if review_type == "scene":
+            return quality_score < self.quality_thresholds.minimum_scene_quality
+        elif review_type == "chapter":
+            return quality_score < self.quality_thresholds.minimum_chapter_quality
+        elif review_type == "batch":
+            return quality_score < self.quality_thresholds.minimum_batch_quality
+
+        return False
+
     
     def generate_quality_dashboard(self) -> Dict[str, Any]:
         """Generate comprehensive quality dashboard data."""
-        try:
-            # Overall trends analysis
-            overall_analysis = self.analyze_quality_trends()
-            
-            # Per-chapter analysis
-            chapter_analyses = {}
-            trends = self.get_quality_trends()
-            chapter_numbers = list(set(t.chapter_number for t in trends))
-            
-            for chapter_num in sorted(chapter_numbers):
-                chapter_analyses[f"chapter_{chapter_num}"] = self.analyze_quality_trends(chapter_num)
-            
-            # Review type breakdown
-            review_type_stats = {}
-            for review_type in ["scene", "chapter", "batch"]:
-                type_trends = self.get_quality_trends(review_type=review_type)
-                if type_trends:
-                    review_type_stats[review_type] = {
-                        "count": len(type_trends),
-                        "average_quality": sum(t.quality_score for t in type_trends) / len(type_trends),
-                        "latest_quality": type_trends[-1].quality_score
-                    }
-            
-            # Threshold compliance
-            threshold_compliance = {
-                "scene_threshold": self.quality_thresholds.minimum_scene_quality,
-                "chapter_threshold": self.quality_thresholds.minimum_chapter_quality,
-                "batch_threshold": self.quality_thresholds.minimum_batch_quality,
-                "retry_enabled": self.quality_thresholds.retry_below_threshold,
-                "max_retries": self.quality_thresholds.max_retries
-            }
-            
-            return {
-                "generated_at": datetime.now().isoformat(),
-                "overall_analysis": overall_analysis,
-                "chapter_analyses": chapter_analyses,
-                "review_type_stats": review_type_stats,
-                "threshold_compliance": threshold_compliance,
-                "cache_status": {
-                    "last_update": self._last_cache_update.isoformat() if self._last_cache_update else None,
-                    "cached_trends": len(self._quality_trends_cache),
-                    "ttl_seconds": self._cache_ttl_seconds
+        # Overall trends analysis
+        overall_analysis = self.analyze_quality_trends()
+
+        # Per-chapter analysis
+        chapter_analyses = {}
+        trends = self.get_quality_trends()
+        chapter_numbers = list(set(t.chapter_number for t in trends))
+
+        for chapter_num in sorted(chapter_numbers):
+            chapter_analyses[f"chapter_{chapter_num}"] = self.analyze_quality_trends(chapter_num)
+
+        # Review type breakdown
+        review_type_stats = {}
+        for review_type in ["scene", "chapter", "batch"]:
+            type_trends = self.get_quality_trends(review_type=review_type)
+            if type_trends:
+                review_type_stats[review_type] = {
+                    "count": len(type_trends),
+                    "average_quality": sum(t.quality_score for t in type_trends) / len(type_trends),
+                    "latest_quality": type_trends[-1].quality_score
                 }
+
+        # Threshold compliance
+        threshold_compliance = {
+            "scene_threshold": self.quality_thresholds.minimum_scene_quality,
+            "chapter_threshold": self.quality_thresholds.minimum_chapter_quality,
+            "batch_threshold": self.quality_thresholds.minimum_batch_quality,
+            "retry_enabled": self.quality_thresholds.retry_below_threshold,
+            "max_retries": self.quality_thresholds.max_retries
+        }
+
+        return {
+            "generated_at": datetime.now().isoformat(),
+            "overall_analysis": overall_analysis,
+            "chapter_analyses": chapter_analyses,
+            "review_type_stats": review_type_stats,
+            "threshold_compliance": threshold_compliance,
+            "cache_status": {
+                "last_update": self._last_cache_update.isoformat() if self._last_cache_update else None,
+                "cached_trends": len(self._quality_trends_cache),
+                "ttl_seconds": self._cache_ttl_seconds
             }
-            
-        except Exception as e:
-            self.logger.error(f"Error generating quality dashboard: {e}")
-            return {"error": str(e)}
+        }
+
     
     def save_quality_dashboard(self) -> str:
         """Save quality dashboard to file and return filepath."""
-        try:
-            dashboard_data = self.generate_quality_dashboard()
-            
-            # Save to quality/reports directory
-            reports_dir = os.path.join(self.dir_manager.get_quality_dir(), "reports")
-            os.makedirs(reports_dir, exist_ok=True)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"quality_dashboard_{timestamp}.json"
-            filepath = os.path.join(reports_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(dashboard_data, f, indent=2, ensure_ascii=False)
-            
-            # Also save as latest dashboard
-            latest_filepath = os.path.join(reports_dir, "quality_dashboard_latest.json")
-            with open(latest_filepath, 'w', encoding='utf-8') as f:
-                json.dump(dashboard_data, f, indent=2, ensure_ascii=False)
-            
-            self.logger.info(f"Quality dashboard saved: {filename}")
-            return filepath
-            
-        except Exception as e:
-            self.logger.error(f"Error saving quality dashboard: {e}")
-            return ""
+        dashboard_data = self.generate_quality_dashboard()
+
+        # Save to quality/reports directory
+        reports_dir = os.path.join(self.dir_manager.get_quality_dir(), "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"quality_dashboard_{timestamp}.json"
+        filepath = os.path.join(reports_dir, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(dashboard_data, f, indent=2, ensure_ascii=False)
+
+        # Also save as latest dashboard
+        latest_filepath = os.path.join(reports_dir, "quality_dashboard_latest.json")
+        with open(latest_filepath, 'w', encoding='utf-8') as f:
+            json.dump(dashboard_data, f, indent=2, ensure_ascii=False)
+
+        self.logger.info(f"Quality dashboard saved: {filename}")
+        return filepath
+
 
 
 # Convenience functions for integration

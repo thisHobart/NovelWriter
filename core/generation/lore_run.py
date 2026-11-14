@@ -1,71 +1,14 @@
-"""世界设定的请求预算、候选交付与可恢复运行记录。"""
+"""世界设定的候选交付与可恢复运行记录。"""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field
 from pathlib import Path
 import json
-import time
 
 from core.generation.lore_repository import LoreRepository, encode, digest, BODY, CONTRACT, CHARACTERS, FACTIONS
+from core.generation.design_contract import DesignContractError
 
-ACTIVE_BUDGET = ContextVar("lore_request_budget", default=None)
-IN_REQUEST = ContextVar("lore_inside_request", default=False)
 RESULTS = "system/lore_generation/results"
 LABELS = {"characters": "人物", "factions": "势力", "world": "世界观", "background": "人物背景", "titles": "推荐标题"}
-
-
-class BudgetExhausted(RuntimeError):
-    pass
-
-
-@dataclass
-class RequestBudget:
-    progress: object = None
-    max_calls: int = 6
-    seconds: float = 300
-    clock: object = time.monotonic
-    calls: int = 0
-    deadline_expired: bool = False
-    started: float = field(init=False)
-
-    def __post_init__(self):
-        self.started = self.clock()
-
-    @property
-    def remaining(self):
-        return self.seconds - (self.clock() - self.started)
-
-    def check(self):
-        if self.progress:
-            self.progress()
-        if self.calls >= self.max_calls:
-            raise BudgetExhausted(f"已达到 {self.max_calls} 次模型请求预算")
-        if self.deadline_expired or self.remaining <= 0:
-            raise BudgetExhausted("已达到单份产物 5 分钟的总预算")
-
-    @contextmanager
-    def activate(self):
-        token = ACTIVE_BUDGET.set(self)
-        try:
-            yield
-        finally:
-            ACTIVE_BUDGET.reset(token)
-
-
-def budgeted_call(invoke):
-    """SDK 内部重试关闭后，每次底层请求只在此计数一次。"""
-    budget = ACTIVE_BUDGET.get()
-    if budget is None or IN_REQUEST.get():
-        return invoke()
-    budget.check()
-    budget.calls += 1
-    token = IN_REQUEST.set(True)
-    try:
-        return invoke()
-    finally:
-        IN_REQUEST.reset(token)
 
 
 def source_fingerprint(root, changes=None):
@@ -118,17 +61,25 @@ def readable_json(raw, key):
     cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", raw.strip(), flags=re.I)
     try:
         data = json.loads(cleaned)
-    except ValueError:
-        data = json.loads(cleaned[cleaned.index("{"):cleaned.rindex("}") + 1])
+    except json.JSONDecodeError as exc:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise DesignContractError("返回内容不是可读取的 JSON") from exc
+        try:
+            data = json.loads(cleaned[start:end + 1])
+        except json.JSONDecodeError as inner:
+            raise DesignContractError("返回内容不是可读取的 JSON") from inner
+    if not isinstance(data, (list, dict)):
+        raise DesignContractError("返回内容必须是对象或数组")
     items = data if isinstance(data, list) else data.get(key)
     if not isinstance(items, list) or not items or any(not isinstance(r, dict) for r in items):
-        raise ValueError("没有可读取的条目列表")
+        raise DesignContractError("没有可读取的条目列表")
     if any(not isinstance(r.get("name"), str) or not r["name"].strip() for r in items):
-        raise ValueError("条目缺少可读取的名称")
+        raise DesignContractError("条目缺少可读取的名称")
     if key == "characters":
         relationships = data.get("relationships", []) if isinstance(data, dict) else []
         if not isinstance(relationships, list) or any(not isinstance(r, dict) for r in relationships):
-            raise ValueError("人物关系不是可读取的对象数组")
+            raise DesignContractError("人物关系不是可读取的对象数组")
         return {"characters": items, "relationships": relationships,
                 **({k: v for k, v in data.items() if k not in {"characters", "relationships"}} if isinstance(data, dict) else {})}
     return items
@@ -138,7 +89,7 @@ def readable_world(raw):
     from core.generation.design_contract import LORE_CONTRACT_START, LORE_CONTRACT_END
     body = raw.split(LORE_CONTRACT_START, 1)[0].strip()
     if not body:
-        raise ValueError("没有可读取的世界观正文")
+        raise DesignContractError("没有可读取的世界观正文")
     contract = None
     if LORE_CONTRACT_START in raw and LORE_CONTRACT_END in raw:
         try:
@@ -146,7 +97,7 @@ def readable_world(raw):
             from core.generation.design_contract import validate_lore_contract
             validate_lore_contract(value)
             contract = value
-        except (ValueError, TypeError, KeyError):
+        except (json.JSONDecodeError, DesignContractError):
             pass
     return body, contract
 

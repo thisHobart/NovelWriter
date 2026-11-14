@@ -14,7 +14,7 @@ from .contracts import (
 )
 from .conversation_context import build_conversation_context
 from .conversation_store import ConversationStore, select_completed_turns
-from .llm import RequestBudget, ScriptLLM
+from .llm import ScriptLLM
 from .models import (
     WorkspaceError,
     capture_model_snapshot,
@@ -124,7 +124,6 @@ class ConversationService:
                     model_snapshot=command["model_snapshot"],
                     expected_revision=command["conversation_revision"],
                 )
-                budget = RequestBudget(max_calls=1, seconds=120)
 
                 def record_call(prompt: str, response: str, error: str | None) -> None:
                     self.repository.update_run(
@@ -141,7 +140,6 @@ class ConversationService:
 
                 send = ScriptLLM(
                     command["model"],
-                    budget,
                     token=token,
                     transport=self.transport,
                     record=record_call,

@@ -9,7 +9,7 @@ from core.generation.lore_repository import digest, encode
 STATUS_LABELS = {"complete": "已生成", "needs_changes": "已生成，待修改", "unchecked": "已生成，检查未完成",
                  "draft": "草稿已保留", "running": "生成中，候选已保留", "failed": "未取得内容"}
 REASON_LABELS = {"checked": "检查结束", "attempt_limit": "达到自动修复上限", "no_improvement": "重复问题没有改善",
-                 "check_unavailable": "检查服务未完成", "budget_exhausted": "达到总请求或时间预算",
+                 "check_unavailable": "检查服务未完成", "budget_exhausted": "旧任务达到当时的限制",
                  "generation_unavailable": "模型服务未完成", "cancelled": "用户停止", "external_change": "外部修改冲突",
                  "save_failed": "保存失败", "manual_adoption": "已手动采用", "manual_draft": "已保存草稿"}
 REASON_LABELS["interrupted"] = "上次运行意外中断"

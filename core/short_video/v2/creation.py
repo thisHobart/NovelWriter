@@ -9,7 +9,6 @@ from pathlib import Path
 from core.generation.cancellation import CancelToken
 
 from .contracts import JsonObject, ProgressReporter, TextTransport
-from .llm import BudgetExhausted, RequestBudget
 from .models import (
     ASSET_KINDS,
     WorkspaceError,
@@ -24,7 +23,7 @@ from .models import (
 from .repository import ProjectRepository
 from .storage import atomic_write_text
 from .validation import local_issues
-from .workflow import STAGE_MAX_CALLS, WorkflowService
+from .workflow import WorkflowService
 
 
 class CreationWork:
@@ -65,7 +64,6 @@ class CreationWork:
             raise WorkspaceError(
                 "TASK_STOPPED", "这个任务已经停止，已完成内容保留；请从当前页面重新生成未完成内容"
             )
-        budget = RequestBudget(self.command["max_calls"], seconds=self.command["seconds"])
         task = {
             "command": self.command,
             "command_hash": fingerprint(self.command),
@@ -76,25 +74,9 @@ class CreationWork:
         }
         atomic_write_text(task_path, encode(task))
         try:
-            result = self.execute_task(repository, budget, report, task, task_path)
+            result = self.execute_task(repository, report, task, task_path)
             task.update(
-                status="succeeded", result=result, calls_used=budget.calls, ended_at=timestamp()
-            )
-            atomic_write_text(task_path, encode(task))
-            return result
-        except BudgetExhausted:
-            if not task["outputs"]:
-                task.update(status="failed", calls_used=budget.calls)
-                atomic_write_text(task_path, encode(task))
-                raise
-            result = {
-                "status": "partial",
-                "review_status": "incomplete",
-                "calls": budget.calls,
-                "version_id": task["outputs"][-1],
-            }
-            task.update(
-                status="partial", result=result, calls_used=budget.calls, ended_at=timestamp()
+                status="succeeded", result=result, ended_at=timestamp()
             )
             atomic_write_text(task_path, encode(task))
             return result
@@ -102,7 +84,6 @@ class CreationWork:
             task.update(
                 status="cancelled" if self.token.cancelled else "failed",
                 error=type(exc).__name__,
-                calls_used=budget.calls,
                 ended_at=timestamp(),
             )
             try:
@@ -114,7 +95,6 @@ class CreationWork:
     def execute_task(
         self,
         repository: ProjectRepository,
-        budget: RequestBudget,
         report: ProgressReporter,
         task: JsonObject,
         task_path: Path,
@@ -136,11 +116,15 @@ class CreationWork:
 
         def execute(command: JsonObject) -> JsonObject:
             verify_inputs()
-            result = service.execute(command, token=self.token, report=report, budget=budget)
+
+            def record_call(sent: str, response: str, error: str | None) -> None:
+                task["calls_used"] += 1
+                atomic_write_text(task_path, encode(task))
+
+            result = service.execute(command, token=self.token, report=report, on_request=record_call)
             results.append(result)
             record = repository.record(result["version_id"])
             task["outputs"].append(record["id"])
-            task["calls_used"] = budget.calls
             atomic_write_text(task_path, encode(task))
             frozen[record["key"]] = record["id"]
             require(
@@ -178,12 +162,12 @@ class CreationWork:
                 if all(r["review_status"] == "passed" for r in results)
                 else "issues"
                 if any(r["review_status"] == "issues" for r in results)
-                else "incomplete"
+                else "unavailable"
             )
             if results
             else "not_requested",
             "version_id": results[-1]["version_id"] if results else None,
-            "calls": budget.calls,
+            "calls": task["calls_used"],
         }
 
 
@@ -204,8 +188,6 @@ def prepare_storyboard_task(
         "first_command": first,
         "model_snapshot": first["model_snapshot"],
         "use_stale": use_stale,
-        "max_calls": 2 * STAGE_MAX_CALLS,
-        "seconds": 600,
     }
 
 
@@ -253,7 +235,7 @@ def prepare_prompt_task(
         "STALE_INPUT",
         "分镜使用另一版人物和场景，请重新生成分镜或先恢复其历史内容",
     )
-    # Each item gets an Agent Loop with its own retry limit; the entire task also has a hard deadline.
+    # 每项资产独立执行质量修复循环，不设置整轮调用次数和时长上限。
     return {
         "stage": "prompt_task",
         "catalog_id": catalog["id"],
@@ -279,6 +261,4 @@ def prepare_prompt_task(
         "items": items,
         "model_snapshot": capture_model_snapshot(model) if items else None,
         "use_stale": use_stale,
-        "max_calls": max(1, STAGE_MAX_CALLS * len(items)),
-        "seconds": min(1800, max(300, 300 * len(items))),
     }
