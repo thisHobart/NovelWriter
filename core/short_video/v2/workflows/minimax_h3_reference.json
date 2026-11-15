@@ -286,6 +286,14 @@
       "ref_images.ref_image_0": [
         "137",
         0
+      ],
+      "ref_images.ref_image_1": [
+        "139",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "147",
+        0
       ]
     },
     "class_type": "MiniMaxH3ReferenceToVideo",

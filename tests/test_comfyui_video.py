@@ -111,13 +111,27 @@ class ComfyServer:
         raise AssertionError(f"Unexpected request {request.method} {path}")
 
 
-def test_api_workflow_uses_only_connected_image_and_preserves_template():
-    template = parse_video_workflow(MediaConfig().selected()["graph"])
-    assert [image.node_id for image in template.image_inputs] == ["137"]
+def test_builtin_reference_connects_three_images_and_ignores_orphan_nodes():
+    graph = MediaConfig().selected()["graph"]
+    graph["orphan-image"] = {"class_type": "LoadImage", "inputs": {"image": "unused.png"}}
+    template = parse_video_workflow(graph)
+    assert [image.node_id for image in template.image_inputs] == ["137", "139", "147"]
+    assert template.reference_count == 3
     assert template.output_node == "92"
-    assert not {"139", "147", "149"} & template.graph.keys()
+    assert not {"orphan-image", "149"} & template.graph.keys()
     original = template.graph["137"]["inputs"]["image"]
-    bound = template.bind({"137": "NovelWriter/input.png"}, "Use <Picture 1>.", "job", {})
+    bound = template.bind(
+        {
+            "137": "NovelWriter/input.png",
+            "139": "NovelWriter/second.png",
+            "147": "NovelWriter/third.png",
+        },
+        "Use <Picture 1>.",
+        "job",
+        {},
+    )
+    assert bound["139"]["inputs"]["image"] == "NovelWriter/second.png"
+    assert bound["147"]["inputs"]["image"] == "NovelWriter/third.png"
     assert bound["137"]["inputs"]["image"] == "NovelWriter/input.png"
     assert bound["138"]["inputs"]["value"] == "Use <Picture 1>."
     assert template.graph["137"]["inputs"]["image"] == original
@@ -146,7 +160,9 @@ def test_saved_catalog_keeps_json_when_original_resource_moves(tmp_path, monkeyp
 
 def test_video_runs_through_mcp_upload_submission_download_and_replay(tmp_path, image):
     server = ComfyServer()
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     transport = httpx.MockTransport(server.request)
     result = MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
     assert result["status"] == "succeeded"
@@ -165,7 +181,9 @@ def test_video_runs_through_mcp_upload_submission_download_and_replay(tmp_path, 
 def test_lost_submission_response_queries_original_job_without_resubmission(tmp_path, image):
     server = ComfyServer()
     server.drop_response = True
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     transport = httpx.MockTransport(server.request)
     with pytest.raises(httpx.ReadTimeout, match="response lost"):
         MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
@@ -180,7 +198,9 @@ def test_lost_submission_response_queries_original_job_without_resubmission(tmp_
 def test_failed_download_only_fetches_existing_video_again(tmp_path, image):
     server = ComfyServer()
     server.fail_download = True
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     transport = httpx.MockTransport(server.request)
     with pytest.raises(httpx.HTTPStatusError):
         MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
@@ -200,7 +220,9 @@ def test_rejected_submission_is_failed_instead_of_remote_status_unknown(tmp_path
             return httpx.Response(400, json={"error": "invalid workflow"})
         return server.request(request)
 
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     with pytest.raises(httpx.HTTPStatusError):
         MediaWork(str(tmp_path), command, transport=httpx.MockTransport(reject_workflow))(
             lambda *_: None
@@ -220,7 +242,9 @@ def test_old_config_discards_unused_image_setting_and_preserves_video(tmp_path, 
             "image_workflow": str(tmp_path / "not-implemented.json"),
         },
     )
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     assert command["images"]["137"]["image_id"] == image["image_id"]
     MediaConfig.load(tmp_path).save(tmp_path)
     assert "image_workflow" not in repository.read("settings.json")
@@ -229,7 +253,9 @@ def test_old_config_discards_unused_image_setting_and_preserves_video(tmp_path, 
 def test_local_cancel_never_sends_global_comfy_interrupt(tmp_path, image):
     server = ComfyServer()
     server.running = True
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     work = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))
 
     def cancel_when_running(message, fraction):
@@ -247,7 +273,9 @@ def test_local_cancel_never_sends_global_comfy_interrupt(tmp_path, image):
 def test_mcp_preserves_programming_error_without_retry(tmp_path, image):
     server = ComfyServer()
     server.failure = TypeError("internal transport defect")
-    command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+    command = MediaService(tmp_path).prepare_video(
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+    )
     with pytest.raises(TypeError, match="internal transport defect") as caught:
         MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(
             lambda *_: None
@@ -268,10 +296,14 @@ def test_missing_model_is_reported_before_gpu_submission():
 def test_changed_image_or_invalid_reference_is_rejected(tmp_path, image):
     service = MediaService(tmp_path)
     with pytest.raises(WorkspaceError, match="引用超出范围"):
-        service.prepare_video({"137": image["image_id"]}, "Use <Picture 2>.")
+        service.prepare_video(
+            {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 4>."
+        )
     MediaRepository(tmp_path).resolve(image["relative_path"]).write_bytes(PNG + b"changed")
     with pytest.raises(WorkspaceError, match="已被修改"):
-        service.prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
+        service.prepare_video(
+            {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+        )
 
 
 def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
@@ -295,7 +327,8 @@ def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
     image.fill(0xFF0088)
     path = tmp_path / "ui-reference.png"
     assert image.save(str(path))
-    panel.import_image(str(path), "137")
+    for node_id in ["137", "139", "147"]:
+        panel.import_image(str(path), node_id)
     panel.generate_button.click()
     app.processEvents()
     assert len(submitted) == 1
@@ -311,6 +344,10 @@ def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
 
 def reference_graph(count):
     graph = MediaConfig().selected()["graph"]
+    inputs = graph["136"]["inputs"]
+    for name in list(inputs):
+        if name.startswith("ref_images.ref_image_"):
+            del inputs[name]
     for index in range(count):
         node_id = f"image-{index}"
         graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": "original.png"}}
@@ -396,7 +433,9 @@ def test_missing_image_wrong_parameter_or_unknown_template_is_explicit(tmp_path,
     config.save(tmp_path)
     service = MediaService(tmp_path)
     with pytest.raises(WorkspaceError, match="每个工作流图片输入"):
-        service.prepare_video({"137": image["image_id"]}, "camera movement")
+        service.prepare_video(
+            {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "camera movement"
+        )
     with pytest.raises(WorkspaceError, match="类型或范围"):
         service.prepare_video(
             {
@@ -512,7 +551,8 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
     image = QImage(8, 8, QImage.Format_RGB32)
     image.fill(0x001188)
     assert image.save(str(path))
-    panel.import_image(str(path), "137")
+    for node_id in ["137", "139", "147"]:
+        panel.import_image(str(path), node_id)
     selection = panel.image_selection()
     server = ComfyServer()
 

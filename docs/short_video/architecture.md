@@ -273,7 +273,7 @@ MCP 客户端和服务端使用官方 Python SDK 在进程内连接，随软件�
 
 | 模板 | 图片关系 | 已提供资源 |
 |---|---|---|
-| 参考图 | MiniMaxH3ReferenceToVideo.ref_images.ref_image_N 直接连接的独立 LoadImage，按 N 排序 | minimax_h3_reference.json，原模板实际连接一张；连接三／四张后 UI 同步显示三／四项 |
+| 参考图 | MiniMaxH3ReferenceToVideo.ref_images.ref_image_N 直接连接的独立 LoadImage，按 N 排序 | minimax_h3_reference.json，默认连接 137／139／147 三张参考图；更新连线数量后 UI 同步变化 |
 | 参考图＋首尾帧 | MiniMaxH3ReferenceToVideo 的 3 张参考图，加上顺序连接的 MiniMaxH3AddGuide（frame_idx = 0／-1） | minimax_h3_first_last.json，用户提供的实际工作流，显示参考图 1～3、首帧和尾帧 |
 
 首尾帧资源现以用户提供的 MiniMaxH3_多参考图_已连接首尾帧_完整示例.json 为准，保留 ref2va 模型与其采样分支。参考图作为外观条件，两个 AddGuide 分别传入首帧和末帧引导条件；尾帧引导的条件输出连接最终采样器。已有 MiniMaxH3ImageToVideo 独立首尾帧配置继续支持。自带副本仅将 CreateVideo.chroma_subsampling 从当前 ComfyUI 不接受的 none 改为 auto，不修改用户源文件。 当前 5 秒复测已跑通生成与播放，但严格首帧画面控制未通过；连接正确不表示模型一定严格复现输入首尾帧，具体观察见开发文档。
