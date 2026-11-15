@@ -32,6 +32,13 @@ def validate_nodes(workflow: JsonObject, nodes: JsonObject) -> None:
             if name not in node["inputs"]:
                 continue
             value = node["inputs"][name]
+            if definition[0] in ("INT", "FLOAT") and type(value) in (int, float):
+                bounds = definition[1]
+                require(
+                    bounds.get("min", float("-inf")) <= value <= bounds.get("max", float("inf")),
+                    "INVALID_INPUT",
+                    f"节点 {node_id} 的 {name} 超出允许范围：{value}",
+                )
             choices = definition[0]
             if choices == "COMBO":
                 choices = definition[1]["options"]

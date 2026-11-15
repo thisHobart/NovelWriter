@@ -316,7 +316,7 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
                     "megapixels",
                     "分辨率（百万像素）",
                     node["inputs"]["megapixels"],
-                    0.01,
+                    0.1,
                     16,
                 )
             )

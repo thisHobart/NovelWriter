@@ -608,3 +608,15 @@ def test_optional_combo_is_checked_before_remote_submission():
                 }
             },
         )
+
+
+def test_server_numeric_range_is_checked_before_upload():
+    with pytest.raises(WorkspaceError, match="megapixels 超出允许范围"):
+        validate_nodes(
+            {"115": {"class_type": "ResolutionSelector", "inputs": {"megapixels": 0.03}}},
+            {
+                "ResolutionSelector": {
+                    "input": {"required": {"megapixels": ["FLOAT", {"min": 0.1, "max": 16}]}}
+                }
+            },
+        )
