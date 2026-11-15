@@ -13,6 +13,7 @@ from openai import APIError
 
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
+from . import models as model_contracts
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
 from .feedback import (
     ACTION_NAMES,
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from .repository import ProjectRepository
     from .workflow import WorkflowService
 
-RUNTIME_VERSION = 1
+RUNTIME_VERSION = 2
 logger = logging.getLogger(__name__)
 PHASES = {
     "request": "生成",
@@ -175,6 +176,8 @@ def validate_task(repository: ProjectRepository, task_id: str, *, model: bool = 
     )
     if model and task["command"].get("model_snapshot") is not None:
         validate_model_snapshot(task["command"]["model_snapshot"])
+    if model and task["command"].get("review_model_snapshot") is not None:
+        model_contracts.validate_review_model_snapshot(task["command"]["review_model_snapshot"])
     return task
 
 
@@ -196,6 +199,8 @@ def finish_failure(
                 retryable = exc.code in {
                     "MODEL_CONFIGURATION_CHANGED",
                     "MODEL_CONFIGURATION_MISSING",
+                    "REVIEW_CONFIGURATION_CHANGED",
+                    "REVIEW_CONFIGURATION_MISSING",
                 }
             task.update(
                 status="paused" if paused else "failed",
@@ -403,11 +408,16 @@ class AgentExecution:
             return self.cp["response"]
         call = {}
         network_attempt = -1
+        purpose = "review" if call_type == "quality_check" else "generation"
+        snapshot = self.command[
+            "review_model_snapshot" if purpose == "review" else "model_snapshot"
+        ]
 
         def begin() -> None:
             nonlocal call, network_attempt
             self.token.raise_if_cancelled()
             validate_task(self.repository, self.task_id)
+            model_contracts.validate_review_model_snapshot(self.command["review_model_snapshot"])
             network_attempt += 1
             self.tracker.update_context(network_retries=network_attempt)
             if self.on_context:
@@ -415,6 +425,8 @@ class AgentExecution:
             call = {
                 "id": identity("call"),
                 "type": call_type,
+                "purpose": purpose,
+                "model_snapshot": deepcopy(snapshot),
                 "step_id": f"{self.run_id}:{self.cp['revision']}:{self.cp['format_attempt']}:{call_type}",
                 "network_attempt": network_attempt,
                 "state": "sending",
@@ -463,7 +475,8 @@ class AgentExecution:
                 self.on_request("", "", error)
 
         return ScriptLLM(
-            self.command["model"],
+            snapshot.get("provider", self.command["model"]),
+            purpose=purpose,
             token=self.token,
             transport=self.service.transport,
             record=record,
@@ -513,6 +526,7 @@ class AgentExecution:
                     "model": admitted["model"],
                     "prompt_ref": admitted["prompt_ref"],
                     "model_snapshot": admitted["model_snapshot"],
+                    "review_model_snapshot": admitted["review_model_snapshot"],
                 },
                 task_id=self.task_id,
                 checkpoint=self.cp,
@@ -657,6 +671,7 @@ class AgentExecution:
                     if k not in {"run_id", "version_id", "invalidated_refs"}
                 },
                 output_refs=[latest["id"]],
+                review_result={**asdict(review), "candidate_id": latest["id"]},
                 result=deepcopy(result),
                 ended_at=timestamp(),
             )
@@ -696,9 +711,9 @@ def execute_stage(
 ) -> JsonObject:
     """Standalone stages own a task/lock; composed stages share their parent's lock."""
     require(
-        type(command.get("max_retries")) is int and command["max_retries"] >= 0,
+        type(command.get("max_retries")) is int and 0 <= command["max_retries"] <= 1,
         "INVALID_INPUT",
-        "重试次数必须为非负整数",
+        "质量修订次数只能是0或1",
     )
     if task_id is not None:
         return AgentExecution(

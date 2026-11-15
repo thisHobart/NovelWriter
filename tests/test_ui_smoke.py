@@ -110,7 +110,7 @@ def test_model_configuration_save_failure_preserves_error_type_in_feedback(app, 
     from unittest.mock import Mock
     from core.gui import model_config_dialog
 
-    monkeypatch.setattr(model_config_dialog, "form_values", lambda provider: {
+    monkeypatch.setattr(model_config_dialog, "form_values", lambda provider, **kwargs: {
         "base_url": "https://example.test/v1", "api_key": "", "model": "test-model",
     })
     dialog = model_config_dialog.ModelConfigDialog()
@@ -122,6 +122,27 @@ def test_model_configuration_save_failure_preserves_error_type_in_feedback(app, 
     assert "PermissionError: configuration write denied" in dialog.error_label.text()
     assert dialog.result() == model_config_dialog.QDialog.DialogCode.Rejected.value
     assert caplog.records[-1].exc_info[1] is failure
+    dialog.close()
+
+
+def test_review_model_dialog_saves_independently_with_shared_controls(app, monkeypatch, tmp_path):
+    from core.generation import api_settings, api_providers
+    from core.gui.model_config_dialog import ModelConfigDialog
+
+    monkeypatch.setattr(api_settings, "settings_file", lambda: tmp_path / "llm_settings.json")
+    api_settings.save_provider("hosted-llm", "https://generate.test/v1", "generation-key", "generator")
+    original = api_providers.get_config("hosted-llm")
+    dialog = ModelConfigDialog("hosted-llm", purpose="review")
+    assert dialog.windowTitle() == "校验模型配置"
+    assert dialog.key_edit.text() == "" and dialog.model_edit.text() == ""
+    assert dialog.test_button.isEnabled() and dialog.fetch_models_button.isEnabled()
+    dialog.url_edit.setText("https://review.test/v1")
+    dialog.key_edit.setText("review-key")
+    dialog.model_edit.setText("reviewer")
+    dialog._save()
+    assert dialog.result() == dialog.DialogCode.Accepted.value
+    assert api_settings.get_review_config().model == "reviewer"
+    assert api_providers.get_config("hosted-llm") == original
     dialog.close()
 
 

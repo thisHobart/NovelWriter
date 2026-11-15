@@ -71,11 +71,14 @@ class ScriptLLM:
         network_retries: int | None = None,
         before_request: Callable[[], None] | None = None,
         on_retry: RetryReporter | None = None,
+        purpose: str = "generation",
     ) -> None:
         self.model = model
         self.token = token or CancelToken()
         self.record = record or (lambda *args: None)
         self.transport = transport
+        require(purpose in {"generation", "review"}, "INVALID_INPUT", "未知模型用途")
+        self.purpose = purpose
         self.network_retries = NETWORK_MAX_RETRIES if network_retries is None else network_retries
         require(
             type(self.network_retries) is int and self.network_retries >= 0,
@@ -123,7 +126,12 @@ class ScriptLLM:
         if self.transport is not None:
             response = self.transport(prompt)
         else:
-            config = api_providers.get_config(self.model)
+            if self.purpose == "review":
+                from core.generation.api_settings import get_review_config
+
+                config = get_review_config(self.model)
+            else:
+                config = api_providers.get_config(self.model)
 
             async def request() -> str:
                 async with api_providers.AsyncOpenAI(

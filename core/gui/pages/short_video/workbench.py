@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.generation.api_providers import PROVIDER_LABELS, configuration_status
+from core.generation.api_settings import get_review_config, review_provider
+from core.gui.model_config_dialog import ModelConfigDialog
 from core.short_video.v2.contracts import OperationResult, VideoTask
 from core.short_video.v2.conversation import ConversationService
 from core.short_video.v2.creation import CreationWork, prepare_prompt_task, prepare_storyboard_task
@@ -92,7 +94,8 @@ class Workbench(QWidget):
         top.addStretch()
         self.model_config_button = QPushButton("服务配置")
         service_menu = QMenu(self.model_config_button)
-        service_menu.addAction("文字模型配置", self.host._configure_model)
+        service_menu.addAction("生成模型配置", self.host._configure_model)
+        service_menu.addAction("校验模型配置", lambda: self.perform(self.configure_review_model))
         service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
         self.model_config_button.setMenu(service_menu)
         top.addWidget(self.model_config_button)
@@ -135,7 +138,22 @@ class Workbench(QWidget):
         provider = self.model()
         _, detail = configuration_status(provider)
         self.model_config_button.setText("服务配置 · " + PROVIDER_LABELS[provider])
-        self.model_config_button.setToolTip(detail)
+        try:
+            config = get_review_config()
+            review_detail = f"校验模型：{PROVIDER_LABELS[config.provider]} · {config.model}"
+        except ValueError as exc:
+            review_detail = str(exc)
+        self.model_config_button.setToolTip(f"生成模型：{detail}\n{review_detail}")
+
+    def configure_review_model(self) -> None:
+        require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改校验模型配置")
+        dialog = ModelConfigDialog(review_provider(), self, purpose="review")
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.refresh_model_status()
+                self.notice("校验模型配置已保存")
+        finally:
+            dialog.deleteLater()
 
     def setting_key(self, field: str) -> str:
         return fingerprint(self.output_dir)[:20] + "/" + field
@@ -163,6 +181,7 @@ class Workbench(QWidget):
             "browse_project": "项目打开",
             "project_settings": "项目设置",
             "configure_comfy": "工作流配置",
+            "configure_review_model": "校验模型配置",
             "send": "AI 回复",
             "query": "视频任务查询",
             "edit_template": "阶段提示词保存",

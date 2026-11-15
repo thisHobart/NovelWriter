@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, NoReturn
 from uuid import uuid4
 
-from .contracts import JsonObject, ModelSnapshot
+from .contracts import JsonObject, ModelSnapshot, ReviewModelSnapshot
 from .storyboard_skill import STORYBOARD_SKILLS
 
 
@@ -116,6 +116,34 @@ def capture_model_snapshot(provider: str) -> ModelSnapshot:
     except ValueError as exc:
         raise WorkspaceError("MODEL_CONFIGURATION_MISSING", f"文字服务配置无效：{exc}") from exc
     return {"provider": provider, "model": config.model}
+
+
+def capture_review_model_snapshot() -> ReviewModelSnapshot:
+    from core.generation.api_settings import get_review_config
+
+    try:
+        config = get_review_config()
+    except ValueError as exc:
+        raise WorkspaceError("REVIEW_CONFIGURATION_MISSING", str(exc)) from exc
+    return {
+        "provider": config.provider,
+        "model": config.model,
+        "endpoint_hash": fingerprint(config.base_url),
+    }
+
+
+def validate_review_model_snapshot(snapshot: ReviewModelSnapshot) -> None:
+    require(
+        isinstance(snapshot, dict) and isinstance(snapshot.get("endpoint_hash"), str),
+        "INVALID_MODEL_SNAPSHOT",
+        "任务缺少独立校验模型快照，请重新生成",
+    )
+    validate_model_snapshot_format(snapshot)
+    require(
+        capture_review_model_snapshot() == snapshot,
+        "REVIEW_CONFIGURATION_CHANGED",
+        "校验模型或接口地址已变化，请重新生成任务",
+    )
 
 
 def validate_model_snapshot_format(snapshot: object) -> ModelSnapshot:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .contracts import ArtifactRecord, JsonObject
 from .llm import ScriptLLM
@@ -96,6 +96,7 @@ class QualityCheckResult:
     passed: bool
     feedback: str = ""
     issue_count: int = 0
+    issues: list[JsonObject] = field(default_factory=list)
 
 
 def check_candidate(
@@ -104,7 +105,7 @@ def check_candidate(
     send: ScriptLLM,
     repository: ProjectRepository,
 ) -> QualityCheckResult:
-    """Check one candidate; feedback stays in memory and never starts generation."""
+    """Check one candidate; the executor records feedback and controls revision."""
     prompt = build_review_prompt(
         command["context"]["article"],
         candidate,
@@ -121,6 +122,7 @@ def check_candidate(
     return QualityCheckResult(
         passed=not problems,
         issue_count=len(problems),
+        issues=problems,
         feedback="\n".join(
             f"{problem['target_path']}：{problem['explanation']}；修改建议：{problem['suggestion']}"
             for problem in problems

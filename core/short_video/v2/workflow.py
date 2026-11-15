@@ -8,6 +8,7 @@ from copy import deepcopy
 
 from core.generation.cancellation import CancelToken
 
+from . import models as model_contracts
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
 from .feedback import (
     ACTION_NAMES,
@@ -41,7 +42,7 @@ PREREQUISITES = {
     "asset_spec": ("asset_catalog",),
 }
 MAX_CONTEXT_CHARS = 48000
-DEFAULT_MAX_RETRIES = 2
+DEFAULT_MAX_RETRIES = 1
 MAX_FORMAT_RETRIES = 2
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,9 @@ class WorkflowService:
     ) -> None:
         self.repository, self.model, self.transport = repository, model, transport
         require(
-            type(max_retries) is int and max_retries >= 0, "INVALID_INPUT", "重试次数必须为非负整数"
+            type(max_retries) is int and 0 <= max_retries <= 1,
+            "INVALID_INPUT",
+            "质量修订次数只能是0或1",
         )
         self.max_context_chars = max_context_chars
         self.max_retries, self.quality_check = max_retries, quality_check
@@ -330,6 +333,7 @@ class WorkflowService:
             "key": key,
             "model": self.model,
             "model_snapshot": capture_model_snapshot(self.model),
+            "review_model_snapshot": model_contracts.capture_review_model_snapshot(),
             "request_id": request_id or identity("request"),
             "expected_revision": state["revision"],
             "input_refs": deps,

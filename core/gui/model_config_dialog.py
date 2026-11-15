@@ -4,15 +4,25 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QCompleter, QDialog, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QStyle, QVBoxLayout, QWidget,
+    QCheckBox,
+    QComboBox,
+    QCompleter,
+    QDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QStyle,
+    QVBoxLayout,
+    QWidget,
 )
 
-from core.generation.api_providers import DEFAULT_API_MODEL, PROVIDER_LABELS
 from core.generation.api_models import fetch_models
+from core.generation.api_probe import ProbeResult, probe_connection
+from core.generation.api_providers import DEFAULT_API_MODEL, PROVIDER_LABELS
 from core.generation.api_settings import form_values, save_provider, validate_provider
-from core.generation.api_probe import probe_connection
 from core.gui.task_runner import TaskRunner
 from core.gui.widgets.card import Card
 from core.gui.widgets.controls import LabeledRow, hint_label, primary_button, secondary_button
@@ -20,10 +30,15 @@ from core.gui.widgets.page_header import PageHeader
 
 
 class ModelConfigDialog(QDialog):
-    def __init__(self, provider: str = DEFAULT_API_MODEL, parent=None):
+    def __init__(self, provider: str = DEFAULT_API_MODEL, parent: QWidget | None = None,
+                 *, purpose: str = "generation") -> None:
         super().__init__(parent)
+        if purpose not in {"generation", "review"}:
+            raise ValueError("不支持的模型用途")
+        self.purpose = purpose
+        title = "校验模型配置" if purpose == "review" else "模型服务配置"
         self.setObjectName("ModelConfigDialog")
-        self.setWindowTitle("模型服务配置")
+        self.setWindowTitle(title)
         self.setMinimumWidth(620)
         self.resize(640, 400)
         self._drafts = {}
@@ -34,7 +49,8 @@ class ModelConfigDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(PageHeader("模型服务配置", "填写当前服务的连接信息，保存后立即生效"))
+        layout.addWidget(PageHeader(title, "独立保存，仅用于检查生成结果" if purpose == "review"
+                                    else "填写当前服务的连接信息，保存后立即生效"))
         body = QVBoxLayout()
         body.setContentsMargins(24, 20, 24, 20)
         body.setSpacing(12)
@@ -138,7 +154,7 @@ class ModelConfigDialog(QDialog):
         return {"base_url": self.url_edit.text(), "api_key": self.key_edit.text(),
                 "model": self.model_edit.text()}
 
-    def _switch_provider(self, *_):
+    def _switch_provider(self, *_: object) -> None:
         if self._current is not None and not self._load_error:
             self._drafts[self._current] = self._values()
         self._current = self.selected_provider()
@@ -150,7 +166,7 @@ class ModelConfigDialog(QDialog):
         try:
             values = self._drafts.get(self._current)
             if values is None:
-                values = form_values(self._current)
+                values = form_values(self._current, purpose=self.purpose)
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).error("读取模型配置失败", exc_info=True)
             values = {"base_url": "", "api_key": "", "model": ""}
@@ -167,13 +183,13 @@ class ModelConfigDialog(QDialog):
         self.model_edit.setText(values["model"])
         self.model_edit.setPlaceholderText("获取后点击箭头选择，或手动输入模型名称")
 
-    def _clear_models(self):
+    def _clear_models(self) -> None:
         current = self.model_edit.text()
         self.model_combo.clear()
         self.model_edit.setText(current)
         self.model_dropdown_action.setEnabled(False)
 
-    def _show_model_list(self):
+    def _show_model_list(self) -> None:
         if self.isVisible() and self.model_combo.isEnabled() and self.model_combo.count():
             self.model_combo.showPopup()
 
@@ -181,7 +197,7 @@ class ModelConfigDialog(QDialog):
         return [self.provider_combo, self.url_edit, self.key_edit, self.model_combo,
                 self.fetch_models_button, self.test_button, self.save_button, self.cancel_button]
 
-    def _fetch_models(self):
+    def _fetch_models(self) -> None:
         if self._test_runner.current is not None:
             return
         self.error_label.hide()
@@ -195,7 +211,7 @@ class ModelConfigDialog(QDialog):
             return
         self._set_test_status("running", "正在获取模型列表…")
 
-        def success(model_ids):
+        def success(model_ids: list[str]) -> None:
             current = self.model_edit.text()
             self.model_combo.clear()
             self.model_combo.addItems(model_ids)
@@ -207,7 +223,7 @@ class ModelConfigDialog(QDialog):
             else:
                 self._set_test_status("empty", "接口未返回可用模型，可手动输入模型名称。")
 
-        def show_fetched_models():
+        def show_fetched_models() -> None:
             if self.test_status.property("state") == "success":
                 self._show_model_list()
 
@@ -220,29 +236,29 @@ class ModelConfigDialog(QDialog):
             on_done=show_fetched_models,
         )
 
-    def _show_error(self, text: str):
+    def _show_error(self, text: str) -> None:
         self.error_label.setText(text)
         self.error_label.show()
 
-    def _save(self):
+    def _save(self) -> None:
         if self._test_runner.current is not None:
             return
         try:
-            save_provider(self.selected_provider(), **self._values())
+            save_provider(self.selected_provider(), **self._values(), purpose=self.purpose)
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).error("保存模型配置失败", exc_info=True)
             self._show_error(f"{type(exc).__name__}: {exc}")
             return
         self.accept()
 
-    def _set_test_status(self, state: str, text: str):
+    def _set_test_status(self, state: str, text: str) -> None:
         self.test_status.setProperty("state", state)
         self.test_status.style().unpolish(self.test_status)
         self.test_status.style().polish(self.test_status)
         self.test_status.setText(text)
         self.test_status.show()
 
-    def _test_connection(self):
+    def _test_connection(self) -> None:
         if self._test_runner.current is not None:
             return
         self.error_label.hide()
@@ -254,7 +270,7 @@ class ModelConfigDialog(QDialog):
             return
         self._set_test_status("running", "正在测试当前填写的配置…仅发送一次极短请求。")
 
-        def success(result):
+        def success(result: ProbeResult) -> None:
             text = (f"连接成功 · {PROVIDER_LABELS[config.provider]} · 请求模型：{config.model}"
                     f" · 耗时 {result.elapsed:.1f} 秒")
             if result.returned_model != config.model:
@@ -271,12 +287,12 @@ class ModelConfigDialog(QDialog):
             on_error=lambda exc: self._set_test_status("error", f"连接测试失败：{type(exc).__name__}: {exc}"),
         )
 
-    def reject(self):
+    def reject(self) -> None:
         # Keep the dialog's callbacks alive until the short request finishes.
         if self._test_runner.current is None:
             super().reject()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._test_runner.current is not None:
             event.ignore()
         else:

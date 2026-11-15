@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.17；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.18；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -27,9 +27,9 @@
 
 ## 2. 内部生成与检查契约
 
-`WorkflowService(..., max_retries=2).prepare(...)` 冻结质量重试上限，`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入重试；N 次重试对应最多 N+1 次结构合法的候选生成与检查。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None, network_retries=None, before_request=None, on_retry=None)` 默认最多两次网络重试，共最多三次尝试。连接／超时、HTTP 408／409／429／5xx 可重试；认证、权限、参数、格式、代码及存储错误不自动重试。采用约1秒、2秒的指数退避及少量抖动，尊重 Retry-After／retry-after-ms；服务要求等待超过60秒时停止自动重试，转入现有恢复流程。等待使用取消事件，可立即停止；SDK 内部重试保持0，由本层统一重试以避免叠加。
+`WorkflowService(..., max_retries=1).prepare(...)` 冻结质量修订上限（仅允许0或1），`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入修订；默认最多生成两稿、校验两次。首次通过立即采用；否则反馈给生成模型修订一次，再交给独立校验模型，之后采用最新合法稿件。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None, purpose="generation", network_retries=None, before_request=None, on_retry=None)` 默认最多两次网络重试，共最多三次尝试。连接／超时、HTTP 408／409／429／5xx 可重试；认证、权限、参数、格式、代码及存储错误不自动重试。采用约1秒、2秒的指数退避及少量抖动，尊重 Retry-After／retry-after-ms；服务要求等待超过60秒时停止自动重试，转入现有恢复流程。等待使用取消事件，可立即停止；SDK 内部重试保持0，由本层统一重试以避免叠加。
 
-外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool,feedback: str,issue_count: int = 0)`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
+外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool, feedback: str, issue_count: int = 0, issues: list = [])`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
 
 Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。新生成成功结果的 `review_status` 为 passed（通过）或 issues（检查仍有问题）；审阅网络失败进入可恢复失败，不作为成功结果提交。历史 unavailable／incomplete 状态仅兼容读取。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
 
@@ -43,14 +43,24 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 统一清单 `tasks[id]` 保存任务命令、输入与目标 expected 指针、阶段规则、已完成输出、调用次数及当前项目命令；`runs[].checkpoint` 保存 `step=request|validate|review|decide|commit`、原阶段命令、最新候选引用、待处理 response、审阅反馈和格式／质量次数；冻结命令和检查点均校验指纹。任务状态为 running、paused、interrupted、failed、succeeded、invalidated，resumable 单独表示是否允许继续。仅 pending 检查点保存必要正文，结束后移除；不恢复历史候选接口。
 
-调用元数据增加调用编号、逻辑 step_id 和 sending／received／unknown／failed。发送前落盘 sending，完整回复与下一步骤同步落盘；429等明确服务错误记 failed，无完整确认的网络结果记 unknown。每次物理请求前调用 before_request，分别记录调用与次数；网络失败后 on_retry 提供错误、重试序号、上限和等待秒数。网络自动重试与格式／质量修订分开计数；网络重试耗尽后，用户可继续同一步骤，格式／质量次数不重置。重试反馈保留实际阶段、部分完成数量和网络重试次数；耗尽后裸 raise 传播最后的原始异常。写盘失败停止后续调用，并保留原异常及必要 cause。
+调用元数据包含调用编号、逻辑 step_id、purpose=generation|review、实际使用的 model_snapshot 和 sending／received／unknown／failed。发送前落盘 sending，完整回复与下一步骤同步落盘；429等明确服务错误记 failed，无完整确认的网络结果记 unknown。每次物理请求前调用 before_request，分别记录调用与次数；网络失败后 on_retry 提供错误、重试序号、上限和等待秒数。网络自动重试与格式／质量修订分开计数；网络重试耗尽后，用户可继续同一步骤，格式／质量次数不重置。重试反馈保留实际阶段、部分完成数量和网络重试次数；耗尽后裸 raise 传播最后的原始异常。写盘失败停止后续调用，并保留原异常及必要 cause。
 
 任务提交同时核对输入和人工目标，原子更新业务当前指针、run 输出与父任务完成记录。原子事务内同步修正自身清除的下游引用；外部变化返回 TARGET_VERSION_CONFLICT，旧结果被替换返回 OUTPUT_REPLACED。组合任务末尾编排使用同一事务接口，并把 prompt_bundle 加入任务输出。
 
 TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `action,target,phase,completed,total,saved,remote_status` 保留，ProgressReporter 与成功／失败／取消信号保持。任务状态与候选可恢复性从持久化检查点得出，不能只依赖 saved 标记。审阅限流／断网先有限网络重试，耗尽后停止在审阅处，不再返回 unavailable 并视作完成；质量问题达到修订上限仍返回 issues。聊天及视频任务的取消与远程查询语义保持原样。
 
 
-### 2.1 纯聊天实际契约
+### 2.1 生成与校验模型配置
+
+- `ModelConfigDialog(provider, parent=None, *, purpose="generation")` 复用服务商、接口地址、API 密钥、模型及获取列表／测试连接，`purpose="review"` 使用独立配置。
+- `api_settings.save_provider(..., purpose="review")` 写入 `llm_settings.json.review={provider, providers:{服务商:{base_url,api_key,model}}}`；原 `providers` 继续用于生成与聊天，互不覆盖。
+- `review_provider()` 读取校验所选服务；`get_review_config(provider=None)` 只读取显式校验配置，不回退到生成或环境变量。缺失时 `prepare` 返回 `REVIEW_CONFIGURATION_MISSING`，不发送生成请求。
+- 阶段命令、组合父任务与新长文计划冻结 `review_model_snapshot={provider, model, endpoint_hash}`；密钥不写任务，允许更新密钥。恢复／每次实际请求前校验当前模型及接口指纹；变化返回 `REVIEW_CONFIGURATION_CHANGED`，可恢复原配置继续或重新生成。
+- `ScriptLLM(..., purpose="review")` 使用校验配置，仅处理 quality_check；初稿、格式修复与唯一一次质量修订使用生成配置。聊天使用生成配置，不进入校验循环。
+- `runs[].snapshot` 保存两份模型快照；`runs[].review_result={passed, feedback, issue_count, issues, candidate_id}` 保存最终完整校验结果及具体字段／原因／建议，绑定实际采用稿。UI 继续使用短摘要，不新增报告页面。
+- 运行格式为2；旧格式检查点通过现有失效机制提示重新生成，已保存当前稿不变。旧长文计划在新请求前补绑校验配置与冻结哈希，成功分块继续复用。
+
+### 2.2 纯聊天实际契约
 
 - `ConversationService.prepare(conversation_id, user_text, *, request_id=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息，调用上下文纯函数；冻结实际历史 ID、context_hash、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
 - `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
@@ -265,13 +275,13 @@ head_front 使用正面头部特写；body_front 正面站立全身；body_side 
 
 第 9.4～9.6 节为用户原始模板，不是最终交付。当前 asset_spec 阶段由 LLM 一次生成具体人物／场景／道具字段及全部计划视图的正负提示词，保存 source_refs 与 inferred_fields；顶层正负提示词为空，具体文字位于 views。finalize_asset_prompts 仅校验完整性、排序并维护内部指纹，不用模板覆盖文字。compile_shots 根据分镜与已有设定生成镜头提示词，用户优化镜头时通过 shot_prompts 调用模型。禁止遗留未替换变量，禁止把文章没有的信息伪装成原文事实。旧模板编译、单独视图优化和视频运动文字生成分支已删除。
 
-review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角及镜头画面文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产不套用文案风格要求，镜头提示词不套用 H3 专用格式。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入现有有限循环，不新增检查报告、UI 或图片调用。
+review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角及镜头画面文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产不套用文案风格要求，镜头提示词不套用 H3 专用格式。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入一次质量修订流程，最终完整校验结果保存在 run 中；不新增独立报告文件、UI 或图片调用。
 
 
 
 ## 现有文字实现的格式与错误边界
 
-文字生成入口使用自动 Agent Loop。数据入口只接受当前完整格式：模型快照为 provider／model 对象，配置包含必需字段；保存和编译维护视图的 content_hash／spec_input_hash。保留旧 confirmed／reports 字段不等于支持任意旧来源类型、字符串快照或缺失指纹；读取失败明确反馈并保持原文件不变。
+文字生成入口使用自动 Agent Loop。数据入口只接受当前完整格式：生成模型快照为 provider／model 对象，校验模型另含 endpoint_hash，配置包含必需字段；保存和编译维护视图的 content_hash／spec_input_hash。保留旧 confirmed／reports 字段不等于支持任意旧来源类型、字符串快照或缺失指纹；读取失败明确反馈并保持原文件不变。
 
 业务、界面、文字服务和持久化的共享类型见 core/short_video/v2/contracts.py。文字模型网络异常保留原始类型与信息，不统一包装成 ValueError 或 PROVIDER_UNAVAILABLE；记录失败使用 RecordingError 并保留存储异常 cause。内部字段、类型、逻辑错误原样暴露。运行收尾不改变原错误类别，格式修复只处理明确的输入／输出校验失败。
 

@@ -6,6 +6,10 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .api_providers import APIConfig
 
 VARIABLES = {
     "hosted-llm": ("HOSTED_LLM_BASE_URL", "HOSTED_LLM_API_KEY", "HOSTED_LLM_MODEL"),
@@ -39,6 +43,15 @@ def _read() -> dict:
             not isinstance(values.get(name), str) for name in ("base_url", "api_key", "model")
         ):
             raise ValueError("模型配置文件 llm_settings.json 字段格式不正确")
+    review = document.get("review")
+    if review is not None:
+        if (not isinstance(review, dict) or review.get("provider") not in VARIABLES
+                or not isinstance(review.get("providers"), dict)):
+            raise ValueError("校验模型配置格式不正确")
+        for values in review["providers"].values():
+            if not isinstance(values, dict) or any(
+                    not isinstance(values.get(name), str) for name in ("base_url", "api_key", "model")):
+                raise ValueError("校验模型配置字段格式不正确")
     return document
 
 
@@ -49,8 +62,31 @@ def provider_overrides(provider: str) -> dict[str, str]:
             if variable and field in values}
 
 
-def form_values(provider: str) -> dict[str, str]:
+def review_provider() -> str:
+    return _read().get("review", {}).get("provider", "hosted-llm")
+
+
+def get_review_config(provider: str | None = None) -> APIConfig:
+    """Review uses an explicit independent profile, never generation or .env fallback."""
+    review = _read().get("review", {})
+    selected = review.get("provider")
+    values = review.get("providers", {}).get(selected)
+    if not values:
+        raise ValueError("请先在“服务配置 → 校验模型配置”中配置校验模型")
+    if provider is not None and selected != provider:
+        raise ValueError("校验模型服务已变化，请重新准备任务")
+    return validate_provider(selected, **values)
+
+
+def form_values(provider: str, *, purpose: str = "generation") -> dict[str, str]:
     from .api_providers import get_config
+    if purpose == "review":
+        values = _read().get("review", {}).get("providers", {}).get(provider)
+        return dict(values) if values else {
+            "base_url": DEFAULT_URLS[provider], "api_key": "", "model": DEFAULT_MODELS[provider],
+        }
+    if purpose != "generation":
+        raise ValueError("不支持的模型用途")
     variables = VARIABLES[provider]
     effective = dict(os.environ)
     effective.update(provider_overrides(provider))
@@ -68,7 +104,7 @@ def form_values(provider: str) -> dict[str, str]:
 
 
 def validate_provider(provider: str, base_url: str, api_key: str, model: str,
-                      *, require_model: bool = True):
+                      *, require_model: bool = True) -> APIConfig:
     """Validate the form itself, without reading or changing saved settings."""
     from .api_providers import APIConfig, _validate_url
     if provider not in VARIABLES:
@@ -86,11 +122,19 @@ def validate_provider(provider: str, base_url: str, api_key: str, model: str,
     return APIConfig(provider, values["base_url"], values["model"], values["api_key"] or "not-needed")
 
 
-def save_provider(provider: str, base_url: str, api_key: str, model: str) -> None:
+def save_provider(provider: str, base_url: str, api_key: str, model: str,
+                  *, purpose: str = "generation") -> None:
     config = validate_provider(provider, base_url, api_key, model)
     values = {"base_url": config.base_url, "api_key": api_key.strip(), "model": config.model}
     document = _read()
-    document["providers"][provider] = values
+    if purpose == "review":
+        review = document.setdefault("review", {"provider": provider, "providers": {}})
+        review["provider"] = provider
+        review["providers"][provider] = values
+    elif purpose == "generation":
+        document["providers"][provider] = values
+    else:
+        raise ValueError("不支持的模型用途")
     path = settings_file()
     temporary = None
     try:

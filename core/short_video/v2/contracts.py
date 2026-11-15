@@ -30,6 +30,10 @@ class ModelSnapshot(TypedDict):
     model: str
 
 
+class ReviewModelSnapshot(ModelSnapshot):
+    endpoint_hash: str
+
+
 class SourceRange(TypedDict):
     start: int
     end: int

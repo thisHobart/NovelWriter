@@ -9,6 +9,7 @@ from typing import Any
 
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
+from . import models as model_contracts
 from .contracts import JsonObject, OperationResult, ProgressReporter, TextTransport
 from .feedback import TaskContext, TaskTracker, failure_feedback
 from .llm import ScriptLLM
@@ -160,6 +161,8 @@ class BatchPlanService(TaskTracker):
         # 旧计划的冻结哈希包含这两个字段；仅兼容核验，不用于限制执行。
         if "max_calls" in plan and "seconds" in plan:
             data.update(max_calls=plan["max_calls"], seconds=plan["seconds"])
+        if "review_model_snapshot" in plan:
+            data["review_model_snapshot"] = plan["review_model_snapshot"]
         return fingerprint(data)
 
     def save_plan(self, plan: JsonObject) -> None:
@@ -252,6 +255,7 @@ class ChunkService(BatchPlanService):
             "status": "planned",
             "model": self.model,
             "model_snapshot": capture_model_snapshot(self.model),
+            "review_model_snapshot": model_contracts.capture_review_model_snapshot(),
             "input_refs": {"selection": article["selection_id"], "config": config["id"]},
             "chunks": chunks,
             "calls_used": 0,
@@ -294,6 +298,12 @@ class ChunkService(BatchPlanService):
             plan["status"] = "running"
             self.save_plan(plan)
             try:
+                if "review_model_snapshot" not in plan:
+                    # Legacy plans bind the independent reviewer before any new request.
+                    plan["review_model_snapshot"] = model_contracts.capture_review_model_snapshot()
+                    plan["input_hash"] = self.hash_plan_inputs(plan)
+                    self.save_plan(plan)
+                model_contracts.validate_review_model_snapshot(plan["review_model_snapshot"])
                 config = self.repository.record(plan["input_refs"]["config"])["content"]
                 custom = self.repository.current("prompt_template:novel_copy")
                 instruction = (
@@ -426,6 +436,11 @@ class ChunkService(BatchPlanService):
                     command = service.prepare(
                         "novel_copy", fact_table_id=plan.get("fact_table_ref")
                     )
+                    require(
+                        command["review_model_snapshot"] == plan["review_model_snapshot"],
+                        "REVIEW_CONFIGURATION_CHANGED",
+                        "校验模型配置已变化，请新建生成任务",
+                    )
                     command["prompt"] += (
                         "\n从各块中组织本条完整事件，合并重复开头、背景和结尾，保留核心因果、已有结果与原始码点来源；没有结果时如实说明素材不足，不把分块停点拼成连载预告：\n"
                         + encode(
@@ -499,6 +514,8 @@ class ChunkService(BatchPlanService):
 
         def before_request() -> None:
             validate_model_snapshot(plan["model_snapshot"])
+            if "review_model_snapshot" in plan:
+                model_contracts.validate_review_model_snapshot(plan["review_model_snapshot"])
             require(self.inputs_are_current(plan), "STALE_INPUT", "分块计划输入已变化，请重新生成")
 
         send = ScriptLLM(

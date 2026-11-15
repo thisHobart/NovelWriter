@@ -1,6 +1,6 @@
 # 短视频工作台：开发文档
 
-文档版本：2.17；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
+文档版本：2.18；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
 整体结构见[架构设计](architecture.md)，字段和接口见[接口设计](interfaces.md)，操作与提示见[交互设计](interaction.md)。历次变更及验收证据见[DEVLOG](../../DEVLOG.md)。
 
 ## 1. 运行与代码入口
@@ -18,6 +18,7 @@
 | 准备阶段输入、多阶段编排 | `core/short_video/v2/workflow.py`、`creation.py` |
 | Agent Loop、检查点与继续执行 | `core/short_video/v2/runtime.py` |
 | 项目与内容存储 | `repository.py`、`storage.py`、`project_service.py`、`models.py`、`contracts.py` |
+| 生成／校验配置与模型调用 | `core/generation/api_settings.py`、`core/gui/model_config_dialog.py`；`llm.py` |
 | 提示词、校验与审阅 | `prompts.py`、`validation.py`、`review.py`、`storyboard_skill.py` |
 | 会话与上下文 | `conversation.py`、`conversation_store.py`、`conversation_context.py` |
 | 长文分块、编排及导出 | `batches.py`、`prompt_compiler.py`、`storyboard_text.py`、`exporter.py` |
@@ -27,10 +28,10 @@
 
 ## 2. 文字生成的维护要点
 
-1. `WorkflowService.prepare` 读取当前有效内容，冻结模型、来源、模板、要求和目标内容；分镜组合任务在目录生成前冻结后续分镜规则。
+1. `WorkflowService.prepare` 读取当前有效内容，冻结生成与校验模型、来源、模板、要求和目标内容；分镜组合任务在目录生成前冻结后续分镜规则。
 2. `CreationWork` 编排目录→分镜，或逐项资产→镜头本地编排；单阶段任务通过 `WorkspaceWork` 执行。
 3. `AgentExecution` 执行 request→validate→review→decide→commit；`validation` 保证结构和引用，`review` 返回质量反馈，二者不自行启动新任务。
-4. 质量修订默认最多两次，每轮候选的格式修复最多两次，分别计数；分块请求允许一次格式修复。ScriptLLM 另负责最多两次网络重试，SDK 内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
+4. 质量修订默认最多一次：首次校验失败后由生成模型修订，再用独立校验模型复检，第二次残留质量问题只记录、不触发第三稿。每轮候选的格式修复最多两次，独立计数；分块请求允许一次格式修复。ScriptLLM 另负责最多两次网络重试，SDK 内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
 
 修改内容规则时，阶段任务与样例在 `prompts.py`，硬性约束在 `validation.py`，AI 审阅标准在 `review.py`；保持三者一致。自定义阶段模板优先，不以更新内置提示词为由覆盖用户模板。
 
@@ -39,7 +40,8 @@
 ## 3. 检查点、依赖与提交
 
 - 运行数据统一存入 `project_v2.json` 的 tasks／runs；`TaskContext` 仅用于界面反馈。不要将内存进度当作恢复依据，也不要为新任务重新写 tasks/*.json。
-- ScriptLLM 的 before_request 在每次实际发送前校验任务并记录独立调用，防止重试期间输入变更；完整回复先落盘；本地解析、审阅与修订分别推进步骤。每个未完成运行仅保留最新候选及当前待处理回复。
+- ScriptLLM 的 before_request 在每次实际发送前校验任务并记录独立调用及实际模型用途／快照，防止重试期间输入或校验配置变更；完整回复先落盘；本地解析、审阅与修订分别推进步骤。每个未完成运行仅保留最新候选及当前待处理回复。
+- 最终完整校验结果保存在 `run.review_result`，含完整 issues／反馈及最终 candidate_id；不要只存 UI 截断摘要。校验配置显式独立保存，缺失即预检失败，不默认使用生成模型。
 - 当前内容指针、run 结果与父任务完成项在同一事务提交；镜头本地编排也须在事务内校验任务，并将产物加入任务输出。
 - 网络错误先有限退避重试；停止或重试耗尽后保留可恢复状态；修订次数跨恢复保持。质量修订耗尽仍提交合法候选并标为 issues，格式修复耗尽则失败。
 - 恢复先核对输入与人工目标。外部修改使原任务失效；任务自身更新产生的指针变化须同步到预期引用。清理依赖后再次校验任务，避免旧原文残留检查点。
@@ -65,7 +67,7 @@
 .\venv\Scripts\python.exe -m pytest tests -q --tb=short
 
 # 文字存储、恢复、会话与反馈
-.\venv\Scripts\python.exe -m pytest tests/test_video_v2_repository.py tests/test_video_runtime.py tests/test_conversation_management.py tests/test_video_feedback.py tests/test_video_network_retry.py -q
+.\venv\Scripts\python.exe -m pytest tests/test_video_v2_repository.py tests/test_video_runtime.py tests/test_conversation_management.py tests/test_video_feedback.py tests/test_video_network_retry.py tests/test_video_review_model.py -q
 
 # 按仓库 Ruff 配置检查生产代码
 .\venv\Scripts\python.exe -m ruff check core/short_video/v2 core/gui/pages/short_video
@@ -74,6 +76,7 @@
 
 核心回归应覆盖：
 
+- 不同生成／校验接口、密钥及模型的真实 SDK 路由；首检通过、修订后通过和修订后仍有问题；完整问题持久化、配置变更阻断恢复。
 - 回复、候选、审阅和提交边界退出后的恢复；已完成资产及已保存回复不重复调用。
 - 暂时网络故障后成功、重试耗尽、Retry-After、等待中停止及不嵌套 SDK 重试；认证／权限／存储错误不自动重试。
 - 限流、结果不明、磁盘失败、损坏检查点、并发恢复和修复次数保持。
@@ -81,7 +84,7 @@
 - UI 继续入口与真实错误提示；分镜时间轴、资产引用、编辑与 Markdown 导出。
 - 媒体输入和工作流隔离、远程任务对账、下载恢复；真实联调使用隔离项目并单独记录参数与产物。
 
-检查点恢复实现曾通过329项测试和提交内容独立复验；网络重试本次验证结果见 DEVLOG。离线测试不代表成片质量。
+各次回归与校验模型接入的验收结果见 DEVLOG。离线测试不代表成片质量。
 
 ## 6. 打包与变更约定
 

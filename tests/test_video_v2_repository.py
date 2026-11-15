@@ -49,7 +49,11 @@ def rebuild_with_config(repository, config):
 
 
 @pytest.fixture
-def project(tmp_path):
+def project(tmp_path, monkeypatch):
+    from core.short_video.v2 import models
+    monkeypatch.setattr(models, "capture_review_model_snapshot", lambda: {
+        "provider": "hosted-llm", "model": "review-offline", "endpoint_hash": "offline",
+    })
     repository = ProjectRepository(tmp_path)
     ProjectService(repository).import_text(ARTICLE, expected_revision=0)
     return repository
@@ -356,7 +360,7 @@ def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project,
             return "invalid JSON"
         if position == 2:
             return encode(content)
-        if len(calls) < 12:
+        if len(calls) < 8:
             return encode({"issues": [{"rule_id": "SHOT-TIMING-001", "severity": "warning",
                 "target_path": "shots.0.duration_ms", "explanation": "动作节奏需要调整",
                 "suggestion": "结合动作重新安排节奏", "quote": None, "source_refs": []}]})
@@ -365,9 +369,9 @@ def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project,
     service = WorkflowService(prompt_project, transport=send)
     result = service.execute(service.prepare("storyboard"))
 
-    assert len(calls) == 12
+    assert len(calls) == 8
     assert result["review_status"] == "passed"
-    assert result["retries_used"] == 2
+    assert result["retries_used"] == 1
     assert "budget" not in prompt_project.load()["runs"][-1]["snapshot"]
 
 
@@ -457,6 +461,7 @@ def test_legacy_exhausted_chunk_plan_can_resume_without_budget_checks(project, m
     plan = service.create_plan()
     assert "max_calls" not in plan and "seconds" not in plan
     plan.update(max_calls=0, seconds=0, calls_used=100, status="failed")
+    plan.pop("review_model_snapshot")  # Simulate an actual legacy plan without reviewer binding.
     frozen = {key: plan[key] for key in (
         "project_id", "mode", "model", "model_snapshot", "input_refs", "max_calls", "seconds", "selected_before",
     )}
@@ -998,8 +1003,8 @@ def test_missing_result_remains_unpassed_after_quality_retries(project, monkeypa
         return encode(content)
 
     result = WorkflowService(project, transport=send).execute(WorkflowService(project).prepare("novel_copy"))
-    assert result["review_status"] == "issues" and result["retries_used"] == 2
-    assert len(prompts) == 6
+    assert result["review_status"] == "issues" and result["retries_used"] == 1
+    assert len(prompts) == 4
     assert project.current("novel_copy")["content"] == original["content"]
     assert original["id"] not in project.load()["records"]
 

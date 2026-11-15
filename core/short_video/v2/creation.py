@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from core.generation.cancellation import CancelToken
 
+from . import models as model_contracts
 from .contracts import JsonObject, ProgressReporter, TextTransport
 from .feedback import ACTION_NAMES, TaskContext, TaskTracker, review_message
 from .models import (
@@ -112,6 +113,11 @@ class CreationWork(TaskTracker):
                 return item["result"]
             if item is None:
                 command = prepare()
+                require(
+                    command["review_model_snapshot"] == self.command["review_model_snapshot"],
+                    "REVIEW_CONFIGURATION_CHANGED",
+                    "校验模型配置已变化，请重新生成任务",
+                )
                 with repository.transaction() as state:
                     require(
                         task_valid(state, state["tasks"][task_id]),
@@ -223,6 +229,7 @@ def prepare_storyboard_task(repository: ProjectRepository, model: str) -> JsonOb
             state=state,
         ),
         "model_snapshot": first["model_snapshot"],
+        "review_model_snapshot": first["review_model_snapshot"],
     }
 
 
@@ -301,4 +308,5 @@ def prepare_prompt_task(
         },
         "items": items,
         "model_snapshot": capture_model_snapshot(model) if items else None,
+        "review_model_snapshot": model_contracts.capture_review_model_snapshot() if items else None,
     }

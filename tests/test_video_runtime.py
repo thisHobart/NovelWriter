@@ -167,10 +167,11 @@ def test_real_process_exit_recovers_from_last_durable_boundary(project, boundary
     novel(project)
     script = r'''
 import os, sys, json
-from core.short_video.v2 import workflow, runtime, repository
+from core.short_video.v2 import workflow, runtime, repository, models
 r = repository.ProjectRepository(sys.argv[1])
 workflow.capture_model_snapshot = lambda _: {"provider":"hosted-llm", "model":"offline"}
 runtime.validate_model_snapshot = lambda _: None
+models.capture_review_model_snapshot = lambda: {"provider":"hosted-llm", "model":"review-offline", "endpoint_hash":"offline"}
 original = r.current("novel_copy")["content"]
 write = repository.atomic_write_text
 def exiting(path, value):
