@@ -385,8 +385,13 @@ class MediaPreview(QWidget):
                 duration = job["outputs"][0].get("metadata", {}).get("duration")
                 if isinstance(duration, (int, float)):
                     text += f"；实际时长 {duration:.2f} 秒"
-            if job.get("error"):
-                text += f"；{job['error']['type']}: {job['error']['message']}"
+            if job.get("feedback"):
+                text += "；" + job["feedback"]["summary"]
+            elif job.get("error"):
+                from core.short_video.v2.feedback import concise
+                text += "；" + concise(f"{job['error']['type']}: {job['error']['message']}")
+            if job["status"] == "unknown":
+                text += "；请查询原任务，避免重复提交"
             self.status.setText(text)
         else:
             self.status.setText("")

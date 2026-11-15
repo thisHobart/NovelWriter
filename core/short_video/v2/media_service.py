@@ -14,6 +14,7 @@ from core.generation.cancellation import CancelToken, GenerationCancelled
 
 from .comfy_mcp import ComfyMCPClient
 from .contracts import JsonObject, ProgressReporter
+from .feedback import TaskTracker, failure_feedback
 from .media_repository import MediaRepository
 from .media_workflows import MediaConfig, parse_video_workflow
 from .models import encode, fingerprint, require, timestamp
@@ -113,7 +114,7 @@ class MediaService:
         }
 
 
-class MediaWork:
+class MediaWork(TaskTracker):
     def __init__(
         self,
         output_dir: str,
@@ -122,6 +123,7 @@ class MediaWork:
         job_id: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        super().__init__("视频生成")
         self.output_dir, self.command, self.job_id = output_dir, command, job_id
         self.transport = transport
         self.token = CancelToken()
@@ -160,14 +162,18 @@ class MediaWork:
         if job["status"] == "succeeded":
             return job
         command = job["input_snapshot"]
+        self.update_context(target="ComfyUI", phase="连接服务")
         client = ComfyMCPClient(command["base_url"], repository, transport=self.transport)
         try:
+            report("正在连接 ComfyUI…", -1)
             async with client.connect():
                 if job["status"] == "prepared":
                     self.token.raise_if_cancelled()
+                    self.update_context(phase="工作流校验")
                     report("正在校验 ComfyUI 工作流…", -1)
                     information = await client.call("comfy_status")
                     validate_nodes(command["workflow"], information["nodes"])
+                    self.update_context(phase="上传参考图片")
                     report("正在上传参考图片…", -1)
                     if "images" in command:
                         images = command["images"]
@@ -192,6 +198,8 @@ class MediaWork:
                     job["submitted_workflow"] = workflow
                     job["status"] = "submitting"
                     repository.save_job(job)
+                    self.update_context(phase="提交远程任务")
+                    report("正在提交视频任务…", -1)
                     submitted = await client.call(
                         "comfy_submit_workflow",
                         {"workflow": workflow, "request_id": job["request_id"]},
@@ -205,6 +213,8 @@ class MediaWork:
                     job["status"] = "queued"
                     repository.save_job(job)
                 if job["remote_job_id"] is None:
+                    self.update_context(phase="查询原任务")
+                    report("正在查询原视频任务…", -1)
                     found = await client.call(
                         "comfy_find_request", {"request_id": job["request_id"]}
                     )
@@ -214,6 +224,7 @@ class MediaWork:
                         repository.save_job(job)
                         return job
                 while True:
+                    self.update_context(phase="等待远程视频")
                     self.token.raise_if_cancelled(
                         "已停止本地等待；ComfyUI 可能仍在运行，可查询原任务"
                     )
@@ -244,6 +255,7 @@ class MediaWork:
                         await asyncio.sleep(0.2)
         except GenerationCancelled as exc:
             job["status"] = "interrupted" if job["status"] != "prepared" else "cancelled"
+            self.update_context(remote_status=job["status"])
             try:
                 repository.save_job(job)
             except OSError as state_error:
@@ -264,7 +276,9 @@ class MediaWork:
                 job["status"] = "failed" if rejected else "unknown"
             elif job["remote_job_id"] is None:
                 job["status"] = "failed"
+            self.update_context(remote_status=job["status"])
             job["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            job["feedback"] = failure_feedback(self.task_context, exc)
             try:
                 repository.save_job(job)
             except OSError as state_error:
@@ -281,6 +295,7 @@ class MediaWork:
         history: JsonObject,
         report: ProgressReporter,
     ) -> JsonObject:
+        self.update_context(phase="读取远程结果")
         status = history["status"]
         if status["status_str"] == "error":
             job["status"] = "failed"
@@ -295,6 +310,7 @@ class MediaWork:
         require(bool(descriptors), "INVALID_OUTPUT", f"输出节点 {output_node} 未返回视频文件")
         job["status"] = "collecting"
         repository.save_job(job)
+        self.update_context(phase="保存视频")
         report("正在保存生成的视频…", -1)
         saved = []
         for index, descriptor in enumerate(descriptors):
@@ -312,5 +328,7 @@ class MediaWork:
         job["outputs"] = saved
         job["status"] = "succeeded"
         job.pop("error", None)
+        job.pop("feedback", None)
         repository.save_job(job)
+        self.update_context(saved=True, phase="视频已保存")
         return job

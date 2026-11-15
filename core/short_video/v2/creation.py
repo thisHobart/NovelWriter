@@ -9,6 +9,7 @@ from pathlib import Path
 from core.generation.cancellation import CancelToken
 
 from .contracts import JsonObject, ProgressReporter, TextTransport
+from .feedback import ACTION_NAMES, TaskTracker, failure_feedback, review_message
 from .models import (
     ASSET_KINDS,
     WorkspaceError,
@@ -26,7 +27,7 @@ from .validation import local_issues
 from .workflow import WorkflowService
 
 
-class CreationWork:
+class CreationWork(TaskTracker):
     def __init__(
         self,
         repository: ProjectRepository,
@@ -34,6 +35,10 @@ class CreationWork:
         *,
         transport: TextTransport | None = None,
     ) -> None:
+        super().__init__(ACTION_NAMES[command["stage"]])
+        self.update_context(
+            total=2 if command["stage"] == "storyboard_task" else len(command["items"])
+        )
         self.output_dir = repository.output_dir
         self.command = deepcopy(command)
         self.transport = transport
@@ -75,15 +80,15 @@ class CreationWork:
         atomic_write_text(task_path, encode(task))
         try:
             result = self.execute_task(repository, report, task, task_path)
-            task.update(
-                status="succeeded", result=result, ended_at=timestamp()
-            )
+            self.update_context(phase="保存任务记录")
+            task.update(status="succeeded", result=result, ended_at=timestamp())
             atomic_write_text(task_path, encode(task))
             return result
         except Exception as exc:
             task.update(
                 status="cancelled" if self.token.cancelled else "failed",
                 error=type(exc).__name__,
+                feedback=failure_feedback(self.task_context, exc),
                 ended_at=timestamp(),
             )
             try:
@@ -121,7 +126,13 @@ class CreationWork:
                 task["calls_used"] += 1
                 atomic_write_text(task_path, encode(task))
 
-            result = service.execute(command, token=self.token, report=report, on_request=record_call)
+            result = service.execute(
+                command,
+                token=self.token,
+                report=report,
+                on_request=record_call,
+                on_context=self.accept_context,
+            )
             results.append(result)
             record = repository.record(result["version_id"])
             task["outputs"].append(record["id"])
@@ -132,6 +143,7 @@ class CreationWork:
                 "TARGET_VERSION_CONFLICT",
                 "已生成候选，但当前稿已被修改，候选保留在历史版本",
             )
+            self.update_context(completed=self.task_context.completed + 1, saved=False)
             return result
 
         verify_inputs()
@@ -140,7 +152,13 @@ class CreationWork:
             frozen["asset_catalog"] = catalog["version_id"]
             execute(service.prepare("storyboard", use_stale=self.command["use_stale"]))
         else:
+            entities = {
+                e["asset_id"]: e
+                for e in repository.record(self.command["catalog_id"])["content"]["entities"]
+            }
             for item in self.command["items"]:
+                entity = entities[item["entity_id"]]
+                self.update_context(target=entity["name"], phase="准备", saved=False)
                 verify_inputs()
                 report("正在生成资产提示词…", -1)
                 execute(
@@ -152,22 +170,37 @@ class CreationWork:
                     )
                 )
             verify_inputs()
+            self.update_context(target="镜头提示词", phase="编排", saved=False)
+            report("正在编排镜头提示词…", -1)
             service.compile_storyboard_prompts(
                 expected_revision=repository.load()["revision"], use_stale=self.command["use_stale"]
             )
+        unavailable = [r for r in results if r["review_status"] in {"unavailable", "incomplete"}]
+        issues = [r for r in results if r["review_status"] == "issues"]
+        summaries = []
+        for status, group, label in (
+            ("unavailable", unavailable, "检查未完成"),
+            ("issues", issues, "检查发现问题"),
+        ):
+            if group:
+                feedback = group[0].get("feedback") or {}
+                summaries.append(
+                    f"{len(group)}项{label}：{feedback.get('target', '')} "
+                    + review_message(status, feedback)
+                )
         return {
             "status": "succeeded",
-            "review_status": (
-                "passed"
-                if all(r["review_status"] == "passed" for r in results)
-                else "issues"
-                if any(r["review_status"] == "issues" for r in results)
-                else "unavailable"
-            )
+            "review_status": "unavailable"
+            if unavailable
+            else "issues"
+            if issues
+            else "passed"
             if results
             else "not_requested",
             "version_id": results[-1]["version_id"] if results else None,
             "calls": task["calls_used"],
+            "review_summary": "；".join(summaries)
+            or ("自动检查通过" if results else "已完成提示词编排，未额外进行AI审阅"),
         }
 
 

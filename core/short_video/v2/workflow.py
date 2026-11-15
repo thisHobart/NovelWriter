@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from copy import deepcopy
+from typing import Any
 
 from openai import APIError
 
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
+from .feedback import (
+    ACTION_NAMES,
+    TaskContext,
+    TaskTracker,
+    command_target,
+    concise,
+    failure_feedback,
+    readable_fields,
+)
 from .llm import ScriptLLM
 from .models import (
     ASSET_KINDS,
@@ -44,6 +55,7 @@ PREREQUISITES = {
 MAX_CONTEXT_CHARS = 48000
 DEFAULT_MAX_RETRIES = 2
 MAX_FORMAT_RETRIES = 2
+logger = logging.getLogger(__name__)
 
 
 def normalize_catalog(content: JsonObject, previous: ArtifactRecord | None = None) -> JsonObject:
@@ -351,10 +363,31 @@ class WorkflowService:
         token: CancelToken | None = None,
         report: ProgressReporter | None = None,
         on_request: RequestRecorder | None = None,
+        on_context: Callable[[TaskContext], None] | None = None,
     ) -> JsonObject:
         """Run the Agent Loop; max_retries excludes the initial generation."""
         token = token or CancelToken()
         report = report or (lambda *args: None)
+        tracker = TaskTracker(
+            ACTION_NAMES.get(command["stage"], "内容生成"), target=command_target(command)
+        )
+
+        def phase(name: str, **changes: Any) -> None:
+            tracker.update_context(phase=name, **changes)
+            if on_context:
+                on_context(tracker.task_context)
+            # After a model response, persist the candidate before reporting cancellation.
+            if name not in {"结构与引用校验", "保存候选"}:
+                report(f"{tracker.task_context.target} · {name}…", -1)
+
+        def failed(exc: Exception) -> None:
+            self.repository.record_run_failure(
+                run["id"],
+                exc,
+                cancelled=token.cancelled or isinstance(exc, GenerationCancelled),
+                feedback=failure_feedback(tracker.task_context, exc),
+            )
+
         max_retries = command["max_retries"]
         require(
             type(max_retries) is int and max_retries >= 0, "INVALID_INPUT", "重试次数必须为非负整数"
@@ -383,6 +416,7 @@ class WorkflowService:
                     "selected": run.get("selected", False),
                     "review_status": run.get("review_status", "unavailable"),
                     "retries_used": run.get("retries_used", 0),
+                    "feedback": run.get("feedback"),
                 }
 
             call_type = "generation"
@@ -409,10 +443,12 @@ class WorkflowService:
 
             def generate_candidate(prompt: str) -> ArtifactRecord:
                 generation_prompt = prompt
+                generation_phase = "质量修订" if candidates else "生成"
                 for format_attempt in range(MAX_FORMAT_RETRIES + 1):
-                    report("正在生成…" if not candidates else "正在调整…", -1)
+                    phase("格式修复" if format_attempt else generation_phase)
                     raw = send(prompt)
                     try:
+                        phase("结构与引用校验")
                         content = parse_object(raw)
                         if command["stage"] == "asset_catalog":
                             content = normalize_catalog(content, command.get("previous_catalog"))
@@ -439,6 +475,7 @@ class WorkflowService:
                         )
                         continue
                     # Persist before any further paid request, even if cancellation just arrived.
+                    phase("保存候选")
                     with self.repository.transaction() as state:
                         version = self.repository._save(
                             state,
@@ -458,12 +495,16 @@ class WorkflowService:
                         next(r for r in state["runs"] if r["id"] == run["id"])["output_refs"] = [
                             v["id"] for v in candidates
                         ]
+                    tracker.update_context(saved=True)
+                    if on_context:
+                        on_context(tracker.task_context)
                     token.raise_if_cancelled()
                     return version
 
             latest = None
             retries_used = 0
             review_status = "unavailable"
+            feedback = None
             try:
                 validate_model_snapshot(command["model_snapshot"])
                 prompt = command["prompt"]
@@ -473,6 +514,7 @@ class WorkflowService:
                     latest = generate_candidate(prompt)
                     retries_used = attempt
                     call_type = "quality_check"
+                    phase("自动审阅")
                     result = (
                         self.quality_check(command, latest)
                         if self.quality_check is not None
@@ -480,6 +522,22 @@ class WorkflowService:
                     )
                     token.raise_if_cancelled()
                     review_status = "passed" if result.passed else "issues"
+                    feedback = {
+                        "phase": "自动审阅",
+                        "target": tracker.task_context.target,
+                        "summary": "自动检查通过"
+                        if result.passed
+                        else readable_fields(
+                            concise(
+                                result.feedback.splitlines()[0]
+                                if result.feedback
+                                else "检查发现问题"
+                            )
+                        ),
+                        "issue_count": result.issue_count or (0 if result.passed else 1),
+                    }
+                    if not result.passed:
+                        logger.warning("%s：%s", tracker.task_context.target, result.feedback)
                     if result.passed or attempt == max_retries:
                         break
                     prompt = (
@@ -487,6 +545,7 @@ class WorkflowService:
                         + "\n根据外部质量检查反馈修改最新候选，保留原始任务与上下文，只返回完整JSON：\n"
                         + encode({"candidate": latest["content"], "feedback": result.feedback})
                     )
+                    phase("质量修订")
                     require(
                         len(prompt) <= self.max_context_chars,
                         "CONTEXT_TOO_LARGE",
@@ -494,9 +553,11 @@ class WorkflowService:
                     )
             except (APIError, TimeoutError, ConnectionError) as exc:
                 if latest is None:
-                    self.repository.record_run_failure(run["id"], exc, cancelled=token.cancelled)
+                    failed(exc)
                     raise
                 review_status = "unavailable"
+                feedback = failure_feedback(tracker.task_context, exc)
+                logger.error("已保留候选，后续步骤中断", exc_info=True)
             except WorkspaceError as exc:
                 if latest is None or exc.code not in {
                     "INVALID_INPUT",
@@ -504,19 +565,18 @@ class WorkflowService:
                     "CONTEXT_TOO_LARGE",
                     "INPUT_TOO_LARGE",
                 }:
-                    self.repository.record_run_failure(run["id"], exc, cancelled=token.cancelled)
+                    failed(exc)
                     raise
                 review_status = "unavailable"
+                feedback = failure_feedback(tracker.task_context, exc)
+                logger.error("已保留候选，后续步骤中断", exc_info=True)
             except Exception as exc:
-                self.repository.record_run_failure(
-                    run["id"],
-                    exc,
-                    cancelled=isinstance(exc, GenerationCancelled) or token.cancelled,
-                )
+                failed(exc)
                 raise
 
             try:
                 token.raise_if_cancelled()
+                phase("选用结果")
                 with self.repository.transaction() as state:
                     unchanged_inputs = all(
                         state["current"].get(k) == v
@@ -543,6 +603,7 @@ class WorkflowService:
                         selected=select,
                         ended_at=timestamp(),
                         review_status=review_status,
+                        feedback=feedback,
                         retries_used=retries_used,
                     )
                 return {
@@ -552,13 +613,10 @@ class WorkflowService:
                     "selected": select,
                     "review_status": review_status,
                     "retries_used": retries_used,
+                    "feedback": feedback,
                 }
             except Exception as exc:
-                self.repository.record_run_failure(
-                    run["id"],
-                    exc,
-                    cancelled=isinstance(exc, GenerationCancelled) or token.cancelled,
-                )
+                failed(exc)
                 raise
 
     def _validate_output(self, command: JsonObject, content: JsonObject) -> JsonObject:
@@ -695,7 +753,7 @@ class WorkflowService:
         )
 
 
-class WorkspaceWork:
+class WorkspaceWork(TaskTracker):
     """TaskRunner-compatible work; captures input before leaving the GUI thread."""
 
     def __init__(
@@ -706,6 +764,9 @@ class WorkspaceWork:
         transport: TextTransport | None = None,
         token: CancelToken | None = None,
     ) -> None:
+        super().__init__(
+            ACTION_NAMES.get(command["stage"], "内容生成"), target=command_target(command)
+        )
         self.output_dir = repository.output_dir
         self.command = deepcopy(command)
         self.token = token or CancelToken()
@@ -714,4 +775,4 @@ class WorkspaceWork:
     def __call__(self, report: ProgressReporter) -> JsonObject:
         return WorkflowService(
             ProjectRepository(self.output_dir), self.command["model"], transport=self.transport
-        ).execute(self.command, token=self.token, report=report)
+        ).execute(self.command, token=self.token, report=report, on_context=self.accept_context)

@@ -459,7 +459,9 @@ class ProjectRepository:
             result = operation(run, state)
         return deepcopy(result)
 
-    def record_run_failure(self, run_id: str, error: Exception, *, cancelled: bool) -> None:
+    def record_run_failure(
+        self, run_id: str, error: Exception, *, cancelled: bool, feedback: JsonObject | None = None
+    ) -> None:
         """Persist task state without relabelling the original failure."""
         try:
             self.update_run(
@@ -467,6 +469,7 @@ class ProjectRepository:
                 lambda run, _: run.update(
                     status="cancelled" if cancelled else "failed",
                     error=type(error).__name__,
+                    **({"feedback": feedback} if feedback else {}),
                     ended_at=timestamp(),
                 ),
             )

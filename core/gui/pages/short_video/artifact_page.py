@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.short_video.v2.feedback import record_message
 from core.short_video.v2.models import require
 from core.short_video.v2.prompts import INSTRUCTIONS
 from core.short_video.v2.storyboard_text import render_storyboard_text
@@ -103,18 +104,8 @@ class ArtifactPage(QWidget):
             self.editor.set_content(record["content"] if record else None)
         if not record:
             self.status.setText("尚无稿件，从上一阶段继续。")
-        elif not self.workbench.repository.is_current(record["id"], state=state):
-            self.status.setText("基于旧内容；可以重新生成，或继续时明确沿用原稿。")
         else:
-            run = next(
-                (r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None
-            )
-            if run and run.get("review_status") in {"unavailable", "incomplete"}:
-                self.status.setText("已生成，自动检查未完成；可以直接修改或使用。")
-            elif run and run.get("review_status") == "issues":
-                self.status.setText("已生成，自动检查仍未通过；可以直接修改或使用。")
-            else:
-                self.status.setText("已保存")
+            self.status.setText(record_message(self.workbench.repository, record, state))
 
     def save(self) -> bool:
         require(self.record is not None, "INVALID_INPUT", "请先生成稿件")

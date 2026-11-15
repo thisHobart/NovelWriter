@@ -1009,3 +1009,158 @@ def test_compiled_shot_deduplicates_visible_text_without_changing_refs(prompt_pr
     assert shot["asset_refs"] == original["shots"][0]["asset_refs"]
     assert shot["source_refs"] == original["shots"][0]["source_refs"]
     assert compiled["asset_spec_refs"] == original["asset_spec_refs"]
+
+
+@pytest.mark.parametrize("failure_phase", ["生成", "格式修复", "自动审阅", "质量修订"])
+def test_task_feedback_keeps_original_failure_and_actual_phase(prompt_project, monkeypatch, caplog, failure_phase):
+    from core.short_video.v2 import workflow
+    from core.short_video.v2.feedback import record_message, task_message
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.review import QualityCheckResult
+
+    monkeypatch.setattr(workflow, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda _: None)
+    original = prompt_project.current("storyboard")
+    error = TimeoutError("original transport failure")
+    calls = []
+
+    def send(prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            if failure_phase == "生成":
+                raise error
+            if failure_phase == "格式修复":
+                return "bad JSON"
+            return encode(original["content"])
+        raise error
+
+    def check(command, candidate):
+        if failure_phase == "自动审阅":
+            raise error
+        return QualityCheckResult(False, "镜头1：动作过多，请拆镜", 1)
+
+    command = workflow.WorkflowService(prompt_project).prepare("storyboard")
+    # Exercise the same service through the real worker, with a deterministic reviewer.
+    monkeypatch.setattr(workflow, "check_candidate", lambda command, candidate, *args: check(command, candidate))
+    work = workflow.WorkspaceWork(prompt_project, command, transport=send)
+    if failure_phase in {"生成", "格式修复"}:
+        with pytest.raises(TimeoutError) as caught:
+            work(lambda *_: None)
+        assert caught.value is error
+        assert prompt_project.current("storyboard")["id"] == original["id"]
+        feedback = prompt_project.load()["runs"][-1]["feedback"]
+        assert work.task_context.phase == failure_phase
+        assert task_message(work.task_context, error=error)[0] == "error"
+    else:
+        result = work(lambda *_: None)
+        assert result["review_status"] == "unavailable"
+        assert prompt_project.current("storyboard")["id"] == result["version_id"]
+        feedback = result["feedback"]
+        assert feedback == prompt_project.load()["runs"][-1]["feedback"]
+        assert "original transport failure" in caplog.text
+        message = record_message(prompt_project, prompt_project.current("storyboard"), prompt_project.load())
+        assert failure_phase + "失败" in message and "请求超时" in message
+    assert feedback["phase"] == failure_phase
+    assert "请求超时" in feedback["cause"]
+
+
+def test_review_feedback_stale_source_and_manual_edit_are_distinct(prompt_project, monkeypatch):
+    from core.short_video.v2 import workflow
+    from core.short_video.v2.feedback import record_message
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.review import QualityCheckResult
+
+    monkeypatch.setattr(workflow, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda _: None)
+    content = prompt_project.current("storyboard")["content"]
+    service = workflow.WorkflowService(prompt_project, transport=lambda _: encode(content),
+                                      quality_check=lambda *_: QualityCheckResult(False, "总时长超过60秒", 2))
+    result = service.execute(service.prepare("storyboard"))
+    board = prompt_project.current("storyboard")
+    assert result["review_status"] == "issues"
+    config = deepcopy(prompt_project.current("config")["content"])
+    config["audience"] = "另一个观众群"
+    prompt_project.save("config", config, {}, expected_revision=prompt_project.load()["revision"])
+    message = record_message(prompt_project, board, prompt_project.load())
+    assert "总时长超过60秒" in message and "共2项" in message and "创作配置已更新" in message
+    manual = prompt_project.save("storyboard", content, board["dependency_refs"],
+                                 expected_revision=prompt_project.load()["revision"], allow_stale=True)
+    message = record_message(prompt_project, manual, prompt_project.load())
+    assert "尚未自动检查" in message and "总时长超过60秒" not in message
+
+
+def test_asset_batch_reports_object_partial_progress_and_original_429(prompt_project, monkeypatch):
+    import httpx
+    from openai import RateLimitError
+    from core.short_video.v2 import creation, workflow
+    from core.short_video.v2.feedback import task_message
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.review import QualityCheckResult
+
+    for module in (creation, workflow):
+        monkeypatch.setattr(module, "capture_model_snapshot", lambda *_: {"model": "offline"})
+        monkeypatch.setattr(module, "validate_model_snapshot", lambda *_: None)
+    originals = {kind: prompt_project.current(f"{kind}_spec:asset_{kind}:base")["content"]
+                 for kind in ("character", "scene", "prop")}
+    with prompt_project.transaction() as state:
+        for key in list(state["current"]):
+            if "_spec:" in key:
+                state["current"].pop(key)
+    monkeypatch.setattr(workflow, "check_candidate", lambda *_: QualityCheckResult(True))
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
+    error = RateLimitError("Upstream rate limit exceeded", response=response, body={})
+
+    def send(prompt):
+        if "寻井人" in work.task_context.target:
+            return encode(originals["character"])
+        raise error
+
+    work = creation.CreationWork(prompt_project, creation.prepare_prompt_task(prompt_project, "hosted-llm"),
+                                 transport=send)
+    with pytest.raises(RateLimitError) as caught:
+        work(lambda *_: None)
+    assert caught.value is error
+    assert work.task_context.completed == 1 and work.task_context.total == 3
+    severity, title, detail = task_message(work.task_context, error=error)
+    assert severity == "warning" and title == "资产提示词生成中断"
+    assert "老宅" in detail and "生成" in detail and "429" in detail and "1/3" in detail
+    assert prompt_project.current("character_spec:asset_character:base") is not None
+
+
+def test_asset_batch_keeps_both_incomplete_review_and_quality_issues(prompt_project, monkeypatch):
+    from core.short_video.v2 import creation, workflow
+    from core.short_video.v2.feedback import task_message
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.review import QualityCheckResult
+
+    for module in (creation, workflow):
+        monkeypatch.setattr(module, "capture_model_snapshot", lambda *_: {"model": "offline"})
+        monkeypatch.setattr(module, "validate_model_snapshot", lambda *_: None)
+    names = {"寻井人": "character", "老宅": "scene", "铜钥匙": "prop"}
+    originals = {kind: prompt_project.current(f"{kind}_spec:asset_{kind}:base")["content"]
+                 for kind in names.values()}
+    with prompt_project.transaction() as state:
+        for key in list(state["current"]):
+            if "_spec:" in key:
+                state["current"].pop(key)
+
+    def check(command, candidate, *args):
+        kind = command["context"]["entity"]["kind"]
+        if kind == "character":
+            raise TimeoutError("review timeout")
+        return QualityCheckResult(kind != "scene", "反向视角的门窗布局不一致", 1)
+
+    def send(prompt):
+        kind = next(kind for name, kind in names.items() if name in work.task_context.target)
+        return encode(originals[kind])
+
+    monkeypatch.setattr(workflow, "check_candidate", check)
+    work = creation.CreationWork(prompt_project, creation.prepare_prompt_task(prompt_project, "hosted-llm"),
+                                 transport=send)
+    result = work(lambda *_: None)
+    assert result["review_status"] == "unavailable"
+    severity, title, detail = task_message(work.task_context, result=result)
+    assert severity == "warning" and title == "资产提示词已保存"
+    assert "1项检查未完成" in detail and "请求超时" in detail
+    assert "1项检查发现问题" in detail and "门窗布局不一致" in detail
+    assert work.task_context.completed == 3

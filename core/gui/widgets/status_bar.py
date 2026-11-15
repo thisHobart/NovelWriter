@@ -11,11 +11,29 @@ import time
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QWidget
+from PySide6.QtGui import QPainter, QPaintEvent
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QSizePolicy, QWidget
 
 from core.gui import theme
 from core.gui.widgets.card import vline
 from core.gui.widgets.controls import IconLabel, danger_button
+
+
+class ElidedStatusLabel(QLabel):
+    """Keep full text available to code, while painting within the available width."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.setTextFormat(Qt.PlainText)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setPen(self.palette().windowText().color())
+        painter.setFont(self.font())
+        value = self.fontMetrics().elidedText(self.text(), Qt.ElideRight, self.contentsRect().width())
+        painter.drawText(self.contentsRect(), Qt.AlignLeft | Qt.AlignVCenter, value)
 
 
 class AppStatusBar(QWidget):
@@ -37,9 +55,9 @@ class AppStatusBar(QWidget):
         self._sep = vline()
         layout.addWidget(self._sep)
 
-        self._context = QLabel("")
+        self._context = ElidedStatusLabel("")
         self._context.setObjectName("Secondary")
-        layout.addWidget(self._context)
+        layout.addWidget(self._context, 1)
 
         self._progress = QProgressBar()
         self._progress.setFixedSize(200, 5)
@@ -51,8 +69,6 @@ class AppStatusBar(QWidget):
         self._elapsed.setObjectName("Tertiary")
         self._elapsed.hide()
         layout.addWidget(self._elapsed)
-
-        layout.addStretch(1)
 
         self._right = QLabel("")
         self._right.setObjectName("Tertiary")
@@ -80,6 +96,7 @@ class AppStatusBar(QWidget):
         self._reset_stop()
 
     def set_busy(self, text: str, context: str = "") -> None:
+        self._right.clear()
         self._state.set_state("spinner", theme.ACCENT, text)
         self._context.setText(context)
         self._progress.show()
@@ -106,6 +123,7 @@ class AppStatusBar(QWidget):
             self._progress.setValue(int(max(0.0, min(1.0, fraction)) * 100))
 
     def set_dirty(self, text: str, context: str = "") -> None:
+        self._right.clear()
         self._timer.stop()
         self._state.set_state("half", theme.WARN, text)
         self._context.setText(context)
@@ -114,6 +132,7 @@ class AppStatusBar(QWidget):
         self._stop.hide()
 
     def set_blocked(self, text: str, context: str = "") -> None:
+        self._right.clear()
         self._timer.stop()
         self._state.set_state("lock", theme.DANGER, text)
         self._context.setText(context)
@@ -122,6 +141,7 @@ class AppStatusBar(QWidget):
         self._stop.hide()
 
     def set_done(self, text: str, context: str = "") -> None:
+        self._right.clear()
         self._timer.stop()
         self._state.set_state("check", theme.SUCCESS, text)
         self._context.setText(context)
@@ -130,6 +150,7 @@ class AppStatusBar(QWidget):
         self._stop.hide()
 
     def set_error(self, text: str, context: str = "") -> None:
+        self._right.clear()
         self._timer.stop()
         self._state.set_state("half", theme.DANGER, text)
         self._context.setText(context)
@@ -139,6 +160,9 @@ class AppStatusBar(QWidget):
 
     def set_right(self, text: str) -> None:
         self._right.setText(text)
+
+    def set_context(self, text: str) -> None:
+        self._context.setText(text)
 
     # -- 内部 --------------------------------------------------------------
     def _on_stop(self) -> None:

@@ -1,7 +1,10 @@
 """Types shared at the workspace's UI, model and storage boundaries."""
 
 from collections.abc import Callable
-from typing import Any, ParamSpec, Protocol, TypeAlias, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, TypeAlias, TypedDict, TypeVar
+
+if TYPE_CHECKING:
+    from .feedback import TaskContext
 
 from core.generation.cancellation import CancelToken
 
@@ -13,9 +16,11 @@ RequestRecorder: TypeAlias = Callable[[str, str, str | None], None]
 OperationResult = TypeVar("OperationResult")
 OperationParameters = ParamSpec("OperationParameters")
 
+
 class VideoTask(Protocol):
     token: CancelToken
     output_dir: str
+    task_context: "TaskContext"
 
     def __call__(self, report: ProgressReporter) -> JsonObject: ...
 

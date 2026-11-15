@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from core.generation.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import JsonObject, OperationResult, ProgressReporter, TextTransport
+from .feedback import TaskContext, TaskTracker, failure_feedback
 from .llm import ScriptLLM
 from .models import (
     WorkspaceError,
@@ -33,7 +35,7 @@ from .validation import rows, validate_content
 from .workflow import WorkflowService
 
 
-class BatchPlanService:
+class BatchPlanService(TaskTracker):
     mode = "base"
 
     def __init__(
@@ -43,7 +45,14 @@ class BatchPlanService:
         *,
         transport: TextTransport | None = None,
     ) -> None:
+        super().__init__("长文分段改编")
+        self.on_context: Callable[[TaskContext], None] | None = None
         self.repository, self.model, self.transport = repository, model, transport
+
+    def phase(self, name: str, **changes: Any) -> None:
+        self.update_context(phase=name, **changes)
+        if self.on_context:
+            self.on_context(self.task_context)
 
     def path(self, plan_id: str) -> Path:
         from .models import ID_PATTERN
@@ -243,10 +252,19 @@ class ChunkService(BatchPlanService):
         *,
         token: CancelToken | None = None,
         report: ProgressReporter | None = None,
+        on_context: Callable[[TaskContext], None] | None = None,
     ) -> JsonObject:
         token, report = token or CancelToken(), report or (lambda *args: None)
+        self.on_context = on_context
         with self.repository.generation_lock():
             plan = self.load_plan(plan_id)
+            self.phase(
+                "准备",
+                total=len(plan["chunks"]) * 2 + 1,
+                completed=sum(
+                    (c["facts"] is not None) + (c["output"] is not None) for c in plan["chunks"]
+                ),
+            )
             require(
                 self.inputs_are_current(plan),
                 "STALE_INPUT",
@@ -266,6 +284,7 @@ class ChunkService(BatchPlanService):
                     token.raise_if_cancelled()
                     if chunk["facts"] is not None:
                         continue
+                    self.phase("提取事实", target=f"第{index + 1}块", saved=False)
                     report(
                         f"提取第 {index + 1}/{len(plan['chunks'])} 块事实",
                         index / (len(plan["chunks"]) * 2 + 1),
@@ -301,6 +320,7 @@ class ChunkService(BatchPlanService):
                     )
                     chunk["facts_hash"] = fingerprint(chunk["facts"])
                     self.save_plan(plan)
+                    self.phase("事实已保存", completed=self.task_context.completed + 1)
                     token.raise_if_cancelled()
                 shared_facts = [f for chunk in plan["chunks"] for f in chunk["facts"]]
                 require(
@@ -331,6 +351,7 @@ class ChunkService(BatchPlanService):
                     token.raise_if_cancelled()
                     if chunk["output"] is not None:
                         continue
+                    self.phase("分块改编", target=f"第{index + 1}块", saved=False)
                     article = {
                         "source_id": chunk["source_id"],
                         "selection_id": plan["input_refs"]["selection"],
@@ -360,6 +381,7 @@ class ChunkService(BatchPlanService):
                     )
                     chunk["output_hash"] = fingerprint(chunk["output"])
                     self.save_plan(plan)
+                    self.phase("分块稿已保存", completed=self.task_context.completed + 1)
                     token.raise_if_cancelled()
                 service = WorkflowService(self.repository, plan["model"], transport=self.transport)
                 command = service.prepare("novel_copy", fact_table_id=plan.get("fact_table_ref"))
@@ -382,12 +404,20 @@ class ChunkService(BatchPlanService):
                     self.save_plan(plan)
 
                 result = service.execute(
-                    command, token=token, report=report, on_request=record_merge
+                    command,
+                    token=token,
+                    report=report,
+                    on_request=record_merge,
+                    on_context=lambda context: self.phase(
+                        context.phase, target="合稿", saved=context.saved
+                    ),
                 )
                 plan.update(output_ref=result["version_id"], status="succeeded")
                 self.save_plan(plan)
+                self.phase("合稿已保存", completed=self.task_context.completed + 1)
                 return result
             except Exception as exc:
+                plan["feedback"] = failure_feedback(self.task_context, exc)
                 plan["status"] = (
                     "cancelled"
                     if token.cancelled or isinstance(exc, GenerationCancelled)
@@ -422,6 +452,8 @@ class ChunkService(BatchPlanService):
         try:
             for attempt_index in range(2):
                 token.raise_if_cancelled()
+                if attempt_index:
+                    self.phase("格式修复")
                 raw = send(current)
                 try:
                     result = validate(parse_object(raw))
@@ -459,7 +491,7 @@ def create_batch_service(
     return ChunkService(repository, transport=transport)
 
 
-class BatchWork:
+class BatchWork(TaskTracker):
     def __init__(
         self,
         repository: ProjectRepository,
@@ -468,6 +500,7 @@ class BatchWork:
         mode: str,
         transport: TextTransport | None = None,
     ) -> None:
+        super().__init__("长文分段改编")
         self.output_dir, self.plan_id, self.mode, self.transport = (
             repository.output_dir,
             plan["id"],
@@ -480,7 +513,12 @@ class BatchWork:
         service = create_batch_service(
             ProjectRepository(self.output_dir), self.mode, transport=self.transport
         )
-        return service.execute(self.plan_id, token=self.token, report=report)
+        return service.execute(
+            self.plan_id, token=self.token, report=report, on_context=self.copy_context
+        )
+
+    def copy_context(self, context: TaskContext) -> None:
+        self.task_context = context
 
 
 def recover_plans(repository: ProjectRepository) -> None:

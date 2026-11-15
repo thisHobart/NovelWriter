@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.short_video.v2.contracts import JsonObject
+from core.short_video.v2.feedback import record_message
 from core.short_video.v2.models import ASSET_KINDS, require
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
@@ -280,7 +281,11 @@ class PromptPage(QWidget):
                 + "点击“生成镜头提示词”补齐资产并编排完整提示词。"
             )
         else:
-            self.status.setText("已保存" if self.record else "从分镜页生成资产提示词。")
+            self.status.setText(
+                record_message(self.workbench.repository, self.record, state)
+                if self.record
+                else "从分镜页生成资产提示词。"
+            )
         for combo in (self.objects, self.variants, self.views):
             combo.blockSignals(False)
 

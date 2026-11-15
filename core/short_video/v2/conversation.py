@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from copy import deepcopy
 
 from core.generation.cancellation import CancelToken, GenerationCancelled
@@ -14,6 +15,7 @@ from .contracts import (
 )
 from .conversation_context import build_conversation_context
 from .conversation_store import ConversationStore, select_completed_turns
+from .feedback import TaskContext, TaskTracker, failure_feedback
 from .llm import ScriptLLM
 from .models import (
     WorkspaceError,
@@ -94,9 +96,17 @@ class ConversationService:
         *,
         token: CancelToken | None = None,
         report: ProgressReporter | None = None,
+        on_context: Callable[[TaskContext], None] | None = None,
     ) -> JsonObject:
         token = token or CancelToken()
         report = report or (lambda *args: None)
+        tracker = TaskTracker("AI 回复", target="当前会话")
+
+        def phase(name: str, *, saved: bool = False) -> None:
+            tracker.update_context(phase=name, saved=saved)
+            if on_context:
+                on_context(tracker.task_context)
+
         with self.repository.generation_lock():
             run, created = self.repository.start_run(
                 command,
@@ -117,6 +127,7 @@ class ConversationService:
 
             try:
                 validate_model_snapshot(command["model_snapshot"])
+                phase("保存用户消息")
                 user_message = self.store.save_user_message(
                     command["conversation_id"],
                     command["user_text"],
@@ -146,14 +157,17 @@ class ConversationService:
                 )
                 token.raise_if_cancelled()
                 report("等待 LLM 回复", -1)
+                phase("等待回复")
                 response = send(command["prompt"])
                 require(bool(response.strip()), "INVALID_OUTPUT", "模型未返回有效回复")
                 status = "cancelled" if token.cancelled else "complete"
 
+                phase("保存回复")
                 self.store.save_final_reply(
                     command["conversation_id"], user_message["id"], response, status=status
                 )
                 reply_saved = True
+                phase("回复已保存", saved=True)
                 self.repository.update_run(
                     run["id"],
                     lambda r, _: r.update(
@@ -187,7 +201,12 @@ class ConversationService:
                             type(storage_error).__name__,
                             exc_info=True,
                         )
-                self.repository.record_run_failure(run["id"], exc, cancelled=status == "cancelled")
+                self.repository.record_run_failure(
+                    run["id"],
+                    exc,
+                    cancelled=status == "cancelled",
+                    feedback=failure_feedback(tracker.task_context, exc),
+                )
                 raise
 
     def recover(self) -> None:
@@ -198,7 +217,7 @@ class ConversationService:
         self.store.recover(active)
 
 
-class ChatWork:
+class ChatWork(TaskTracker):
     def __init__(
         self,
         repository: ProjectRepository,
@@ -207,10 +226,11 @@ class ChatWork:
         token: CancelToken | None = None,
         transport: TextTransport | None = None,
     ) -> None:
+        super().__init__("AI 回复", target="当前会话")
         self.output_dir, self.command = repository.output_dir, deepcopy(command)
         self.token, self.transport = token or CancelToken(), transport
 
     def __call__(self, report: ProgressReporter) -> JsonObject:
         return ConversationService(
             ProjectRepository(self.output_dir), self.command["model"], transport=self.transport
-        ).execute(self.command, token=self.token, report=report)
+        ).execute(self.command, token=self.token, report=report, on_context=self.accept_context)

@@ -313,7 +313,13 @@ def validate_content(
         value = recalculate_timeline(value)
         for shot in value["shots"]:
             for field in ("shot_size", "camera_movement", "action", "visual_prompt_draft"):
-                text(shot.get(field), field)
+                label = {
+                    "shot_size": "景别",
+                    "camera_movement": "镜头运动",
+                    "action": "动作",
+                    "visual_prompt_draft": "画面提示词",
+                }[field]
+                text(shot.get(field), f"镜头{shot['order']}的{label}")
             for field in ("sound", "narration"):
                 text(shot.get(field), field, empty=True)
             _asset_ref(shot.get("scene_ref"), "scene", entities)

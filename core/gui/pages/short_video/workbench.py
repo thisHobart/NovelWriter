@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -31,6 +32,7 @@ from core.short_video.v2.contracts import OperationResult, VideoTask
 from core.short_video.v2.conversation import ConversationService
 from core.short_video.v2.creation import CreationWork, prepare_prompt_task, prepare_storyboard_task
 from core.short_video.v2.exporter import ExportService
+from core.short_video.v2.feedback import ACTION_NAMES, error_reason, record_message
 from core.short_video.v2.models import WorkspaceError, fingerprint, require
 from core.short_video.v2.repository import ProjectRepository
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
@@ -150,10 +152,71 @@ class Workbench(QWidget):
         self.right.addWidget(widget)
 
     def perform(self, operation: Callable[[], OperationResult]) -> OperationResult | Literal[False]:
+        owner = getattr(operation, "__self__", None)
+        method = getattr(operation, "__name__", "")
+        stage = getattr(owner, "stage", "")
+        name = {
+            "save": "保存",
+            "generate": "生成",
+            "import_file": "原文导入",
+            "export": "内容导出",
+            "browse_project": "项目打开",
+            "project_settings": "项目设置",
+            "configure_comfy": "工作流配置",
+            "send": "AI 回复",
+            "query": "视频任务查询",
+            "restore_version": "历史版本恢复",
+            "edit_template": "阶段提示词保存",
+            "new_project": "项目创建",
+            "select_workflow": "视频工作流切换",
+            "import_image": "参考图片导入",
+            "select": "会话切换",
+            "create": "会话创建",
+        }.get(method, "当前操作")
+        if method in {"save", "generate"}:
+            subject = {
+                "novel_copy": "小说推文",
+                "video_copy": "视频文案",
+                "storyboard": "分镜",
+            }.get(stage)
+            subject = subject or ("原文" if owner is self.source else "提示词")
+            name = subject + name
+        if method == "generate":
+            if owner is self.source:
+                name = "小说推文生成"
+            elif stage:
+                name = ACTION_NAMES.get(stage, name)
+            elif owner is self.specs:
+                name = (
+                    "镜头提示词优化"
+                    if owner.record and owner.record["kind"] == "prompt_bundle"
+                    else "资产提示词生成"
+                )
+            elif owner is self.specs.media:
+                name = "视频生成"
+        if method == "continue_creation":
+            name = {
+                "novel_copy": "视频文案生成",
+                "video_copy": "分镜生成",
+                "storyboard": "资产提示词生成",
+            }.get(stage, "后续内容生成")
         try:
-            return operation()
+            result = operation()
+            if method == "save" and result is True:
+                detail = (
+                    "当前内容尚未自动检查"
+                    if owner is not self.source
+                    else "后续任务使用已保存的原文与Skill选择"
+                )
+                if owner is not self.source and getattr(owner, "record", None):
+                    detail = record_message(
+                        self.repository, owner.record, self.repository.load()
+                    ).removeprefix("已保存；")
+                self.host.status.set_done(name.removesuffix("保存") + "已保存", detail)
+            return result
         except (WorkspaceError, OSError) as exc:
-            self.host.status.set_error("操作未完成", str(exc))
+            self.host.status.set_error(name + "失败", error_reason(exc))
+            logging.getLogger(__name__).error("%s失败", name, exc_info=True)
             return False
 
     def notice(self, text: str) -> None:
@@ -162,7 +225,8 @@ class Workbench(QWidget):
     def submit(self, work: VideoTask, busy_button: QPushButton | None = None) -> None:
         require(not self.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
         self.active_work = work
-        self.host._on_video_task_requested(work, busy_button, "正在生成…")
+        context = work.task_context
+        self.host._on_video_task_requested(work, busy_button, context.action + "中…")
         self.chat.refresh()
 
     def task_controls(self) -> list[QWidget]:

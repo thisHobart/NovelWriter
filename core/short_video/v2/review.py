@@ -95,6 +95,7 @@ def parse_review(
 class QualityCheckResult:
     passed: bool
     feedback: str = ""
+    issue_count: int = 0
 
 
 def check_candidate(
@@ -119,6 +120,7 @@ def check_candidate(
     problems = parse_review(send(prompt), candidate, repository)
     return QualityCheckResult(
         passed=not problems,
+        issue_count=len(problems),
         feedback="\n".join(
             f"{problem['target_path']}：{problem['explanation']}；修改建议：{problem['suggestion']}"
             for problem in problems

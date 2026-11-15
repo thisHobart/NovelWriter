@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.12；日期：2026-11-15；状态：文字提示词 default-v3；记录字段不迁移，多工作流视频接口保持不变。
+文档版本：2.13；日期：2026-11-15；状态：文字提示词 default-v3；任务新增可选简明反馈和上下文回调，旧记录兼容读取。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -26,15 +26,17 @@
 
 ## 2. 内部生成与检查契约
 
-`WorkflowService(..., max_retries=2).prepare(...)` 冻结质量重试上限，`execute(command, *, token=None, report=None, on_request=None)` 执行 Agent Loop。首次生成不计入重试；N 次重试对应最多 N+1 次结构合法的候选生成与检查。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None)` 不接收预算，不设整次墙钟期限，网络超时沿用 SDK 默认值，自动重试关闭。
+`WorkflowService(..., max_retries=2).prepare(...)` 冻结质量重试上限，`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入重试；N 次重试对应最多 N+1 次结构合法的候选生成与检查。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None)` 不接收预算，不设整次墙钟期限，网络超时沿用 SDK 默认值，自动重试关闭。
 
-外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool,feedback: str)`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
+外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool,feedback: str,issue_count: int = 0)`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
 
 Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。`review_status` 为 passed（通过）、issues（检查仍不通过）、unavailable（检查或调用不可用）；历史 incomplete 状态继续可读。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
 
 分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行；长文计划逐段提取事实、改编并最终合稿，不按累计调用次数或耗时停止。新任务和分段计划不含 max_calls、seconds；calls_used 仅记录调用次数。旧分段计划保留原冻结哈希核验，历史限制字段不参与执行判断。长文续跑不重发成功分段，不增加独立运行存储。
 
-检查反馈及中间检查问题仅在本轮内存中使用：不保存检查报告，不写 issues 到任务结果，不写入会话历史，也不持久化检查原文或含反馈的修改请求。已有调用记录仅保留类型、错误类型和时间；调用计数回调不传递请求／响应原文。已删除无调用方的独立检查服务与人工确认、报告写入接口。
+完整检查反馈及中间问题用于本轮修订，并记录到应用日志；不新增检查报告，不写 issues 列表到任务结果，不写入会话历史，也不持久化含反馈的修改请求。运行记录及结果新增可选 `feedback={phase,target,summary,issue_count,cause?}`，仅存一条简明问题或失败原因。已有调用记录仍仅保留类型、错误类型和时间，计数回调不传递请求／响应原文。已删除的独立检查服务、人工确认与报告写入接口不恢复。
+
+各 `VideoTask` 暴露不可变 `task_context` 快照，包含 `action,target,phase,completed,total,saved,remote_status`。工作流、对话及分块服务通过可选 `on_context(TaskContext)` 更新任务快照；UI 从快照获取对象和阶段，不解析进度文字。现有 `ProgressReporter(str,float)`、TaskRunner 成功／失败／取消信号不变，失败信号继续传递原始异常。资产任务结果另含 `review_summary`，同时汇总检查中断与仍有问题的项数。旧记录缺少反馈时显示原因未记录，不迁移或回写历史文件。
 
 上述调用记录限制仅针对阶段 Agent Loop。合法候选在每次检查前保存，尚未选为当前稿；最终提交核对输入快照与 selected_before。文案／分镜冲突时返回 selected=false，保留候选；提示词冲突返回 TARGET_VERSION_CONFLICT，清理候选并保留当前编辑。提示词任务完成后仅保留最终当前结果，删除旧提示词、中间候选及运行命令中的正文副本；旧请求结果被替换后重放返回 PROMPT_REPLACED，不重新请求模型。其他阶段的初始运行命令继续保留原始上下文；普通聊天会记录实际 prompt／response，分段提取和分段改编也有各自的调用记录。
 
@@ -43,7 +45,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 ### 2.1 纯聊天实际契约
 
 - `ConversationService.prepare(conversation_id, user_text, *, request_id=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息，调用上下文纯函数；冻结实际历史 ID、context_hash、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
-- `execute(command, *, token=None, report=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
+- `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
 - `ConversationStore` 是唯一会话文件读写入口；仅保存 user／assistant 文本和状态，不保存项目引用、检查反馈或候选。
 - `build_conversation_context(...)` 是纯函数，48,000 字符默认上限包含系统规则与序列化文本；按最早完整轮次裁剪副本，保留本轮完整消息。规则和本轮仍超限返回 CONTEXT_TOO_LARGE，不删除磁盘历史。
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送。
