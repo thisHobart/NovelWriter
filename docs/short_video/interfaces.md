@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.13；日期：2026-11-15；状态：文字提示词 default-v3；任务新增可选简明反馈和上下文回调，旧记录兼容读取。
+文档版本：2.14；日期：2026-11-15；状态：文字提示词 default-v3；任务新增可选简明反馈和上下文回调，旧记录兼容读取。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -9,7 +9,7 @@
 | 动作 | 当前实际入口 | 行为 |
 |---|---|---|
 | 保存原文与配置 | ProjectService.save_inputs(config, source, ranges=None, *, expected_revision) | 同一次业务变更保存配置、原文与选区 |
-| 保存稿件／提示词 | ProjectRepository.save(kind, content, dependencies, *, expected_revision, ...) | 稿件追加版本；提示词替换当前内容并删除旧记录，不启动 AI 检查 |
+| 保存稿件／提示词 | ProjectRepository.save(kind, content, dependencies, *, expected_revision, ...) | 均替换当前内容并删除旧记录和失效下游，不启动 AI 检查 |
 | 复制分镜文本 | ArtifactPage.copy_storyboard_text → render_storyboard_text(content, catalog) | 使用当前编辑器内容及该稿精确依赖的目录，复制整段文字，不保存或调用模型 |
 | 单阶段生成／重新生成 | WorkflowService.prepare(stage, ...) → WorkspaceWork → execute(command, ...) | 冻结输入并执行生成、检查、有限修改和保存 |
 | 生成分镜 | prepare_storyboard_task → CreationWork | 先 asset_catalog，再 storyboard，分别执行质量修复循环 |
@@ -17,7 +17,7 @@
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 查看／停止 | repository.load()["runs"] / host.runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
-| 导出 | ExportService.snapshot / export(destination, *, keys, allow_stale=False, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
+| 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
 | 聊天讨论 | ConversationService.prepare / execute | 仅接收用户消息和历史对话，不接收文章／稿件／镜头／视图引用；保留项目隔离和手动重试 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
@@ -38,7 +38,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 各 `VideoTask` 暴露不可变 `task_context` 快照，包含 `action,target,phase,completed,total,saved,remote_status`。工作流、对话及分块服务通过可选 `on_context(TaskContext)` 更新任务快照；UI 从快照获取对象和阶段，不解析进度文字。现有 `ProgressReporter(str,float)`、TaskRunner 成功／失败／取消信号不变，失败信号继续传递原始异常。资产任务结果另含 `review_summary`，同时汇总检查中断与仍有问题的项数。旧记录缺少反馈时显示原因未记录，不迁移或回写历史文件。
 
-上述调用记录限制仅针对阶段 Agent Loop。合法候选在每次检查前保存，尚未选为当前稿；最终提交核对输入快照与 selected_before。文案／分镜冲突时返回 selected=false，保留候选；提示词冲突返回 TARGET_VERSION_CONFLICT，清理候选并保留当前编辑。提示词任务完成后仅保留最终当前结果，删除旧提示词、中间候选及运行命令中的正文副本；旧请求结果被替换后重放返回 PROMPT_REPLACED，不重新请求模型。其他阶段的初始运行命令继续保留原始上下文；普通聊天会记录实际 prompt／response，分段提取和分段改编也有各自的调用记录。
+合法候选在每次检查前保存，暂不选为当前内容；提交时核对输入快照与 selected_before。所有内容发生冲突均返回 TARGET_VERSION_CONFLICT，保留当前编辑并删除未选候选。任务结束后各内容键仅保留当前一份，删除旧文件及失效下游；所有非聊天运行移除 command 和 snapshot.input_refs 中的正文副本。旧请求对应的输出已被替换时返回 OUTPUT_REPLACED，不重新请求模型。组合任务返回 invalidated_refs（被本次合法提交清除的下游键及原引用），供同一任务更新冻结指针，避免目录更新后误判其清除的旧分镜为外部修改。
 
 模型异常、检查服务异常及无效检查响应不触发质量修改循环。生成前失败沿用现有异常；已有合法候选时沿用保留可用稿与未完成／不可用状态；取消沿用取消异常和恢复机制。内部编程错误原样暴露。普通聊天不使用 Agent Loop；手改只做本地校验。
 
@@ -56,7 +56,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 保存时自动维护已知姓名、别名与实体关系；无法可靠判断身份时保留草稿并返回具体歧义。取消人工绑定 UI 不等于删除实体引用校验。
 
-旧 confirmed 状态不再控制下阶段入口或导出。新任务引用用户选择的当前可用版本；继续操作不是新的审批记录。上游改变后仍保存旧依赖，明确沿用旧稿不得重写成依赖最新原文。
+旧 confirmed 状态不再控制下阶段入口或导出。新任务只引用当前有效内容；继续操作不是审批记录。上游被替换后清理旧下游，不保留旧依赖或旧稿沿用入口。
 
 导出仅校验实际所选内容的结构、来源说明和输出文件。不再区分带审核门槛的“正式”与“草稿”流程；未包含的部分在清单注明。无需确认所有视图或手动编译，确定性 PromptCompiler 在必要时内部执行；若需要额外 LLM 调用，必须属于已启动生成任务。
 
@@ -87,13 +87,13 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 内置赛道词表作为旧配置数据保留，原文页不再展示或编辑，不从 UI 文案反向猜分组。
 
-配置、原文、选区及下列业务模型均保存在统一 ArtifactRecord 外壳的 content 中；id、kind、key、dependency_refs、parent_id、content_hash、created_at 属于记录外壳。ConfigVersion／SourceVersion 等是业务名称，不是额外的 Python 数据类或独立文件格式。生成请求的 config 引用不可变配置记录。
+配置、原文、选区及下列业务模型均保存在统一 ArtifactRecord 外壳的 content 中；id、kind、key、dependency_refs、content_hash、created_at 属于记录外壳。内容ID只用于绑定与冲突校验，不是历史版本；新记录不含 parent_id，旧记录的多余字段兼容读取但不再用于恢复。生成请求的 config 引用不可变配置记录。
 
-### 5.2 SourceVersion、SelectionVersion 与 SourceRef
+### 5.2 Source、Selection 与 SourceRef
 
-- SourceVersion：`id, title, origin(paste/file), original_file_name?, raw_sha256, normalized_text, text_sha256, paragraphs[]`。TXT／MD 默认按 UTF-8／UTF-8 BOM 解码，失败返回 SOURCE_ENCODING_ERROR 并允许选择编码重导；MD 先作为文本保留，不执行 HTML。
-- `paragraphs[]`：`paragraph_id, start, end`。来源位置基于这一 SourceVersion 的规范化文本：移除 BOM、统一换行为 LF，以 Unicode 码点计数，使用 `[start,end)`；Qt UTF-16 光标位置必须显式转换。
-- SelectionVersion：`id, source_id, ranges[{start,end}], selected_text_sha256`，范围有效、非空、排序后不重叠。显示选区拼接文本时保留映射，不能用拼接后的偏移冒充原文偏移。
+- Source：`id, title, origin(paste/file), original_file_name?, raw_sha256, normalized_text, text_sha256, paragraphs[]`。TXT／MD 默认按 UTF-8／UTF-8 BOM 解码，失败返回 SOURCE_ENCODING_ERROR 并允许选择编码重导；MD 先作为文本保留，不执行 HTML。
+- `paragraphs[]`：`paragraph_id, start, end`。来源位置基于这一 Source 的规范化文本：移除 BOM、统一换行为 LF，以 Unicode 码点计数，使用 `[start,end)`；Qt UTF-16 光标位置必须显式转换。
+- Selection：`id, source_id, ranges[{start,end}], selected_text_sha256`，范围有效、非空、排序后不重叠。显示选区拼接文本时保留映射，不能用拼接后的偏移冒充原文偏移。
 - SourceRef：`source_id, paragraph_id?, start, end`；可选 `quote` 用于展示，提供时必须与对应切片一致。
 - 超过模型有效上下文时，返回 INPUT_TOO_LARGE 和统计信息；允许缩小选区，或用户启用分块计划。分块记录范围、顺序、共用事实表和最终合稿依赖；不得静默截断后声称处理全文。
 
@@ -121,7 +121,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 ### 7.2 AssetSpec
 
-共同字段：`asset_id,variant_id,catalog_version_id,style,positive_prompt,negative_prompt,views[],source_refs,inferred_fields`。保存产生对应 kind 的 ArtifactVersion。
+共同字段：`asset_id,variant_id,catalog_version_id,style,positive_prompt,negative_prompt,views[],source_refs,inferred_fields`。保存产生对应 kind 的 ArtifactRecord。
 
 | kind | 结构化字段 | 默认视图计划 |
 |---|---|---|
@@ -135,7 +135,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 视图内容至少包含 `view_id,label,camera_view,composition,required,positive_prompt,negative_prompt`；生成后由代码补充 `source_refs,template_ref,content_hash,spec_input_hash`，不重写模型生成的视角及正负提示词。视图嵌入 AssetSpec 的 views，不要求独立 id／spec_version_id；设计补充主要由设定的 inferred_fields 表达，不把概念字段当作所有视图的必需字段。
 
-`spec_input_hash` 在内部关联设定与视图文本。设定改变时标记旧提示词需要更新；可确定的本地编译自动执行，需要模型生成的部分随下一次生成任务处理。用户可明确导出原有文字并保留旧来源说明。内部哈希不能由界面或聊天直接改写，历史记录不原地改变。
+`spec_input_hash` 在内部关联设定与视图文本。设定改变时标记旧提示词需要更新；可确定的本地编译自动执行，需要模型生成的部分随下一次生成任务处理。导出仅接受当前有效来源，已被替换的内容不能恢复或沿用。内部哈希不能由界面或聊天直接改写，保存采用新文件原子替换，提交后删除旧文件。
 
 人物四视图共享身份和服装设定，只有视角／构图不同；场景角度共享布局；道具角度共享结构与状态。source_refs 表示原文依据，inferred_fields 表达设计补充，不建立逐项审批记录。
 
@@ -175,7 +175,7 @@ PromptBundle：`storyboard_version_id,asset_spec_refs[],shots[{shot_id,resolved_
 
 PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 PromptBundle 作为完整可编辑结果。缺少该结果时，在内存中将当前分镜的 visual_prompt_draft 显示为只读、可复制的画面草稿，负面提示词留空；不写入 PromptBundle，不作为完整提示词导出。状态显示缺少的资产设定数，生成按钮复用 start_creation("prompts") 补齐资产并编排；用户查看或切换草稿不触发模型请求和项目写入。
 
-character_spec／scene_spec／prop_spec 按 asset_id＋variant_id、prompt_bundle 按全体镜头，各只保留当前一份。新记录的 parent_id=null，select 不支持恢复提示词，替换后删除旧记录与文件；资产提示词被替换时，依赖旧记录的镜头提示词一并清除并从当前资产重新编排。is_current 对提示词表示是否为当前保留内容，不再递归比较上游历史；生成中的快照与修订冲突校验仍然有效。
+原文、配置、选区、文案、目录、分镜、阶段模板及各项提示词均按内容键只保留当前一份；人物／场景／道具按 asset_id＋variant_id 分别保存。删除 versions／select 接口和 parent_id 参数。替换后递归清理依赖旧记录的下游及文件；is_current 对所有内容核对当前指针与完整来源链。生成的临时候选只在本轮运行期间存在，任务结束清理，冲突与取消均不覆盖当前内容。
 
 
 ## 9. Prompt 契约：保留用户原意，结构化封装

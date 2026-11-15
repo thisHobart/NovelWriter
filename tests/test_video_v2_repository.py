@@ -16,6 +16,37 @@ import core.short_video.v2.repository as repository_module
 ARTICLE = "\ufeff乡村😀老宅\r\n井口响了三声。\r父亲留下铜钥匙。"
 
 
+def current_records(repository, key=None):
+    state = repository.load()
+    return [repository.record(ref, state=state) for name, ref in state["current"].items()
+            if key is None or name == key]
+
+
+def rebuild_with_config(repository, config):
+    """Explicitly regenerate the fixture pipeline after its source config is replaced."""
+    old = current_records(repository)
+    saved = repository.save("config", config, {}, expected_revision=repository.load()["revision"])
+    replacements = {r["id"]: r["id"] for r in current_records(repository)}
+    replacements.update({r["id"]: saved["id"] for r in old if r["key"] == "config"})
+
+    def update(value):
+        if isinstance(value, str):
+            return replacements.get(value, value)
+        if isinstance(value, list):
+            return [update(item) for item in value]
+        if isinstance(value, dict):
+            return {key: update(item) for key, item in value.items()}
+        return value
+
+    for record in old:
+        if record["key"] in repository.load()["current"]:
+            continue
+        result = repository.save(record["kind"], update(record["content"]),
+                                 update(record["dependency_refs"]), key=record["key"],
+                                 expected_revision=repository.load()["revision"])
+        replacements[record["id"]] = result["id"]
+
+
 @pytest.fixture
 def project(tmp_path):
     repository = ProjectRepository(tmp_path)
@@ -87,7 +118,7 @@ def test_encoding_failure_preserves_existing_project(project, tmp_path):
     assert ProjectService(project).context()["text"] == "乡村故事"
 
 
-def test_source_and_config_changes_stale_descendants_but_keep_versions(project):
+def test_config_replacement_removes_dependent_content(project):
     first = novel(project)
     video = project.save("video_copy", {"blocks": [
         {"id": "b1", "role": "opening", "narration": "井口有声音", "visible_action": "镜头靠近井口", "dialogue": []},
@@ -97,19 +128,21 @@ def test_source_and_config_changes_stale_descendants_but_keep_versions(project):
     cfg = project.current("config")["content"]
     cfg["tracks"]["backgrounds"] = ["乡村"]
     ProjectService(project).save_inputs(cfg, project.current("source")["content"], expected_revision=project.load()["revision"])
-    assert not project.is_current(first["id"]) and not project.is_current(video["id"])
-    assert project.record(video["id"])["content"] == video["content"]
+    assert project.current("novel_copy") is None and project.current("video_copy") is None
+    assert first["id"] not in project.load()["records"]
+    assert not (project.root / "artifacts" / f"{video['id']}.json").exists()
 
 
-def test_manual_revision_preserves_original_version(project):
+def test_manual_save_keeps_only_current_content(project):
     first = novel(project)
     changed = deepcopy(first["content"])
     changed["opening"]["text"] = "这口井藏着什么？"
-    second = project.save("novel_copy", changed, first["dependency_refs"], parent_id=first["id"],
+    second = project.save("novel_copy", changed, first["dependency_refs"],
                           expected_revision=project.load()["revision"])
-    assert second["parent_id"] == first["id"]
+    assert "parent_id" not in second
     assert project.current("novel_copy")["id"] == second["id"]
-    assert project.record(first["id"])["content"]["opening"]["text"] != second["content"]["opening"]["text"]
+    assert first["id"] not in project.load()["records"]
+    assert not (project.root / "artifacts" / f"{first['id']}.json").exists()
 
 
 def test_conflicting_save_and_failed_commit_do_not_lose_old_state(project, monkeypatch):
@@ -118,7 +151,7 @@ def test_conflicting_save_and_failed_commit_do_not_lose_old_state(project, monke
     novel(project)
     before = project.path.read_bytes()
     with pytest.raises(WorkspaceError) as error:
-        project.select(first["id"], expected_revision=old_revision)
+        project.save("novel_copy", first["content"], first["dependency_refs"], expected_revision=old_revision)
     assert error.value.code == "REVISION_CONFLICT" and project.path.read_bytes() == before
     actual_atomic = repository_module.atomic_write_text
     def broken(path, value):
@@ -129,7 +162,10 @@ def test_conflicting_save_and_failed_commit_do_not_lose_old_state(project, monke
     with pytest.raises(OSError):
         novel(project)
     assert project.path.read_bytes() == before
-    assert len(project.versions("novel_copy")) == 2
+    assert len(current_records(project, "novel_copy")) == 1
+    monkeypatch.setattr(repository_module, "atomic_write_text", actual_atomic)
+    project.recover()
+    assert {path.stem for path in (project.root / "artifacts").glob("*.json")} == set(project.load()["records"])
 
 
 def test_quote_cannot_claim_text_outside_selected_article(project):
@@ -238,29 +274,27 @@ def test_prompt_save_replaces_files_and_rebuilds_only_current_bundle(prompt_proj
     from core.short_video.v2.workflow import WorkflowService
 
     repository = prompt_project
-    first = next(record for record in repository.versions() if record["kind"] == kind)
+    first = next(record for record in current_records(repository) if record["kind"] == kind)
     previous_bundle = repository.current("prompt_bundle")
     content = deepcopy(first["content"])
     content["views"][0]["positive_prompt"] += "，光线柔和"
-    latest = repository.save(kind, content, first["dependency_refs"], parent_id=first["id"],
+    latest = repository.save(kind, content, first["dependency_refs"],
                              expected_revision=repository.load()["revision"])
-    assert latest["parent_id"] is None
-    assert len(repository.versions(first["key"])) == 1
+    assert "parent_id" not in latest
+    assert len(current_records(repository, first["key"])) == 1
     assert not (repository.root / "artifacts" / f"{first['id']}.json").exists()
     assert not (repository.root / "artifacts" / f"{previous_bundle['id']}.json").exists()
     assert repository.current("prompt_bundle") is None
     rebuilt = WorkflowService(repository).compile_storyboard_prompts(expected_revision=repository.load()["revision"])
     assert latest["id"] in rebuilt["content"]["asset_spec_refs"]
-    assert len(repository.versions("prompt_bundle")) == 1
-    assert len(repository.versions("storyboard")) == 1
+    assert len(current_records(repository, "prompt_bundle")) == 1
+    assert len(current_records(repository, "storyboard")) == 1
     result = ExportService(repository).export(repository.root / "exports" / "prompts.md", keys=["prompts"])
     assert "光线柔和" in Path(result["path"]).read_text(encoding="utf-8")
-    with pytest.raises(WorkspaceError, match="不支持恢复"):
-        repository.select(latest["id"], expected_revision=repository.load()["revision"])
+    assert not hasattr(repository, "select")
 
 
 def test_prompt_agent_retries_keep_only_final_result_and_do_not_replay_old_results(prompt_project, monkeypatch):
-    from core.short_video.v2.models import PROMPT_KINDS
     from core.short_video.v2.review import QualityCheckResult
     from core.short_video.v2.workflow import WorkflowService
     import core.short_video.v2.workflow as workflow_module
@@ -288,7 +322,7 @@ def test_prompt_agent_retries_keep_only_final_result_and_do_not_replay_old_resul
     current = repository.current(original["key"])
     assert current["id"] == result["version_id"]
     assert "第2次生成" in current["content"]["views"][0]["positive_prompt"]
-    assert len(repository.versions(original["key"])) == 1
+    assert len(current_records(repository, original["key"])) == 1
     assert checked[0] not in repository.load()["records"]
     assert service.execute(command)["version_id"] == result["version_id"]
     assert len(calls) == 2
@@ -299,9 +333,9 @@ def test_prompt_agent_retries_keep_only_final_result_and_do_not_replay_old_resul
                                   expected_revision=repository.load()["revision"])
     with pytest.raises(WorkspaceError) as error:
         service.execute(command)
-    assert error.value.code == "PROMPT_REPLACED" and len(calls) == 2
+    assert error.value.code == "OUTPUT_REPLACED" and len(calls) == 2
     assert repository.current(original["key"])["id"] == replacement["id"]
-    assert all(record["parent_id"] is None for record in repository.versions() if record["kind"] in PROMPT_KINDS)
+    assert all("parent_id" not in record for record in current_records(repository))
 
 
 def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project, monkeypatch):
@@ -480,7 +514,7 @@ def test_failed_prompt_replacement_commit_keeps_original_files(prompt_project, m
     assert repository.record(original["id"])["content"] == original["content"]
 
 
-def test_current_prompts_remain_usable_after_config_changes(prompt_project):
+def test_config_changes_remove_old_prompts_instead_of_exporting_them(prompt_project):
     from core.short_video.v2.exporter import ExportService
 
     repository = prompt_project
@@ -488,10 +522,11 @@ def test_current_prompts_remain_usable_after_config_changes(prompt_project):
     config["tone"] = "克制悬疑"
     ProjectService(repository).save_inputs(config, repository.current("source")["content"],
                                            expected_revision=repository.load()["revision"])
-    assert not repository.is_current(repository.current("storyboard")["id"])
-    assert repository.is_current(repository.current("prop_spec:asset_prop:base")["id"])
-    assert repository.is_current(repository.current("prompt_bundle")["id"])
-    assert not ExportService(repository).snapshot(keys=["prompts"])["problems"]
+    assert repository.current("storyboard") is None
+    assert repository.current("prop_spec:asset_prop:base") is None
+    assert repository.current("prompt_bundle") is None
+    with pytest.raises(WorkspaceError, match="缺少内容"):
+        ExportService(repository).snapshot(keys=["prompts"])
 
 
 def test_prompt_generation_conflict_keeps_newer_manual_edit(prompt_project, monkeypatch):
@@ -516,7 +551,7 @@ def test_prompt_generation_conflict_keeps_newer_manual_edit(prompt_project, monk
     with pytest.raises(WorkspaceError) as error:
         service.execute(command)
     assert error.value.code == "TARGET_VERSION_CONFLICT"
-    assert len(repository.versions(original["key"])) == 1
+    assert len(current_records(repository, original["key"])) == 1
     assert "保留人工修改" in repository.current(original["key"])["content"]["views"][0]["positive_prompt"]
     assert repository.load()["runs"][-1]["status"] == "failed"
 
@@ -529,7 +564,7 @@ def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_pro
     repository = prompt_project
     config = deepcopy(repository.current("config")["content"])
     config["storyboard_skill_id"] = "short-video-content-storyboard"
-    repository.save("config", config, {}, expected_revision=repository.load()["revision"])
+    rebuild_with_config(repository, config)
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
     monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
     base = repository.current("storyboard")["content"]["shots"][0]
@@ -562,7 +597,7 @@ def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_pro
         return '{"issues":[]}'
 
     service = WorkflowService(repository, transport=send)
-    command = service.prepare("storyboard", use_stale=True)
+    command = service.prepare("storyboard")
     assert command["requirements"]["skill_id"] == "short-video-content-storyboard"
     assert "short-video-content-storyboard" in command["requirements"]["instruction"]
     monkeypatch.setattr(workflow_module, "load_storyboard_skill",
@@ -632,9 +667,9 @@ def test_storyboard_skill_requires_an_explicit_choice(prompt_project, monkeypatc
 
     config = deepcopy(prompt_project.current("config")["content"])
     config["storyboard_skill_id"] = "short-video-content-storyboard"
-    prompt_project.save("config", config, {}, expected_revision=prompt_project.load()["revision"])
+    rebuild_with_config(prompt_project, config)
     for stage in ("novel_copy", "video_copy", "asset_catalog"):
-        other = service.prepare(stage, use_stale=True)
+        other = service.prepare(stage)
         assert other["requirements"]["skill_id"] is None
 
 
@@ -664,7 +699,7 @@ def test_storyboard_creation_task_uses_only_selected_skill(prompt_project, monke
         monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
     config = deepcopy(prompt_project.current("config")["content"])
     config["storyboard_skill_id"] = skill_id
-    prompt_project.save("config", config, {}, expected_revision=prompt_project.load()["revision"])
+    rebuild_with_config(prompt_project, config)
     catalog = prompt_project.current("asset_catalog")["content"]
     board = prompt_project.current("storyboard")["content"]
     skill_text = load_storyboard_skill("short-video-content-storyboard")
@@ -675,7 +710,7 @@ def test_storyboard_creation_task_uses_only_selected_skill(prompt_project, monke
         prompts.append(prompt)
         return next(responses)
 
-    command = creation.prepare_storyboard_task(prompt_project, "hosted-llm", use_stale=True)
+    command = creation.prepare_storyboard_task(prompt_project, "hosted-llm")
     assert command["first_command"]["requirements"]["skill_id"] is None
     result = creation.CreationWork(prompt_project, command, transport=send)(lambda *_: None)
     assert result["review_status"] == "passed" and len(prompts) == 4
@@ -838,7 +873,8 @@ def test_shot_page_does_not_show_bundle_from_another_storyboard(prompt_project, 
     page.tabs.setCurrentIndex(3)
     assert page.editor.positive.toPlainText() == "当前分镜的井口全景"
     assert page.record is None and page.editor.positive.isReadOnly()
-    assert repository.current("prompt_bundle")["id"] == old_bundle["id"]
+    assert repository.current("prompt_bundle") is None
+    assert old_bundle["id"] not in repository.load()["records"]
 
 
 def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, monkeypatch, tmp_path):
@@ -963,7 +999,7 @@ def test_missing_result_remains_unpassed_after_quality_retries(project, monkeypa
     assert result["review_status"] == "issues" and result["retries_used"] == 2
     assert len(prompts) == 6
     assert project.current("novel_copy")["content"] == original["content"]
-    assert project.record(original["id"])["content"] == original["content"]
+    assert original["id"] not in project.load()["records"]
 
 
 def test_custom_stage_instruction_is_preserved_and_prepare_is_readonly(project, monkeypatch):
@@ -1000,7 +1036,7 @@ def test_compiled_shot_deduplicates_visible_text_without_changing_refs(prompt_pr
 
     board = deepcopy(prompt_project.current("storyboard"))
     board["content"]["shots"][0]["visual_prompt_draft"] = "举起铜钥匙。"
-    specs = [r for r in prompt_project.versions() if r["kind"] in {"character_spec", "scene_spec", "prop_spec"}]
+    specs = [r for r in current_records(prompt_project) if r["kind"] in {"character_spec", "scene_spec", "prop_spec"}]
     original = compile_shots(prompt_project.current("storyboard"), specs)
     compiled = compile_shots(board, specs)
     shot = compiled["shots"][0]
@@ -1064,7 +1100,7 @@ def test_task_feedback_keeps_original_failure_and_actual_phase(prompt_project, m
     assert "请求超时" in feedback["cause"]
 
 
-def test_review_feedback_stale_source_and_manual_edit_are_distinct(prompt_project, monkeypatch):
+def test_review_feedback_manual_edit_and_source_replacement_are_distinct(prompt_project, monkeypatch):
     from core.short_video.v2 import workflow
     from core.short_video.v2.feedback import record_message
     from core.short_video.v2.models import encode
@@ -1078,15 +1114,17 @@ def test_review_feedback_stale_source_and_manual_edit_are_distinct(prompt_projec
     result = service.execute(service.prepare("storyboard"))
     board = prompt_project.current("storyboard")
     assert result["review_status"] == "issues"
+    message = record_message(prompt_project, board, prompt_project.load())
+    assert "总时长超过60秒" in message and "共2项" in message
+    manual = prompt_project.save("storyboard", content, board["dependency_refs"],
+                                 expected_revision=prompt_project.load()["revision"])
+    message = record_message(prompt_project, manual, prompt_project.load())
+    assert "尚未自动检查" in message and "总时长超过60秒" not in message
     config = deepcopy(prompt_project.current("config")["content"])
     config["audience"] = "另一个观众群"
     prompt_project.save("config", config, {}, expected_revision=prompt_project.load()["revision"])
-    message = record_message(prompt_project, board, prompt_project.load())
-    assert "总时长超过60秒" in message and "共2项" in message and "创作配置已更新" in message
-    manual = prompt_project.save("storyboard", content, board["dependency_refs"],
-                                 expected_revision=prompt_project.load()["revision"], allow_stale=True)
-    message = record_message(prompt_project, manual, prompt_project.load())
-    assert "尚未自动检查" in message and "总时长超过60秒" not in message
+    assert prompt_project.current("storyboard") is None
+    assert board["id"] not in prompt_project.load()["records"]
 
 
 def test_asset_batch_reports_object_partial_progress_and_original_429(prompt_project, monkeypatch):
@@ -1164,3 +1202,144 @@ def test_asset_batch_keeps_both_incomplete_review_and_quality_issues(prompt_proj
     assert "1项检查未完成" in detail and "请求超时" in detail
     assert "1项检查发现问题" in detail and "门窗布局不一致" in detail
     assert work.task_context.completed == 3
+
+
+@pytest.mark.parametrize("key", ["source", "selection", "config", "novel_copy", "video_copy", "asset_catalog", "storyboard", "prompt_template:storyboard"])
+def test_creative_content_replacement_deletes_old_file(prompt_project, key):
+    repository = prompt_project
+    if key.startswith("prompt_template:"):
+        repository.save("prompt_template", {"stage": "storyboard", "instruction": "按动作拆镜"}, {},
+                        key=key, expected_revision=repository.load()["revision"])
+    original = repository.current(key)
+    replacement = repository.save(original["kind"], original["content"], original["dependency_refs"],
+                                  key=key, expected_revision=repository.load()["revision"])
+    state = repository.load()
+    assert repository.current(key)["id"] == replacement["id"]
+    assert original["id"] not in state["records"]
+    assert not (repository.root / "artifacts" / f"{original['id']}.json").exists()
+    assert "parent_id" not in replacement
+    assert len([m for m in state["records"].values() if m["key"] == key]) == 1
+
+
+def test_second_article_cannot_reuse_first_article_assets(prompt_project):
+    repository = prompt_project
+    previous_ids = set(repository.load()["records"])
+    ProjectService(repository).import_text("第二份原文：雪山木屋里的新故事。", expected_revision=repository.load()["revision"])
+    state = repository.load()
+    assert set(state["current"]) == {"config", "source", "selection"}
+    assert all(meta["kind"] not in {"character_spec", "scene_spec", "prop_spec", "storyboard", "prompt_bundle"}
+               for meta in state["records"].values())
+    assert not any((repository.root / "artifacts" / f"{ref}.json").exists()
+                   for ref in previous_ids - state["records"].keys())
+    assert ProjectService(repository).context()["text"] == "第二份原文：雪山木屋里的新故事。"
+
+
+def test_recovery_prunes_legacy_history_and_stale_downstream(prompt_project):
+    repository = prompt_project
+    old_ids = set(repository.load()["records"])
+    with repository.generation_lock():
+        run, _ = repository.start_run({"stage": "novel_copy", "request_id": "legacy-run", "context": {"article": "old"}},
+                                      expected_revision=repository.load()["revision"], snapshot={"input_refs": {"old": "old"}})
+        ProjectService(repository).import_text("新原文", expected_revision=repository.load()["revision"])
+        latest = novel(repository)
+        # Represents a previously interrupted project with old records still on disk.
+        assert old_ids <= repository.load()["records"].keys()
+        before = repository.path.read_bytes()
+        repository.load()
+        assert repository.path.read_bytes() == before
+    repository.recover()
+    state = repository.load()
+    assert repository.current("novel_copy")["id"] == latest["id"]
+    assert repository.current("storyboard") is None and repository.current("prompt_bundle") is None
+    assert len(state["records"]) == len(state["current"]) == 4
+    assert state["runs"][-1]["id"] == run["id"] and state["runs"][-1]["status"] == "interrupted"
+    assert "command" not in state["runs"][-1] and "input_refs" not in state["runs"][-1]["snapshot"]
+    assert all(path.stem in state["records"] for path in (repository.root / "artifacts").glob("*.json"))
+
+
+def test_cancel_recovery_discards_unselected_candidate(project):
+    original = novel(project)
+    with project.generation_lock():
+        run, _ = project.start_run({"stage": "novel_copy", "request_id": "unfinished"},
+                                   expected_revision=project.load()["revision"], snapshot={})
+        with project.transaction() as state:
+            candidate = project._save(state, "novel_copy", original["content"], original["dependency_refs"], select=False)
+        assert candidate["id"] in project.load()["records"]
+    project.recover()
+    assert project.current("novel_copy")["id"] == original["id"]
+    assert candidate["id"] not in project.load()["records"]
+    assert not (project.root / "artifacts" / f"{candidate['id']}.json").exists()
+
+
+@pytest.mark.parametrize("stage", ["novel_copy", "video_copy", "storyboard"])
+def test_copy_and_storyboard_ui_has_no_history_actions(prompt_project, stage):
+    import os
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QApplication, QPushButton
+    from core.gui.pages.short_video.artifact_page import ArtifactPage
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    page = ArtifactPage(SimpleNamespace(repository=prompt_project, perform=lambda callback: callback()), stage, "内容")
+    page.refresh()
+    titles = [button.text() for button in page.findChildren(QPushButton)]
+    assert "更多" not in titles and "历史版本" not in titles
+    assert "编辑阶段提示词" in titles and not hasattr(page, "restore_version")
+    assert not hasattr(prompt_project, "select") and not hasattr(prompt_project, "versions")
+    page.close()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("stage", ["novel_copy", "video_copy", "storyboard"])
+def test_generation_conflict_keeps_manual_content_without_history(prompt_project, monkeypatch, stage):
+    from core.short_video.v2 import workflow
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.review import QualityCheckResult
+
+    monkeypatch.setattr(workflow, "capture_model_snapshot", lambda *_: {"model": "offline"})
+    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda *_: None)
+    original = prompt_project.current(stage)
+    candidate_ids = []
+
+    def check(command, candidate):
+        candidate_ids.append(candidate["id"])
+        prompt_project.save(stage, original["content"], original["dependency_refs"],
+                            expected_revision=prompt_project.load()["revision"])
+        return QualityCheckResult(True)
+
+    service = workflow.WorkflowService(prompt_project, transport=lambda _: encode(original["content"]), quality_check=check)
+    with pytest.raises(WorkspaceError) as error:
+        service.execute(service.prepare(stage))
+    assert error.value.code == "TARGET_VERSION_CONFLICT"
+    state = prompt_project.load()
+    assert prompt_project.current(stage)["id"] not in {original["id"], *candidate_ids}
+    assert len(current_records(prompt_project, stage)) == 1
+    assert not any(ref in state["records"] for ref in [original["id"], *candidate_ids])
+    assert state["runs"][-1]["status"] == "failed" and not state["runs"][-1]["output_refs"]
+
+
+def test_cancelled_candidate_is_removed_and_not_reported_as_saved(prompt_project, monkeypatch):
+    from core.generation.cancellation import GenerationCancelled
+    from core.short_video.v2 import workflow
+    from core.short_video.v2.feedback import task_message
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.review import QualityCheckResult
+
+    monkeypatch.setattr(workflow, "capture_model_snapshot", lambda *_: {"model": "offline"})
+    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda *_: None)
+    original = prompt_project.current("storyboard")
+    work = workflow.WorkspaceWork(prompt_project, workflow.WorkflowService(prompt_project).prepare("storyboard"),
+                                  transport=lambda _: encode(original["content"]))
+
+    def check(command, candidate, *args):
+        assert candidate["id"] in prompt_project.load()["records"]
+        work.token.cancel()
+        return QualityCheckResult(True)
+
+    monkeypatch.setattr(workflow, "check_candidate", check)
+    with pytest.raises(GenerationCancelled):
+        work(lambda *_: None)
+    assert prompt_project.current("storyboard")["id"] == original["id"]
+    assert len(current_records(prompt_project, "storyboard")) == 1
+    assert work.task_context.saved is False
+    assert "本次候选已保存" not in task_message(work.task_context, cancelled=True)[2]

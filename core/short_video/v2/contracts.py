@@ -42,7 +42,6 @@ class ArtifactRecord(TypedDict):
     content: JsonObject
     content_hash: str
     dependency_refs: dict[str, str]
-    parent_id: str | None
     origin: str
     created_at: str
     metadata: JsonObject

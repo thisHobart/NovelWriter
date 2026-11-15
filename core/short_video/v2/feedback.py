@@ -258,8 +258,6 @@ def task_message(
         return "warning", "暂时无法确认远程任务状态", "请查询原任务，避免重复提交"
     if result.get("selected") is False:
         detail = "输入或当前稿已变化；当前内容保留"
-        if context.action in {"小说推文生成", "视频文案生成", "分镜生成"}:
-            detail += "，生成候选可在“更多 → 历史版本”查看"
         return "warning", context.action + "未替换当前内容", detail
     if result.get("status") != "succeeded":
         return "warning", context.action + "未完成", context.retained()

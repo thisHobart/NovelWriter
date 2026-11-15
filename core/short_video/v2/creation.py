@@ -58,13 +58,12 @@ class CreationWork(TaskTracker):
                 "任务编号不能用于不同内容",
             )
             if previous["status"] == "succeeded":
-                if self.command["stage"] == "prompt_task":
-                    state = repository.load()
-                    require(
-                        all(ref in state["records"] for ref in previous["outputs"]),
-                        "PROMPT_REPLACED",
-                        "这次任务的提示词已被替换，请使用当前提示词或重新生成",
-                    )
+                state = repository.load()
+                require(
+                    all(ref in state["records"] for ref in previous["outputs"]),
+                    "OUTPUT_REPLACED",
+                    "这次任务的内容已被替换，请使用当前内容或重新生成",
+                )
                 return previous["result"]
             raise WorkspaceError(
                 "TASK_STOPPED", "这个任务已经停止，已完成内容保留；请从当前页面重新生成未完成内容"
@@ -81,10 +80,12 @@ class CreationWork(TaskTracker):
         try:
             result = self.execute_task(repository, report, task, task_path)
             self.update_context(phase="保存任务记录")
+            task.pop("command", None)
             task.update(status="succeeded", result=result, ended_at=timestamp())
             atomic_write_text(task_path, encode(task))
             return result
         except Exception as exc:
+            task.pop("command", None)
             task.update(
                 status="cancelled" if self.token.cancelled else "failed",
                 error=type(exc).__name__,
@@ -112,10 +113,12 @@ class CreationWork(TaskTracker):
             if self.command["model_snapshot"] is not None:
                 validate_model_snapshot(self.command["model_snapshot"])
             state = repository.load()
+            retained = set(state["current"].values())
+            self.update_context(completed=sum(ref in retained for ref in task["outputs"]))
             require(
                 all(state["current"].get(key) == value for key, value in frozen.items()),
                 "STALE_INPUT",
-                "输入在生成期间发生变化，已完成内容保留，请重新选择当前内容",
+                "输入在生成期间发生变化，请使用当前内容重新生成",
             )
             self.token.raise_if_cancelled()
 
@@ -138,10 +141,13 @@ class CreationWork(TaskTracker):
             task["outputs"].append(record["id"])
             atomic_write_text(task_path, encode(task))
             frozen[record["key"]] = record["id"]
+            for key, ref in result.get("invalidated_refs", {}).items():
+                if frozen.get(key) == ref:
+                    frozen[key] = None
             require(
                 result["selected"],
                 "TARGET_VERSION_CONFLICT",
-                "已生成候选，但当前稿已被修改，候选保留在历史版本",
+                "当前内容已被修改，本次候选不替换当前内容",
             )
             self.update_context(completed=self.task_context.completed + 1, saved=False)
             return result
@@ -150,7 +156,7 @@ class CreationWork(TaskTracker):
         if self.command["stage"] == "storyboard_task":
             catalog = execute(self.command["first_command"])
             frozen["asset_catalog"] = catalog["version_id"]
-            execute(service.prepare("storyboard", use_stale=self.command["use_stale"]))
+            execute(service.prepare("storyboard"))
         else:
             entities = {
                 e["asset_id"]: e
@@ -165,16 +171,13 @@ class CreationWork(TaskTracker):
                     service.prepare(
                         "asset_spec",
                         **item,
-                        use_stale=self.command["use_stale"],
                         upstream_ids={"asset_catalog": self.command["catalog_id"]},
                     )
                 )
             verify_inputs()
             self.update_context(target="镜头提示词", phase="编排", saved=False)
             report("正在编排镜头提示词…", -1)
-            service.compile_storyboard_prompts(
-                expected_revision=repository.load()["revision"], use_stale=self.command["use_stale"]
-            )
+            service.compile_storyboard_prompts(expected_revision=repository.load()["revision"])
         unavailable = [r for r in results if r["review_status"] in {"unavailable", "incomplete"}]
         issues = [r for r in results if r["review_status"] == "issues"]
         summaries = []
@@ -204,10 +207,8 @@ class CreationWork(TaskTracker):
         }
 
 
-def prepare_storyboard_task(
-    repository: ProjectRepository, model: str, *, use_stale: bool = False
-) -> JsonObject:
-    first = WorkflowService(repository, model).prepare("asset_catalog", use_stale=use_stale)
+def prepare_storyboard_task(repository: ProjectRepository, model: str) -> JsonObject:
+    first = WorkflowService(repository, model).prepare("asset_catalog")
     state = repository.load()
     pointers = {
         **first["selection_snapshot"],
@@ -220,7 +221,6 @@ def prepare_storyboard_task(
         "input_refs": pointers,
         "first_command": first,
         "model_snapshot": first["model_snapshot"],
-        "use_stale": use_stale,
     }
 
 
@@ -228,16 +228,15 @@ def prepare_prompt_task(
     repository: ProjectRepository,
     model: str,
     *,
-    use_stale: bool = False,
     asset_key: str | None = None,
 ) -> JsonObject:
     state = repository.load()
     board = repository.current("storyboard", state=state)
     require(board is not None, "MISSING_UPSTREAM", "请先生成分镜")
     require(
-        use_stale or repository.is_current(board["id"], state=state),
+        repository.is_current(board["id"], state=state),
         "STALE_INPUT",
-        "当前分镜基于旧内容，请选择重新生成或明确沿用",
+        "当前分镜来源已变化，请重新生成分镜",
     )
     catalog = repository.record(board["dependency_refs"]["asset_catalog"], state=state)
     items = []
@@ -264,9 +263,9 @@ def prepare_prompt_task(
                     }
                 )
     require(
-        use_stale or state["current"].get("asset_catalog") == catalog["id"],
+        state["current"].get("asset_catalog") == catalog["id"],
         "STALE_INPUT",
-        "分镜使用另一版人物和场景，请重新生成分镜或先恢复其历史内容",
+        "分镜与当前资产目录不一致，请重新生成分镜",
     )
     # 每项资产独立执行质量修复循环，不设置整轮调用次数和时长上限。
     return {
@@ -293,5 +292,4 @@ def prepare_prompt_task(
         },
         "items": items,
         "model_snapshot": capture_model_snapshot(model) if items else None,
-        "use_stale": use_stale,
     }

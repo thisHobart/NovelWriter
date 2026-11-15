@@ -165,7 +165,6 @@ class Workbench(QWidget):
             "configure_comfy": "工作流配置",
             "send": "AI 回复",
             "query": "视频任务查询",
-            "restore_version": "历史版本恢复",
             "edit_template": "阶段提示词保存",
             "new_project": "项目创建",
             "select_workflow": "视频工作流切换",
@@ -318,24 +317,18 @@ class Workbench(QWidget):
         if page and page.dirty:
             page.save()
 
-        def prepare(use_stale: bool) -> VideoTask:
+        def prepare() -> VideoTask:
             if stage == "storyboard":
-                command = prepare_storyboard_task(
-                    self.repository, self.model(), use_stale=use_stale
-                )
+                command = prepare_storyboard_task(self.repository, self.model())
                 return CreationWork(self.repository, command, transport=self.transport)
             if stage == "prompts":
-                command = prepare_prompt_task(
-                    self.repository, self.model(), use_stale=use_stale, asset_key=asset_key
-                )
+                command = prepare_prompt_task(self.repository, self.model(), asset_key=asset_key)
                 return CreationWork(self.repository, command, transport=self.transport)
-            command = WorkflowService(self.repository, self.model()).prepare(
-                stage, use_stale=use_stale
-            )
+            command = WorkflowService(self.repository, self.model()).prepare(stage)
             return WorkspaceWork(self.repository, command, transport=self.transport)
 
         try:
-            work = prepare(stage == "prompts")
+            work = prepare()
         except WorkspaceError as exc:
             if exc.code == "INPUT_TOO_LARGE":
                 if (
@@ -346,18 +339,7 @@ class Workbench(QWidget):
                 ):
                     self.chunk_plan()
                 return
-            if exc.code != "STALE_INPUT":
-                raise
-            if (
-                QMessageBox.question(
-                    self,
-                    "当前稿基于旧内容",
-                    "明确沿用这版稿件及其原有来源继续？选择“否”可返回重新生成。",
-                )
-                != QMessageBox.Yes
-            ):
-                return
-            work = prepare(True)
+            raise
         target = {
             "novel_copy": "video_adaptation",
             "video_copy": "video_adaptation",
@@ -375,7 +357,7 @@ class Workbench(QWidget):
             return
         try:
             WorkflowService(self.repository).compile_storyboard_prompts(
-                expected_revision=self.repository.load()["revision"], use_stale=True
+                expected_revision=self.repository.load()["revision"]
             )
         except WorkspaceError as exc:
             if exc.code not in {"EXPORT_INCOMPLETE", "STALE_INPUT"}:
@@ -422,11 +404,11 @@ class Workbench(QWidget):
             return
         keys = [key for key, check in choices.items() if check.isChecked()]
         require(bool(keys), "INVALID_INPUT", "请选择要导出的内容")
-        allow_stale, allow_partial = False, False
+        allow_partial = False
         service = ExportService(self.repository)
         while True:
             try:
-                service.snapshot(keys=keys, allow_stale=allow_stale, allow_partial=allow_partial)
+                service.snapshot(keys=keys, allow_partial=allow_partial)
                 break
             except WorkspaceError as exc:
                 if exc.code == "EXPORT_INCOMPLETE" and not allow_partial:
@@ -436,13 +418,6 @@ class Workbench(QWidget):
                     ):
                         return
                     allow_partial = True
-                elif exc.code == "STALE_INPUT" and not allow_stale:
-                    if (
-                        QMessageBox.question(self, "基于旧内容", "明确导出所选旧稿及其真实来源？")
-                        != QMessageBox.Yes
-                    ):
-                        return
-                    allow_stale = True
                 else:
                     raise
         path, _ = QFileDialog.getSaveFileName(
@@ -459,7 +434,6 @@ class Workbench(QWidget):
         service.export(
             path,
             keys=keys,
-            allow_stale=allow_stale,
             allow_partial=allow_partial,
             overwrite=overwrite,
         )

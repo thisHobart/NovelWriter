@@ -303,9 +303,7 @@ class PromptPage(QWidget):
             self.record["kind"],
             self.editor.value(),
             self.record["dependency_refs"],
-            parent_id=self.record["id"],
             expected_revision=state["revision"],
-            allow_stale=True,
         )
         self.dirty = False
         if self.record["kind"] != "prompt_bundle":
@@ -338,7 +336,6 @@ class PromptPage(QWidget):
             mode="revise",
             target_id=self.record["id"],
             asks=asks,
-            use_stale=True,
             shot_ids=shot_ids,
         )
         self.workbench.submit(

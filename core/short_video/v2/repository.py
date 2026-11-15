@@ -1,4 +1,4 @@
-"""Versioned story content and current-only prompts in an atomic manifest.
+"""Current-only creative content in an atomic manifest.
 
 Opening a repository is read-only.
 """
@@ -20,7 +20,6 @@ from .contracts import ArtifactRecord, JsonObject, OperationResult
 from .models import (
     ACTIVE_RUNS,
     ID_PATTERN,
-    PROMPT_KINDS,
     RUN_STATUSES,
     WorkspaceError,
     content_key,
@@ -93,10 +92,10 @@ class ProjectRepository:
             require(
                 isinstance(record_id, str) and record_id in state["records"],
                 "INVALID_PROJECT",
-                "当前版本引用丢失",
+                "当前内容引用丢失",
             )
             require(
-                state["records"][record_id]["key"] == key, "INVALID_PROJECT", "当前版本绑定类型错误"
+                state["records"][record_id]["key"] == key, "INVALID_PROJECT", "当前内容绑定类型错误"
             )
         run_ids = set()
         for run in state["runs"]:
@@ -117,7 +116,7 @@ class ProjectRepository:
         require(
             isinstance(record_id, str) and ID_PATTERN.fullmatch(record_id) is not None,
             "INVALID_INPUT",
-            "版本编号无效",
+            "内容编号无效",
         )
         state = self.load() if state is None else state
         metadata = state["records"].get(record_id)
@@ -125,7 +124,7 @@ class ProjectRepository:
             isinstance(metadata, dict)
             and all(isinstance(metadata.get(key), str) for key in ("kind", "key", "hash")),
             "INVALID_PROJECT",
-            "版本索引不存在或损坏",
+            "内容索引不存在或损坏",
         )
         try:
             record = json.loads(
@@ -133,7 +132,7 @@ class ProjectRepository:
                 parse_constant=reject_json_constant,
             )
         except (OSError, UnicodeError, ValueError) as exc:
-            raise WorkspaceError("INVALID_PROJECT", "版本文件丢失或损坏；项目未被覆盖") from exc
+            raise WorkspaceError("INVALID_PROJECT", "内容文件丢失或损坏；项目未被覆盖") from exc
         required_fields = {
             "id",
             "kind",
@@ -141,7 +140,6 @@ class ProjectRepository:
             "content",
             "content_hash",
             "dependency_refs",
-            "parent_id",
             "origin",
             "created_at",
             "metadata",
@@ -149,21 +147,21 @@ class ProjectRepository:
         require(
             isinstance(record, dict) and required_fields <= record.keys(),
             "INVALID_PROJECT",
-            "版本文件缺少当前必需字段",
+            "内容文件缺少当前必需字段",
         )
         require(
             record["id"] == record_id
             and record["kind"] == metadata["kind"]
             and record["key"] == metadata["key"],
             "INVALID_PROJECT",
-            "版本文件身份校验失败",
+            "内容文件身份校验失败",
         )
         require(
             isinstance(record["content"], dict)
             and isinstance(record["metadata"], dict)
             and isinstance(record["dependency_refs"], dict),
             "INVALID_PROJECT",
-            "版本内容或依赖格式损坏",
+            "内容或依赖格式损坏",
         )
         require(
             all(
@@ -171,13 +169,13 @@ class ProjectRepository:
                 for reference in record["dependency_refs"].values()
             ),
             "INVALID_PROJECT",
-            "版本依赖丢失",
+            "内容依赖丢失",
         )
         require(
             fingerprint(record) == metadata["hash"]
             and fingerprint(record["content"]) == record["content_hash"],
             "INVALID_PROJECT",
-            "版本文件或内容指纹校验失败",
+            "内容文件或指纹校验失败",
         )
         if record["kind"] == "source":
             origin = record["content"].get("origin")
@@ -209,14 +207,6 @@ class ProjectRepository:
         ref = state["current"].get(key)
         return self.record(ref, state=state) if ref else None
 
-    def versions(self, key: str | None = None) -> list[ArtifactRecord]:
-        state = self.load()
-        return [
-            self.record(ref, state=state)
-            for ref, meta in state["records"].items()
-            if key is None or meta["key"] == key
-        ]
-
     def is_current(
         self, record_id: str, *, state: JsonObject | None = None, visited: set[str] | None = None
     ) -> bool:
@@ -225,8 +215,8 @@ class ProjectRepository:
         require(record_id not in visited, "INVALID_PROJECT", "发现循环来源依赖")
         visited.add(record_id)
         record = self.record(record_id, state=state)
-        if record["kind"] in PROMPT_KINDS:
-            return state["current"].get(record["key"]) == record_id
+        if state["current"].get(record["key"]) != record_id:
+            return False
         for key, ref in record["dependency_refs"].items():
             if state["current"].get(key) != ref or not self.is_current(
                 ref, state=state, visited=visited
@@ -246,39 +236,46 @@ class ProjectRepository:
                     "项目已被其他操作更新；编辑内容保留，请刷新后比较",
                 )
             before = fingerprint(state)
-            previous_record_ids = set(state["records"])
             yield state
-            previous_record_ids.update(state["records"])
-            self._discard_prompt_history(state)
+            self._discard_history(state)
             if before == fingerprint(state):
+                self._delete_unindexed_files(state)
                 return
             state["revision"] += 1
             if not state["project_id"]:
                 state["project_id"] = identity("project")
             atomic_write_text(self.path, encode(state))
-            for record_id in previous_record_ids - state["records"].keys():
-                (self.root / "artifacts" / f"{record_id}.json").unlink(missing_ok=True)
+            self._delete_unindexed_files(state)
 
-    def _discard_prompt_history(self, state: JsonObject) -> None:
+    def _delete_unindexed_files(self, state: JsonObject) -> None:
+        """Only delete known artifact filenames after the manifest is durable."""
+        folder = self.root / "artifacts"
+        if not folder.exists():
+            return
+        for path in folder.glob("*.json"):
+            if ID_PATTERN.fullmatch(path.stem) and path.stem not in state["records"]:
+                require(
+                    path.resolve().is_relative_to(self.root.resolve()),
+                    "INVALID_PROJECT",
+                    "内容文件路径超出项目目录",
+                )
+                path.unlink(missing_ok=True)
+
+    def _discard_history(self, state: JsonObject) -> None:
         # In-flight candidates and their original editing target live until the run ends.
         if any(run["status"] in ACTIVE_RUNS for run in state["runs"]):
             return
         discarded = {
             record_id
             for record_id, metadata in state["records"].items()
-            if metadata["kind"] in PROMPT_KINDS
-            and state["current"].get(metadata["key"]) != record_id
+            if state["current"].get(metadata["key"]) != record_id
+            or metadata["kind"] == "check_report"
         }
         while True:
             dependents = set()
             for record_id in state["records"].keys() - discarded:
                 record = self.record(record_id, state=state)
                 if discarded.intersection(record["dependency_refs"].values()):
-                    require(
-                        record["kind"] in {"prompt_bundle", "check_report"},
-                        "INVALID_PROJECT",
-                        "故事资料不应依赖历史提示词",
-                    )
                     dependents.add(record_id)
             if not dependents:
                 break
@@ -290,12 +287,11 @@ class ProjectRepository:
         state["current"] = {
             key: ref for key, ref in state["current"].items() if ref not in discarded
         }
-        for target, reports in state["reports"].items():
-            state["reports"][target] = [ref for ref in reports if ref not in discarded]
+        state["confirmations"].clear()
+        state["reports"].clear()
         for run in state["runs"]:
             run["output_refs"] = [ref for ref in run["output_refs"] if ref not in discarded]
-            if run["stage"] in {"asset_spec", "view_prompts", "shot_prompts"}:
-                # Include the retired view stage when cleaning existing project history.
+            if run["stage"] != "chat":
                 run.pop("command", None)
                 run["snapshot"].pop("input_refs", None)
 
@@ -306,7 +302,6 @@ class ProjectRepository:
         content: JsonObject,
         dependencies: dict[str, str] | None,
         *,
-        parent_id: str | None = None,
         origin: str = "manual",
         select: bool = True,
         key: str | None = None,
@@ -315,9 +310,8 @@ class ProjectRepository:
         for binding, ref in dependencies.items():
             record = self.record(ref, state=state)
             require(record["key"] == binding, "INVALID_INPUT", "依赖类型与绑定名称不一致")
-        if parent_id:
-            parent = self.record(parent_id, state=state)
-            require(parent["kind"] == kind, "INVALID_INPUT", "父版本类型不匹配")
+        key = key or content_key(kind, content)
+        previous = self.current(key, state=state)
         value = validate_content(
             kind,
             content,
@@ -325,19 +319,15 @@ class ProjectRepository:
             dependencies=dependencies,
         )
         if kind in SPEC_FIELDS:
-            bind_view_prompts(kind, value, parent["content"] if parent_id else None)
-        key = key or content_key(kind, value)
-        if parent_id:
-            require(parent["key"] == key, "INVALID_INPUT", "父版本不属于当前实体或状态")
-        require(origin in {"manual", "model", "import"}, "INVALID_INPUT", "版本来源无效")
+            bind_view_prompts(kind, value, previous["content"] if previous else None)
+        require(origin in {"manual", "model", "import"}, "INVALID_INPUT", "内容来源无效")
         record = {
-            "id": identity("version"),
+            "id": identity("artifact"),
             "kind": kind,
             "key": key,
             "content": value,
             "content_hash": fingerprint(value),
             "dependency_refs": deepcopy(dependencies),
-            "parent_id": None if kind in PROMPT_KINDS else parent_id,
             "origin": origin,
             "created_at": timestamp(),
             "metadata": deepcopy(metadata or {}),
@@ -355,44 +345,29 @@ class ProjectRepository:
         dependencies: dict[str, str] | None,
         *,
         expected_revision: int,
-        parent_id: str | None = None,
         origin: str = "manual",
         select: bool = True,
         key: str | None = None,
         metadata: JsonObject | None = None,
-        allow_stale: bool = False,
     ) -> ArtifactRecord:
         with self.transaction(expected_revision) as state:
-            if not allow_stale:
-                for binding, ref in dependencies.items():
-                    require(
-                        state["current"].get(binding) == ref and self.is_current(ref, state=state),
-                        "STALE_INPUT",
-                        "输入版本已过期，请重新生成或明确沿用原稿",
-                    )
+            for binding, ref in dependencies.items():
+                require(
+                    state["current"].get(binding) == ref and self.is_current(ref, state=state),
+                    "STALE_INPUT",
+                    "输入内容已被替换，请使用当前内容重新生成",
+                )
             record = self._save(
                 state,
                 kind,
                 content,
                 dependencies,
-                parent_id=parent_id,
                 origin=origin,
                 select=select,
                 key=key,
                 metadata=metadata,
             )
         return deepcopy(record)
-
-    def select(self, record_id: str, *, expected_revision: int) -> ArtifactRecord:
-        with self.transaction(expected_revision) as state:
-            record = self.record(record_id, state=state)
-            require(
-                record["kind"] not in PROMPT_KINDS,
-                "INVALID_INPUT",
-                "提示词只保留当前内容，不支持恢复版本",
-            )
-            state["current"][record["key"]] = record_id
-        return record
 
     @contextmanager
     def generation_lock(self) -> Iterator[None]:

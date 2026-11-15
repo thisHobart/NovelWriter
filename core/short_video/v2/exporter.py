@@ -20,6 +20,7 @@ from .repository import ProjectRepository
 from .storyboard_text import render_storyboard_text
 from .validation import local_issues, validate_content
 
+
 class ExportService:
     def __init__(self, repository: ProjectRepository) -> None:
         self.repository = repository
@@ -28,7 +29,6 @@ class ExportService:
         self,
         *,
         keys: list[str] | None = None,
-        allow_stale: bool = False,
         allow_partial: bool = False,
     ) -> JsonObject:
         state = self.repository.load()
@@ -121,7 +121,7 @@ class ExportService:
             for key, record in records.items()
             if not self.repository.is_current(record["id"], state=state)
         ]
-        require(allow_stale or not stale, "STALE_INPUT", "所选内容基于旧来源：" + "、".join(stale))
+        require(not stale, "STALE_INPUT", "所选内容来源已变化，请重新生成：" + "、".join(stale))
         for record in list(records.values()):
             include(record["id"])
         return {
@@ -143,7 +143,6 @@ class ExportService:
         destination: str | Path,
         *,
         keys: list[str] | None = None,
-        allow_stale: bool = False,
         allow_partial: bool = False,
         overwrite: bool = False,
     ) -> JsonObject:
@@ -165,7 +164,7 @@ class ExportService:
             "EXPORT_EXISTS",
             "导出文件已存在，请明确选择覆盖或另存",
         )
-        snapshot = self.snapshot(keys=keys, allow_stale=allow_stale, allow_partial=allow_partial)
+        snapshot = self.snapshot(keys=keys, allow_partial=allow_partial)
         lines = ["# 视频推广文字成果", ""]
         if snapshot["missing"]:
             lines += ["本次未包含：" + "、".join(snapshot["missing"]), ""]
@@ -199,7 +198,9 @@ class ExportService:
                 lines += [
                     render_storyboard_text(
                         content,
-                        snapshot["provenance"][record["dependency_refs"]["asset_catalog"]]["content"],
+                        snapshot["provenance"][record["dependency_refs"]["asset_catalog"]][
+                            "content"
+                        ],
                     ),
                     "",
                 ]

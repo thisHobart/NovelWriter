@@ -24,7 +24,6 @@ from .feedback import (
 from .llm import ScriptLLM
 from .models import (
     ASSET_KINDS,
-    PROMPT_KINDS,
     WorkspaceError,
     capture_model_snapshot,
     content_key,
@@ -129,7 +128,6 @@ class WorkflowService:
         kind: str | None = None,
         shot_ids: list[str] | None = None,
         request_id: str | None = None,
-        use_stale: bool = False,
         fact_table_id: str | None = None,
         upstream_ids: dict[str, str] | None = None,
     ) -> JsonObject:
@@ -174,9 +172,9 @@ class WorkflowService:
                 "提示词目标类型不匹配",
             )
             require(
-                (use_stale or self.repository.is_current(candidate["id"], state=state)),
+                self.repository.is_current(candidate["id"], state=state),
                 "STALE_INPUT",
-                "目标内容基于旧来源，请重新生成或明确沿用",
+                "目标内容已被替换，请重新生成",
             )
             deps = deepcopy(candidate["dependency_refs"])
             board = self.repository.record(deps["storyboard"], state=state)
@@ -206,23 +204,14 @@ class WorkflowService:
                     "MISSING_UPSTREAM",
                     f"请先生成 {key}",
                 )
-                if state["current"].get(key) != record["id"] or not self.repository.is_current(
-                    record["id"], state=state
-                ):
-                    require(
-                        use_stale, "STALE_INPUT", "当前稿基于旧内容；请选择重新生成或明确沿用原稿"
-                    )
-                    deps.update(record["dependency_refs"])
+                require(
+                    state["current"].get(key) == record["id"]
+                    and self.repository.is_current(record["id"], state=state),
+                    "STALE_INPUT",
+                    "来源已被替换，请使用当前内容重新生成",
+                )
                 context[key] = record
                 deps[key] = record["id"]
-            if use_stale:
-                article = ProjectService(self.repository).context(
-                    state=state, selection_id=deps["selection"]
-                )
-                context.update(
-                    article=article,
-                    config=self.repository.record(deps["config"], state=state)["content"],
-                )
             kind = kind if stage == "asset_spec" else stage
         if stage == "asset_spec":
             require(kind in ASSET_KINDS.values(), "INVALID_INPUT", "请选择人物、场景或道具类型")
@@ -251,7 +240,7 @@ class WorkflowService:
             require(
                 candidate is not None
                 and candidate["kind"] == kind
-                and (use_stale or self.repository.is_current(candidate["id"], state=state)),
+                and self.repository.is_current(candidate["id"], state=state),
                 "STALE_INPUT",
                 "请先选择有效的待修订版本",
             )
@@ -300,7 +289,7 @@ class WorkflowService:
         )
         custom = self.repository.current(f"prompt_template:{stage}", state=state)
         instruction = custom["content"]["instruction"] if custom else INSTRUCTIONS[stage]
-        # Use the user's current explicit choice, also when reusing older source drafts.
+        # Freeze the user's current explicit choice for this request.
         skill_id = config["content"].get("storyboard_skill_id") if stage == "storyboard" else None
         require(
             skill_id is None or isinstance(skill_id, str) and skill_id in STORYBOARD_SKILLS,
@@ -328,7 +317,6 @@ class WorkflowService:
         )
         return {
             "selection_snapshot": {key: state["current"].get(key) for key in deps},
-            "use_stale": use_stale,
             "stage": stage,
             "max_retries": self.max_retries,
             "mode": mode,
@@ -387,6 +375,17 @@ class WorkflowService:
                 cancelled=token.cancelled or isinstance(exc, GenerationCancelled),
                 feedback=failure_feedback(tracker.task_context, exc),
             )
+            # Failed/cancelled runs discard unselected candidates, so the UI must
+            # not keep reporting a temporary candidate as retained content.
+            saved = False
+            try:
+                current_refs = set(self.repository.load()["current"].values())
+                saved = any(candidate["id"] in current_refs for candidate in candidates)
+            except (OSError, WorkspaceError):
+                pass  # Preserve the original failure if storage is also unavailable.
+            tracker.update_context(saved=saved)
+            if on_context:
+                on_context(tracker.task_context)
 
         max_retries = command["max_retries"]
         require(
@@ -405,9 +404,9 @@ class WorkflowService:
             )
             if not created:
                 require(
-                    command["kind"] not in PROMPT_KINDS or bool(run["output_refs"]),
-                    "PROMPT_REPLACED",
-                    "这次任务的提示词已被替换或未完成，请使用当前提示词或重新生成",
+                    bool(run["output_refs"]),
+                    "OUTPUT_REPLACED",
+                    "这次任务的内容已被替换或未完成，请使用当前内容或重新生成",
                 )
                 return {
                     "run_id": run["id"],
@@ -482,7 +481,6 @@ class WorkflowService:
                             command["kind"],
                             content,
                             command["input_refs"],
-                            parent_id=command.get("candidate_id"),
                             origin="model",
                             select=False,
                             metadata={
@@ -578,6 +576,7 @@ class WorkflowService:
                 token.raise_if_cancelled()
                 phase("选用结果")
                 with self.repository.transaction() as state:
+                    previous_current = dict(state["current"])
                     unchanged_inputs = all(
                         state["current"].get(k) == v
                         for k, v in command["selection_snapshot"].items()
@@ -587,19 +586,15 @@ class WorkflowService:
                         and state["current"].get(command["key"]) == command["selected_before"]
                     )
                     require(
-                        command["kind"] not in PROMPT_KINDS or select,
+                        select,
                         "TARGET_VERSION_CONFLICT",
-                        "提示词在生成期间已被修改，当前内容保留，请重新生成",
+                        "输入或当前内容在生成期间已变化，当前内容保留，请重新生成",
                     )
-                    if select:
-                        state["current"][command["key"]] = latest["id"]
+                    state["current"][command["key"]] = latest["id"]
                     current_run = next(r for r in state["runs"] if r["id"] == run["id"])
                     current_run.update(
                         status="succeeded",
-                        output_refs=[
-                            latest["id"],
-                            *[v["id"] for v in candidates if v["id"] != latest["id"]],
-                        ],
+                        output_refs=[latest["id"]],
                         selected=select,
                         ended_at=timestamp(),
                         review_status=review_status,
@@ -614,6 +609,11 @@ class WorkflowService:
                     "review_status": review_status,
                     "retries_used": retries_used,
                     "feedback": feedback,
+                    "invalidated_refs": {
+                        key: ref
+                        for key, ref in previous_current.items()
+                        if key not in state["current"]
+                    },
                 }
             except Exception as exc:
                 failed(exc)
@@ -711,14 +711,11 @@ class WorkflowService:
             content = finalize_asset_prompts(kind, content)
         return content
 
-    def compile_storyboard_prompts(
-        self, *, expected_revision: int, use_stale: bool = False
-    ) -> ArtifactRecord:
+    def compile_storyboard_prompts(self, *, expected_revision: int) -> ArtifactRecord:
         state = self.repository.load()
         storyboard = self.repository.current("storyboard", state=state)
         require(
-            storyboard is not None
-            and (use_stale or self.repository.is_current(storyboard["id"], state=state)),
+            storyboard is not None and self.repository.is_current(storyboard["id"], state=state),
             "STALE_INPUT",
             "请先保存有效分镜",
         )
@@ -728,7 +725,7 @@ class WorkflowService:
             if key.split(":")[0] in ASSET_KINDS.values()
         ]
         require(
-            use_stale or all(self.repository.is_current(s["id"], state=state) for s in specs),
+            all(self.repository.is_current(s["id"], state=state) for s in specs),
             "STALE_INPUT",
             "资产设定来源已过期",
         )
@@ -749,7 +746,6 @@ class WorkflowService:
             content,
             deps,
             expected_revision=expected_revision,
-            allow_stale=use_stale,
         )
 
 

@@ -1,4 +1,4 @@
-"""Readable versioned copy and storyboard workspaces."""
+"""Current copy and storyboard editing workspaces."""
 
 from __future__ import annotations
 
@@ -7,10 +7,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
-    QMenu,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -47,12 +44,7 @@ class ArtifactPage(QWidget):
         if stage == "storyboard":
             create_action_button("复制分镜文本", self.copy_storyboard_text, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
-        more = QPushButton("更多")
-        menu = QMenu(more)
-        menu.addAction("历史版本", lambda: workbench.perform(self.restore_version))
-        menu.addAction("编辑阶段提示词", lambda: workbench.perform(self.edit_template))
-        more.setMenu(menu)
-        bar.addWidget(more)
+        create_action_button("编辑阶段提示词", self.edit_template, bar, workbench)
         bar.addStretch()
         layout.addLayout(bar)
         bar = QHBoxLayout()
@@ -115,15 +107,13 @@ class ArtifactPage(QWidget):
         require(
             state["current"].get(self.record["key"]) == self.record["id"],
             "TARGET_VERSION_CONFLICT",
-            "当前稿已变化，编辑已保留；请先复制未保存文字，再核对历史版本",
+            "当前内容已变化，编辑已保留；请先复制未保存文字，再刷新核对当前内容",
         )
         self.workbench.repository.save(
             self.record["kind"],
             self.editor.value(),
             self.record["dependency_refs"],
-            parent_id=self.record["id"],
             expected_revision=state["revision"],
-            allow_stale=True,
         )
         self.dirty = False
         if self.stage == "storyboard":
@@ -144,25 +134,6 @@ class ArtifactPage(QWidget):
             return
         self.workbench.start_creation(self.stage, self.generate_button)
 
-    def restore_version(self) -> None:
-        if not self.workbench.resolve_page(self):
-            return
-        versions = self.workbench.repository.versions(self.key())
-        require(bool(versions), "INVALID_INPUT", "尚无历史版本")
-        labels = [
-            f"第 {i + 1} 版 · {r['created_at'][:19]} · {'手动编辑' if r['origin'] == 'manual' else '生成稿'}"
-            for i, r in enumerate(versions)
-        ]
-        label, ok = QInputDialog.getItem(
-            self, "历史版本", "选择要恢复的版本", labels, len(labels) - 1, False
-        )
-        if ok:
-            self.workbench.repository.select(
-                versions[labels.index(label)]["id"],
-                expected_revision=self.workbench.repository.load()["revision"],
-            )
-            self.workbench.refresh()
-
     def edit_template(self) -> None:
         current = self.workbench.repository.current(f"prompt_template:{self.stage}")
         value = show_text_dialog(
@@ -176,7 +147,6 @@ class ArtifactPage(QWidget):
                 {"stage": self.stage, "instruction": value},
                 {},
                 key=f"prompt_template:{self.stage}",
-                parent_id=current["id"] if current else None,
                 expected_revision=self.workbench.repository.load()["revision"],
             )
 
