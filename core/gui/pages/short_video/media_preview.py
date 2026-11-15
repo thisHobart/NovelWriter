@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -28,7 +29,12 @@ from PySide6.QtWidgets import (
 
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork
-from core.short_video.v2.media_workflows import MediaConfig, parse_video_workflow
+from core.short_video.v2.media_workflows import (
+    MAX_REFERENCE_IMAGES,
+    ImageInput,
+    MediaConfig,
+    parse_video_workflow,
+)
 from core.short_video.v2.models import require
 
 if TYPE_CHECKING:
@@ -62,13 +68,19 @@ class MediaPreview(QWidget):
         self.input_area.setWidgetResizable(True)
         self.input_area.setMaximumHeight(240)
         layout.addWidget(self.input_area)
+        self.add_image_button = QPushButton("＋添加参考图片")
+        layout.addWidget(self.add_image_button)
         self.image_fields = {}
+        self.image_labels = {}
+        self.additional_reference_slots = []
+        self.prompt_image_bindings = {}
         self.parameter_fields = {}
         self.drafts = {}
         self.loaded_workflow_id = None
         layout.addWidget(QLabel("视频提示词"))
         self.prompt = QPlainTextEdit()
         self.prompt.setMaximumHeight(130)
+        self.prompt.textChanged.connect(self.capture_prompt_image_bindings)
         layout.addWidget(self.prompt, 1)
         self.parameter_area = QWidget()
         self.parameter_form = QFormLayout(self.parameter_area)
@@ -98,6 +110,7 @@ class MediaPreview(QWidget):
         bar.addStretch()
         layout.addLayout(bar)
         self.workflows.currentIndexChanged.connect(lambda: workbench.perform(self.select_workflow))
+        self.add_image_button.clicked.connect(lambda: workbench.perform(self.add_reference_image))
         self.generate_button.clicked.connect(lambda: workbench.perform(self.generate))
         self.query_button.clicked.connect(lambda: workbench.perform(self.query))
         self.config_button.clicked.connect(lambda: workbench.perform(workbench.configure_comfy))
@@ -108,6 +121,7 @@ class MediaPreview(QWidget):
         return [
             self.workflows,
             self.input_area,
+            self.add_image_button,
             self.parameter_area,
             self.prompt,
             self.generate_button,
@@ -132,8 +146,61 @@ class MediaPreview(QWidget):
         self.drafts[self.loaded_workflow_id]["images"][node_id] = image_id
         self.load_workflow()
 
-    def image_selection(self) -> dict[str, str]:
+    def add_reference_image(self) -> None:
+        require(
+            len(self.image_fields) < MAX_REFERENCE_IMAGES,
+            "INVALID_INPUT",
+            "最多添加 9 个参考图片位置，请使用已有空位",
+        )
+        number = len(self.image_fields) + 1
+        node_id = f"reference_input_{number}"
+        while node_id in self.template.graph or node_id in self.image_fields:
+            number += 1
+            node_id = f"reference_input_{number}"
+        self.additional_reference_slots.append(node_id)
+        self.remember_draft()
+        self.load_workflow()
+        QTimer.singleShot(0, self, self.scroll_to_last_image)
+
+    def scroll_to_last_image(self) -> None:
+        scrollbar = self.input_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def image_selection(self) -> dict[str, str | None]:
         return {node_id: fields[0].currentData() for node_id, fields in self.image_fields.items()}
+
+    def capture_prompt_image_bindings(self) -> None:
+        self.prompt_image_bindings = {}
+        self.refresh_reference_labels(self.image_selection())
+
+    def refresh_reference_labels(self, selection: dict[str, str | None]) -> None:
+        if self.template.kind != "reference":
+            return
+        selected_nodes = []
+        for node_id, image_id in selection.items():
+            if image_id is None:
+                self.image_labels[node_id].setText("待选图片")
+            else:
+                selected_nodes.append(node_id)
+                self.image_labels[node_id].setText(f"参考图片 {len(selected_nodes)}")
+        if not selected_nodes:
+            self.prompt_image_bindings = {}
+        for matched in re.findall(r"<Picture\s+(\d+)>", self.prompt.toPlainText(), re.IGNORECASE):
+            number = int(matched)
+            if number not in self.prompt_image_bindings and 1 <= number <= len(selected_nodes):
+                self.prompt_image_bindings[number] = selected_nodes[number - 1]
+
+    def validate_prompt_image_bindings(self) -> None:
+        selected_nodes = []
+        for node_id, image_id in self.image_selection().items():
+            if image_id is not None:
+                selected_nodes.append(node_id)
+        for number, node_id in self.prompt_image_bindings.items():
+            require(
+                number <= len(selected_nodes) and selected_nodes[number - 1] == node_id,
+                "INVALID_INPUT",
+                f"图片编号已变化，请核对并修改提示词中的 <Picture {number}> 后再生成",
+            )
 
     def parameter_values(self, *, raw: bool = False) -> dict:
         values = {}
@@ -152,6 +219,9 @@ class MediaPreview(QWidget):
                 "images": self.image_selection(),
                 "prompt": self.prompt.toPlainText(),
                 "parameters": self.parameter_values(raw=True),
+                "additional_reference_slots": list(self.additional_reference_slots),
+                "prompt_image_bindings": dict(self.prompt_image_bindings),
+                "image_scroll": self.input_area.verticalScrollBar().value(),
             }
 
     def refresh(self) -> None:
@@ -184,11 +254,24 @@ class MediaPreview(QWidget):
         self.loaded_workflow_id = selected["workflow_id"]
         draft = self.drafts.get(self.loaded_workflow_id, {})
         self.image_fields = {}
+        self.image_labels = {}
+        self.additional_reference_slots = []
+        image_inputs = list(self.template.image_inputs)
+        if self.template.kind == "reference":
+            available = MAX_REFERENCE_IMAGES - len(image_inputs)
+            for node_id in draft.get("additional_reference_slots", []):
+                if len(self.additional_reference_slots) >= available:
+                    break
+                if node_id not in self.template.graph:
+                    self.additional_reference_slots.append(node_id)
+            for node_id in self.additional_reference_slots:
+                image_inputs.append(ImageInput(node_id, "待选图片"))
+        self.add_image_button.setVisible(self.template.kind == "reference")
         container = QWidget()
         form = QFormLayout(container)
         repository = MediaRepository(self.workbench.output_dir)
         images = repository.images()
-        for image_input in self.template.image_inputs:
+        for image_input in image_inputs:
             row = QWidget()
             bar = QHBoxLayout(row)
             combo = QComboBox()
@@ -203,7 +286,9 @@ class MediaPreview(QWidget):
             bar.addWidget(combo, 1)
             bar.addWidget(choose)
             bar.addWidget(preview)
-            form.addRow(image_input.label, row)
+            label = QLabel(image_input.label)
+            form.addRow(label, row)
+            self.image_labels[image_input.node_id] = label
             self.image_fields[image_input.node_id] = (combo, choose, preview)
             choose.clicked.connect(
                 lambda checked=False, node_id=image_input.node_id: self.workbench.perform(
@@ -212,12 +297,20 @@ class MediaPreview(QWidget):
             )
             combo.currentIndexChanged.connect(lambda: self.workbench.perform(self.refresh_result))
         self.input_area.setWidget(container)
+        QTimer.singleShot(
+            0,
+            self,
+            lambda: self.input_area.verticalScrollBar().setValue(draft.get("image_scroll", 0)),
+        )
+        self.prompt.blockSignals(True)
         self.prompt.setPlainText(
             draft.get(
                 "prompt",
                 DEFAULT_VIDEO_PROMPT if self.template.kind == "reference" else self.template.prompt,
             )
         )
+        self.prompt.blockSignals(False)
+        self.prompt_image_bindings = dict(draft.get("prompt_image_bindings", {}))
         while self.parameter_form.rowCount():
             self.parameter_form.removeRow(0)
         form = self.parameter_form
@@ -244,6 +337,7 @@ class MediaPreview(QWidget):
     def refresh_result(self) -> None:
         repository = MediaRepository(self.workbench.output_dir)
         selection = self.image_selection()
+        self.refresh_reference_labels(selection)
         for node_id, (combo, choose, preview) in self.image_fields.items():
             image_id = selection[node_id]
             if image_id:
@@ -254,6 +348,10 @@ class MediaPreview(QWidget):
                 )
             else:
                 preview.clear()
+        if self.template.kind == "reference":
+            selection = {
+                node_id: image_id for node_id, image_id in selection.items() if image_id is not None
+            }
         self.current_job = None
         for job in reversed(repository.jobs()):
             snapshot = job["input_snapshot"]
@@ -303,6 +401,7 @@ class MediaPreview(QWidget):
             self.video_path = path
         busy = self.workbench.host.runner.busy
         self.generate_button.setEnabled(all(selection.values()) and bool(selection) and not busy)
+        self.add_image_button.setEnabled(len(self.image_fields) < MAX_REFERENCE_IMAGES and not busy)
         self.query_button.setEnabled(
             bool(job and job["status"] not in {"succeeded", "cancelled", "failed"}) and not busy
         )
@@ -311,6 +410,8 @@ class MediaPreview(QWidget):
 
     def generate(self) -> None:
         require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        if self.template.kind == "reference":
+            self.validate_prompt_image_bindings()
         prompt = self.prompt.toPlainText().strip()
         command = MediaService(self.workbench.output_dir).prepare_video(
             self.image_selection(),

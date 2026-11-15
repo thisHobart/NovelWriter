@@ -274,7 +274,7 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 | MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。读取旧配置时丢弃未使用的 image_workflow 字段 |
 | parse_video_workflow(graph) | 从已保存的 API JSON 适配有效图片、提示词、参数和唯一 SaveVideo |
 | MediaRepository.import_image(path, source=None) | 导入 PNG／JPEG／WebP，保存独立文件、哈希、原文件名及来源；供手动导图与后续图片工作流共用 |
-| MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为 LoadImage 节点标识到 image_id 的映射，parameters 为参数键到类型值；只读校验并冻结输入与可选目标镜头；不提交 GPU 工作 |
+| MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为图片位置标识到 image_id 或 None 的映射；普通参考图过滤 None，首尾帧输入仍须完整。parameters 为参数键到类型值；只读校验并冻结实际输入，不提交 GPU 工作 |
 | MediaWork(output_dir, command) | 符合 VideoTask 调用约定，通过现有 TaskRunner 执行并报告状态 |
 | MediaWork(output_dir, job_id=...) | 查询同一远程任务或重新取回结果，不再次提交 |
 | MediaRepository.images / jobs / image / job | 读取本地图片与任务记录；读取不创建媒体目录 |
@@ -287,7 +287,9 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 
 MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析 JSON 并验证支持的模板；新增时生成标识，更新时保留标识。save 将整个列表原子写入项目；旧 video_workflow 路径配置在读取时转为 JSON 快照，不覆盖旧任务。
 
-parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters 与 kind。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后串联的两个 MiniMaxH3AddGuide。后一结构必须按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点；新增对应图片输入。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
+parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters、kind 与 generator_node。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后串联的两个 MiniMaxH3AddGuide。后一结构必须按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点；新增对应图片输入。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
+
+VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 将已选项标为“参考图片 1～N”，对应 Picture 1～N；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
 
 WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。像素量下限为当前 ResolutionSelector 允许的 0.1；保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
 
@@ -323,7 +325,7 @@ short_video/media/
   videos/<job_id>_<index>.mp4|mov|webm|mkv
 ```
 
-文件先写临时文件再原子改名，数据路径限制在项目媒体目录内；视频只接受支持的容器和对应文件头，不将空文件、网页或 GIF 冒充视频。独立文件不会覆盖其他任务产物。媒体没有单独的 current 指针或 index.json，界面按当前工作流及全部图片输入展示最新任务；文字 schema 仍为 2。
+文件先写临时文件再原子改名，数据路径限制在项目媒体目录内；视频只接受支持的容器和对应文件头，不将空文件、网页或 GIF 冒充视频。独立文件不会覆盖其他任务产物。媒体没有单独的 current 指针或 index.json，界面按当前工作流及实际图片选择展示最新任务（普通参考图忽略空位）；文字 schema 仍为 2。
 
 ### 10.4 状态与恢复
 

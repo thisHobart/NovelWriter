@@ -569,6 +569,7 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
 
     workbench.submit = submit
     panel.generate_button.click()
+    assert not panel.add_image_button.isEnabled()
     timer = QElapsedTimer()
     timer.start()
     while runner.busy and timer.elapsed() < 5000:
@@ -577,6 +578,7 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
     assert not runner.busy
     assert failures == []
     assert panel.generate_button.isEnabled()
+    assert panel.add_image_button.isEnabled()
     assert panel.current_job["status"] == "succeeded"
     config = MediaConfig.load(tmp_path)
     other_id = config.put_workflow("相同模板另一个工作流", json.dumps(config.selected()["graph"]))
@@ -660,3 +662,210 @@ def test_server_numeric_range_is_checked_before_upload():
                 }
             },
         )
+
+
+def test_dynamic_reference_inputs_skip_blanks_and_upload_only_selected_images(tmp_path, image):
+    config = MediaConfig()
+    config.save(tmp_path)
+    settings_before = (tmp_path / "short_video/media/settings.json").read_bytes()
+    selection = {
+        "137": image["image_id"],
+        "139": None,
+        "147": None,
+        "reference_input_4": image["image_id"],
+        "reference_input_5": None,
+    }
+    command = MediaService(tmp_path).prepare_video(selection, "Use <Picture 1> and <Picture 2>.")
+    assert list(command["images"]) == ["137", "reference_input_4"]
+    assert not {"139", "147", "reference_input_5"} & command["workflow"].keys()
+    inputs = command["workflow"]["136"]["inputs"]
+    assert inputs["ref_images.ref_image_0"] == ["137", 0]
+    assert inputs["ref_images.ref_image_1"] == ["reference_input_4", 0]
+    assert "ref_images.ref_image_2" not in inputs
+    server = ComfyServer()
+    job = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(
+        lambda *_: None
+    )
+    assert job["status"] == "succeeded"
+    assert len(server.uploads) == 2
+    graph = server.submissions[0]["prompt"]
+    assert graph["reference_input_4"]["class_type"] == "LoadImage"
+    assert graph["reference_input_4"]["inputs"]["image"] == "NovelWriter/server-renamed2.png"
+    assert graph["137"]["inputs"]["image"] == "NovelWriter/server-renamed.png"
+    assert "139" not in graph and "147" not in graph
+    assert (tmp_path / "short_video/media/settings.json").read_bytes() == settings_before
+
+
+def test_dynamic_reference_limits_and_picture_numbers_fail_before_upload(tmp_path, image):
+    service = MediaService(tmp_path)
+    with pytest.raises(WorkspaceError, match="至少选择一张"):
+        service.prepare_video({"137": None, "139": None, "147": None}, "camera movement")
+    selected = {}
+    for number in range(9):
+        selected[f"reference_input_{number + 1}"] = image["image_id"]
+    command = service.prepare_video(selected, "Use <Picture 9>.")
+    assert len(command["images"]) == 9
+    selected["reference_input_10"] = image["image_id"]
+    with pytest.raises(WorkspaceError, match="最多使用 9 张"):
+        service.prepare_video(selected, "camera movement")
+    with pytest.raises(WorkspaceError, match="编号与其他节点冲突"):
+        service.prepare_video({"127": image["image_id"]}, "camera movement")
+    with pytest.raises(WorkspaceError, match="引用超出范围"):
+        service.prepare_video(
+            {"137": None, "139": image["image_id"], "147": None}, "Use <Picture 2>."
+        )
+    assert MediaRepository(tmp_path).jobs() == []
+
+
+def reference_panel(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from core.gui.pages.short_video.media_preview import MediaPreview
+
+    app = QApplication.instance() or QApplication([])
+    submitted = []
+    workbench = SimpleNamespace(
+        output_dir=str(tmp_path),
+        host=SimpleNamespace(runner=SimpleNamespace(busy=False)),
+        perform=lambda operation: operation(),
+        configure_comfy=lambda: None,
+        submit=lambda work, button: submitted.append(work),
+    )
+    panel = MediaPreview(workbench)
+    panel.refresh()
+    return app, panel, submitted
+
+
+def save_ui_image(path):
+    from PySide6.QtGui import QImage
+
+    image = QImage(8, 8, QImage.Format_RGB32)
+    image.fill(0xFF8800)
+    assert image.save(str(path))
+
+
+def test_ui_add_reference_slot_and_skip_blank_slots_through_task_recovery(tmp_path):
+    app, panel, submitted = reference_panel(tmp_path)
+    panel.resize(900, 1000)
+    panel.show()
+    app.processEvents()
+    path = tmp_path / "manual.png"
+    save_ui_image(path)
+    assert not panel.generate_button.isEnabled()
+    panel.prompt.setPlainText("Use <Picture 1> and <Picture 2>.")
+    panel.parameter_fields["129.noise_seed"].setText("12345")
+    panel.add_image_button.click()
+    app.processEvents()
+    assert len(panel.image_fields) == 4
+    added_id = panel.additional_reference_slots[0]
+    assert added_id == "reference_input_4"
+    assert panel.image_labels[added_id].text() == "待选图片"
+    scroll_position = panel.input_area.verticalScrollBar().value()
+    assert scroll_position > 0
+    panel.import_image(str(path), "137")
+    app.processEvents()
+    assert panel.input_area.verticalScrollBar().value() == scroll_position
+    assert panel.generate_button.isEnabled()
+    panel.import_image(str(path), added_id)
+    assert panel.image_labels[added_id].text() == "参考图片 2"
+    assert panel.image_labels["139"].text() == "待选图片"
+    assert panel.prompt.toPlainText() == "Use <Picture 1> and <Picture 2>."
+    assert panel.parameter_fields["129.noise_seed"].text() == "12345"
+    panel.generate_button.click()
+    assert len(submitted) == 1
+    work = submitted[0]
+    assert list(work.command["images"]) == ["137", added_id]
+    server = ComfyServer()
+    server.running = True
+    work.transport = httpx.MockTransport(server.request)
+
+    def stop_local_wait(message, progress):
+        if "正在生成视频" in message:
+            work.token.cancel()
+
+    with pytest.raises(GenerationCancelled):
+        work(stop_local_wait)
+    panel.refresh()
+    assert len(panel.image_fields) == 4
+    assert panel.current_job["status"] == "interrupted"
+    assert panel.query_button.isEnabled()
+    original_id = panel.current_job["job_id"]
+    panel.query()
+    assert submitted[-1].job_id == original_id
+    assert len(server.submissions) == 1
+    assert parse_video_workflow(MediaConfig.load(tmp_path).selected()["graph"]).reference_count == 3
+    assert "reference_input_4" not in MediaConfig.load(tmp_path).selected()["graph"]
+    panel.close()
+
+
+def test_ui_reference_number_changes_require_prompt_review_and_allow_undo(tmp_path):
+    app, panel, submitted = reference_panel(tmp_path)
+    path = tmp_path / "manual.png"
+    save_ui_image(path)
+    for node_id in ["137", "139", "147"]:
+        panel.import_image(str(path), node_id)
+    original_image = panel.image_fields["139"][0].currentData()
+    panel.prompt.setPlainText("Use <Picture 2>.")
+    panel.image_fields["139"][0].setCurrentIndex(0)
+    assert panel.image_labels["147"].text() == "参考图片 2"
+    panel.refresh()
+    with pytest.raises(WorkspaceError, match="图片编号已变化"):
+        panel.generate()
+    assert submitted == []
+    panel.image_fields["139"][0].setCurrentIndex(
+        panel.image_fields["139"][0].findData(original_image)
+    )
+    panel.generate()
+    assert len(submitted) == 1
+    panel.image_fields["139"][0].setCurrentIndex(0)
+    with pytest.raises(WorkspaceError, match="图片编号已变化"):
+        panel.generate()
+    panel.prompt.setPlainText("Use <Picture 2>, now the second visible reference.")
+    panel.generate()
+    assert list(submitted[-1].command["images"]) == ["137", "147"]
+    assert panel.prompt.toPlainText().startswith("Use <Picture 2>")
+    panel.close()
+    app.processEvents()
+
+
+def test_ui_reference_slot_limit_workflow_isolation_and_project_reset(tmp_path):
+    app, panel, submitted = reference_panel(tmp_path)
+    for _ in range(6):
+        panel.add_image_button.click()
+        app.processEvents()
+    assert len(panel.image_fields) == 9
+    assert not panel.add_image_button.isEnabled()
+    with pytest.raises(WorkspaceError, match="最多添加 9 个"):
+        panel.add_reference_image()
+    panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
+    assert panel.add_image_button.isHidden()
+    assert len(panel.image_fields) == 5
+    assert not panel.generate_button.isEnabled()
+    panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-reference"))
+    assert len(panel.image_fields) == 9
+    panel.workbench.output_dir = str(tmp_path / "other-project")
+    panel.refresh()
+    assert len(panel.image_fields) == 3
+    assert panel.add_image_button.isEnabled()
+    assert panel.additional_reference_slots == []
+    panel.close()
+
+
+def test_template_refresh_does_not_duplicate_a_previously_added_reference(tmp_path):
+    app, panel, submitted = reference_panel(tmp_path)
+    panel.add_image_button.click()
+    app.processEvents()
+    added_id = panel.additional_reference_slots[0]
+    config = MediaConfig.load(tmp_path)
+    graph = (
+        parse_video_workflow(config.selected()["graph"])
+        .prepare_reference_inputs(["137", "139", "147", added_id])
+        .graph
+    )
+    config.put_workflow("updated reference", json.dumps(graph), config.selected_workflow_id)
+    config.save(tmp_path)
+    panel.refresh()
+    assert len(panel.image_fields) == 4
+    assert panel.additional_reference_slots == []
+    assert len(set(panel.image_fields)) == 4
+    panel.close()

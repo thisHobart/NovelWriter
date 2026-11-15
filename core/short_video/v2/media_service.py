@@ -55,7 +55,7 @@ class MediaService:
 
     def prepare_video(
         self,
-        images: dict[str, str],
+        images: dict[str, str | None],
         prompt: str,
         *,
         workflow_id: str | None = None,
@@ -67,8 +67,20 @@ class MediaService:
         config.validate()
         selected = config.selected(workflow_id)
         template = parse_video_workflow(selected["graph"])
+        selected_images = {}
+        for node_id, image_id in images.items():
+            if image_id is not None:
+                selected_images[node_id] = image_id
+        if template.kind == "reference":
+            template = template.prepare_reference_inputs(list(selected_images))
+        else:
+            require(
+                len(selected_images) == len(images),
+                "INVALID_INPUT",
+                "请为每个工作流图片输入选择图片",
+            )
         # 在本地确认所有输入完整且参数类型正确，再进行外部上传与提交。
-        template.bind(images, prompt, "validation", parameters or {})
+        template.bind(selected_images, prompt, "validation", parameters or {})
         if template.reference_count:
             for number in re.findall(r"<Picture\s+(\d+)>", prompt, flags=re.IGNORECASE):
                 require(
@@ -77,7 +89,7 @@ class MediaService:
                     f"当前工作流连接 {template.reference_count} 张参考图片，提示词引用超出范围",
                 )
         records = {}
-        for node_id, image_id in images.items():
+        for node_id, image_id in selected_images.items():
             image = self.repository.image(image_id)
             data = self.repository.resolve(image["relative_path"]).read_bytes()
             require(

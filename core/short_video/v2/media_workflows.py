@@ -14,6 +14,7 @@ from .models import encode, require
 from .storage import atomic_write_text
 
 WORKFLOW_DIRECTORY = Path(__file__).with_name("workflows")
+MAX_REFERENCE_IMAGES = 9
 
 
 def default_workflows() -> list[JsonObject]:
@@ -129,6 +130,7 @@ class VideoWorkflow:
     prompt_input: str
     parameters: tuple[WorkflowParameter, ...]
     kind: str
+    generator_node: str
 
     @property
     def prompt(self) -> str:
@@ -137,6 +139,28 @@ class VideoWorkflow:
     @property
     def reference_count(self) -> int:
         return sum(image.role == "reference" for image in self.image_inputs)
+
+    def prepare_reference_inputs(self, node_ids: list[str]) -> VideoWorkflow:
+        """只为本轮已选参考图接线，未选节点由依赖裁剪移出执行图。"""
+        require(self.kind == "reference", "INVALID_INPUT", "当前工作流不支持动态参考图片")
+        require(bool(node_ids), "INVALID_INPUT", "请至少选择一张参考图片")
+        require(len(node_ids) <= MAX_REFERENCE_IMAGES, "INVALID_INPUT", "最多使用 9 张参考图片")
+        graph = deepcopy(self.graph)
+        inputs = graph[self.generator_node]["inputs"]
+        for name in list(inputs):
+            if name.startswith("ref_images.ref_image_"):
+                del inputs[name]
+        reference_nodes = {image.node_id for image in self.image_inputs}
+        for index, node_id in enumerate(node_ids):
+            require(
+                node_id not in graph or node_id in reference_nodes,
+                "INVALID_INPUT",
+                f"参考图片节点编号与其他节点冲突：{node_id}",
+            )
+            if node_id not in graph:
+                graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": ""}}
+            inputs[f"ref_images.ref_image_{index}"] = [node_id, 0]
+        return parse_video_workflow(graph)
 
     def bind(
         self, image_names: dict[str, str], prompt: str, job_id: str, parameters: JsonObject
@@ -226,6 +250,7 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
         for name in inputs:
             if name.startswith("ref_images.ref_image_"):
                 names.append(name)
+        require(len(names) <= MAX_REFERENCE_IMAGES, "INVALID_INPUT", "最多使用 9 张参考图片")
         names.sort(key=lambda name: int(name.rsplit("_", 1)[1]))
         for index, name in enumerate(names, 1):
             image_inputs.append(ImageInput(inputs[name][0], f"参考图片 {index}"))
@@ -341,4 +366,5 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
         prompt_input,
         tuple(parameters),
         kind,
+        generator,
     )
