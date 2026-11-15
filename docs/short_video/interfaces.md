@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.15；日期：2026-11-15；状态：文字提示词 default-v3；任务新增可选简明反馈和上下文回调，旧记录兼容读取。
+文档版本：2.16；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -16,13 +16,14 @@
 | 生成资产提示词 | prepare_prompt_task → CreationWork | 按待生成实体／状态执行 asset_spec，最后本地编译镜头提示词 |
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
+| 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
 | 查看／停止 | repository.load()["runs"] / host.runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
 | 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
 | 聊天讨论 | ConversationService.prepare / execute | 仅接收用户消息和历史对话，不接收文章／稿件／镜头／视图引用；保留项目隔离和手动重试 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
 
-同请求 ID 同内容复用已保存结果；同键不同内容报冲突。请求结果不明时显式继续可能重发，不能承诺远端只执行一次。来源 ID、revision、精确版本和运行记录由应用层维护，不要求用户填写。运行中用户另存内容时，生成结果保留为候选，不能覆盖新的人工选择。
+同请求 ID 同内容复用已保存结果；同键不同内容报冲突。请求结果不明时显式继续可能重发，不能承诺远端只执行一次。来源 ID、revision、内容引用和运行记录由应用层维护，不要求用户填写。运行中用户保存人工修改时，相应旧任务失效并清理未提交候选，保留人工当前内容。
 
 ## 2. 内部生成与检查契约
 
@@ -30,9 +31,9 @@
 
 外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool,feedback: str,issue_count: int = 0)`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
 
-Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。`review_status` 为 passed（通过）、issues（检查仍不通过）、unavailable（检查或调用不可用）；历史 incomplete 状态继续可读。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
+Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。新生成成功结果的 `review_status` 为 passed（通过）或 issues（检查仍有问题）；审阅网络失败进入可恢复失败，不作为成功结果提交。历史 unavailable／incomplete 状态仅兼容读取。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
 
-分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行；长文计划逐段提取事实、改编并最终合稿，不按累计调用次数或耗时停止。新任务和分段计划不含 max_calls、seconds；calls_used 仅记录调用次数。旧分段计划保留原冻结哈希核验，历史限制字段不参与执行判断。长文续跑不重发成功分段，不增加独立运行存储。
+分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行；长文计划逐段提取事实、改编并最终合稿，不按累计调用次数或耗时停止。新任务和分段计划不含 max_calls、seconds；calls_used 仅记录调用次数。旧分段计划保留原冻结哈希核验，历史限制字段不参与执行判断。长文续跑不重发成功分段，复用统一任务与运行存储。
 
 文字执行交由 runtime 管理，`WorkflowService.execute` 新增内部 `task_id=None` 和 `resume=False`：独立阶段持有生成锁并创建任务，组合阶段传入父任务编号并共享顶层锁。`prepare` 新增可选 `frozen_rules`，分镜组合任务从目录生成前就冻结分镜模板与 Skill 正文；资产任务冻结整批共用的阶段要求。恢复不得重新读取新 Skill 正文替换旧请求。
 
@@ -40,7 +41,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 - `get_recovery(repository, stage)`：返回同类最近任务的编号、状态、有效性、完成数、对象、阶段、结果不明提示或失效原因；已成功任务不提供恢复入口。
 - `ProjectRepository.recover()`：在生成锁内迁移旧任务、识别 interrupted 和 unknown、清理失效检查点；不发送模型请求。
 
-统一清单 `tasks[id]` 保存任务命令、输入与目标 expected 指针、阶段规则、已完成输出、调用次数及当前项目命令；`runs[].checkpoint` 保存 `step=request|validate|review|decide|commit`、原阶段命令、最新候选引用、待处理 response、审阅反馈和格式／质量次数。任务状态为 running、paused、interrupted、failed、succeeded、invalidated，resumable 单独表示是否允许继续。仅 pending 检查点保存必要正文，结束后移除；不恢复历史候选接口。
+统一清单 `tasks[id]` 保存任务命令、输入与目标 expected 指针、阶段规则、已完成输出、调用次数及当前项目命令；`runs[].checkpoint` 保存 `step=request|validate|review|decide|commit`、原阶段命令、最新候选引用、待处理 response、审阅反馈和格式／质量次数；冻结命令和检查点均校验指纹。任务状态为 running、paused、interrupted、failed、succeeded、invalidated，resumable 单独表示是否允许继续。仅 pending 检查点保存必要正文，结束后移除；不恢复历史候选接口。
 
 调用元数据增加调用编号、逻辑 step_id 和 sending／received／unknown／failed。发送前落盘 sending，完整回复与下一步骤同步落盘；429等明确服务错误记 failed，无完整确认的网络结果记 unknown。SDK 自动重试仍关闭；用户点击继续才重试，次数不重置。写盘失败停止后续调用，并保留原异常及必要 cause。
 
@@ -57,9 +58,9 @@ TaskContext 增加 `resumable`；其余 `action,target,phase,completed,total,sav
 - `build_conversation_context(...)` 是纯函数，48,000 字符默认上限包含系统规则与序列化文本；按最早完整轮次裁剪副本，保留本轮完整消息。规则和本轮仍超限返回 CONTEXT_TOO_LARGE，不删除磁盘历史。
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送。
 
-全部存储签名、恢复规则及聊天时序见[会话管理](conversation_management.md)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 将完整 prompt 作为一次 user 消息提交，模型 SDK 不另行读取会话文件。
+消息存取与历史筛选由 [ConversationStore](../../core/short_video/v2/conversation_store.py) 实现，上下文构造见 [conversation_context.py](../../core/short_video/v2/conversation_context.py)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 将完整 prompt 作为一次 user 消息提交，模型 SDK 不另行读取会话文件。
 
-## 3. 内部关系与版本
+## 3. 来源依赖与当前内容
 
 保存时自动维护已知姓名、别名与实体关系；无法可靠判断身份时保留草稿并返回具体歧义。取消人工绑定 UI 不等于删除实体引用校验。
 
@@ -128,7 +129,7 @@ TaskContext 增加 `resumable`；其余 `action,target,phase,completed,total,sav
 
 ### 7.2 AssetSpec
 
-共同字段：`asset_id,variant_id,catalog_version_id,style,positive_prompt,negative_prompt,views[],source_refs,inferred_fields`。保存产生对应 kind 的 ArtifactRecord。
+资产内容包含 `asset_id,variant_id,views[]`、类型专属设定，以及 style、source_refs、inferred_fields 等描述字段。顶层正负提示词兼容保留，具体提示词位于 views；资产目录绑定在记录外壳 `dependency_refs.asset_catalog`，不要求 content 中另填 catalog_version_id。保存产生对应 kind 的 ArtifactRecord。
 
 | kind | 结构化字段 | 默认视图计划 |
 |---|---|---|
@@ -150,7 +151,7 @@ TaskContext 增加 `resumable`；其余 `action,target,phase,completed,total,sav
 
 ## 8. 分镜契约与时间轴
 
-Storyboard：`video_copy_version_id,catalog_version_id,shots[]`；每镜字段如下。
+Storyboard 内容为 `shots[]`；视频文案和资产目录绑定在记录外壳 `dependency_refs.video_copy`／`asset_catalog`。每镜字段如下。
 
 | 字段 | 类型与规则 | 表格显示 |
 |---|---|---|
@@ -165,7 +166,7 @@ Storyboard：`video_copy_version_id,catalog_version_id,shots[]`；每镜字段�
 | action | 非空 string | 动作 |
 | dialogue / narration | 对白数组及 string；允许空 | 对白列以“人物：”“旁白：”区分 |
 | sound | string，允许空 | 音效 |
-| visual_description | 非空 string | 内部画面描述，随镜头内容保存 |
+| visual_description | 可选 string | 补充画面描述，缺失时文本编排使用动作与画面草稿 |
 | visual_prompt_draft | 非空 string | 画面生成提示词草稿 |
 | video_block_refs / source_refs | 视频块引用与原文引用 | 元数据，可展开来源 |
 | duration_exception_reason | string 或 null | 超出建议区间时可空，不作为继续操作的门槛，作为 warning 处置 |
@@ -182,7 +183,7 @@ PromptBundle：`storyboard_version_id,asset_spec_refs[],shots[{shot_id,resolved_
 
 PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 PromptBundle 作为完整可编辑结果。缺少该结果时，在内存中将当前分镜的 visual_prompt_draft 显示为只读、可复制的画面草稿，负面提示词留空；不写入 PromptBundle，不作为完整提示词导出。状态显示缺少的资产设定数，生成按钮复用 start_creation("prompts") 补齐资产并编排；用户查看或切换草稿不触发模型请求和项目写入。
 
-原文、配置、选区、文案、目录、分镜、阶段模板及各项提示词均按内容键只保留当前一份；人物／场景／道具按 asset_id＋variant_id 分别保存。删除 versions／select 接口和 parent_id 参数。替换后递归清理依赖旧记录的下游及文件；is_current 对所有内容核对当前指针与完整来源链。生成的临时候选只在本轮运行期间存在，任务结束清理，冲突与取消均不覆盖当前内容。
+原文、配置、选区、文案、目录、分镜、阶段模板及各项提示词均按内容键只保留当前一份；人物／场景／道具按 asset_id＋variant_id 分别保存。删除 versions／select 接口和 parent_id 参数。替换后递归清理依赖旧记录的下游及文件；is_current 对所有内容核对当前指针与完整来源链。未完成运行可保留一个最新临时候选与必要检查点；停止或可恢复失败后继续使用，成功、失效或被替代后清理。冲突及停止均不覆盖已有当前内容。
 
 
 ## 9. Prompt 契约：保留用户原意，结构化封装
@@ -195,7 +196,7 @@ PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 Pro
 
 分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
-模板库以阶段区分 instruction；自定义模板保存为不可变 prompt_template 版本（content: stage,instruction）并继续优先，默认模板引用升级为阶段 default-v3。任务冻结完整Prompt、输入、模型与所选Skill；旧运行快照与稿件不改。Prompt由共享事实／格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例组成。演示与当前素材隔离，不能混入实际人物与事件。
+模板库以阶段区分 instruction；自定义模板保存为当前 prompt_template 内容（content: stage,instruction），替换后清理旧记录，并继续优先，默认模板引用升级为阶段 default-v3。任务冻结完整Prompt、输入、模型与所选Skill；旧运行快照与稿件不改。Prompt由共享事实／格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例组成。演示与当前素材隔离，不能混入实际人物与事件。
 
 ### 9.1 第一阶段：小说推文
 
@@ -272,7 +273,7 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 
 文字生成入口使用自动 Agent Loop。数据入口只接受当前完整格式：模型快照为 provider／model 对象，配置包含必需字段；保存和编译维护视图的 content_hash／spec_input_hash。保留旧 confirmed／reports 字段不等于支持任意旧来源类型、字符串快照或缺失指纹；读取失败明确反馈并保持原文件不变。
 
-业务、界面、文字服务和持久化的共享类型见 core/short_video/v2/contracts.py。文字模型网络异常保留原始 cause 并转换为 PROVIDER_UNAVAILABLE；内部字段、类型、逻辑错误原样暴露。运行收尾不改变原错误类别，格式修复只处理明确的输入／输出校验失败。
+业务、界面、文字服务和持久化的共享类型见 core/short_video/v2/contracts.py。文字模型网络异常保留原始类型与信息，不统一包装成 ValueError 或 PROVIDER_UNAVAILABLE；记录失败使用 RecordingError 并保留存储异常 cause。内部字段、类型、逻辑错误原样暴露。运行收尾不改变原错误类别，格式修复只处理明确的输入／输出校验失败。
 
 ## 10. ComfyUI MCP 媒体接口
 
