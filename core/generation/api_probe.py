@@ -26,7 +26,6 @@ def probe_connection(config: api.APIConfig) -> ProbeResult:
             model=config.model,
             messages=[{"role": "user", "content": "Reply OK"}],
             max_tokens=PROBE_MAX_TOKENS,
-            temperature=0.7,
             extra_body=api.request_options(config.provider),
         )
 

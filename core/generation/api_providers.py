@@ -122,7 +122,6 @@ def send_messages(provider: str, messages: list[dict], max_tokens: int = 16384) 
             model=config.model,
             messages=messages,
             max_tokens=max_tokens,
-            temperature=0.7,
             extra_body=request_options(provider),
         )
     return response.choices[0].message.content or ""
