@@ -332,11 +332,11 @@ def test_catalog_add_replace_and_reopen_preserves_workflow_identity(tmp_path):
     assert len(parse_video_workflow(updated.selected()["graph"]).image_inputs) == 4
     assert updated.selected()["workflow_id"] == workflow_id
     assert (
-        len(parse_video_workflow(updated.selected("minimax-first-last")["graph"]).image_inputs) == 2
+        len(parse_video_workflow(updated.selected("minimax-first-last")["graph"]).image_inputs) == 5
     )
 
 
-@pytest.mark.parametrize("workflow_id,count", [("four-images", 4), ("minimax-first-last", 2)])
+@pytest.mark.parametrize("workflow_id,count", [("four-images", 4), ("minimax-first-last", 5)])
 def test_all_images_parameters_and_selected_graph_reach_comfy(tmp_path, workflow_id, count):
     config = MediaConfig()
     if workflow_id == "four-images":
@@ -381,9 +381,13 @@ def test_all_images_parameters_and_selected_graph_reach_comfy(tmp_path, workflow
     assert result["input_snapshot"]["workflow_id"] == workflow_id
     assert result["input_snapshot"]["images"].keys() == images.keys()
     assert config.selected()["graph"] == MediaConfig.load(tmp_path).selected()["graph"]
-    if template.kind == "first_last":
-        assert graph["136"]["inputs"]["first_frame"] == [template.image_inputs[0].node_id, 0]
-        assert graph["136"]["inputs"]["last_frame"] == [template.image_inputs[1].node_id, 0]
+    if template.kind == "reference_first_last":
+        assert graph["149"]["inputs"]["image"] == ["147", 0]
+        assert graph["150"]["inputs"]["image"] == ["148", 0]
+        assert graph["149"]["inputs"]["frame_idx"] == 0
+        assert graph["150"]["inputs"]["frame_idx"] == -1
+        assert graph["126"]["inputs"]["conditioning"] == ["150", 0]
+        assert template.reference_count == 3
 
 
 def test_missing_image_wrong_parameter_or_unknown_template_is_explicit(tmp_path, image):
@@ -395,7 +399,10 @@ def test_missing_image_wrong_parameter_or_unknown_template_is_explicit(tmp_path,
         service.prepare_video({"137": image["image_id"]}, "camera movement")
     with pytest.raises(WorkspaceError, match="类型或范围"):
         service.prepare_video(
-            {"137": image["image_id"], "139": image["image_id"]},
+            {
+                entry.node_id: image["image_id"]
+                for entry in parse_video_workflow(config.selected()["graph"]).image_inputs
+            },
             "camera movement",
             parameters={"132.value": "five"},
         )
@@ -433,7 +440,13 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     panel.refresh()
     assert len(panel.image_fields) == 4
     panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
-    assert [entry.label for entry in panel.template.image_inputs] == ["首帧图片", "尾帧图片"]
+    assert [entry.label for entry in panel.template.image_inputs] == [
+        "参考图片 1",
+        "参考图片 2",
+        "参考图片 3",
+        "首帧图片",
+        "尾帧图片",
+    ]
     from PySide6.QtGui import QImage
 
     path = tmp_path / "ui-image.png"
@@ -442,7 +455,8 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     assert ui_image.save(str(path))
     panel.import_image(str(path), "137")
     assert not panel.generate_button.isEnabled()
-    panel.import_image(str(path), "139")
+    for entry in panel.template.image_inputs[1:]:
+        panel.import_image(str(path), entry.node_id)
     panel.parameter_fields["132.value"].setValue(5.5)
     panel.parameter_fields["129.noise_seed"].setText("18446744073709551615")
     panel.prompt.setPlainText("首尾衔接")
@@ -453,7 +467,8 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     assert command["workflow_id"] == "minimax-first-last"
     assert command["parameters"]["132.value"] == 5.5
     assert command["parameters"]["129.noise_seed"] == 2**64 - 1
-    assert command["images"]["137"]["image_id"] != command["images"]["139"]["image_id"]
+    assert len(command["images"]) == 5
+    assert command["images"]["147"]["image_id"] != command["images"]["148"]["image_id"]
     dialog = ComfySettingsDialog(str(tmp_path))
     dialog.new_button.click()
     dialog.name.setText("粘贴工作流")
@@ -533,3 +548,63 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
     assert panel.loaded_workflow_id == other_id
     assert panel.current_job is None
     panel.close()
+
+
+def test_reference_and_guides_have_separate_roles_and_picture_numbers(tmp_path, image):
+    config = MediaConfig()
+    config.selected_workflow_id = "minimax-first-last"
+    config.save(tmp_path)
+    template = parse_video_workflow(config.selected()["graph"])
+    assert [(entry.node_id, entry.role) for entry in template.image_inputs] == [
+        ("137", "reference"),
+        ("139", "reference"),
+        ("152", "reference"),
+        ("147", "first_frame"),
+        ("148", "last_frame"),
+    ]
+    images = {entry.node_id: image["image_id"] for entry in template.image_inputs}
+    service = MediaService(tmp_path)
+    assert (
+        service.prepare_video(images, "使用 <Picture 3> 作为外观参考")["workflow_id"]
+        == "minimax-first-last"
+    )
+    with pytest.raises(WorkspaceError, match="3 张参考图片"):
+        service.prepare_video(images, "Use <Picture 4>")
+    graph = config.selected()["graph"]
+    graph["150"]["inputs"]["frame_idx"] = 3
+    with pytest.raises(WorkspaceError, match="frame_idx"):
+        parse_video_workflow(graph)
+
+
+def test_independent_first_last_node_remains_supported():
+    graph = MediaConfig().selected("minimax-first-last")["graph"]
+    inputs = graph["136"]["inputs"]
+    graph["136"]["class_type"] = "MiniMaxH3ImageToVideo"
+    graph["136"]["inputs"] = {
+        key: inputs[key] for key in ["clip", "vae", "prompt", "width", "height", "length"]
+    }
+    graph["136"]["inputs"].update(first_frame=["137", 0], last_frame=["139", 0])
+    graph["126"]["inputs"]["conditioning"] = ["136", 0]
+    template = parse_video_workflow(graph)
+    assert template.kind == "first_last"
+    assert template.reference_count == 0
+    assert [entry.label for entry in template.image_inputs] == ["首帧图片", "尾帧图片"]
+
+
+def test_optional_combo_is_checked_before_remote_submission():
+    with pytest.raises(WorkspaceError, match="chroma_subsampling 不可用"):
+        validate_nodes(
+            {"130": {"class_type": "CreateVideo", "inputs": {"chroma_subsampling": "none"}}},
+            {
+                "CreateVideo": {
+                    "input": {
+                        "optional": {
+                            "chroma_subsampling": [
+                                "COMBO",
+                                {"options": ["auto", "444", "422", "420"]},
+                            ]
+                        }
+                    }
+                }
+            },
+        )

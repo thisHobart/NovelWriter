@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.10；日期：2026-11-15；状态：已实现固定 API JSON 多工作流、参考图与首尾帧输入、内置 MCP 视频生成；图片生成仅保留图片导入接口。
+文档版本：2.11；日期：2026-11-15；状态：已实现固定 API JSON 多工作流、参考图与首尾帧输入、内置 MCP 视频生成；图片生成仅保留图片导入接口。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -286,11 +286,11 @@ review.check_candidate 对资产使用专门的整组提示词检查要求，检
 
 MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析 JSON 并验证支持的模板；新增时生成标识，更新时保留标识。save 将整个列表原子写入项目；旧 video_workflow 路径配置在读取时转为 JSON 快照，不覆盖旧任务。
 
-parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters 与 kind。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧按 first_frame／last_frame 的明确关系显示；图片均须直接连接独立的 LoadImage。支持一个 SaveVideo 以及 MiniMaxH3ReferenceToVideo 或 MiniMaxH3ImageToVideo；不推测未知节点映射。
+parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters 与 kind。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后串联的两个 MiniMaxH3AddGuide。后一结构必须按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点；新增对应图片输入。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
 
 WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
 
-VideoWorkflow.bind(image_names, prompt, job_id, parameters) 核对完整图片集合、参数键、数值类型及范围，再复制模板并替换值。参考图提示词中 Picture N 必须在实际输入数量范围内。后端逐张上传，以返回的 subfolder/name 替换对应 LoadImage.image，不向 ComfyUI 发送桌面绝对路径；原配置 JSON 不修改。
+VideoWorkflow.bind(image_names, prompt, job_id, parameters) 核对完整图片集合、参数键、数值类型及范围，再复制模板并替换值。参考图提示词中 Picture N 必须在 reference_count 范围内，组合模板的五个输入中仅前三个对应 Picture 1～3。后端逐张上传，以返回的 subfolder/name 替换对应 LoadImage.image，不向 ComfyUI 发送桌面绝对路径；原配置 JSON 不修改。
 
 内置 MCPServer 使用官方 Python SDK 2.x，与 Client 在进程内连接；不占端口，不启动子进程。服务端工具由本项目实现，名称并非 ComfyUI 或 MCP 的内置标准：
 
@@ -328,7 +328,7 @@ short_video/media/
 
 正常状态：prepared → submitting → queued/running → collecting → succeeded。失败为 failed；提交结果或远程状态待核实为 unknown；本地等待中断为 interrupted，未提交即停止为 cancelled。
 
-执行前读取服务、节点和可选模型名称；配置错误、模型缺失、图片哈希变化不会提交。提交响应丢失不自动重发，查询通过请求标记找到原任务后继续跟踪；找不到保持 unknown。下载失败保持 collecting 和远程任务编号，下次仅查询与取回结果。已成功请求重放直接返回本地记录。
+执行前读取服务、节点和可选模型名称，检查 required／optional 中的列表枚举及 COMBO.options；配置错误、模型缺失、图片哈希变化不会提交。提交响应丢失不自动重发，查询通过请求标记找到原任务后继续跟踪；找不到保持 unknown。下载失败保持 collecting 和远程任务编号，下次仅查询与取回结果。已成功请求重放直接返回本地记录。
 
 停止不发送全局 interrupt，也不谎称远程已取消。重新打开不自动提交或续跑。HTTP 单次网络超时为连接 5 秒、读写等操作 60 秒；不以此限制 GPU 总执行时间，不新增预算和任务总时限。
 

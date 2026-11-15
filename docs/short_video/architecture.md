@@ -1,6 +1,6 @@
 # 网文视频推广工作台：架构设计
 
-文档版本：2.10；日期：2026-11-15；状态：已实现固定 API JSON 多工作流、参考图与首尾帧输入、内置 MCP 视频生成；图片生成仅保留图片导入接口。
+文档版本：2.11；日期：2026-11-15；状态：已实现固定 API JSON 多工作流、参考图与首尾帧输入、内置 MCP 视频生成；图片生成仅保留图片导入接口。
 
 关联：[接口设计](interfaces.md)、[交互设计](interaction.md)、[开发文档](development.md)。复用现有 v2 存储和文字服务，当前入口与历史验证见开发文档。
 
@@ -274,9 +274,9 @@ MCP 客户端和服务端使用官方 Python SDK 在进程内连接，随软件�
 | 模板 | 图片关系 | 已提供资源 |
 |---|---|---|
 | 参考图 | MiniMaxH3ReferenceToVideo.ref_images.ref_image_N 直接连接的独立 LoadImage，按 N 排序 | minimax_h3_reference.json，原模板实际连接一张；连接三／四张后 UI 同步显示三／四项 |
-| 首尾帧 | MiniMaxH3ImageToVideo.first_frame／last_frame 分别连接 LoadImage | minimax_h3_first_last.json，使用本地 fl2va 模型，显示首帧和尾帧 |
+| 参考图＋首尾帧 | MiniMaxH3ReferenceToVideo 的 3 张参考图，加上顺序连接的 MiniMaxH3AddGuide（frame_idx = 0／-1） | minimax_h3_first_last.json，用户提供的实际工作流，显示参考图 1～3、首帧和尾帧 |
 
-首尾帧资源依据本地 ComfyUI 的 MiniMaxH3ImageToVideo 节点定义整理；复用已有视频输出链路，切换到 fl2va 模型并移除仅适用于参考图的加速 LoRA 分支。参考图条件与首尾帧条件各自保留其语义。
+首尾帧资源现以用户提供的 MiniMaxH3_多参考图_已连接首尾帧_完整示例.json 为准，保留 ref2va 模型与其采样分支。参考图作为外观条件，两个 AddGuide 分别锚定首帧和末帧；尾帧引导的条件输出连接最终采样器。已有 MiniMaxH3ImageToVideo 独立首尾帧配置继续支持。自带副本仅将 CreateVideo.chroma_subsampling 从当前 ComfyUI 不接受的 none 改为 auto，不修改用户源文件。
 
 模板适配还确定提示词入口和时长、随机种子、分辨率及采样等参数。界面按参数类型显示控件；只有公开参数、每张图片的服务器返回引用、可见提示词和本轮输出前缀写入 JSON 副本，其余模型设置与连线保留。时长仍按模板内 24 fps 与帧数网格换算，实际视频时长可能略有差异。其他模型或图片预处理拓扑尚未适配时明确报错。
 

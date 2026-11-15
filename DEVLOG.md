@@ -1,5 +1,20 @@
 # Development Log
 
+## 2026-11-15 — 接入用户提供的多参考图与首尾帧组合工作流
+
+以 MiniMaxH3_多参考图_已连接首尾帧_完整示例.json 替换自带的推定首尾帧模板。
+这份实际工作流使用 ref2va 模型：137／139／152 为三张外观参考图，147 经 AddGuide 149
+锚定 frame_idx = 0，148 经 AddGuide 150 锚定 -1，尾帧条件最终进入 126 采样引导。
+UI 分别显示五个输入，图片各自上传；首尾帧不计入 Picture 1～3 的编号。
+已有 MiniMaxH3ImageToVideo 独立首尾帧配置继续可用，已保存的用户配置不自动替换。
+
+自带副本仅把 CreateVideo.chroma_subsampling 从 none 修正为当前 ComfyUI 接受的 auto；
+用户原文件未改。同步补齐 optional 与 COMBO.options 的节点预检，保留原始错误反馈。
+新增引导角色、编号边界、独立首尾帧兼容及新枚举验证；专项 22 项、全量
+**240 passed（14.18 秒）**。相关代码 Ruff、格式、Markdown 链接及差异检查通过。
+四份设计文档与模板说明更新至 2.11。
+
+
 ## 2026-11-15 — 清理 ComfyUI 临时文件与旧入口
 
 将两次 ComfyUI 联调目录（quality_runs/comfyui_video_20261114/、

@@ -20,7 +20,7 @@ def default_workflows() -> list[JsonObject]:
     workflows = []
     for workflow_id, name, filename in (
         ("minimax-reference", "H3 参考图", "minimax_h3_reference.json"),
-        ("minimax-first-last", "H3 首尾帧", "minimax_h3_first_last.json"),
+        ("minimax-first-last", "H3 参考图＋首尾帧", "minimax_h3_first_last.json"),
     ):
         workflows.append(
             {
@@ -103,6 +103,7 @@ class MediaConfig:
 class ImageInput:
     node_id: str
     label: str
+    role: str = "reference"
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,10 @@ class VideoWorkflow:
     @property
     def prompt(self) -> str:
         return self.graph[self.prompt_node]["inputs"][self.prompt_input]
+
+    @property
+    def reference_count(self) -> int:
+        return sum(image.role == "reference" for image in self.image_inputs)
 
     def bind(
         self, image_names: dict[str, str], prompt: str, job_id: str, parameters: JsonObject
@@ -215,7 +220,7 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
         for name, label in (("first_frame", "首帧图片"), ("last_frame", "尾帧图片")):
             value = inputs.get(name)
             require(isinstance(value, list), "INVALID_INPUT", f"首尾帧工作流需要连接{label}")
-            image_inputs.append(ImageInput(value[0], label))
+            image_inputs.append(ImageInput(value[0], label, name))
     else:
         names = []
         for name in inputs:
@@ -224,6 +229,33 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
         names.sort(key=lambda name: int(name.rsplit("_", 1)[1]))
         for index, name in enumerate(names, 1):
             image_inputs.append(ImageInput(inputs[name][0], f"参考图片 {index}"))
+        guides = {}
+        for node_id, node in active.items():
+            if node["class_type"] == "MiniMaxH3AddGuide":
+                frame_index = node["inputs"]["frame_idx"]
+                require(
+                    frame_index in {0, -1} and frame_index not in guides,
+                    "INVALID_INPUT",
+                    "当前首尾帧引导需要分别使用 frame_idx = 0 和 -1",
+                )
+                guides[frame_index] = node_id
+        if guides:
+            require(set(guides) == {0, -1}, "INVALID_INPUT", "请同时连接首帧和尾帧引导")
+            previous = generator
+            for frame_index, label, role in (
+                (0, "首帧图片", "first_frame"),
+                (-1, "尾帧图片", "last_frame"),
+            ):
+                guide_id = guides[frame_index]
+                guide = active[guide_id]["inputs"]
+                require(
+                    guide["positive"] == [previous, 0] and guide["latent"] == [generator, 1],
+                    "INVALID_INPUT",
+                    "首尾帧引导应依次连接参考图条件，并使用同一生成潜空间",
+                )
+                image_inputs.append(ImageInput(guide["image"][0], label, role))
+                previous = guide_id
+            kind = "reference_first_last"
     require(bool(image_inputs), "INVALID_INPUT", "工作流没有连接图片输入")
     for image in image_inputs:
         require(

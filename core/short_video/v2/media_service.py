@@ -23,8 +23,9 @@ def validate_nodes(workflow: JsonObject, nodes: JsonObject) -> None:
     for node_id, node in workflow.items():
         kind = node["class_type"]
         require(kind in nodes, "INVALID_INPUT", f"ComfyUI 缺少节点 {node_id}：{kind}")
-        required = nodes[kind]["input"].get("required", {})
-        for name, definition in required.items():
+        definitions = nodes[kind]["input"]
+        inputs = {**definitions.get("required", {}), **definitions.get("optional", {})}
+        for name, definition in inputs.items():
             # 模板内的旧文件名会在上传后替换，不能用服务器现有文件列表提前拒绝。
             if kind == "LoadImage" and name == "image":
                 continue
@@ -32,6 +33,8 @@ def validate_nodes(workflow: JsonObject, nodes: JsonObject) -> None:
                 continue
             value = node["inputs"][name]
             choices = definition[0]
+            if choices == "COMBO":
+                choices = definition[1]["options"]
             if isinstance(choices, list) and not isinstance(value, list):
                 require(
                     value in choices, "INVALID_INPUT", f"节点 {node_id} 的 {name} 不可用：{value}"
@@ -59,12 +62,12 @@ class MediaService:
         template = parse_video_workflow(selected["graph"])
         # 在本地确认所有输入完整且参数类型正确，再进行外部上传与提交。
         template.bind(images, prompt, "validation", parameters or {})
-        if template.kind == "reference":
+        if template.reference_count:
             for number in re.findall(r"<Picture\s+(\d+)>", prompt, flags=re.IGNORECASE):
                 require(
-                    1 <= int(number) <= len(template.image_inputs),
+                    1 <= int(number) <= template.reference_count,
                     "INVALID_INPUT",
-                    f"当前工作流连接 {len(template.image_inputs)} 张图片，提示词引用超出范围",
+                    f"当前工作流连接 {template.reference_count} 张参考图片，提示词引用超出范围",
                 )
         records = {}
         for node_id, image_id in images.items():

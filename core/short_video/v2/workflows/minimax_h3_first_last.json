@@ -19,7 +19,7 @@
   },
   "115": {
     "inputs": {
-      "aspect_ratio": "21:9 (Ultrawide)",
+      "aspect_ratio": "16:9 (Widescreen)",
       "megapixels": 0.4,
       "multiple": 32
     },
@@ -103,7 +103,7 @@
     "inputs": {
       "scheduler": "simple",
       "steps": [
-        "143",
+        "142",
         0
       ],
       "denoise": 1,
@@ -152,11 +152,11 @@
   "126": {
     "inputs": {
       "model": [
-        "127",
+        "141",
         0
       ],
       "conditioning": [
-        "136",
+        "150",
         0
       ]
     },
@@ -169,7 +169,7 @@
   },
   "127": {
     "inputs": {
-      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -194,7 +194,7 @@
   },
   "129": {
     "inputs": {
-      "noise_seed": 37826622207606
+      "noise_seed": 346153349934773
     },
     "class_type": "RandomNoise",
     "_meta": {
@@ -243,7 +243,7 @@
   },
   "132": {
     "inputs": {
-      "value": 10
+      "value": 5
     },
     "class_type": "PrimitiveFloat",
     "_meta": {
@@ -270,6 +270,7 @@
         "131",
         1
       ],
+      "ref_image_size": "match",
       "clip": [
         "128",
         0
@@ -278,25 +279,33 @@
         "119",
         0
       ],
-      "first_frame": [
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "ref_images.ref_image_0": [
         "137",
         0
       ],
-      "last_frame": [
+      "ref_images.ref_image_1": [
         "139",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "152",
         0
       ]
     },
-    "class_type": "MiniMaxH3ImageToVideo",
+    "class_type": "MiniMaxH3ReferenceToVideo",
     "_meta": {
-      "title": "MiniMax H3 首尾帧",
+      "title": "MiniMax H3 参考转视频",
       "cnr_id": "comfy-core",
       "ver": "0.33.0"
     }
   },
   "137": {
     "inputs": {
-      "image": "0d17dbf6f12c849bb1f8ce8cfda0a653.png"
+      "image": "ChatGPT 图像 2026年11月5日 19_42_39-1.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -307,7 +316,7 @@
   },
   "138": {
     "inputs": {
-      "value": "以首帧为开始、尾帧为结束，保持主体和环境连贯，镜头自然平稳过渡。无文字、无水印。"
+      "value": "使用 <Picture 3> 作为兰州牛肉面的外观参考。\n\n山洞内，完整的兰州牛肉面稳稳放在木桌上。清亮的牛肉汤中盛着细长的手拉面、薄切牛肉、白萝卜片、翠绿香菜和蒜苗，表面漂浮鲜红的辣椒油。\n\n镜头从斜上方缓慢推近面碗，逐渐展现面条、牛肉、汤汁与配菜的细腻质感。热气持续、柔和地升起，暖黄色篝火光映照碗沿与汤面。\n\n电影级真实美食摄影，画面稳定，食材不凭空增加或移动。无人物、无手部、无字幕、无配乐，仅保留篝火轻响。"
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
@@ -318,7 +327,7 @@
   },
   "139": {
     "inputs": {
-      "image": "7d8d9f70cb046f46f6aa4ed817655647.png"
+      "image": "ChatGPT 图像 2026年11月5日 19_42_41-2.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -327,15 +336,178 @@
       "ver": "0.33.0"
     }
   },
+  "141": {
+    "inputs": {
+      "switch": [
+        "146",
+        0
+      ],
+      "on_false": [
+        "127",
+        0
+      ],
+      "on_true": [
+        "145",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch (model)",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
+  "142": {
+    "inputs": {
+      "switch": [
+        "146",
+        0
+      ],
+      "on_false": [
+        "143",
+        0
+      ],
+      "on_true": [
+        "144",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch (Steps)",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
   "143": {
     "inputs": {
-      "value": 25
+      "value": 20
     },
     "class_type": "PrimitiveInt",
     "_meta": {
       "title": "Int (Full)",
       "cnr_id": "comfy-core",
       "ver": "0.33.0"
+    }
+  },
+  "144": {
+    "inputs": {
+      "value": 4
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Int (Lightning LoRA)",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
+  "145": {
+    "inputs": {
+      "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "127",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA加载器（仅模型）",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
+  "146": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Enable Lightning LoRA)",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
+  "147": {
+    "inputs": {
+      "image": "Snipaste_2026-11-05_18-19-44.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "首帧｜在山洞桌上放食物球",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
+  "148": {
+    "inputs": {
+      "image": "__UPLOAD_LAST_FRAME__.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "尾帧｜同镜位兰州牛肉面",
+      "cnr_id": "comfy-core",
+      "ver": "0.33.0"
+    }
+  },
+  "149": {
+    "inputs": {
+      "frame_idx": 0,
+      "positive": [
+        "136",
+        0
+      ],
+      "latent": [
+        "136",
+        1
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "image": [
+        "147",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3AddGuide",
+    "_meta": {
+      "title": "首帧引导：frame_idx = 0"
+    }
+  },
+  "150": {
+    "inputs": {
+      "frame_idx": -1,
+      "positive": [
+        "149",
+        0
+      ],
+      "latent": [
+        "136",
+        1
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "image": [
+        "148",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3AddGuide",
+    "_meta": {
+      "title": "尾帧引导：frame_idx = -1"
+    }
+  },
+  "152": {
+    "inputs": {
+      "image": "ChatGPT 图像 2026年11月5日 19_42_42-3.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
     }
   }
 }
