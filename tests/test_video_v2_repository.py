@@ -413,6 +413,9 @@ def test_legacy_exhausted_chunk_plan_can_resume_without_budget_checks(project, m
         monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
         monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
     content = novel(project)["content"]
+    custom_instruction = "按我的简短口语风格整理素材，不编造结果。"
+    project.save("prompt_template", {"stage": "novel_copy", "instruction": custom_instruction},
+                 {}, key="prompt_template:novel_copy", expected_revision=project.load()["revision"])
     send = Mock(side_effect=['{"facts":[]}', encode(content), encode(content), '{"issues":[]}'])
     service = batches.ChunkService(project, transport=send)
     plan = service.create_plan()
@@ -434,6 +437,7 @@ def test_legacy_exhausted_chunk_plan_can_resume_without_budget_checks(project, m
     assert service.load_plan(plan["id"])["calls_used"] == 104
     assert service.execute(plan["id"])["version_id"] == result["version_id"]
     assert send.call_count == 4
+    assert all(custom_instruction in send.call_args_list[index].args[0] for index in (1, 2))
 
 
 def test_interrupted_prompt_candidates_are_removed_without_losing_current_content(prompt_project):
@@ -523,6 +527,9 @@ def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_pro
     import core.short_video.v2.workflow as workflow_module
 
     repository = prompt_project
+    config = deepcopy(repository.current("config")["content"])
+    config["storyboard_skill_id"] = "short-video-content-storyboard"
+    repository.save("config", config, {}, expected_revision=repository.load()["revision"])
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
     monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
     base = repository.current("storyboard")["content"]["shots"][0]
@@ -555,10 +562,11 @@ def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_pro
         return '{"issues":[]}'
 
     service = WorkflowService(repository, transport=send)
-    command = service.prepare("storyboard")
-    assert "short-video-storyboard" in command["requirements"]["instruction"]
+    command = service.prepare("storyboard", use_stale=True)
+    assert command["requirements"]["skill_id"] == "short-video-content-storyboard"
+    assert "short-video-content-storyboard" in command["requirements"]["instruction"]
     monkeypatch.setattr(workflow_module, "load_storyboard_skill",
-                        lambda: pytest.fail("执行与重试不能重新加载已冻结的Skill"))
+                        lambda *_: pytest.fail("执行与重试不能重新加载已冻结的Skill"))
     result = service.execute(command)
     shots = repository.record(result["version_id"])["content"]["shots"]
     assert result["review_status"] == "passed" and result["retries_used"] == 1
@@ -600,6 +608,148 @@ def test_storyboard_review_uses_project_duration_range(prompt_project):
     data = json.loads(prompt[prompt.index("\n{") + 1:])
     assert [i["rule_id"] for i in data["code_issues"]] == ["SHOT-003"]
     assert data["code_issues"][0]["target_path"] == "shots.0.duration_ms"
+
+
+def test_storyboard_skill_requires_an_explicit_choice(prompt_project, monkeypatch):
+    from core.short_video.v2.review import build_review_prompt
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "load_storyboard_skill",
+                        lambda *_: pytest.fail("未选择或其他阶段不能加载Skill"))
+    before = prompt_project.path.read_bytes()
+    service = WorkflowService(prompt_project)
+    command = service.prepare("storyboard")
+    assert command["requirements"]["skill_id"] is None
+    assert "MiniMax H3" not in command["requirements"]["instruction"]
+    assert "5–8秒" not in command["requirements"]["instruction"]
+    review = build_review_prompt(ProjectService(prompt_project).context(),
+                                prompt_project.current("storyboard"),
+                                task={"requirements": command["requirements"]})
+    assert "MiniMax H3" not in review and "5–8秒" not in review
+    assert prompt_project.path.read_bytes() == before
+
+    config = deepcopy(prompt_project.current("config")["content"])
+    config["storyboard_skill_id"] = "short-video-content-storyboard"
+    prompt_project.save("config", config, {}, expected_revision=prompt_project.load()["revision"])
+    for stage in ("novel_copy", "video_copy", "asset_catalog"):
+        other = service.prepare(stage, use_stale=True)
+        assert other["requirements"]["skill_id"] is None
+
+
+def test_legacy_config_defaults_to_no_skill_without_mutation():
+    from core.short_video.v2.models import validate_config
+
+    legacy = default_config()
+    legacy.pop("storyboard_skill_id")
+    before = deepcopy(legacy)
+    assert validate_config(legacy)["storyboard_skill_id"] is None
+    assert legacy == before
+    for invalid in ("unknown-skill", "../storyboard", ["short-video-content-storyboard"]):
+        with pytest.raises(WorkspaceError) as error:
+            validate_config({**legacy, "storyboard_skill_id": invalid})
+        assert error.value.code == "INVALID_INPUT"
+
+
+@pytest.mark.parametrize("skill_id", [None, "short-video-content-storyboard"])
+def test_storyboard_creation_task_uses_only_selected_skill(prompt_project, monkeypatch, skill_id):
+    from core.short_video.v2 import creation, workflow
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.storyboard_skill import load_storyboard_skill
+
+    snapshot = {"provider": "hosted-llm", "model": "offline"}
+    for module in (creation, workflow):
+        monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
+        monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
+    config = deepcopy(prompt_project.current("config")["content"])
+    config["storyboard_skill_id"] = skill_id
+    prompt_project.save("config", config, {}, expected_revision=prompt_project.load()["revision"])
+    catalog = prompt_project.current("asset_catalog")["content"]
+    board = prompt_project.current("storyboard")["content"]
+    skill_text = load_storyboard_skill("short-video-content-storyboard")
+    prompts = []
+    responses = iter([encode(catalog), '{"issues":[]}', encode(board), '{"issues":[]}'])
+
+    def send(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    command = creation.prepare_storyboard_task(prompt_project, "hosted-llm", use_stale=True)
+    assert command["first_command"]["requirements"]["skill_id"] is None
+    result = creation.CreationWork(prompt_project, command, transport=send)(lambda *_: None)
+    assert result["review_status"] == "passed" and len(prompts) == 4
+    assert skill_text not in prompts[0]
+    for prompt in prompts[2:]:
+        # Review embeds the frozen instruction as an encoded JSON string.
+        has_skill = skill_text in prompt or json.dumps(skill_text, ensure_ascii=False)[1:-1] in prompt
+        assert has_skill == (skill_id is not None)
+
+
+@pytest.fixture
+def source_page(project):
+    import os
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QApplication
+    from core.gui.pages.short_video.source_page import SourcePage
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    started, notices = [], []
+    workbench = SimpleNamespace(repository=project, model=lambda: "hosted-llm",
+        perform=lambda operation: operation(), notice=notices.append,
+        start_creation=lambda stage, button: started.append(
+            (stage, project.current("config")["content"].get("storyboard_skill_id"))))
+    page = SourcePage(workbench)
+    workbench.refresh = page.refresh
+    page.refresh()
+    yield page, started, notices, app
+    page.close()
+
+
+def test_source_page_skill_selection_roundtrip_preserves_source_and_legacy_settings(project, source_page):
+    from PySide6.QtWidgets import QLineEdit, QPushButton
+
+    page, started, _, app = source_page
+    before = project.path.read_bytes()
+    assert page.skill_combo.currentData() is None
+    assert page.skill_combo.count() == 2
+    assert not page.findChildren(QLineEdit)
+    assert not any(b.text() == "更多创作要求" for b in page.findChildren(QPushButton))
+    page.refresh()
+    app.processEvents()
+    assert not page.dirty and started == []
+    assert project.path.read_bytes() == before
+
+    config = deepcopy(project.current("config")["content"])
+    config.update(title="保留项目名称", target_duration_ms=45000, required=["保留铜钥匙"])
+    config["tracks"]["backgrounds"] = ["乡村"]
+    project.save("config", config, {}, expected_revision=project.load()["revision"])
+    page.refresh()
+    source_id, selection_id = (project.current(k)["id"] for k in ("source", "selection"))
+    page.skill_combo.setCurrentIndex(1)
+    assert page.dirty
+    page.save_button.click()
+    saved = project.current("config")["content"]
+    assert saved == {**config, "storyboard_skill_id": "short-video-content-storyboard"}
+    assert project.current("source")["id"] == source_id
+    assert project.current("selection")["id"] == selection_id
+    assert not page.dirty and page.skill_combo.currentIndex() == 1
+
+    page.skill_combo.setCurrentIndex(0)
+    page.save_button.click()
+    assert project.current("config")["content"]["storyboard_skill_id"] is None
+    assert started == []
+
+
+def test_source_page_saves_explicit_skill_before_starting_adaptation(project, source_page):
+    page, started, _, _ = source_page
+    page.article.setPlainText("井边的人举起铜钥匙，转身走进老宅。")
+    page.skill_combo.setCurrentIndex(1)
+    page.generate_button.click()
+    assert started == [("novel_copy", "short-video-content-storyboard")]
+    assert project.current("source")["content"]["normalized_text"] == page.article.toPlainText()
+    assert not page.dirty
 
 
 @pytest.fixture
@@ -689,3 +839,173 @@ def test_shot_page_does_not_show_bundle_from_another_storyboard(prompt_project, 
     assert page.editor.positive.toPlainText() == "当前分镜的井口全景"
     assert page.record is None and page.editor.positive.isReadOnly()
     assert repository.current("prompt_bundle")["id"] == old_bundle["id"]
+
+
+def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, monkeypatch, tmp_path):
+    from core.short_video.v2.exporter import ExportService
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    article = "小林发现文件夹落在门口，把它拿回书桌。母亲在电话里提醒他带钥匙，他拿起钥匙离开。"
+    ProjectService(project).import_text(article, expected_revision=project.load()["revision"])
+    refs = ProjectService(project).context()["source_refs"]
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    copies = {
+        "novel_copy": {
+            "opening": {"text": "小林发现文件夹落在门口。", "source_refs": refs},
+            "paragraphs": [{"id": "p1", "text": "他把文件夹拿回书桌，接到母亲提醒带钥匙的电话。", "source_refs": refs}],
+            "cliffhanger": {"text": "他拿起钥匙离开。", "source_refs": refs}, "changes": [],
+        },
+        "video_copy": {"blocks": [
+            {"id": "b1", "role": "opening", "narration": "", "dialogue": [],
+             "visible_action": "小林捡起门口文件夹，放回书桌。", "novel_paragraph_refs": ["opening", "p1"], "source_refs": refs},
+            {"id": "b2", "role": "body", "narration": "", "visible_action": "小林看向钥匙。",
+             "dialogue": [{"speaker_label": "母亲", "text": "出门别忘钥匙。", "voice_over": True}],
+             "novel_paragraph_refs": ["p1"], "source_refs": refs},
+            {"id": "b3", "role": "cliffhanger", "narration": "", "dialogue": [],
+             "visible_action": "小林拿起钥匙离开。", "novel_paragraph_refs": ["cliffhanger"], "source_refs": refs},
+        ], "changes": []},
+        "asset_catalog": {"entities": [
+            {"asset_id": f"draft_{i}", "kind": kind, "name": name, "aliases": [],
+             "usage": usage, "variants": [{"variant_id": "base", "label": "当前状态"}],
+             "source_refs": refs, "inferred_fields": []}
+            for i, (kind, name, usage) in enumerate([
+                ("character", "小林", "on_screen"), ("character", "母亲", "voice_only"),
+                ("scene", "书桌旁", "on_screen"), ("prop", "文件夹", "on_screen"), ("prop", "钥匙", "on_screen"),
+            ])
+        ]},
+    }
+    calls = []
+
+    def send(prompt):
+        calls.append(prompt)
+        if prompt.startswith("自动审阅"):
+            payload = json.loads(prompt[prompt.index("\n{") + 1:])
+            assert payload["task"]["requirements"] == command["requirements"]
+            return '{"issues":[]}'
+        if stage != "storyboard":
+            return encode(copies[stage])
+        entities = {e["name"]: e for e in project.current("asset_catalog")["content"]["entities"]}
+
+        def ref(name):
+            return {"asset_id": entities[name]["asset_id"], "variant_id": "base"}
+
+        return encode({"shots": [
+            {"shot_id": f"s{i}", "duration_ms": duration, "shot_size": "中景", "camera_movement": "固定",
+             "scene_ref": ref("书桌旁"), "characters": [ref("小林")], "props": [ref(prop)],
+             "action": block["visible_action"], "visual_prompt_draft": block["visible_action"],
+             "narration": "", "sound": "", "dialogue": [
+                 {"character_id": entities[line["speaker_label"]]["asset_id"], "text": line["text"], "voice_over": True}
+                 for line in block["dialogue"]], "video_block_refs": [block["id"]], "source_refs": refs}
+            for i, (block, duration, prop) in enumerate(zip(copies["video_copy"]["blocks"], [6000, 6500, 3500], ["文件夹", "钥匙", "钥匙"]))
+        ]})
+
+    service = WorkflowService(project, transport=send)
+    for stage in ("novel_copy", "video_copy", "asset_catalog", "storyboard"):
+        command = service.prepare(stage)
+        assert command["prompt_ref"] == f"{stage}-default-v3"
+        result = service.execute(command)
+        assert result["review_status"] == "passed"
+    assert len(calls) == 8
+    board = project.current("storyboard")["content"]
+    mother = next(e for e in project.current("asset_catalog")["content"]["entities"] if e["name"] == "母亲")
+    assert all(mother["asset_id"] not in [r["asset_id"] for r in s["characters"]] for s in board["shots"])
+    assert board["shots"][1]["dialogue"][0]["voice_over"] is True
+    assert board["shots"][-1]["end_ms"] == 16000
+    assert project.current("novel_copy")["content"]["cliffhanger"]["text"] == "他拿起钥匙离开。"
+    destination = tmp_path / "闭合事件.md"
+    ExportService(project).export(destination, keys=["novel_copy", "video_copy", "storyboard"])
+    assert "他拿起钥匙离开。" in destination.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("duration,target,rules", [
+    (59999, None, []), (60000, None, ["SHOT-TOTAL-001"]),
+    (75000, 45000, ["SHOT-TOTAL-001", "SHOT-TARGET-002"]),
+    (45000, 60000, ["SHOT-TARGET-001"]), (45000, 45000, []),
+])
+def test_total_duration_is_a_review_clue_not_a_save_gate(prompt_project, duration, target, rules):
+    from core.short_video.v2.validation import local_issues
+
+    board = prompt_project.current("storyboard")
+    content = deepcopy(board["content"])
+    content["shots"][0]["duration_ms"] = duration
+    issues = local_issues("storyboard", content,
+                          {"target_duration_ms": target, "shot_duration_range_ms": [1, 100000]})
+    assert [i["rule_id"] for i in issues] == rules
+    assert all(i["severity"] == "warning" for i in issues)
+    saved = prompt_project.save("storyboard", content, board["dependency_refs"],
+                                expected_revision=prompt_project.load()["revision"])
+    assert saved["content"]["shots"][-1]["end_ms"] == duration
+
+
+def test_missing_result_remains_unpassed_after_quality_retries(project, monkeypatch):
+    from core.short_video.v2.models import encode
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    content = novel(project)["content"]
+    original = project.current("novel_copy")
+    prompts = []
+
+    def send(prompt):
+        prompts.append(prompt)
+        if prompt.startswith("自动审阅"):
+            return encode({"issues": [{"rule_id": "TEXT-RESULT-001", "severity": "warning",
+                "target_path": "cliffhanger.text", "explanation": "当前素材尚未给出井中声音的结果。",
+                "suggestion": "保留原文停点并报告素材缺失，不补造结局。", "quote": None, "source_refs": []}]})
+        return encode(content)
+
+    result = WorkflowService(project, transport=send).execute(WorkflowService(project).prepare("novel_copy"))
+    assert result["review_status"] == "issues" and result["retries_used"] == 2
+    assert len(prompts) == 6
+    assert project.current("novel_copy")["content"] == original["content"]
+    assert project.record(original["id"])["content"] == original["content"]
+
+
+def test_custom_stage_instruction_is_preserved_and_prepare_is_readonly(project, monkeypatch):
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    custom = project.save("prompt_template", {"stage": "novel_copy", "instruction": "保留我的简短口语风格。"},
+                          {}, key="prompt_template:novel_copy", expected_revision=project.load()["revision"])
+    before = project.path.read_bytes()
+    command = WorkflowService(project).prepare("novel_copy")
+    assert command["prompt_ref"] == custom["id"]
+    assert command["requirements"]["instruction"] == custom["content"]["instruction"]
+    assert custom["content"]["instruction"] in command["prompt"]
+    assert project.path.read_bytes() == before
+
+
+def test_storyboard_format_example_does_not_pack_the_whole_catalog(prompt_project):
+    from core.short_video.v2.prompts import output_example
+
+    context = {key: prompt_project.current(key) for key in ("asset_catalog", "video_copy")}
+    context["article"] = ProjectService(prompt_project).context()
+    extra = deepcopy(context["asset_catalog"]["content"]["entities"][0])
+    extra.update(asset_id="unused_character", name="未出镜配角")
+    context["asset_catalog"]["content"]["entities"].append(extra)
+    shot = output_example("storyboard", context)["shots"][0]
+    assert shot["characters"] == [] and shot["props"] == []
+    assert shot["narration"] == ""
+    assert shot["video_block_refs"] == [context["video_copy"]["content"]["blocks"][0]["id"]]
+
+
+def test_compiled_shot_deduplicates_visible_text_without_changing_refs(prompt_project):
+    from core.short_video.v2.prompt_compiler import compile_shots
+
+    board = deepcopy(prompt_project.current("storyboard"))
+    board["content"]["shots"][0]["visual_prompt_draft"] = "举起铜钥匙。"
+    specs = [r for r in prompt_project.versions() if r["kind"] in {"character_spec", "scene_spec", "prop_spec"}]
+    original = compile_shots(prompt_project.current("storyboard"), specs)
+    compiled = compile_shots(board, specs)
+    shot = compiled["shots"][0]
+    assert shot["resolved_prompt"].count("举起铜钥匙") == 1
+    assert "不要求全部细节同时可见" in shot["resolved_prompt"]
+    assert shot["asset_refs"] == original["shots"][0]["asset_refs"]
+    assert shot["source_refs"] == original["shots"][0]["source_refs"]
+    assert compiled["asset_spec_refs"] == original["asset_spec_refs"]

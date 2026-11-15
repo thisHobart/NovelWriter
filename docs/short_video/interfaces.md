@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.11；日期：2026-11-15；状态：已实现固定 API JSON 多工作流、参考图与首尾帧输入、内置 MCP 视频生成；图片生成仅保留图片导入接口。
+文档版本：2.12；日期：2026-11-15；状态：文字提示词 default-v3；记录字段不迁移，多工作流视频接口保持不变。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -60,7 +60,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 ## 4. 内容模型与 Prompt 的使用边界
 
-以下模型用于保存和自动检查，不据此自动生成一整页表单。对用户显示姓名、正文和提示词；内部引用、来源范围和视图要求由软件维护。原 user Prompt 保持，两次改写仍为不同阶段。
+以下模型用于保存和自动检查，不据此自动生成一整页表单。对用户显示姓名、正文和提示词；引用、来源范围和视图要求由软件维护。两次改写分别整理事件、转换视听表达，默认提示词升级，自定义模板不覆盖。
 
 ## 5. 项目、来源与选题模型
 
@@ -79,8 +79,11 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 | permitted_adaptations | string[] | 用户明确允许的改编，例如压缩时间或合并次要人物；默认空 |
 | text_provider | 配置引用 | 阶段生成和聊天共用现有文字服务；提交时冻结实际选择，不保存明文密钥 |
 | prompt_refs / ruleset_ref | 版本引用 | 各阶段模板版本与规则集版本 |
+| storyboard_skill_id | string 或 null，默认 null | 手动选用的分镜 Skill；当前仅 short-video-content-storyboard。旧配置缺失同 null，不自动选择；其他值在准备请求前拒绝 |
 
-内置赛道词表见架构第 3 节，接口返回固定分组及可用项，不从 UI 文案反向猜分组。
+原文页仅编辑文章、选区和 storyboard_skill_id；上述赛道及其他创作设定字段保留原值／默认值，不再展示整页表单。兼容旧配置读取时不写文件，用户保存后才把选择作为配置版本持久化。
+
+内置赛道词表作为旧配置数据保留，原文页不再展示或编辑，不从 UI 文案反向猜分组。
 
 配置、原文、选区及下列业务模型均保存在统一 ArtifactRecord 外壳的 content 中；id、kind、key、dependency_refs、parent_id、content_hash、created_at 属于记录外壳。ConfigVersion／SourceVersion 等是业务名称，不是额外的 Python 数据类或独立文件格式。生成请求的 config 引用不可变配置记录。
 
@@ -98,13 +101,13 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 `opening{text,source_refs}, paragraphs[{id,text,source_refs}], cliffhanger{text,source_refs}, changes[{type(delete/compress/rephrase/adapt),reason,source_refs}], unresolved_facts[]`。
 
-完整推文由 opening、paragraphs、cliffhanger 依次拼接，输出结构避免把开头或结尾又放进正文造成重复。开头可以重排原文信息；悬念必须指向已有矛盾，不能伪造未发生的核心事实。
+完整推文由 opening、paragraphs、cliffhanger 依次拼接，避免重复。cliffhanger 是保留的兼容字段名，表示结尾段，可以写原文已有结果、收束或实际停点，不要求悬念。允许重排、压缩、忠实口语化和合理外化，不能新增关键事实或结局；无结果时可在 unresolved_facts 说明缺失。
 
 ### 6.2 VideoCopy
 
 `blocks[{id,role(opening/body/cliffhanger),narration,dialogue[{speaker_label,text}],visible_action,source_refs,novel_paragraph_refs}], changes[], estimated_speech_ms?, estimation_config_ref?`。
 
-至少有 opening 和 cliffhanger 角色的非空文本块，body 按内容需要。口播、对白和可见动作分别记录；必要旁白允许保留。口播估计依据速度设置，不等于实际成片时长。
+至少有 opening 与 cliffhanger（结尾）角色的非空块，body 按内容需要；校验不要求结尾具备悬念。可见动作、对白、旁白分别记录，画面能传达的信息不重复旁白。按少于60秒估算容量，顺序与并行声画分别计时；文本估算不等于实测成片时长。
 
 ## 7. 资产目录、设定与视图提示词
 
@@ -160,7 +163,9 @@ Storyboard：`video_copy_version_id,catalog_version_id,shots[]`；每镜字段�
 
 第一镜 start_ms=0，end_ms=start_ms+duration_ms，下一镜 start_ms=前镜 end_ms。没有重叠、负值和缝隙；镜头拆分、合并、排序后全部重新计算。时间轴由 validate_content／recalculate_timeline 根据时长重算，不信任模型提供的 start_ms／end_ms；当前没有单独的时间轴解析报告。
 
-storyboard 生成要求在 prepare 时追加并冻结项目内的专业分镜 Skill，检查器通过 command.requirements 接收同一份规则。模型按视觉节拍和声音安排 duration_ms；不把样例时长或目标总时长均分当模板。旁白跨镜时分配实际发声文字，避免重复整段；检查反馈定位具体时长、动作或声音字段，经既有重试修订。超出参考区间及全部同长只提供待核对线索，不是结构错误，合理同长可以通过。未新增数据字段、API 参数、模型调用或人工检查入口。
+storyboard 的 prepare 根据当前配置 storyboard_skill_id 明确选择性加载[短视频内容分镜 Skill](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)，将ID和完整文本冻结到 command.requirements.skill_id／instruction，检查与重试使用该快照，不重新读取文件或选择 Skill。缺失／null 时不加载，基础提示和审阅也不隐性包含 H3／5–8秒规则。其他阶段 requirements.skill_id=null，即使项目已选 Skill 也不注入其正文；普通聊天亦不使用。
+
+选中该 Skill 后，H3 常规镜头按5–8秒设计，必要短镜可低于5秒，超过8秒优先拆镜，旧区间仅供参考。duration_ms 仍是计划时长，低于工作流范围需后续裁切，当前未自动裁切。结构字段、模型参数和人工检查入口不变。
 
 分镜需覆盖已保存视频文案的有效内容；镜头中无人、静物特写是合法情况。人物对白说话者必须在本镜出场或标记 voice_over；旁白不创建虚构出镜人物。
 
@@ -181,35 +186,31 @@ character_spec／scene_spec／prop_spec 按 asset_id＋variant_id、prompt_bundl
 
 分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
-模板库以阶段区分角色与 instruction；自定义模板保存为不可变 prompt_template 版本（content: stage,instruction），默认模板引用为阶段 default-v2。结构约束与负面约束由 prompts.py 和 validation.py 统一定义，任务冻结最终完整 Prompt、输入和具体模型名。原始小说置于清晰分隔的数据区。
+模板库以阶段区分 instruction；自定义模板保存为不可变 prompt_template 版本（content: stage,instruction）并继续优先，默认模板引用升级为阶段 default-v3。任务冻结完整Prompt、输入、模型与所选Skill；旧运行快照与稿件不改。Prompt由共享事实／格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例组成。演示与当前素材隔离，不能混入实际人物与事件。
 
 ### 9.1 第一阶段：小说推文
 
-用户给定核心指令：
+默认任务：从原文组织一个适合独立短视频的完整事件，保留必要人物、动机、行动、因果与已有结果，压缩背景、重复说明和无关支线；开头直接进入事件，结尾交代结果或落点，不强制悬念、反转或笑点。
 
-> 你是一个专业的小说推文作者，请你优化这段小说，使用“爆款开头+结尾留钩”的结构，不利于观众停留的剧情酌情删掉。
-
-注入：选题配置、原文选区、允许改编范围、长度目标。输出 NovelCopy，同时标记删减／压缩／改编与原文位置；保持核心人物身份、因果和事件事实，不能为制造开头捏造原文没有的关键反转。
+输入为原文选区与配置，输出 NovelCopy。允许合理外化，不新增关键事实；changes 使用原枚举说明删改依据。素材无结果时保留实际停点并说明缺失，不能编造收束。
 
 ### 9.2 第二阶段：视频推广文案
 
-用户给定核心指令：
+默认任务：将当前故事文案转为可观看、可听懂的内容，分别安排可见动作、必要对白和旁白；不重复解释已展示的画面，不继续文学润色。保留理解事件所需的因果和已有结果。
 
-> 你是一个专业的视频推文博主，请你优化这段文案，用作视频推文，“爆款开头+结尾留钩”的结构，不适合做成视频的内容适当进行改编。
-
-注入：已保存小说推文、对应原文依据、视频呈现目标。输出 VideoCopy，压缩拖沓画面，把难以表现的心理或解释转成可拍动作、对白或必要旁白。改编超出 permitted_adaptations 时列入待人工核对，不静默改变核心事实。
+输入为当前小说推文和原文依据，输出 VideoCopy。少于一分钟；有效 target_duration_ms 按目标规划，未指定时自然结束，超范围目标如实报告。清晰中文声音可从每秒3–4字估算，另考虑停顿、换人和情绪；顺序累计、并行取覆盖时长，不假称已测配音。
 
 ### 9.3 第三阶段：分镜
 
-用户给定核心指令：
+默认任务：按视觉与声音节拍拆镜，写清主体、起始状态、主要动作、结束状态、景别、运镜与声音，保持空间及动作连续，不机械按段落切镜或均分时长。输入为 VideoCopy、实际资产目录及用户明确选择的可选 Skill，返回 Storyboard，绝对时间由代码累加。
 
-> 你是一名资深的AI真人短剧分镜师，擅长将故事剧本进行细致拆分并转化为分镜脚本，请基于之前生成的剧本，生成包括“镜号、时间轴、景别、镜头运动、人物、动作、对白、音效、画面生成提示词”的分镜头脚本。
-
-注入：VideoCopy、内部解析的资产目录、时长建议、镜头模板。返回结构化 Storyboard；镜头号和绝对时间轴由代码生成。用户文字中的“警别”统一为“景别”。
+目录只提取当前视频实际出镜、发声或使用的对象与必要状态，原文只用于核对。分镜结构样例不再把全目录人物、道具和全部视频块放进第一镜；实际输出仍须真实覆盖全部视频块。代码给出 SHOT-TOTAL-001（合计达到或超过60秒）、SHOT-TARGET-001（目标超范围）、SHOT-TARGET-002（有效目标不闭合）提醒，手动保存不新增时长门槛。
 
 ### 9.4 人物定妆照
 
 字段：年龄、性别、外貌特征、发型、妆容、服装、配饰；每个时期／状态变体另存。标准提示词模板：
+
+以下资产模板仅说明描述组成；实际统一设定及全部视图由模型生成，代码不以模板覆盖正文。只生成当前视频需要的状态，不为未使用时期扩展资产。
 
 ```text
 写实真人短剧定妆照，{age}，{gender}，{appearance}，{hair}，{makeup}，
@@ -254,7 +255,7 @@ head_front 使用正面头部特写；body_front 正面站立全身；body_side 
 
 第 9.4～9.6 节为用户原始模板，不是最终交付。当前 asset_spec 阶段由 LLM 一次生成具体人物／场景／道具字段及全部计划视图的正负提示词，保存 source_refs 与 inferred_fields；顶层正负提示词为空，具体文字位于 views。finalize_asset_prompts 仅校验完整性、排序并维护内部指纹，不用模板覆盖文字。compile_shots 根据分镜与已有设定生成镜头提示词，用户优化镜头时通过 shot_prompts 调用模型。禁止遗留未替换变量，禁止把文章没有的信息伪装成原文事实。旧模板编译、单独视图优化和视频运动文字生成分支已删除。
 
-review.check_candidate 对资产使用专门的整组提示词检查要求，检查统一设定、单视图及跨视图一致性，不套用文案的开头留钩等规则。输出仍为既有 issues 格式，target_path 指向具体字段；跨视图问题在 explanation 中说明关联视图，suggestion 给出可执行修改。反馈传入现有循环，修订后重新检查；不新增检查报告、UI 或图片调用。
+review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角及镜头画面文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产不套用文案风格要求，镜头提示词不套用 H3 专用格式。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入现有有限循环，不新增检查报告、UI 或图片调用。
 
 
 

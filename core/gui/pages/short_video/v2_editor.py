@@ -26,9 +26,16 @@ from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.models import identity, require
 from core.short_video.v2.validation import recalculate_timeline
 
-
 STORYBOARD_COLUMNS = [
-    "镜号", "时间轴", "景别", "镜头运动", "人物", "动作", "对白", "音效", "画面生成提示词"
+    "镜号",
+    "时间轴",
+    "景别",
+    "镜头运动",
+    "人物",
+    "动作",
+    "对白",
+    "音效",
+    "画面生成提示词",
 ]
 
 
@@ -71,7 +78,7 @@ class CopyEditor(QWidget):
                 (f"正文 {i + 1}", paragraph, "text")
                 for i, paragraph in enumerate(content["paragraphs"])
             ]
-            sections += [("结尾留钩", content["cliffhanger"], "text")]
+            sections += [("结尾", content["cliffhanger"], "text")]
             nodes = [
                 self.content["opening"],
                 *self.content["paragraphs"],

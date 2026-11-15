@@ -258,6 +258,10 @@ class ChunkService(BatchPlanService):
             self.save_plan(plan)
             try:
                 config = self.repository.record(plan["input_refs"]["config"])["content"]
+                custom = self.repository.current("prompt_template:novel_copy")
+                instruction = (
+                    custom["content"]["instruction"] if custom else INSTRUCTIONS["novel_copy"]
+                )
                 for index, chunk in enumerate(plan["chunks"]):
                     token.raise_if_cancelled()
                     if chunk["facts"] is not None:
@@ -344,8 +348,8 @@ class ChunkService(BatchPlanService):
                     prompt = stage_prompt(
                         "novel_copy",
                         context,
-                        instruction=INSTRUCTIONS["novel_copy"]
-                        + "本次仅改编当前块，结合共享事实保持一致。精炼文字，保留本段来源，不把中段悬念冒充全篇结局。",
+                        instruction=instruction
+                        + "本次仅整理当前块，结合共享事实保持身份与因果。保留本段来源和实际停点，后续块才有的结果留到合稿处理，不为每块补造结局。",
                     )
                     report(
                         f"改编第 {index + 1}/{len(plan['chunks'])} 块",
@@ -360,7 +364,7 @@ class ChunkService(BatchPlanService):
                 service = WorkflowService(self.repository, plan["model"], transport=self.transport)
                 command = service.prepare("novel_copy", fact_table_id=plan.get("fact_table_ref"))
                 command["prompt"] += (
-                    "\n合并各块改编为连续小说推文，去除重复开头与结尾，保留原始码点来源：\n"
+                    "\n从各块中组织本条完整事件，合并重复开头、背景和结尾，保留核心因果、已有结果与原始码点来源；没有结果时如实说明素材不足，不把分块停点拼成连载预告：\n"
                     + encode(
                         reference_text({"copies": [chunk["output"] for chunk in plan["chunks"]]})
                     )
@@ -413,9 +417,7 @@ class ChunkService(BatchPlanService):
             attempt["calls"].append({"prompt": sent, "response": response, "error": error})
             self.save_plan(plan)
 
-        send = ScriptLLM(
-            plan["model"], token=token, transport=self.transport, record=record_call
-        )
+        send = ScriptLLM(plan["model"], token=token, transport=self.transport, record=record_call)
         current = prompt
         try:
             for attempt_index in range(2):
@@ -431,10 +433,12 @@ class ChunkService(BatchPlanService):
                         raise
                     token.raise_if_cancelled()
                     if attempt_index == 1:
-                        raise WorkspaceError("INVALID_OUTPUT", "分块输出未通过校验；回复已保存") from exc
+                        raise WorkspaceError(
+                            "INVALID_OUTPUT", "分块输出未通过校验；回复已保存"
+                        ) from exc
                     current = (
                         prompt
-                        + "\n仅修复格式和引文："
+                        + "\n仅修复格式和引文，保留已有叙事，不新增事实、补结局或借格式修复删改剧情："
                         + str(exc)
                         + "\n"
                         + encode({"previous_response": raw})

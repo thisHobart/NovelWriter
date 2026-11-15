@@ -31,7 +31,7 @@ from .prompt_compiler import compile_shots, finalize_asset_prompts
 from .prompts import INSTRUCTIONS, stage_prompt
 from .repository import ProjectRepository
 from .review import QualityCheckResult, check_candidate
-from .storyboard_skill import load_storyboard_skill
+from .storyboard_skill import STORYBOARD_SKILLS, load_storyboard_skill
 from .validation import rows, strings, validate_content
 
 PREREQUISITES = {
@@ -178,9 +178,9 @@ class WorkflowService:
                     self.repository.record(ref, state=state)
                     for ref in candidate["content"]["asset_spec_refs"]
                 ],
-                "config": self.repository.record(
-                    board["dependency_refs"]["config"], state=state
-                )["content"],
+                "config": self.repository.record(board["dependency_refs"]["config"], state=state)[
+                    "content"
+                ],
             }
         else:
             for key in PREREQUISITES[stage]:
@@ -288,9 +288,16 @@ class WorkflowService:
         )
         custom = self.repository.current(f"prompt_template:{stage}", state=state)
         instruction = custom["content"]["instruction"] if custom else INSTRUCTIONS[stage]
-        if stage == "storyboard":
-            # Freeze once: generation, review and retries use the same skill text.
-            instruction += "\n\n专业分镜 Skill：\n" + load_storyboard_skill()
+        # Use the user's current explicit choice, also when reusing older source drafts.
+        skill_id = config["content"].get("storyboard_skill_id") if stage == "storyboard" else None
+        require(
+            skill_id is None or isinstance(skill_id, str) and skill_id in STORYBOARD_SKILLS,
+            "INVALID_INPUT",
+            "请选择可用的分镜 Skill 或不使用 Skill",
+        )
+        if skill_id is not None:
+            # Freeze once: generation, review and retries use the selected skill text.
+            instruction += "\n\n用户选择的分镜 Skill：\n" + load_storyboard_skill(skill_id)
         if shot_ids:
             context["selected_shot_ids"] = shot_ids
         prompt = stage_prompt(
@@ -322,8 +329,13 @@ class WorkflowService:
             "input_refs": deps,
             "context": context,
             "prompt": prompt,
-            "prompt_ref": custom["id"] if custom else f"{stage}-default-v2",
-            "requirements": {"instruction": instruction, "asks": asks or [], "mode": mode},
+            "prompt_ref": custom["id"] if custom else f"{stage}-default-v3",
+            "requirements": {
+                "instruction": instruction,
+                "asks": asks or [],
+                "mode": mode,
+                "skill_id": skill_id,
+            },
             "candidate_id": target_id,
             "selected_before": state["current"].get(key),
             "shot_ids": shot_ids or [],
@@ -415,7 +427,7 @@ class WorkflowService:
                             ) from exc
                         prompt = (
                             generation_prompt
-                            + "\n修复上次格式错误，只输出完整JSON。错误："
+                            + "\n仅修复上次JSON、字段类型、规定枚举或引用格式，输出完整JSON。保留既有叙事内容，不借格式修复新增剧情、补结局或删除事实。错误："
                             + str(exc)
                             + "\n上次原始回复："
                             + encode({"response": raw})

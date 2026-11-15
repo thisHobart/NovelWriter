@@ -1,30 +1,24 @@
-"""Article input, track selection and source range editing."""
+"""Article input, source ranges and an explicit optional storyboard skill."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFileDialog,
-    QFormLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
-    QMenu,
     QPlainTextEdit,
-    QPushButton,
     QRadioButton,
     QVBoxLayout,
     QWidget,
-    QWidgetAction,
 )
 
 from core.short_video.v2.models import (
-    TRACKS,
     WorkspaceError,
     default_config,
     require,
@@ -35,6 +29,7 @@ from core.short_video.v2.source import (
     read_source_file,
     source_content,
 )
+from core.short_video.v2.storyboard_skill import STORYBOARD_SKILLS
 
 from .ui_helpers import create_action_button
 
@@ -79,65 +74,17 @@ class SourcePage(QWidget):
         self.range_label = QLabel()
         bar.addWidget(self.range_label, 1)
         layout.addLayout(bar)
-        self.track_boxes = {}
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("赛道"))
-        for key, label in [("themes", "主题"), ("settings", "设定"), ("backgrounds", "背景")]:
-            button = QPushButton(label)
-            menu = QMenu(button)
-            self.track_boxes[key] = []
-            for value in TRACKS[key]:
-                check = QCheckBox(value)
-                check.toggled.connect(self.mark_dirty)
-                check.toggled.connect(
-                    lambda _, b=button, k=key, title=label: b.setText(
-                        title + f" · {sum(c.isChecked() for c in self.track_boxes[k])}"
-                    )
-                )
-                action = QWidgetAction(menu)
-                action.setDefaultWidget(check)
-                menu.addAction(action)
-                self.track_boxes[key].append(check)
-            button.setMenu(menu)
-            bar.addWidget(button)
+        bar.addWidget(QLabel("Skill（用于分镜）"))
+        self.skill_combo = QComboBox()
+        self.skill_combo.addItem("不使用 Skill", None)
+        for skill_id, label in STORYBOARD_SKILLS.items():
+            self.skill_combo.addItem(label, skill_id)
+        self.skill_combo.setToolTip("手动选择后在分镜生成时使用；Agent 不自动选择。")
+        self.skill_combo.currentIndexChanged.connect(self.mark_dirty)
+        bar.addWidget(self.skill_combo)
         bar.addStretch()
         layout.addLayout(bar)
-        self.more_button = QPushButton("更多创作要求")
-        self.more_button.setCheckable(True)
-        layout.addWidget(self.more_button)
-        self.requirements = QWidget()
-        form = QFormLayout(self.requirements)
-        self.title = QLineEdit()
-        self.title.setPlaceholderText("作品标题")
-        self.title.textChanged.connect(self.mark_dirty)
-        form.addRow("作品标题", self.title)
-        self.fields = {}
-        for key, label in [
-            ("audience", "目标观众"),
-            ("tone", "基调"),
-            ("narrative_person", "人称"),
-            ("target_words", "目标字数（可留空）"),
-            ("target_duration_ms", "目标时长（秒，可留空）"),
-            ("required", "必需内容（；分隔）"),
-            ("forbidden", "禁止内容（；分隔）"),
-        ]:
-            if key == "narrative_person":
-                edit = QComboBox()
-                for title, value in [
-                    ("沿用原文", "source"),
-                    ("第一人称", "first"),
-                    ("第三人称", "third"),
-                ]:
-                    edit.addItem(title, value)
-                edit.currentIndexChanged.connect(self.mark_dirty)
-            else:
-                edit = QLineEdit()
-                edit.textChanged.connect(self.mark_dirty)
-            form.addRow(label, edit)
-            self.fields[key] = edit
-        self.requirements.hide()
-        self.more_button.toggled.connect(self.requirements.setVisible)
-        layout.addWidget(self.requirements)
         bar = QHBoxLayout()
         self.save_button = create_action_button("保存", self.save, bar, workbench)
         bar.addStretch()
@@ -158,11 +105,6 @@ class SourcePage(QWidget):
         self.full_radio.setChecked(True)
         self.validation_label.clear()
         self.range_label.setText(f"共 {len(self.article.toPlainText())} 字")
-
-    def clear_tracks(self) -> None:
-        for boxes in self.track_boxes.values():
-            for check in boxes:
-                check.setChecked(False)
 
     def add_range(self) -> None:
         cursor = self.article.textCursor()
@@ -231,35 +173,12 @@ class SourcePage(QWidget):
             {key: state["current"].get(key) for key in ("config", "source", "selection")}
             == self.input_refs,
             "REVISION_CONFLICT",
-            "文章或创作要求已被其他操作更新；编辑保留，请核对后再保存",
+            "原文或 Skill 选择已被其他操作更新；编辑保留，请核对后再保存",
         )
         current = self.workbench.repository.current("config", state=state)
         config = deepcopy(current["content"]) if current else default_config()
-        config["title"] = self.title.text()
         config["text_provider"] = self.workbench.model()
-        config["tracks"] = {
-            k: [c.text() for c in boxes if c.isChecked()] for k, boxes in self.track_boxes.items()
-        }
-        for key, edit in self.fields.items():
-            if key == "narrative_person":
-                config[key] = edit.currentData()
-                continue
-            raw = edit.text().strip()
-            if key in {"target_words", "target_duration_ms"}:
-                require(
-                    not raw or raw.isdigit() and int(raw) > 0,
-                    "INVALID_INPUT",
-                    "目标字数／时长需为正整数或留空",
-                )
-                config[key] = (
-                    int(raw) * (1000 if key == "target_duration_ms" else 1) if raw else None
-                )
-            else:
-                config[key] = (
-                    [s.strip() for s in raw.split("；") if s.strip()]
-                    if key in {"required", "forbidden", "permitted_adaptations"}
-                    else raw
-                )
+        config["storyboard_skill_id"] = self.skill_combo.currentData()
         content = self.loaded_source or source_content(
             self.article.toPlainText(), title=config["title"]
         )
@@ -268,7 +187,7 @@ class SourcePage(QWidget):
         )
         self.dirty = False
         self.workbench.refresh()
-        self.workbench.notice("文章和创作要求已保存；依赖旧输入的稿件会提示过期。")
+        self.workbench.notice("原文和 Skill 选择已保存；依赖旧输入的稿件会提示过期。")
         return True
 
     def refresh(self) -> None:
@@ -281,24 +200,17 @@ class SourcePage(QWidget):
         }
         current = self.workbench.repository.current("config", state=state)
         config = current["content"] if current else default_config()
-        self.title.setText(config["title"])
-        for key, edit in self.fields.items():
-            value = config.get(key)
-            if key == "narrative_person":
-                edit.setCurrentIndex(edit.findData(value))
-                continue
-            if key == "target_duration_ms" and value:
-                value //= 1000
-            edit.setText(
-                "；".join(value)
-                if isinstance(value, list)
-                else str(value)
-                if value is not None
-                else ""
-            )
-        for key, boxes in self.track_boxes.items():
-            for check in boxes:
-                check.setChecked(check.text() in config["tracks"][key])
+        with QSignalBlocker(self.skill_combo):
+            self.skill_combo.clear()
+            self.skill_combo.addItem("不使用 Skill", None)
+            for skill_id, label in STORYBOARD_SKILLS.items():
+                self.skill_combo.addItem(label, skill_id)
+            selected_skill = config.get("storyboard_skill_id")
+            index = self.skill_combo.findData(selected_skill)
+            if index < 0:
+                self.skill_combo.addItem(f"不可用的 Skill：{selected_skill}", selected_skill)
+                index = self.skill_combo.count() - 1
+            self.skill_combo.setCurrentIndex(index)
         source = self.workbench.repository.current("source", state=state)
         self.article.setPlainText(source["content"]["normalized_text"] if source else "")
         self.loaded_source = deepcopy(source["content"]) if source else None

@@ -64,16 +64,28 @@ def compile_shots(
                 ref["asset_id"],
                 {"character_spec": "人物", "scene_spec": "场景", "prop_spec": "道具"}[spec["kind"]],
             )
-            description = "，".join(value[field] for field in fields)
+            description = "，".join(
+                dict.fromkeys(value[field].strip() for field in fields if value[field].strip())
+            )
             if spec["kind"] == "scene_spec":
                 description = f"{value['location']}，{value['time']}，{value['spatial_structure']}，{value['height_notes']}；中央{value['center']}；左区{value['left']}；右区{value['right']}；后方{value['rear']}；入口{value['entrances']}；标志陈设{value['landmarks']}；主光{value['main_light']}，辅光{value['fill_light']}，{value['atmosphere']}"
             prompts.append(name + "：" + description)
             refs.append({**ref, "spec_version_id": spec["id"]})
             used[spec["id"]] = spec
-        combined = (
-            f"{shot['visual_prompt_draft']}。{shot['shot_size']}，{shot['camera_movement']}。"
-            f"可见动作：{shot['action']}。固定设定：" + "\n".join(prompts)
+        visible = dict.fromkeys(
+            part.strip().rstrip("。")
+            for part in (
+                shot["visual_prompt_draft"],
+                f"{shot['shot_size']}，{shot['camera_movement']}",
+                shot["action"],
+            )
+            if part.strip()
         )
+        combined = (
+            "。".join(visible)
+            + "。\n固定设定（用于身份、布局和状态连续性，不要求全部细节同时可见）：\n"
+        )
+        combined += "\n".join(dict.fromkeys(prompts))
         result.append(
             {
                 "shot_id": shot["shot_id"],

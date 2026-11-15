@@ -284,7 +284,7 @@ def validate_content(
                 "INVALID_OUTPUT",
                 "视频块不能全部为空",
             )
-        require({"opening", "cliffhanger"} <= roles, "INVALID_OUTPUT", "视频文案缺少开头或结尾悬念")
+        require({"opening", "cliffhanger"} <= roles, "INVALID_OUTPUT", "视频文案缺少开头或结尾段")
     elif kind == "asset_catalog":
         entities = rows(value.get("entities"), "资产目录", key="asset_id")
         for entity in entities:
@@ -487,9 +487,41 @@ def local_issues(
 ) -> list[JsonObject]:
     result = []
     if kind == "storyboard":
+        total = sum(shot["duration_ms"] for shot in content["shots"])
+        if total >= 60000:
+            result.append(
+                issue(
+                    "SHOT-TOTAL-001",
+                    "shots",
+                    f"镜头合计{total / 1000:g}秒，未满足少于60秒的成片目标",
+                    "核对实际动作和声音容量；消除重复表达或反馈上游压缩，不仅修改汇总标签",
+                )
+            )
+        target = (config or {}).get("target_duration_ms")
+        if target is not None:
+            if target >= 60000:
+                result.append(
+                    issue(
+                        "SHOT-TARGET-001",
+                        "shots",
+                        f"配置目标{target / 1000:g}秒与少于60秒的任务范围冲突",
+                        "明确报告输入冲突，不静默改配置或声称同时满足两种目标",
+                    )
+                )
+            elif total != target:
+                result.append(
+                    issue(
+                        "SHOT-TARGET-002",
+                        "shots",
+                        f"镜头合计{total / 1000:g}秒，与目标{target / 1000:g}秒不一致",
+                        "结合动作、声音和停顿重新编排，不能等比例缩放或添加无效空镜凑时长",
+                    )
+                )
         lower, upper = (config or {}).get("shot_duration_range_ms", [5000, 15000])
         for index, shot in enumerate(content["shots"]):
-            if not lower <= shot["duration_ms"] <= upper and not shot.get("duration_exception_reason"):
+            if not lower <= shot["duration_ms"] <= upper and not shot.get(
+                "duration_exception_reason"
+            ):
                 result.append(
                     issue(
                         "SHOT-003",

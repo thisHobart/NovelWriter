@@ -4,8 +4,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 datas, binaries, hiddenimports = collect_all("llm_backends")
-datas += [(str(Path(SPECPATH) / "core/short_video/v2/skills/short-video-storyboard/SKILL.md"),
-           "core/short_video/v2/skills/short-video-storyboard")]
+datas += [(str(Path(SPECPATH) / "core/short_video/v2/skills/short-video-content-storyboard/SKILL.md"),
+           "core/short_video/v2/skills/short-video-content-storyboard")]
 datas += [(str(Path(SPECPATH) / "core/short_video/v2/workflows/minimax_h3_reference.json"),
            "core/short_video/v2/workflows")]
 datas += [(str(Path(SPECPATH) / "core/short_video/v2/workflows/minimax_h3_first_last.json"),

@@ -12,6 +12,7 @@ from typing import Any, NoReturn
 from uuid import uuid4
 
 from .contracts import JsonObject, ModelSnapshot
+from .storyboard_skill import STORYBOARD_SKILLS
 
 
 def encode(value: Any) -> str:
@@ -189,13 +190,25 @@ def default_config() -> JsonObject:
         "text_provider": "hosted-llm",
         "prompt_refs": {},
         "ruleset_ref": "v2-default-1",
+        "storyboard_skill_id": None,
     }
 
 
 def validate_config(content: JsonObject) -> JsonObject:
     require(isinstance(content, dict), "INVALID_INPUT", "项目配置必须为对象")
-    require(default_config().keys() <= content.keys(), "INVALID_INPUT", "项目配置缺少当前必需字段")
+    require(
+        default_config().keys() - {"storyboard_skill_id"} <= content.keys(),
+        "INVALID_INPUT",
+        "项目配置缺少当前必需字段",
+    )
     config = deepcopy(content)
+    config.setdefault("storyboard_skill_id", None)
+    skill_id = config["storyboard_skill_id"]
+    require(
+        skill_id is None or isinstance(skill_id, str) and skill_id in STORYBOARD_SKILLS,
+        "INVALID_INPUT",
+        "请选择可用的分镜 Skill 或不使用 Skill",
+    )
     text(config["title"], "项目标题")
     for name in ("audience", "tone"):
         text(config[name], name, empty=True)
