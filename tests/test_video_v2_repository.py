@@ -11,6 +11,7 @@ from core.short_video.v2.project_service import ProjectService, invoke
 from core.short_video.v2.repository import ProjectRepository
 from core.short_video.v2.source import qt_to_codepoint, codepoint_to_qt, source_content
 import core.short_video.v2.repository as repository_module
+import core.short_video.v2.runtime as runtime_module
 
 
 ARTICLE = "\ufeff乡村😀老宅\r\n井口响了三声。\r父亲留下铜钥匙。"
@@ -303,7 +304,7 @@ def test_prompt_agent_retries_keep_only_final_result_and_do_not_replay_old_resul
     original = repository.current("prop_spec:asset_prop:base")
     snapshot = {"provider": "offline", "model": "offline"}
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda provider: snapshot)
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda value: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda value: None)
     calls, checked = [], []
 
     def send(prompt):
@@ -344,7 +345,7 @@ def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project,
     import core.short_video.v2.workflow as workflow_module
 
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     content = prompt_project.current("storyboard")["content"]
     calls = []
 
@@ -376,7 +377,7 @@ def test_invalid_output_still_stops_after_finite_format_repairs(prompt_project, 
     import core.short_video.v2.workflow as workflow_module
 
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     original = prompt_project.current("storyboard")["id"]
     send = Mock(return_value="invalid JSON")
     service = WorkflowService(prompt_project, transport=send)
@@ -395,7 +396,7 @@ def test_cancelled_format_repair_stops_without_replacing_the_current_storyboard(
     import core.short_video.v2.workflow as workflow_module
 
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     original = prompt_project.current("storyboard")["id"]
     token = CancelToken()
     calls = []
@@ -411,7 +412,7 @@ def test_cancelled_format_repair_stops_without_replacing_the_current_storyboard(
 
     assert len(calls) == 1
     assert prompt_project.current("storyboard")["id"] == original
-    assert prompt_project.load()["runs"][-1]["status"] == "cancelled"
+    assert prompt_project.load()["runs"][-1]["status"] == "paused"
 
 
 def test_creation_task_uses_request_counts_only_for_recording(prompt_project, monkeypatch):
@@ -422,7 +423,7 @@ def test_creation_task_uses_request_counts_only_for_recording(prompt_project, mo
     snapshot = {"provider": "hosted-llm", "model": "offline"}
     for module in (creation, workflow):
         monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
-        monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
+        monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     original = prompt_project.current("prop_spec:asset_prop:base")
     command = creation.prepare_prompt_task(prompt_project, "hosted-llm", asset_key=original["key"])
     assert "max_calls" not in command and "seconds" not in command
@@ -445,7 +446,8 @@ def test_legacy_exhausted_chunk_plan_can_resume_without_budget_checks(project, m
     snapshot = {"provider": "hosted-llm", "model": "offline"}
     for module in (batches, workflow):
         monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
-        monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
+        monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(batches, "validate_model_snapshot", lambda _: None)
     content = novel(project)["content"]
     custom_instruction = "按我的简短口语风格整理素材，不编造结果。"
     project.save("prompt_template", {"stage": "novel_copy", "instruction": custom_instruction},
@@ -537,7 +539,7 @@ def test_prompt_generation_conflict_keeps_newer_manual_edit(prompt_project, monk
     repository = prompt_project
     original = repository.current("prop_spec:asset_prop:base")
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda provider: {"provider": "offline", "model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda value: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda value: None)
 
     def check(command, candidate):
         content = deepcopy(original["content"])
@@ -553,7 +555,7 @@ def test_prompt_generation_conflict_keeps_newer_manual_edit(prompt_project, monk
     assert error.value.code == "TARGET_VERSION_CONFLICT"
     assert len(current_records(repository, original["key"])) == 1
     assert "保留人工修改" in repository.current(original["key"])["content"]["views"][0]["positive_prompt"]
-    assert repository.load()["runs"][-1]["status"] == "failed"
+    assert repository.load()["runs"][-1]["status"] == "invalidated"
 
 
 def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_project, monkeypatch):
@@ -566,7 +568,7 @@ def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_pro
     config["storyboard_skill_id"] = "short-video-content-storyboard"
     rebuild_with_config(repository, config)
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     base = repository.current("storyboard")["content"]["shots"][0]
     first, revised = {"shots": []}, {"shots": []}
     actions = ["靠近井口", "俯看井口", "听见声音后停住", "看向铜钥匙"]
@@ -618,7 +620,7 @@ def test_storyboard_equal_short_shots_can_pass_without_forced_retiming(prompt_pr
 
     repository = prompt_project
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     base = repository.current("storyboard")["content"]["shots"][0]
     content = {"shots": [{**deepcopy(base), "shot_id": f"s{i}", "duration_ms": 1500,
                           "narration": "", "dialogue": []} for i in range(4)]}
@@ -696,7 +698,7 @@ def test_storyboard_creation_task_uses_only_selected_skill(prompt_project, monke
     snapshot = {"provider": "hosted-llm", "model": "offline"}
     for module in (creation, workflow):
         monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
-        monkeypatch.setattr(module, "validate_model_snapshot", lambda _: None)
+        monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     config = deepcopy(prompt_project.current("config")["content"])
     config["storyboard_skill_id"] = skill_id
     rebuild_with_config(prompt_project, config)
@@ -887,7 +889,7 @@ def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, m
     ProjectService(project).import_text(article, expected_revision=project.load()["revision"])
     refs = ProjectService(project).context()["source_refs"]
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     copies = {
         "novel_copy": {
             "opening": {"text": "小林发现文件夹落在门口。", "source_refs": refs},
@@ -982,7 +984,7 @@ def test_missing_result_remains_unpassed_after_quality_retries(project, monkeypa
     import core.short_video.v2.workflow as workflow_module
 
     monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow_module, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     content = novel(project)["content"]
     original = project.current("novel_copy")
     prompts = []
@@ -1055,7 +1057,7 @@ def test_task_feedback_keeps_original_failure_and_actual_phase(prompt_project, m
     from core.short_video.v2.review import QualityCheckResult
 
     monkeypatch.setattr(workflow, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     original = prompt_project.current("storyboard")
     error = TimeoutError("original transport failure")
     calls = []
@@ -1077,25 +1079,16 @@ def test_task_feedback_keeps_original_failure_and_actual_phase(prompt_project, m
 
     command = workflow.WorkflowService(prompt_project).prepare("storyboard")
     # Exercise the same service through the real worker, with a deterministic reviewer.
-    monkeypatch.setattr(workflow, "check_candidate", lambda command, candidate, *args: check(command, candidate))
+    monkeypatch.setattr(runtime_module, "check_candidate", lambda command, candidate, *args: check(command, candidate))
     work = workflow.WorkspaceWork(prompt_project, command, transport=send)
-    if failure_phase in {"生成", "格式修复"}:
-        with pytest.raises(TimeoutError) as caught:
-            work(lambda *_: None)
-        assert caught.value is error
-        assert prompt_project.current("storyboard")["id"] == original["id"]
-        feedback = prompt_project.load()["runs"][-1]["feedback"]
-        assert work.task_context.phase == failure_phase
-        assert task_message(work.task_context, error=error)[0] == "error"
-    else:
-        result = work(lambda *_: None)
-        assert result["review_status"] == "unavailable"
-        assert prompt_project.current("storyboard")["id"] == result["version_id"]
-        feedback = result["feedback"]
-        assert feedback == prompt_project.load()["runs"][-1]["feedback"]
-        assert "original transport failure" in caplog.text
-        message = record_message(prompt_project, prompt_project.current("storyboard"), prompt_project.load())
-        assert failure_phase + "失败" in message and "请求超时" in message
+    with pytest.raises(TimeoutError) as caught:
+        work(lambda *_: None)
+    assert caught.value is error
+    assert prompt_project.current("storyboard")["id"] == original["id"]
+    feedback = prompt_project.load()["runs"][-1]["feedback"]
+    assert work.task_context.phase == failure_phase
+    assert work.task_context.resumable
+    assert "继续生成" in task_message(work.task_context, error=error)[2]
     assert feedback["phase"] == failure_phase
     assert "请求超时" in feedback["cause"]
 
@@ -1107,7 +1100,7 @@ def test_review_feedback_manual_edit_and_source_replacement_are_distinct(prompt_
     from core.short_video.v2.review import QualityCheckResult
 
     monkeypatch.setattr(workflow, "capture_model_snapshot", lambda _: {"model": "offline"})
-    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda _: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
     content = prompt_project.current("storyboard")["content"]
     service = workflow.WorkflowService(prompt_project, transport=lambda _: encode(content),
                                       quality_check=lambda *_: QualityCheckResult(False, "总时长超过60秒", 2))
@@ -1137,14 +1130,14 @@ def test_asset_batch_reports_object_partial_progress_and_original_429(prompt_pro
 
     for module in (creation, workflow):
         monkeypatch.setattr(module, "capture_model_snapshot", lambda *_: {"model": "offline"})
-        monkeypatch.setattr(module, "validate_model_snapshot", lambda *_: None)
+        monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda *_: None)
     originals = {kind: prompt_project.current(f"{kind}_spec:asset_{kind}:base")["content"]
                  for kind in ("character", "scene", "prop")}
     with prompt_project.transaction() as state:
         for key in list(state["current"]):
             if "_spec:" in key:
                 state["current"].pop(key)
-    monkeypatch.setattr(workflow, "check_candidate", lambda *_: QualityCheckResult(True))
+    monkeypatch.setattr(runtime_module, "check_candidate", lambda *_: QualityCheckResult(True))
     response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
     error = RateLimitError("Upstream rate limit exceeded", response=response, body={})
 
@@ -1173,7 +1166,7 @@ def test_asset_batch_keeps_both_incomplete_review_and_quality_issues(prompt_proj
 
     for module in (creation, workflow):
         monkeypatch.setattr(module, "capture_model_snapshot", lambda *_: {"model": "offline"})
-        monkeypatch.setattr(module, "validate_model_snapshot", lambda *_: None)
+        monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda *_: None)
     names = {"寻井人": "character", "老宅": "scene", "铜钥匙": "prop"}
     originals = {kind: prompt_project.current(f"{kind}_spec:asset_{kind}:base")["content"]
                  for kind in names.values()}
@@ -1192,16 +1185,21 @@ def test_asset_batch_keeps_both_incomplete_review_and_quality_issues(prompt_proj
         kind = next(kind for name, kind in names.items() if name in work.task_context.target)
         return encode(originals[kind])
 
-    monkeypatch.setattr(workflow, "check_candidate", check)
+    monkeypatch.setattr(runtime_module, "check_candidate", check)
     work = creation.CreationWork(prompt_project, creation.prepare_prompt_task(prompt_project, "hosted-llm"),
                                  transport=send)
+    with pytest.raises(TimeoutError):
+        work(lambda *_: None)
+    task = next(iter(prompt_project.load()["tasks"].values()))
+    assert task["status"] == "failed" and task["resumable"]
+    assert work.task_context.completed == 0
+    monkeypatch.setattr(runtime_module, "check_candidate", lambda command, candidate, *args:
+                        QualityCheckResult(command["context"]["entity"]["kind"] != "scene", "反向视角的门窗布局不一致", 1))
+    work = runtime_module.ResumeWork(prompt_project, task["id"], transport=send)
     result = work(lambda *_: None)
-    assert result["review_status"] == "unavailable"
-    severity, title, detail = task_message(work.task_context, result=result)
-    assert severity == "warning" and title == "资产提示词已保存"
-    assert "1项检查未完成" in detail and "请求超时" in detail
-    assert "1项检查发现问题" in detail and "门窗布局不一致" in detail
-    assert work.task_context.completed == 3
+    assert result["review_status"] == "issues"
+    assert "1项检查发现问题" in result["review_summary"] and "门窗布局不一致" in result["review_summary"]
+
 
 
 @pytest.mark.parametrize("key", ["source", "selection", "config", "novel_copy", "video_copy", "asset_catalog", "storyboard", "prompt_template:storyboard"])
@@ -1297,7 +1295,7 @@ def test_generation_conflict_keeps_manual_content_without_history(prompt_project
     from core.short_video.v2.review import QualityCheckResult
 
     monkeypatch.setattr(workflow, "capture_model_snapshot", lambda *_: {"model": "offline"})
-    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda *_: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda *_: None)
     original = prompt_project.current(stage)
     candidate_ids = []
 
@@ -1315,10 +1313,10 @@ def test_generation_conflict_keeps_manual_content_without_history(prompt_project
     assert prompt_project.current(stage)["id"] not in {original["id"], *candidate_ids}
     assert len(current_records(prompt_project, stage)) == 1
     assert not any(ref in state["records"] for ref in [original["id"], *candidate_ids])
-    assert state["runs"][-1]["status"] == "failed" and not state["runs"][-1]["output_refs"]
+    assert state["runs"][-1]["status"] == "invalidated" and not state["runs"][-1]["output_refs"]
 
 
-def test_cancelled_candidate_is_removed_and_not_reported_as_saved(prompt_project, monkeypatch):
+def test_paused_candidate_is_retained_for_resume(prompt_project, monkeypatch):
     from core.generation.cancellation import GenerationCancelled
     from core.short_video.v2 import workflow
     from core.short_video.v2.feedback import task_message
@@ -1326,7 +1324,7 @@ def test_cancelled_candidate_is_removed_and_not_reported_as_saved(prompt_project
     from core.short_video.v2.review import QualityCheckResult
 
     monkeypatch.setattr(workflow, "capture_model_snapshot", lambda *_: {"model": "offline"})
-    monkeypatch.setattr(workflow, "validate_model_snapshot", lambda *_: None)
+    monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda *_: None)
     original = prompt_project.current("storyboard")
     work = workflow.WorkspaceWork(prompt_project, workflow.WorkflowService(prompt_project).prepare("storyboard"),
                                   transport=lambda _: encode(original["content"]))
@@ -1336,10 +1334,10 @@ def test_cancelled_candidate_is_removed_and_not_reported_as_saved(prompt_project
         work.token.cancel()
         return QualityCheckResult(True)
 
-    monkeypatch.setattr(workflow, "check_candidate", check)
+    monkeypatch.setattr(runtime_module, "check_candidate", check)
     with pytest.raises(GenerationCancelled):
         work(lambda *_: None)
     assert prompt_project.current("storyboard")["id"] == original["id"]
     assert len(current_records(prompt_project, "storyboard")) == 1
-    assert work.task_context.saved is False
-    assert "本次候选已保存" not in task_message(work.task_context, cancelled=True)[2]
+    assert work.task_context.saved is True
+    assert "继续生成" in task_message(work.task_context, cancelled=True)[2]

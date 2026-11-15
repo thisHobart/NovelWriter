@@ -100,6 +100,7 @@ class TaskContext:
     total: int = 0
     saved: bool = False
     remote_status: str = ""
+    resumable: bool = False
 
     def location(self) -> str:
         return " · ".join(part for part in (self.target, self.phase) if part)
@@ -123,7 +124,12 @@ class TaskTracker:
         self.task_context = replace(self.task_context, **changes)
 
     def accept_context(self, context: TaskContext) -> None:
-        self.update_context(target=context.target, phase=context.phase, saved=context.saved)
+        self.update_context(
+            target=context.target,
+            phase=context.phase,
+            saved=context.saved,
+            resumable=context.resumable,
+        )
 
 
 def command_target(command: dict) -> str:
@@ -227,10 +233,16 @@ def task_message(
         )
         if context.action == "视频生成" and context.remote_status == "cancelled":
             detail = "已停止，尚未提交远程任务"
-        return "warning", context.action + "已停止", detail
+        return (
+            "warning",
+            context.action + "已停止",
+            detail + ("；可点击继续生成" if context.resumable else ""),
+        )
     if error is not None:
         title = context.action + ("中断" if context.saved or context.completed else "失败")
         detail = f"{context.location()}：{error_reason(error)}；{context.retained()}"
+        if context.resumable:
+            detail += "；可点击继续生成"
         if isinstance(error, RecordingError) or (
             isinstance(error, OSError)
             and not isinstance(error, (TimeoutError, ConnectionError))
@@ -249,7 +261,7 @@ def task_message(
                 return "warning", "视频任务状态待确认", detail + "；请查询原任务，避免重复提交"
         if isinstance(error, WorkspaceError) and error.code == "TARGET_VERSION_CONFLICT":
             detail = f"{context.location()}：{error_reason(error)}；当前内容未被替换"
-            return "warning", context.action + "发生版本冲突", detail
+            return "warning", context.action + "发生内容冲突", detail
         return ("warning" if context.saved or context.completed else "error"), title, detail
     result = result or {}
     if context.action == "视频生成":

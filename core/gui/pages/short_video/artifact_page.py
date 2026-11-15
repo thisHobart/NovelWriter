@@ -44,6 +44,13 @@ class ArtifactPage(QWidget):
         if stage == "storyboard":
             create_action_button("复制分镜文本", self.copy_storyboard_text, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
+        self.resume_button = create_action_button(
+            "继续生成",
+            lambda: workbench.resume_generation(self.stage, self.resume_button),
+            bar,
+            workbench,
+        )
+        self.resume_button.hide()
         create_action_button("编辑阶段提示词", self.edit_template, bar, workbench)
         bar.addStretch()
         layout.addLayout(bar)
@@ -98,6 +105,15 @@ class ArtifactPage(QWidget):
             self.status.setText("尚无稿件，从上一阶段继续。")
         else:
             self.status.setText(record_message(self.workbench.repository, record, state))
+
+        from core.short_video.v2.runtime import get_recovery, recovery_message
+
+        task = get_recovery(self.workbench.repository, self.stage)
+        self.resume_button.setVisible(bool(task and task["valid"] and task["status"] != "running"))
+        if task and task["valid"] and task["status"] != "running":
+            self.status.setText(recovery_message(task))
+        elif task and not task["valid"]:
+            self.status.setText("上次任务不能继续：" + task.get("reason", "输入已变化，请重新生成"))
 
     def save(self) -> bool:
         require(self.record is not None, "INVALID_INPUT", "请先生成稿件")

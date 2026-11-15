@@ -70,7 +70,14 @@ VIEWS = {
     "prop": [("front", "正面"), ("three_quarter", "微侧面"), ("top", "微俯视")],
 }
 ACTIVE_RUNS = {"queued", "running"}
-RUN_STATUSES = ACTIVE_RUNS | {"succeeded", "failed", "cancelled", "interrupted"}
+RUN_STATUSES = ACTIVE_RUNS | {
+    "succeeded",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "paused",
+    "invalidated",
+}
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*_[0-9a-f]{32}$")
 
 

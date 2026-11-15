@@ -169,10 +169,26 @@ class BatchPlanService(TaskTracker):
         plans = (
             [self.load_plan(p.stem) for p in folder.glob("plan_*.json")] if folder.exists() else []
         )
+        state = self.repository.load()
+
+        def merge_resumable(plan: JsonObject) -> bool:
+            task = state["tasks"].get(plan.get("merge_task_id"))
+            return (
+                not task
+                or task.get("resumable", False)
+                or (
+                    task["status"] == "succeeded"
+                    and all(ref in state["current"].values() for ref in task["outputs"])
+                )
+            )
+
         plans = [
             p
             for p in plans
-            if p["mode"] == self.mode and p["status"] != "succeeded" and self.inputs_are_current(p)
+            if p["mode"] == self.mode
+            and p["status"] != "succeeded"
+            and self.inputs_are_current(p)
+            and merge_resumable(p)
         ]
         return max(plans, key=lambda p: p["updated_at"]) if plans else None
 
@@ -384,20 +400,47 @@ class ChunkService(BatchPlanService):
                     self.phase("分块稿已保存", completed=self.task_context.completed + 1)
                     token.raise_if_cancelled()
                 service = WorkflowService(self.repository, plan["model"], transport=self.transport)
-                command = service.prepare("novel_copy", fact_table_id=plan.get("fact_table_ref"))
-                command["prompt"] += (
-                    "\n从各块中组织本条完整事件，合并重复开头、背景和结尾，保留核心因果、已有结果与原始码点来源；没有结果时如实说明素材不足，不把分块停点拼成连载预告：\n"
-                    + encode(
-                        reference_text({"copies": [chunk["output"] for chunk in plan["chunks"]]})
+                merge_id = plan.get("merge_task_id")
+                saved_task = self.repository.load()["tasks"].get(merge_id) if merge_id else None
+                if saved_task and saved_task.get("command"):
+                    command = saved_task["command"]
+                elif saved_task and saved_task["status"] == "succeeded":
+                    require(
+                        all(
+                            ref in self.repository.load()["current"].values()
+                            for ref in saved_task["outputs"]
+                        ),
+                        "OUTPUT_REPLACED",
+                        "合稿已被替换，请重新生成",
                     )
-                )
-                require(
-                    len(command["prompt"]) <= 48000,
-                    "INPUT_TOO_LARGE",
-                    "合稿上下文超限；分段结果保留，请调整改编范围",
-                )
-                command["plan_id"] = plan["id"]
-                command["selected_before"] = plan["selected_before"]
+                    plan.update(output_ref=saved_task["result"]["version_id"], status="succeeded")
+                    self.save_plan(plan)
+                    return saved_task["result"]
+                else:
+                    require(
+                        saved_task is None, "TASK_STOPPED", "合稿没有可继续的检查点，请新建生成任务"
+                    )
+                    command = service.prepare(
+                        "novel_copy", fact_table_id=plan.get("fact_table_ref")
+                    )
+                    command["prompt"] += (
+                        "\n从各块中组织本条完整事件，合并重复开头、背景和结尾，保留核心因果、已有结果与原始码点来源；没有结果时如实说明素材不足，不把分块停点拼成连载预告：\n"
+                        + encode(
+                            reference_text(
+                                {"copies": [chunk["output"] for chunk in plan["chunks"]]}
+                            )
+                        )
+                    )
+                    require(
+                        len(command["prompt"]) <= 48000,
+                        "INPUT_TOO_LARGE",
+                        "合稿上下文超限；分段结果保留，请调整改编范围",
+                    )
+                    command["plan_id"] = plan["id"]
+                    command["selected_before"] = plan["selected_before"]
+
+                    plan["merge_task_id"] = command["request_id"]
+                    self.save_plan(plan)
 
                 def record_merge(sent: str, response: str, error: str | None) -> None:
                     plan["calls_used"] += 1
@@ -408,6 +451,7 @@ class ChunkService(BatchPlanService):
                     token=token,
                     report=report,
                     on_request=record_merge,
+                    resume=bool(saved_task),
                     on_context=lambda context: self.phase(
                         context.phase, target="合稿", saved=context.saved
                     ),

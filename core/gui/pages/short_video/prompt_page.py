@@ -111,6 +111,14 @@ class PromptPage(QWidget):
         bar = QHBoxLayout()
         self.save_button = create_action_button("保存", self.save, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
+        self.resume_stage = "prompt_task"
+        self.resume_button = create_action_button(
+            "继续生成",
+            lambda: workbench.resume_generation(self.resume_stage, self.resume_button),
+            bar,
+            workbench,
+        )
+        self.resume_button.hide()
         bar.addStretch()
         create_action_button("导出", workbench.export, bar, workbench, primary=True)
         layout.addLayout(bar)
@@ -288,6 +296,19 @@ class PromptPage(QWidget):
             )
         for combo in (self.objects, self.variants, self.views):
             combo.blockSignals(False)
+
+        from core.short_video.v2.runtime import get_recovery, recovery_message
+
+        shot_task = (
+            get_recovery(self.workbench.repository, "shot_prompts") if kind == "shot" else None
+        )
+        self.resume_stage = "shot_prompts" if shot_task and shot_task["valid"] else "prompt_task"
+        task = get_recovery(self.workbench.repository, self.resume_stage)
+        self.resume_button.setVisible(bool(task and task["valid"] and task["status"] != "running"))
+        if task and task["valid"] and task["status"] != "running":
+            self.status.setText(recovery_message(task))
+        elif task and not task["valid"]:
+            self.status.setText("上次任务不能继续：" + task.get("reason", "输入已变化，请重新生成"))
 
     def save(self) -> bool:
         require(self.record is not None, "INVALID_INPUT", "请先生成提示词")

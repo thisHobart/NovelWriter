@@ -46,6 +46,8 @@ class ProjectRepository:
     def empty() -> JsonObject:
         return {
             "schema_version": 2,
+            "runtime_schema_version": 1,
+            "tasks": {},
             "revision": 0,
             "project_id": None,
             "records": {},
@@ -86,6 +88,32 @@ class ProjectRepository:
             require(isinstance(state.get(key), dict), "INVALID_PROJECT", f"项目缺少 {key}")
         for key in ("runs", "exports"):
             require(isinstance(state.get(key), list), "INVALID_PROJECT", f"项目缺少 {key}")
+        state.setdefault("tasks", {})
+        state.setdefault("runtime_schema_version", 1)
+        require(isinstance(state["tasks"], dict), "INVALID_PROJECT", "运行任务索引损坏")
+        for task_id, task in state["tasks"].items():
+            require(
+                isinstance(task, dict)
+                and task.get("id") == task_id
+                and isinstance(task.get("status"), str)
+                and isinstance(task.get("outputs"), list)
+                and isinstance(task.get("resumable"), bool),
+                "INVALID_PROJECT",
+                "运行检查点损坏；原文件保留",
+            )
+            if task["resumable"]:
+                require(
+                    fingerprint(task.get("command")) == task.get("command_hash"),
+                    "INVALID_PROJECT",
+                    "冻结的任务输入校验失败，原文件保留",
+                )
+                require(
+                    isinstance(task.get("command"), dict)
+                    and isinstance(task.get("expected"), dict)
+                    and isinstance(task.get("items"), dict),
+                    "INVALID_PROJECT",
+                    "恢复输入缺失或损坏",
+                )
         for record_id in state["records"]:
             self.record(record_id, state=state)
         for key, record_id in state["current"].items():
@@ -109,6 +137,44 @@ class ProjectRepository:
                 "INVALID_PROJECT",
                 "任务记录损坏",
             )
+            if "checkpoint" in run:
+                cp = run["checkpoint"]
+                require(
+                    fingerprint(cp) == run.get("checkpoint_hash"),
+                    "INVALID_PROJECT",
+                    "运行检查点损坏，原文件保留",
+                )
+                require(
+                    isinstance(cp, dict)
+                    and cp.get("step") in {"request", "validate", "review", "decide", "commit"}
+                    and isinstance(cp.get("command"), dict)
+                    and isinstance(cp.get("prompt"), str)
+                    and isinstance(cp.get("generation_prompt"), str)
+                    and type(cp.get("revision")) is int
+                    and cp["revision"] >= 0
+                    and type(cp.get("format_attempt")) is int
+                    and cp["format_attempt"] >= 0
+                    and (cp.get("response") is None or isinstance(cp["response"], str))
+                    and (cp.get("candidate") is None or cp["candidate"] in state["records"])
+                    and run.get("task_id") in state["tasks"],
+                    "INVALID_PROJECT",
+                    "运行检查点损坏，原文件保留",
+                )
+                require(
+                    cp["step"] != "validate" or isinstance(cp.get("response"), str),
+                    "INVALID_PROJECT",
+                    "待校验的模型回复缺失",
+                )
+                require(
+                    cp["step"] not in {"review", "decide", "commit"} or bool(cp.get("candidate")),
+                    "INVALID_PROJECT",
+                    "待审阅的候选缺失",
+                )
+                require(
+                    cp["step"] not in {"decide", "commit"} or isinstance(cp.get("review"), dict),
+                    "INVALID_PROJECT",
+                    "审阅结果缺失",
+                )
             run_ids.add(run["id"])
         return state
 
@@ -261,14 +327,26 @@ class ProjectRepository:
                 )
                 path.unlink(missing_ok=True)
 
-    def _discard_history(self, state: JsonObject) -> None:
-        # In-flight candidates and their original editing target live until the run ends.
-        if any(run["status"] in ACTIVE_RUNS for run in state["runs"]):
+    def _discard_history(self, state: JsonObject, *, reconcile: bool = True) -> None:
+        from .runtime import invalidate, invalidation_reason, task_valid
+
+        if reconcile:
+            for task in state["tasks"].values():
+                if task.get("resumable") and not task_valid(state, task):
+                    invalidate(state, task, invalidation_reason(state, task))
+        # Legacy chat/batch runs have no text checkpoint; retain their in-flight data.
+        if any(r["status"] in ACTIVE_RUNS and "checkpoint" not in r for r in state["runs"]):
             return
+        pinned = {
+            run["checkpoint"]["candidate"]
+            for run in state["runs"]
+            if run.get("checkpoint", {}).get("candidate")
+            and state["tasks"].get(run.get("task_id"), {}).get("resumable")
+        }
         discarded = {
             record_id
             for record_id, metadata in state["records"].items()
-            if state["current"].get(metadata["key"]) != record_id
+            if (state["current"].get(metadata["key"]) != record_id and record_id not in pinned)
             or metadata["kind"] == "check_report"
         }
         while True:
@@ -287,11 +365,19 @@ class ProjectRepository:
         state["current"] = {
             key: ref for key, ref in state["current"].items() if ref not in discarded
         }
+        if reconcile:
+            invalidated = False
+            for task in state["tasks"].values():
+                if task.get("resumable") and not task_valid(state, task):
+                    invalidate(state, task, invalidation_reason(state, task))
+                    invalidated = True
+            if invalidated:
+                self._discard_history(state, reconcile=False)
         state["confirmations"].clear()
         state["reports"].clear()
         for run in state["runs"]:
             run["output_refs"] = [ref for ref in run["output_refs"] if ref not in discarded]
-            if run["stage"] != "chat":
+            if run["stage"] != "chat" and "checkpoint" not in run:
                 run.pop("command", None)
                 run["snapshot"].pop("input_refs", None)
 
@@ -379,7 +465,13 @@ class ProjectRepository:
             raise WorkspaceError("PROJECT_BUSY", "项目已有 LLM 任务，请等待完成或停止") from exc
 
     def start_run(
-        self, command: JsonObject, *, expected_revision: int, snapshot: JsonObject
+        self,
+        command: JsonObject,
+        *,
+        expected_revision: int,
+        snapshot: JsonObject,
+        task_id: str | None = None,
+        checkpoint: JsonObject | None = None,
     ) -> tuple[JsonObject, bool]:
         """Called under generation_lock; admission and deduplication are durable."""
         request_id = command.get("request_id")
@@ -421,6 +513,12 @@ class ProjectRepository:
                 "created_at": timestamp(),
                 "error": None,
             }
+            if checkpoint is not None:
+                run.update(
+                    task_id=task_id,
+                    checkpoint=deepcopy(checkpoint),
+                    checkpoint_hash=fingerprint(checkpoint),
+                )
             state["runs"].append(run)
             state["requests"][request_id] = {"command_hash": command_hash, "run_id": run["id"]}
         return deepcopy(run), True
@@ -463,9 +561,58 @@ class ProjectRepository:
         try:
             with self.generation_lock():
                 with self.transaction() as state:
+                    self._migrate_tasks(state)
+                    for task in state["tasks"].values():
+                        if task["status"] == "running":
+                            task.update(status="interrupted", ended_at=timestamp())
                     for run in state["runs"]:
                         if run["status"] in ACTIVE_RUNS:
                             run.update(status="interrupted", ended_at=timestamp())
+                        for call in run.get("calls", []):
+                            if call.get("state") == "sending":
+                                call["state"] = "unknown"
+                for path in (self.root / "tasks").glob("*.json"):
+                    if path.stem in self.load()["tasks"] and path.resolve().is_relative_to(
+                        self.root.resolve()
+                    ):
+                        path.unlink()
         except WorkspaceError as exc:
             if exc.code != "PROJECT_BUSY":
                 raise
+
+    def _migrate_tasks(self, state: JsonObject) -> None:
+        """Legacy tasks cannot resume without a checkpoint; never infer one."""
+        for path in (self.root / "tasks").glob("*.json"):
+            if path.stem in state["tasks"]:
+                continue
+            try:
+                old = json.loads(
+                    path.read_text(encoding="utf-8"), parse_constant=reject_json_constant
+                )
+            except (OSError, ValueError) as exc:
+                raise WorkspaceError("INVALID_TASK", "旧任务记录损坏，原文件保留") from exc
+            require(
+                isinstance(old, dict)
+                and isinstance(old.get("outputs"), list)
+                and isinstance(old.get("command_hash"), str)
+                and isinstance(old.get("command", {}), dict)
+                and isinstance(old.get("status"), str)
+                and all(isinstance(ref, str) for ref in old["outputs"])
+                and (old["status"] != "succeeded" or isinstance(old.get("result"), dict)),
+                "INVALID_TASK",
+                "旧任务记录不完整，原文件保留",
+            )
+            stage = old.get("command", {}).get("stage", "legacy")
+            state["tasks"][path.stem] = {
+                "id": path.stem,
+                "runtime_version": 0,
+                "family": stage,
+                "stage": stage,
+                "command_hash": old["command_hash"],
+                "status": "succeeded" if old.get("status") == "succeeded" else "interrupted",
+                "resumable": False,
+                "outputs": old["outputs"],
+                "calls_used": old.get("calls_used", 0),
+                "result": old.get("result"),
+                "reason": "旧任务没有步骤检查点，请基于当前内容重新生成",
+            }

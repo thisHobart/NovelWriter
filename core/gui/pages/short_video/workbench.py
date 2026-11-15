@@ -237,9 +237,9 @@ class Workbench(QWidget):
                 button
                 for page in self.artifact_pages()
                 for button in (
-                    [page.generate_button, page.next_button]
+                    [page.generate_button, page.next_button, page.resume_button]
                     if isinstance(page, ArtifactPage)
-                    else [page.generate_button]
+                    else [page.generate_button, page.resume_button]
                 )
             ],
             self.chat.send_button,
@@ -305,6 +305,16 @@ class Workbench(QWidget):
             (config["content"]["title"] if config else "新项目") or "新项目"
         )
         self.chat.refresh()
+
+    def resume_generation(self, stage: str, button: QPushButton | None = None) -> None:
+        from core.short_video.v2.runtime import ResumeWork, get_recovery
+
+        require(not self.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        if not self.resolve_edits():
+            return
+        task = get_recovery(self.repository, stage)
+        require(task is not None and task["valid"], "STALE_INPUT", "原任务输入已变化，请重新生成")
+        self.submit(ResumeWork(self.repository, task["id"], transport=self.transport), button)
 
     def start_creation(
         self, stage: str, button: QPushButton | None = None, *, asset_key: str | None = None

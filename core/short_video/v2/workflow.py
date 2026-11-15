@@ -5,11 +5,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from copy import deepcopy
-from typing import Any
 
-from openai import APIError
-
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.generation.cancellation import CancelToken
 
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
 from .feedback import (
@@ -17,30 +14,22 @@ from .feedback import (
     TaskContext,
     TaskTracker,
     command_target,
-    concise,
-    failure_feedback,
-    readable_fields,
 )
-from .llm import ScriptLLM
 from .models import (
     ASSET_KINDS,
-    WorkspaceError,
     capture_model_snapshot,
     content_key,
     encode,
     identity,
-    parse_object,
     require,
     text,
-    timestamp,
     validate_choice,
-    validate_model_snapshot,
 )
 from .project_service import ProjectService
 from .prompt_compiler import compile_shots, finalize_asset_prompts
 from .prompts import INSTRUCTIONS, stage_prompt
 from .repository import ProjectRepository
-from .review import QualityCheckResult, check_candidate
+from .review import QualityCheckResult
 from .storyboard_skill import STORYBOARD_SKILLS, load_storyboard_skill
 from .validation import rows, strings, validate_content
 
@@ -98,6 +87,30 @@ def normalize_catalog(content: JsonObject, previous: ArtifactRecord | None = Non
     return value
 
 
+def freeze_stage_rules(
+    repository: ProjectRepository,
+    stage: str,
+    config: JsonObject,
+    *,
+    state: JsonObject | None = None,
+) -> JsonObject:
+    custom = repository.current(f"prompt_template:{stage}", state=state)
+    instruction = custom["content"]["instruction"] if custom else INSTRUCTIONS[stage]
+    skill_id = config.get("storyboard_skill_id") if stage == "storyboard" else None
+    require(
+        skill_id is None or skill_id in STORYBOARD_SKILLS,
+        "INVALID_INPUT",
+        "请选择可用的分镜 Skill 或不使用 Skill",
+    )
+    if skill_id is not None:
+        instruction += "\n\n用户选择的分镜 Skill：\n" + load_storyboard_skill(skill_id)
+    return {
+        "instruction": instruction,
+        "skill_id": skill_id,
+        "prompt_ref": custom["id"] if custom else f"{stage}-default-v3",
+    }
+
+
 class WorkflowService:
     def __init__(
         self,
@@ -130,6 +143,7 @@ class WorkflowService:
         request_id: str | None = None,
         fact_table_id: str | None = None,
         upstream_ids: dict[str, str] | None = None,
+        frozen_rules: JsonObject | None = None,
     ) -> JsonObject:
         require(stage in INSTRUCTIONS, "INVALID_INPUT", "未知生成阶段")
         require(mode in {"generate", "revise"}, "INVALID_INPUT", "未知生成方式")
@@ -287,18 +301,10 @@ class WorkflowService:
             if candidate
             else {"asset_id": entity_id, "variant_id": variant_id},
         )
-        custom = self.repository.current(f"prompt_template:{stage}", state=state)
-        instruction = custom["content"]["instruction"] if custom else INSTRUCTIONS[stage]
-        # Freeze the user's current explicit choice for this request.
-        skill_id = config["content"].get("storyboard_skill_id") if stage == "storyboard" else None
-        require(
-            skill_id is None or isinstance(skill_id, str) and skill_id in STORYBOARD_SKILLS,
-            "INVALID_INPUT",
-            "请选择可用的分镜 Skill 或不使用 Skill",
+        rules = frozen_rules or freeze_stage_rules(
+            self.repository, stage, config["content"], state=state
         )
-        if skill_id is not None:
-            # Freeze once: generation, review and retries use the selected skill text.
-            instruction += "\n\n用户选择的分镜 Skill：\n" + load_storyboard_skill(skill_id)
+        instruction, skill_id = rules["instruction"], rules["skill_id"]
         if shot_ids:
             context["selected_shot_ids"] = shot_ids
         prompt = stage_prompt(
@@ -329,7 +335,7 @@ class WorkflowService:
             "input_refs": deps,
             "context": context,
             "prompt": prompt,
-            "prompt_ref": custom["id"] if custom else f"{stage}-default-v3",
+            "prompt_ref": rules["prompt_ref"],
             "requirements": {
                 "instruction": instruction,
                 "asks": asks or [],
@@ -352,272 +358,21 @@ class WorkflowService:
         report: ProgressReporter | None = None,
         on_request: RequestRecorder | None = None,
         on_context: Callable[[TaskContext], None] | None = None,
+        task_id: str | None = None,
+        resume: bool = False,
     ) -> JsonObject:
-        """Run the Agent Loop; max_retries excludes the initial generation."""
-        token = token or CancelToken()
-        report = report or (lambda *args: None)
-        tracker = TaskTracker(
-            ACTION_NAMES.get(command["stage"], "内容生成"), target=command_target(command)
+        from .runtime import execute_stage
+
+        return execute_stage(
+            self,
+            command,
+            token=token or CancelToken(),
+            report=report or (lambda *args: None),
+            on_context=on_context,
+            on_request=on_request,
+            task_id=task_id,
+            resume=resume,
         )
-
-        def phase(name: str, **changes: Any) -> None:
-            tracker.update_context(phase=name, **changes)
-            if on_context:
-                on_context(tracker.task_context)
-            # After a model response, persist the candidate before reporting cancellation.
-            if name not in {"结构与引用校验", "保存候选"}:
-                report(f"{tracker.task_context.target} · {name}…", -1)
-
-        def failed(exc: Exception) -> None:
-            self.repository.record_run_failure(
-                run["id"],
-                exc,
-                cancelled=token.cancelled or isinstance(exc, GenerationCancelled),
-                feedback=failure_feedback(tracker.task_context, exc),
-            )
-            # Failed/cancelled runs discard unselected candidates, so the UI must
-            # not keep reporting a temporary candidate as retained content.
-            saved = False
-            try:
-                current_refs = set(self.repository.load()["current"].values())
-                saved = any(candidate["id"] in current_refs for candidate in candidates)
-            except (OSError, WorkspaceError):
-                pass  # Preserve the original failure if storage is also unavailable.
-            tracker.update_context(saved=saved)
-            if on_context:
-                on_context(tracker.task_context)
-
-        max_retries = command["max_retries"]
-        require(
-            type(max_retries) is int and max_retries >= 0, "INVALID_INPUT", "重试次数必须为非负整数"
-        )
-        with self.repository.generation_lock():
-            run, created = self.repository.start_run(
-                command,
-                expected_revision=command["expected_revision"],
-                snapshot={
-                    "input_refs": command["input_refs"],
-                    "model": command["model"],
-                    "prompt_ref": command["prompt_ref"],
-                    "model_snapshot": command["model_snapshot"],
-                },
-            )
-            if not created:
-                require(
-                    bool(run["output_refs"]),
-                    "OUTPUT_REPLACED",
-                    "这次任务的内容已被替换或未完成，请使用当前内容或重新生成",
-                )
-                return {
-                    "run_id": run["id"],
-                    "status": run["status"],
-                    "version_id": next(iter(run["output_refs"]), None),
-                    "selected": run.get("selected", False),
-                    "review_status": run.get("review_status", "unavailable"),
-                    "retries_used": run.get("retries_used", 0),
-                    "feedback": run.get("feedback"),
-                }
-
-            call_type = "generation"
-
-            def record_call(prompt: str, response: str, error: str | None) -> None:
-                self.repository.update_run(
-                    run["id"],
-                    lambda r, _: r["calls"].append(
-                        {
-                            "type": call_type,
-                            "error": error,
-                            "created_at": timestamp(),
-                        }
-                    ),
-                )
-
-                if on_request:
-                    on_request("", "", error)
-
-            send = ScriptLLM(
-                command["model"], token=token, transport=self.transport, record=record_call
-            )
-            candidates = []
-
-            def generate_candidate(prompt: str) -> ArtifactRecord:
-                generation_prompt = prompt
-                generation_phase = "质量修订" if candidates else "生成"
-                for format_attempt in range(MAX_FORMAT_RETRIES + 1):
-                    phase("格式修复" if format_attempt else generation_phase)
-                    raw = send(prompt)
-                    try:
-                        phase("结构与引用校验")
-                        content = parse_object(raw)
-                        if command["stage"] == "asset_catalog":
-                            content = normalize_catalog(content, command.get("previous_catalog"))
-                        content = self._validate_output(command, content)
-                    except WorkspaceError as exc:
-                        if exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}:
-                            raise
-                        token.raise_if_cancelled()
-                        if format_attempt == MAX_FORMAT_RETRIES:
-                            raise WorkspaceError(
-                                "INVALID_OUTPUT", "未取得可用稿件：" + str(exc) + "；原稿保留"
-                            ) from exc
-                        prompt = (
-                            generation_prompt
-                            + "\n仅修复上次JSON、字段类型、规定枚举或引用格式，输出完整JSON。保留既有叙事内容，不借格式修复新增剧情、补结局或删除事实。错误："
-                            + str(exc)
-                            + "\n上次原始回复："
-                            + encode({"response": raw})
-                        )
-                        require(
-                            len(prompt) <= self.max_context_chars,
-                            "INPUT_TOO_LARGE",
-                            "格式修复上下文超限",
-                        )
-                        continue
-                    # Persist before any further paid request, even if cancellation just arrived.
-                    phase("保存候选")
-                    with self.repository.transaction() as state:
-                        version = self.repository._save(
-                            state,
-                            command["kind"],
-                            content,
-                            command["input_refs"],
-                            origin="model",
-                            select=False,
-                            metadata={
-                                "run_id": run["id"],
-                                "prompt_ref": command["prompt_ref"],
-                                **({"plan_id": command["plan_id"]} if "plan_id" in command else {}),
-                            },
-                        )
-                        candidates.append(version)
-                        next(r for r in state["runs"] if r["id"] == run["id"])["output_refs"] = [
-                            v["id"] for v in candidates
-                        ]
-                    tracker.update_context(saved=True)
-                    if on_context:
-                        on_context(tracker.task_context)
-                    token.raise_if_cancelled()
-                    return version
-
-            latest = None
-            retries_used = 0
-            review_status = "unavailable"
-            feedback = None
-            try:
-                validate_model_snapshot(command["model_snapshot"])
-                prompt = command["prompt"]
-                # Agent Loop owns inputs, generation and retry control, never business rules.
-                for attempt in range(max_retries + 1):
-                    call_type = "generation"
-                    latest = generate_candidate(prompt)
-                    retries_used = attempt
-                    call_type = "quality_check"
-                    phase("自动审阅")
-                    result = (
-                        self.quality_check(command, latest)
-                        if self.quality_check is not None
-                        else check_candidate(command, latest, send, self.repository)
-                    )
-                    token.raise_if_cancelled()
-                    review_status = "passed" if result.passed else "issues"
-                    feedback = {
-                        "phase": "自动审阅",
-                        "target": tracker.task_context.target,
-                        "summary": "自动检查通过"
-                        if result.passed
-                        else readable_fields(
-                            concise(
-                                result.feedback.splitlines()[0]
-                                if result.feedback
-                                else "检查发现问题"
-                            )
-                        ),
-                        "issue_count": result.issue_count or (0 if result.passed else 1),
-                    }
-                    if not result.passed:
-                        logger.warning("%s：%s", tracker.task_context.target, result.feedback)
-                    if result.passed or attempt == max_retries:
-                        break
-                    prompt = (
-                        command["prompt"]
-                        + "\n根据外部质量检查反馈修改最新候选，保留原始任务与上下文，只返回完整JSON：\n"
-                        + encode({"candidate": latest["content"], "feedback": result.feedback})
-                    )
-                    phase("质量修订")
-                    require(
-                        len(prompt) <= self.max_context_chars,
-                        "CONTEXT_TOO_LARGE",
-                        "Agent Loop 修改上下文超限",
-                    )
-            except (APIError, TimeoutError, ConnectionError) as exc:
-                if latest is None:
-                    failed(exc)
-                    raise
-                review_status = "unavailable"
-                feedback = failure_feedback(tracker.task_context, exc)
-                logger.error("已保留候选，后续步骤中断", exc_info=True)
-            except WorkspaceError as exc:
-                if latest is None or exc.code not in {
-                    "INVALID_INPUT",
-                    "INVALID_OUTPUT",
-                    "CONTEXT_TOO_LARGE",
-                    "INPUT_TOO_LARGE",
-                }:
-                    failed(exc)
-                    raise
-                review_status = "unavailable"
-                feedback = failure_feedback(tracker.task_context, exc)
-                logger.error("已保留候选，后续步骤中断", exc_info=True)
-            except Exception as exc:
-                failed(exc)
-                raise
-
-            try:
-                token.raise_if_cancelled()
-                phase("选用结果")
-                with self.repository.transaction() as state:
-                    previous_current = dict(state["current"])
-                    unchanged_inputs = all(
-                        state["current"].get(k) == v
-                        for k, v in command["selection_snapshot"].items()
-                    )
-                    select = (
-                        unchanged_inputs
-                        and state["current"].get(command["key"]) == command["selected_before"]
-                    )
-                    require(
-                        select,
-                        "TARGET_VERSION_CONFLICT",
-                        "输入或当前内容在生成期间已变化，当前内容保留，请重新生成",
-                    )
-                    state["current"][command["key"]] = latest["id"]
-                    current_run = next(r for r in state["runs"] if r["id"] == run["id"])
-                    current_run.update(
-                        status="succeeded",
-                        output_refs=[latest["id"]],
-                        selected=select,
-                        ended_at=timestamp(),
-                        review_status=review_status,
-                        feedback=feedback,
-                        retries_used=retries_used,
-                    )
-                return {
-                    "run_id": run["id"],
-                    "status": "succeeded",
-                    "version_id": latest["id"],
-                    "selected": select,
-                    "review_status": review_status,
-                    "retries_used": retries_used,
-                    "feedback": feedback,
-                    "invalidated_refs": {
-                        key: ref
-                        for key, ref in previous_current.items()
-                        if key not in state["current"]
-                    },
-                }
-            except Exception as exc:
-                failed(exc)
-                raise
 
     def _validate_output(self, command: JsonObject, content: JsonObject) -> JsonObject:
         state = self.repository.load()
@@ -711,8 +466,14 @@ class WorkflowService:
             content = finalize_asset_prompts(kind, content)
         return content
 
-    def compile_storyboard_prompts(self, *, expected_revision: int) -> ArtifactRecord:
-        state = self.repository.load()
+    def compile_storyboard_prompts(
+        self, *, expected_revision: int, state: JsonObject | None = None
+    ) -> ArtifactRecord:
+        if state is None:
+            with self.repository.transaction(expected_revision) as current:
+                return self.compile_storyboard_prompts(
+                    expected_revision=expected_revision, state=current
+                )
         storyboard = self.repository.current("storyboard", state=state)
         require(
             storyboard is not None and self.repository.is_current(storyboard["id"], state=state),
@@ -741,12 +502,7 @@ class WorkflowService:
         )
         deps = {"storyboard": storyboard["id"]}
         deps.update({s["key"]: s["id"] for s in specs if s["id"] in content["asset_spec_refs"]})
-        return self.repository.save(
-            "prompt_bundle",
-            content,
-            deps,
-            expected_revision=expected_revision,
-        )
+        return self.repository._save(state, "prompt_bundle", content, deps)
 
 
 class WorkspaceWork(TaskTracker):

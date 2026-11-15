@@ -54,7 +54,7 @@ def test_conflict_and_media_unknown_never_suggest_recreating_remote_tasks() -> N
     context = TaskContext("资产提示词生成", saved=True, phase="选用结果")
     error = WorkspaceError("TARGET_VERSION_CONFLICT", "提示词在生成期间已被修改")
     severity, title, detail = task_message(context, error=error)
-    assert severity == "warning" and "版本冲突" in title
+    assert severity == "warning" and "内容冲突" in title
     assert "当前内容未被替换" in detail and "历史" not in detail
     context = TaskContext("视频生成", phase="提交远程任务", remote_status="unknown")
     severity, title, detail = task_message(context, error=TimeoutError())

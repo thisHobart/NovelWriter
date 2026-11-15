@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.14；日期：2026-11-15；状态：文字提示词 default-v3；任务新增可选简明反馈和上下文回调，旧记录兼容读取。
+文档版本：2.15；日期：2026-11-15；状态：文字提示词 default-v3；任务新增可选简明反馈和上下文回调，旧记录兼容读取。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -22,7 +22,7 @@
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
 
-同请求 ID 同内容只执行一次；同键不同内容报冲突。来源 ID、revision、精确版本和运行记录由应用层维护，不要求用户填写。运行中用户另存内容时，生成结果保留为候选，不能覆盖新的人工选择。
+同请求 ID 同内容复用已保存结果；同键不同内容报冲突。请求结果不明时显式继续可能重发，不能承诺远端只执行一次。来源 ID、revision、精确版本和运行记录由应用层维护，不要求用户填写。运行中用户另存内容时，生成结果保留为候选，不能覆盖新的人工选择。
 
 ## 2. 内部生成与检查契约
 
@@ -34,13 +34,20 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行；长文计划逐段提取事实、改编并最终合稿，不按累计调用次数或耗时停止。新任务和分段计划不含 max_calls、seconds；calls_used 仅记录调用次数。旧分段计划保留原冻结哈希核验，历史限制字段不参与执行判断。长文续跑不重发成功分段，不增加独立运行存储。
 
-完整检查反馈及中间问题用于本轮修订，并记录到应用日志；不新增检查报告，不写 issues 列表到任务结果，不写入会话历史，也不持久化含反馈的修改请求。运行记录及结果新增可选 `feedback={phase,target,summary,issue_count,cause?}`，仅存一条简明问题或失败原因。已有调用记录仍仅保留类型、错误类型和时间，计数回调不传递请求／响应原文。已删除的独立检查服务、人工确认与报告写入接口不恢复。
+文字执行交由 runtime 管理，`WorkflowService.execute` 新增内部 `task_id=None` 和 `resume=False`：独立阶段持有生成锁并创建任务，组合阶段传入父任务编号并共享顶层锁。`prepare` 新增可选 `frozen_rules`，分镜组合任务从目录生成前就冻结分镜模板与 Skill 正文；资产任务冻结整批共用的阶段要求。恢复不得重新读取新 Skill 正文替换旧请求。
 
-各 `VideoTask` 暴露不可变 `task_context` 快照，包含 `action,target,phase,completed,total,saved,remote_status`。工作流、对话及分块服务通过可选 `on_context(TaskContext)` 更新任务快照；UI 从快照获取对象和阶段，不解析进度文字。现有 `ProgressReporter(str,float)`、TaskRunner 成功／失败／取消信号不变，失败信号继续传递原始异常。资产任务结果另含 `review_summary`，同时汇总检查中断与仍有问题的项数。旧记录缺少反馈时显示原因未记录，不迁移或回写历史文件。
+- `ResumeWork(repository, task_id, *, transport=None)`：符合 VideoTask 契约，继续指定任务；任务选择不按资产名称或最近文件猜测。
+- `get_recovery(repository, stage)`：返回同类最近任务的编号、状态、有效性、完成数、对象、阶段、结果不明提示或失效原因；已成功任务不提供恢复入口。
+- `ProjectRepository.recover()`：在生成锁内迁移旧任务、识别 interrupted 和 unknown、清理失效检查点；不发送模型请求。
 
-合法候选在每次检查前保存，暂不选为当前内容；提交时核对输入快照与 selected_before。所有内容发生冲突均返回 TARGET_VERSION_CONFLICT，保留当前编辑并删除未选候选。任务结束后各内容键仅保留当前一份，删除旧文件及失效下游；所有非聊天运行移除 command 和 snapshot.input_refs 中的正文副本。旧请求对应的输出已被替换时返回 OUTPUT_REPLACED，不重新请求模型。组合任务返回 invalidated_refs（被本次合法提交清除的下游键及原引用），供同一任务更新冻结指针，避免目录更新后误判其清除的旧分镜为外部修改。
+统一清单 `tasks[id]` 保存任务命令、输入与目标 expected 指针、阶段规则、已完成输出、调用次数及当前项目命令；`runs[].checkpoint` 保存 `step=request|validate|review|decide|commit`、原阶段命令、最新候选引用、待处理 response、审阅反馈和格式／质量次数。任务状态为 running、paused、interrupted、failed、succeeded、invalidated，resumable 单独表示是否允许继续。仅 pending 检查点保存必要正文，结束后移除；不恢复历史候选接口。
 
-模型异常、检查服务异常及无效检查响应不触发质量修改循环。生成前失败沿用现有异常；已有合法候选时沿用保留可用稿与未完成／不可用状态；取消沿用取消异常和恢复机制。内部编程错误原样暴露。普通聊天不使用 Agent Loop；手改只做本地校验。
+调用元数据增加调用编号、逻辑 step_id 和 sending／received／unknown／failed。发送前落盘 sending，完整回复与下一步骤同步落盘；429等明确服务错误记 failed，无完整确认的网络结果记 unknown。SDK 自动重试仍关闭；用户点击继续才重试，次数不重置。写盘失败停止后续调用，并保留原异常及必要 cause。
+
+任务提交同时核对输入和人工目标，原子更新业务当前指针、run 输出与父任务完成记录。原子事务内同步修正自身清除的下游引用；外部变化返回 TARGET_VERSION_CONFLICT，旧结果被替换返回 OUTPUT_REPLACED。组合任务末尾编排使用同一事务接口，并把 prompt_bundle 加入任务输出。
+
+TaskContext 增加 `resumable`；其余 `action,target,phase,completed,total,saved,remote_status` 保留，ProgressReporter 与成功／失败／取消信号保持。任务状态与候选可恢复性从持久化检查点得出，不能只依赖 saved 标记。审阅限流／断网会停止在审阅处，不再返回 unavailable 并视作完成；质量问题达到修订上限仍返回 issues。聊天及视频任务的取消与远程查询语义保持原样。
+
 
 ### 2.1 纯聊天实际契约
 

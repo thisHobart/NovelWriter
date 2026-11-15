@@ -2,208 +2,204 @@
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from copy import deepcopy
-from pathlib import Path
 
 from core.generation.cancellation import CancelToken
 
 from .contracts import JsonObject, ProgressReporter, TextTransport
-from .feedback import ACTION_NAMES, TaskTracker, failure_feedback, review_message
+from .feedback import ACTION_NAMES, TaskContext, TaskTracker, review_message
 from .models import (
     ASSET_KINDS,
-    WorkspaceError,
     capture_model_snapshot,
-    encode,
     fingerprint,
     identity,
     require,
-    timestamp,
-    validate_model_snapshot,
 )
 from .repository import ProjectRepository
-from .storage import atomic_write_text
 from .validation import local_issues
-from .workflow import WorkflowService
+from .workflow import WorkflowService, freeze_stage_rules
 
 
 class CreationWork(TaskTracker):
+    """One durable task owns the generation lock across all of its assets."""
+
     def __init__(
         self,
         repository: ProjectRepository,
         command: JsonObject,
         *,
         transport: TextTransport | None = None,
+        resume: bool = False,
     ) -> None:
         super().__init__(ACTION_NAMES[command["stage"]])
         self.update_context(
             total=2 if command["stage"] == "storyboard_task" else len(command["items"])
         )
         self.output_dir = repository.output_dir
-        self.command = deepcopy(command)
-        self.transport = transport
+        self.command, self.transport, self.resume = deepcopy(command), transport, resume
         self.token = CancelToken()
+        self.on_context = None
+
+    def accept_context(self, context: TaskContext) -> None:
+        super().accept_context(context)
+        if self.on_context:
+            self.on_context(self.task_context)
 
     def __call__(self, report: ProgressReporter) -> JsonObject:
+        from .runtime import (
+            complete_task,
+            finish_failure,
+            start_task,
+            sync_failure_context,
+            task_valid,
+            validate_task,
+        )
+
         repository = ProjectRepository(self.output_dir)
-        task_path = repository.root / "tasks" / (self.command["request_id"] + ".json")
-        if task_path.exists():
-            try:
-                previous = json.loads(task_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise WorkspaceError("INVALID_TASK", "生成任务记录损坏，未重新发送") from exc
-            require(
-                previous["command_hash"] == fingerprint(self.command),
-                "REQUEST_KEY_CONFLICT",
-                "任务编号不能用于不同内容",
-            )
-            if previous["status"] == "succeeded":
-                state = repository.load()
+        task_id = self.command["request_id"]
+        with repository.generation_lock():
+            previous = repository.load()["tasks"].get(task_id)
+            if previous:
                 require(
-                    all(ref in state["records"] for ref in previous["outputs"]),
+                    previous["command_hash"] == fingerprint(self.command),
+                    "REQUEST_KEY_CONFLICT",
+                    "任务编号不能用于不同内容",
+                )
+            if previous and previous["status"] == "succeeded":
+                require(
+                    all(ref in repository.load()["records"] for ref in previous["outputs"]),
                     "OUTPUT_REPLACED",
-                    "这次任务的内容已被替换，请使用当前内容或重新生成",
+                    "这次任务的内容已被替换，请重新生成",
                 )
                 return previous["result"]
-            raise WorkspaceError(
-                "TASK_STOPPED", "这个任务已经停止，已完成内容保留；请从当前页面重新生成未完成内容"
-            )
-        task = {
-            "command": self.command,
-            "command_hash": fingerprint(self.command),
-            "status": "running",
-            "calls_used": 0,
-            "created_at": timestamp(),
-            "outputs": [],
-        }
-        atomic_write_text(task_path, encode(task))
-        try:
-            result = self.execute_task(repository, report, task, task_path)
-            self.update_context(phase="保存任务记录")
-            task.pop("command", None)
-            task.update(status="succeeded", result=result, ended_at=timestamp())
-            atomic_write_text(task_path, encode(task))
-            return result
-        except Exception as exc:
-            task.pop("command", None)
-            task.update(
-                status="cancelled" if self.token.cancelled else "failed",
-                error=type(exc).__name__,
-                feedback=failure_feedback(self.task_context, exc),
-                ended_at=timestamp(),
+            if self.resume:
+                validate_task(repository, task_id, model=False)
+            else:
+                require(previous is None, "TASK_STOPPED", "任务已停止，请使用继续生成")
+                start_task(repository, self.command)
+            self.update_context(
+                completed=repository.load()["tasks"][task_id].get("completed", 0), resumable=True
             )
             try:
-                atomic_write_text(task_path, encode(task))
-            except OSError as storage_error:
-                exc.add_note(f"任务状态保存失败：{type(storage_error).__name__}")
-            raise
+                with repository.transaction() as state:
+                    require(
+                        task_valid(state, state["tasks"][task_id]),
+                        "TARGET_VERSION_CONFLICT",
+                        "输入已变化，请重新生成",
+                    )
+                    state["tasks"][task_id]["status"] = "running"
+                result = self.execute_task(repository, report)
+                with repository.transaction() as state:
+                    complete_task(state, task_id, result)
+                return result
+            except Exception as exc:
+                finish_failure(repository, task_id, exc, self.task_context)
+                sync_failure_context(self, repository, task_id, exc)
+                raise
 
-    def execute_task(
-        self,
-        repository: ProjectRepository,
-        report: ProgressReporter,
-        task: JsonObject,
-        task_path: Path,
-    ) -> JsonObject:
+    def execute_task(self, repository: ProjectRepository, report: ProgressReporter) -> JsonObject:
+        from .runtime import accept_output, task_valid, validate_task
+
+        task_id = self.command["request_id"]
         service = WorkflowService(repository, self.command["model"], transport=self.transport)
-        results = []
-        frozen = deepcopy(self.command["input_refs"])
 
-        def verify_inputs() -> None:
-            if self.command["model_snapshot"] is not None:
-                validate_model_snapshot(self.command["model_snapshot"])
-            state = repository.load()
-            retained = set(state["current"].values())
-            self.update_context(completed=sum(ref in retained for ref in task["outputs"]))
-            require(
-                all(state["current"].get(key) == value for key, value in frozen.items()),
-                "STALE_INPUT",
-                "输入在生成期间发生变化，请使用当前内容重新生成",
-            )
+        def execute(item_key: str, prepare: Callable[[], JsonObject]) -> JsonObject:
+            task = validate_task(repository, task_id)
             self.token.raise_if_cancelled()
-
-        def execute(command: JsonObject) -> JsonObject:
-            verify_inputs()
-
-            def record_call(sent: str, response: str, error: str | None) -> None:
-                task["calls_used"] += 1
-                atomic_write_text(task_path, encode(task))
-
+            item = task["items"].get(item_key)
+            if item and item.get("result"):
+                return item["result"]
+            if item is None:
+                command = prepare()
+                with repository.transaction() as state:
+                    require(
+                        task_valid(state, state["tasks"][task_id]),
+                        "TARGET_VERSION_CONFLICT",
+                        "输入已变化，请重新生成",
+                    )
+                    state["tasks"][task_id]["items"][item_key] = {"command": command}
+            else:
+                command = item["command"]
             result = service.execute(
                 command,
                 token=self.token,
                 report=report,
-                on_request=record_call,
                 on_context=self.accept_context,
+                task_id=task_id,
             )
-            results.append(result)
-            record = repository.record(result["version_id"])
-            task["outputs"].append(record["id"])
-            atomic_write_text(task_path, encode(task))
-            frozen[record["key"]] = record["id"]
-            for key, ref in result.get("invalidated_refs", {}).items():
-                if frozen.get(key) == ref:
-                    frozen[key] = None
-            require(
-                result["selected"],
-                "TARGET_VERSION_CONFLICT",
-                "当前内容已被修改，本次候选不替换当前内容",
+            with repository.transaction() as state:
+                require(
+                    task_valid(state, state["tasks"][task_id]),
+                    "TARGET_VERSION_CONFLICT",
+                    "输入已变化，请重新生成",
+                )
+                state["tasks"][task_id]["items"][item_key] = {"result": result}
+            self.update_context(
+                completed=repository.load()["tasks"][task_id]["completed"], saved=False
             )
-            self.update_context(completed=self.task_context.completed + 1, saved=False)
             return result
 
-        verify_inputs()
+        results = []
         if self.command["stage"] == "storyboard_task":
-            catalog = execute(self.command["first_command"])
-            frozen["asset_catalog"] = catalog["version_id"]
-            execute(service.prepare("storyboard"))
+            results.append(execute("catalog", lambda: deepcopy(self.command["first_command"])))
+            results.append(
+                execute(
+                    "storyboard",
+                    lambda: service.prepare("storyboard", frozen_rules=self.command["stage_rules"]),
+                )
+            )
         else:
             entities = {
                 e["asset_id"]: e
                 for e in repository.record(self.command["catalog_id"])["content"]["entities"]
             }
-            for item in self.command["items"]:
-                entity = entities[item["entity_id"]]
-                self.update_context(target=entity["name"], phase="准备", saved=False)
-                verify_inputs()
-                report("正在生成资产提示词…", -1)
-                execute(
-                    service.prepare(
-                        "asset_spec",
-                        **item,
-                        upstream_ids={"asset_catalog": self.command["catalog_id"]},
+            for index, item in enumerate(self.command["items"]):
+                self.update_context(
+                    target=entities[item["entity_id"]]["name"], phase="准备", saved=False
+                )
+                results.append(
+                    execute(
+                        str(index),
+                        lambda item=item: service.prepare(
+                            "asset_spec",
+                            **item,
+                            upstream_ids={"asset_catalog": self.command["catalog_id"]},
+                            frozen_rules=self.command["stage_rules"],
+                        ),
                     )
                 )
-            verify_inputs()
+            validate_task(repository, task_id)
+            self.token.raise_if_cancelled()
             self.update_context(target="镜头提示词", phase="编排", saved=False)
             report("正在编排镜头提示词…", -1)
-            service.compile_storyboard_prompts(expected_revision=repository.load()["revision"])
-        unavailable = [r for r in results if r["review_status"] in {"unavailable", "incomplete"}]
-        issues = [r for r in results if r["review_status"] == "issues"]
-        summaries = []
-        for status, group, label in (
-            ("unavailable", unavailable, "检查未完成"),
-            ("issues", issues, "检查发现问题"),
-        ):
-            if group:
-                feedback = group[0].get("feedback") or {}
-                summaries.append(
-                    f"{len(group)}项{label}：{feedback.get('target', '')} "
-                    + review_message(status, feedback)
+            with repository.transaction() as state:
+                task = state["tasks"][task_id]
+                require(
+                    task_valid(state, task),
+                    "TARGET_VERSION_CONFLICT",
+                    "镜头提示词或输入已变化，请重新生成",
                 )
+                if "compiled" not in task["items"]:
+                    compiled = service.compile_storyboard_prompts(
+                        expected_revision=state["revision"], state=state
+                    )
+                    accept_output(state, task_id, compiled)
+                    task["items"]["compiled"] = {"result": compiled["id"]}
+            self.update_context(completed=repository.load()["tasks"][task_id]["completed"])
+        issues = [r for r in results if r["review_status"] == "issues"]
+        task = repository.load()["tasks"][task_id]
         return {
             "status": "succeeded",
-            "review_status": "unavailable"
-            if unavailable
-            else "issues"
-            if issues
-            else "passed"
-            if results
-            else "not_requested",
-            "version_id": results[-1]["version_id"] if results else None,
+            "review_status": "issues" if issues else "passed" if results else "not_requested",
+            "version_id": task["outputs"][-1] if task["outputs"] else None,
             "calls": task["calls_used"],
-            "review_summary": "；".join(summaries)
-            or ("自动检查通过" if results else "已完成提示词编排，未额外进行AI审阅"),
+            "review_summary": f"{len(issues)}项检查发现问题："
+            + review_message("issues", issues[0].get("feedback"))
+            if issues
+            else "自动检查通过"
+            if results
+            else "已完成提示词编排，未额外进行AI审阅",
         }
 
 
@@ -220,6 +216,12 @@ def prepare_storyboard_task(repository: ProjectRepository, model: str) -> JsonOb
         "model": model,
         "input_refs": pointers,
         "first_command": first,
+        "stage_rules": freeze_stage_rules(
+            repository,
+            "storyboard",
+            repository.current("config", state=state)["content"],
+            state=state,
+        ),
         "model_snapshot": first["model_snapshot"],
     }
 
@@ -270,11 +272,18 @@ def prepare_prompt_task(
     # 每项资产独立执行质量修复循环，不设置整轮调用次数和时长上限。
     return {
         "stage": "prompt_task",
+        "stage_rules": freeze_stage_rules(
+            repository,
+            "asset_spec",
+            repository.current("config", state=state)["content"],
+            state=state,
+        ),
         "catalog_id": catalog["id"],
         "request_id": identity("creation"),
         "model": model,
         "input_refs": {
             "storyboard": board["id"],
+            "prompt_bundle": state["current"].get("prompt_bundle"),
             "asset_catalog": state["current"].get("asset_catalog"),
             "config": state["current"].get("config"),
             "selection": state["current"].get("selection"),
