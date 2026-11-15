@@ -19,6 +19,8 @@ from test_video_v2_repository import project, prompt_project, novel  # noqa: F40
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
+    from core.short_video.v2 import llm
+    monkeypatch.setattr(llm, "NETWORK_MAX_RETRIES", 0)
     snapshot = {"provider": "hosted-llm", "model": "offline"}
     monkeypatch.setattr(workflow, "capture_model_snapshot", lambda _: snapshot)
     monkeypatch.setattr(creation, "capture_model_snapshot", lambda _: snapshot)

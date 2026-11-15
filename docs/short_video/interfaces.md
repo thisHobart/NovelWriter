@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.16；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.17；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
 
@@ -27,7 +27,7 @@
 
 ## 2. 内部生成与检查契约
 
-`WorkflowService(..., max_retries=2).prepare(...)` 冻结质量重试上限，`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入重试；N 次重试对应最多 N+1 次结构合法的候选生成与检查。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None)` 不接收预算，不设整次墙钟期限，网络超时沿用 SDK 默认值，自动重试关闭。
+`WorkflowService(..., max_retries=2).prepare(...)` 冻结质量重试上限，`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入重试；N 次重试对应最多 N+1 次结构合法的候选生成与检查。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None, network_retries=None, before_request=None, on_retry=None)` 默认最多两次网络重试，共最多三次尝试。连接／超时、HTTP 408／409／429／5xx 可重试；认证、权限、参数、格式、代码及存储错误不自动重试。采用约1秒、2秒的指数退避及少量抖动，尊重 Retry-After／retry-after-ms；服务要求等待超过60秒时停止自动重试，转入现有恢复流程。等待使用取消事件，可立即停止；SDK 内部重试保持0，由本层统一重试以避免叠加。
 
 外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool,feedback: str,issue_count: int = 0)`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
 
@@ -43,11 +43,11 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 统一清单 `tasks[id]` 保存任务命令、输入与目标 expected 指针、阶段规则、已完成输出、调用次数及当前项目命令；`runs[].checkpoint` 保存 `step=request|validate|review|decide|commit`、原阶段命令、最新候选引用、待处理 response、审阅反馈和格式／质量次数；冻结命令和检查点均校验指纹。任务状态为 running、paused、interrupted、failed、succeeded、invalidated，resumable 单独表示是否允许继续。仅 pending 检查点保存必要正文，结束后移除；不恢复历史候选接口。
 
-调用元数据增加调用编号、逻辑 step_id 和 sending／received／unknown／failed。发送前落盘 sending，完整回复与下一步骤同步落盘；429等明确服务错误记 failed，无完整确认的网络结果记 unknown。SDK 自动重试仍关闭；用户点击继续才重试，次数不重置。写盘失败停止后续调用，并保留原异常及必要 cause。
+调用元数据增加调用编号、逻辑 step_id 和 sending／received／unknown／failed。发送前落盘 sending，完整回复与下一步骤同步落盘；429等明确服务错误记 failed，无完整确认的网络结果记 unknown。每次物理请求前调用 before_request，分别记录调用与次数；网络失败后 on_retry 提供错误、重试序号、上限和等待秒数。网络自动重试与格式／质量修订分开计数；网络重试耗尽后，用户可继续同一步骤，格式／质量次数不重置。重试反馈保留实际阶段、部分完成数量和网络重试次数；耗尽后裸 raise 传播最后的原始异常。写盘失败停止后续调用，并保留原异常及必要 cause。
 
 任务提交同时核对输入和人工目标，原子更新业务当前指针、run 输出与父任务完成记录。原子事务内同步修正自身清除的下游引用；外部变化返回 TARGET_VERSION_CONFLICT，旧结果被替换返回 OUTPUT_REPLACED。组合任务末尾编排使用同一事务接口，并把 prompt_bundle 加入任务输出。
 
-TaskContext 增加 `resumable`；其余 `action,target,phase,completed,total,saved,remote_status` 保留，ProgressReporter 与成功／失败／取消信号保持。任务状态与候选可恢复性从持久化检查点得出，不能只依赖 saved 标记。审阅限流／断网会停止在审阅处，不再返回 unavailable 并视作完成；质量问题达到修订上限仍返回 issues。聊天及视频任务的取消与远程查询语义保持原样。
+TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `action,target,phase,completed,total,saved,remote_status` 保留，ProgressReporter 与成功／失败／取消信号保持。任务状态与候选可恢复性从持久化检查点得出，不能只依赖 saved 标记。审阅限流／断网先有限网络重试，耗尽后停止在审阅处，不再返回 unavailable 并视作完成；质量问题达到修订上限仍返回 issues。聊天及视频任务的取消与远程查询语义保持原样。
 
 
 ### 2.1 纯聊天实际契约

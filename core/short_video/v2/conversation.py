@@ -103,7 +103,7 @@ class ConversationService:
         tracker = TaskTracker("AI 回复", target="当前会话")
 
         def phase(name: str, *, saved: bool = False) -> None:
-            tracker.update_context(phase=name, saved=saved)
+            tracker.update_context(phase=name, saved=saved, network_retries=0)
             if on_context:
                 on_context(tracker.task_context)
 
@@ -154,6 +154,10 @@ class ConversationService:
                     token=token,
                     transport=self.transport,
                     record=record_call,
+                    before_request=lambda: validate_model_snapshot(command["model_snapshot"]),
+                    on_retry=lambda error, attempt, maximum, delay: tracker.report_network_retry(
+                        error, attempt, maximum, delay, report, on_context
+                    ),
                 )
                 token.raise_if_cancelled()
                 report("等待 LLM 回复", -1)

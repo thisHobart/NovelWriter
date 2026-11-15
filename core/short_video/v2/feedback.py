@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import errno
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import httpx
 from openai import APIConnectionError, APITimeoutError
 
+from .contracts import ProgressReporter
 from .llm import RecordingError
 from .models import WorkspaceError
 
@@ -101,6 +103,7 @@ class TaskContext:
     saved: bool = False
     remote_status: str = ""
     resumable: bool = False
+    network_retries: int = 0
 
     def location(self) -> str:
         return " · ".join(part for part in (self.target, self.phase) if part)
@@ -129,6 +132,25 @@ class TaskTracker:
             phase=context.phase,
             saved=context.saved,
             resumable=context.resumable,
+            network_retries=context.network_retries,
+        )
+
+    def report_network_retry(
+        self,
+        error: Exception,
+        attempt: int,
+        maximum: int,
+        delay: float,
+        report: ProgressReporter,
+        on_context: Callable[[TaskContext], None] | None = None,
+    ) -> None:
+        self.update_context(network_retries=attempt)
+        if on_context:
+            on_context(self.task_context)
+        report(
+            f"{self.task_context.location()} · 网络重试{attempt}/{maximum}："
+            f"{error_reason(error)}；{delay:.1f}秒后重试",
+            -1,
         )
 
 
@@ -162,7 +184,9 @@ def failure_feedback(context: TaskContext, error: BaseException) -> dict:
         "phase": context.phase,
         "target": context.target,
         "cause": cause,
-        "summary": f"{context.phase}失败：{cause}",
+        "summary": f"{context.phase}失败：{cause}"
+        + (f"；网络已重试{context.network_retries}次" if context.network_retries else ""),
+        **({"network_retries": context.network_retries} if context.network_retries else {}),
         "issue_count": 0,
     }
 
@@ -241,6 +265,8 @@ def task_message(
     if error is not None:
         title = context.action + ("中断" if context.saved or context.completed else "失败")
         detail = f"{context.location()}：{error_reason(error)}；{context.retained()}"
+        if context.network_retries:
+            detail += f"；已自动重试{context.network_retries}次"
         if context.resumable:
             detail += "；可点击继续生成"
         if isinstance(error, RecordingError) or (

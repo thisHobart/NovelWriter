@@ -392,7 +392,7 @@ class AgentExecution:
     def phase(self) -> None:
         name = checkpoint_phase(self.cp)
         self.tracker.update_context(
-            phase=name, saved=bool(self.cp.get("candidate")), resumable=True
+            phase=name, saved=bool(self.cp.get("candidate")), resumable=True, network_retries=0
         )
         if self.on_context:
             self.on_context(self.tracker.task_context)
@@ -401,19 +401,34 @@ class AgentExecution:
     def send(self, prompt: str, call_type: str) -> str:
         if self.cp.get("response") is not None:
             return self.cp["response"]
-        self.token.raise_if_cancelled()
-        validate_task(self.repository, self.task_id)
-        call = {
-            "id": identity("call"),
-            "type": call_type,
-            "step_id": f"{self.run_id}:{self.cp['revision']}:{self.cp['format_attempt']}:{call_type}",
-            "state": "sending",
-            "created_at": timestamp(),
-        }
-        with self.repository.transaction() as state:
-            run = next(r for r in state["runs"] if r["id"] == self.run_id)
-            run["calls"].append(call)
-            state["tasks"][self.task_id]["calls_used"] += 1
+        call = {}
+        network_attempt = -1
+
+        def begin() -> None:
+            nonlocal call, network_attempt
+            self.token.raise_if_cancelled()
+            validate_task(self.repository, self.task_id)
+            network_attempt += 1
+            self.tracker.update_context(network_retries=network_attempt)
+            if self.on_context:
+                self.on_context(self.tracker.task_context)
+            call = {
+                "id": identity("call"),
+                "type": call_type,
+                "step_id": f"{self.run_id}:{self.cp['revision']}:{self.cp['format_attempt']}:{call_type}",
+                "network_attempt": network_attempt,
+                "state": "sending",
+                "created_at": timestamp(),
+            }
+            with self.repository.transaction() as state:
+                require(
+                    task_valid(state, state["tasks"][self.task_id]),
+                    "TARGET_VERSION_CONFLICT",
+                    "输入已变化，请重新生成",
+                )
+                run = next(r for r in state["runs"] if r["id"] == self.run_id)
+                run["calls"].append(call)
+                state["tasks"][self.task_id]["calls_used"] += 1
 
         def record(_prompt: str, response: str, error: str | None) -> None:
             with self.repository.transaction() as state:
@@ -448,7 +463,14 @@ class AgentExecution:
                 self.on_request("", "", error)
 
         return ScriptLLM(
-            self.command["model"], token=self.token, transport=self.service.transport, record=record
+            self.command["model"],
+            token=self.token,
+            transport=self.service.transport,
+            record=record,
+            before_request=begin,
+            on_retry=lambda error, attempt, maximum, delay: self.tracker.report_network_retry(
+                error, attempt, maximum, delay, self.report, self.on_context
+            ),
         )(prompt)
 
     def execute(self) -> JsonObject:

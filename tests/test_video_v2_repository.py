@@ -1051,6 +1051,8 @@ def test_compiled_shot_deduplicates_visible_text_without_changing_refs(prompt_pr
 
 @pytest.mark.parametrize("failure_phase", ["生成", "格式修复", "自动审阅", "质量修订"])
 def test_task_feedback_keeps_original_failure_and_actual_phase(prompt_project, monkeypatch, caplog, failure_phase):
+    from core.short_video.v2 import llm
+    monkeypatch.setattr(llm, "NETWORK_MAX_RETRIES", 0)
     from core.short_video.v2 import workflow
     from core.short_video.v2.feedback import record_message, task_message
     from core.short_video.v2.models import encode
@@ -1121,6 +1123,8 @@ def test_review_feedback_manual_edit_and_source_replacement_are_distinct(prompt_
 
 
 def test_asset_batch_reports_object_partial_progress_and_original_429(prompt_project, monkeypatch):
+    from core.short_video.v2 import llm
+    monkeypatch.setattr(llm, "NETWORK_MAX_RETRIES", 0)
     import httpx
     from openai import RateLimitError
     from core.short_video.v2 import creation, workflow
@@ -1159,6 +1163,8 @@ def test_asset_batch_reports_object_partial_progress_and_original_429(prompt_pro
 
 
 def test_asset_batch_keeps_both_incomplete_review_and_quality_issues(prompt_project, monkeypatch):
+    from core.short_video.v2 import llm
+    monkeypatch.setattr(llm, "NETWORK_MAX_RETRIES", 0)
     from core.short_video.v2 import creation, workflow
     from core.short_video.v2.feedback import task_message
     from core.short_video.v2.models import encode

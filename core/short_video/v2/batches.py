@@ -47,9 +47,11 @@ class BatchPlanService(TaskTracker):
     ) -> None:
         super().__init__("长文分段改编")
         self.on_context: Callable[[TaskContext], None] | None = None
+        self.reporter: ProgressReporter = lambda *_: None
         self.repository, self.model, self.transport = repository, model, transport
 
     def phase(self, name: str, **changes: Any) -> None:
+        changes.setdefault("network_retries", 0)
         self.update_context(phase=name, **changes)
         if self.on_context:
             self.on_context(self.task_context)
@@ -272,6 +274,7 @@ class ChunkService(BatchPlanService):
     ) -> JsonObject:
         token, report = token or CancelToken(), report or (lambda *args: None)
         self.on_context = on_context
+        self.reporter = report
         with self.repository.generation_lock():
             plan = self.load_plan(plan_id)
             self.phase(
@@ -453,7 +456,10 @@ class ChunkService(BatchPlanService):
                     on_request=record_merge,
                     resume=bool(saved_task),
                     on_context=lambda context: self.phase(
-                        context.phase, target="合稿", saved=context.saved
+                        context.phase,
+                        target="合稿",
+                        saved=context.saved,
+                        network_retries=context.network_retries,
                     ),
                 )
                 plan.update(output_ref=result["version_id"], status="succeeded")
@@ -491,7 +497,20 @@ class ChunkService(BatchPlanService):
             attempt["calls"].append({"prompt": sent, "response": response, "error": error})
             self.save_plan(plan)
 
-        send = ScriptLLM(plan["model"], token=token, transport=self.transport, record=record_call)
+        def before_request() -> None:
+            validate_model_snapshot(plan["model_snapshot"])
+            require(self.inputs_are_current(plan), "STALE_INPUT", "分块计划输入已变化，请重新生成")
+
+        send = ScriptLLM(
+            plan["model"],
+            token=token,
+            transport=self.transport,
+            record=record_call,
+            before_request=before_request,
+            on_retry=lambda error, attempt, maximum, delay: self.report_network_retry(
+                error, attempt, maximum, delay, self.reporter, self.on_context
+            ),
+        )
         current = prompt
         try:
             for attempt_index in range(2):
