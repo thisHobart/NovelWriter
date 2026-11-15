@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from core.gui import theme
+from core.gui.input_behavior import install_parameter_wheel_guard
 from core.gui.main_window import MainWindow
 
 
@@ -25,6 +26,7 @@ def create_app(argv: list[str] | None = None) -> tuple[QApplication, MainWindow]
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(argv if argv is not None else sys.argv)
+    install_parameter_wheel_guard(app)
     app.setApplicationName("NovelWriter")
     app.setFont(_pick_ui_font())
     app.setStyleSheet(theme.build_qss())
