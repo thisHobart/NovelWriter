@@ -109,6 +109,8 @@ class TaskContext:
         return " · ".join(part for part in (self.target, self.phase) if part)
 
     def retained(self) -> str:
+        if self.action == "资产图片生成":
+            return f"已保存{self.completed}/{self.total}张图片"
         if self.total:
             suffix = "；本项候选已保存" if self.saved else ""
             return f"本次已完成{self.completed}/{self.total}项{suffix}"
@@ -290,6 +292,12 @@ def task_message(
             return "warning", context.action + "发生内容冲突", detail
         return ("warning" if context.saved or context.completed else "error"), title, detail
     result = result or {}
+    if context.action == "资产图片生成":
+        return (
+            "success" if result.get("status") == "succeeded" else "warning",
+            "资产图片已保存" if result.get("status") == "succeeded" else "资产图片部分完成",
+            result.get("image_summary", context.retained()),
+        )
     if context.action == "视频生成":
         if result.get("status") == "succeeded":
             return "success", "视频已保存", "可在镜头页播放或打开视频位置"

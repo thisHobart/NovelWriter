@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QStackedWidget,
     QTabBar,
     QVBoxLayout,
     QWidget,
@@ -23,7 +25,9 @@ from core.short_video.v2.feedback import record_message
 from core.short_video.v2.models import ASSET_KINDS, require
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
+from .asset_images_page import AssetImagesPage
 from .media_preview import MediaPreview
+from .shot_assets_panel import ShotAssetsPanel
 from .ui_helpers import create_action_button
 
 if TYPE_CHECKING:
@@ -84,7 +88,7 @@ class PromptPage(QWidget):
         self.displayed_selection = (0, None, None)
         layout = QVBoxLayout(self)
         self.tabs = QTabBar()
-        for title in ["人物", "场景", "道具", "镜头"]:
+        for title in ["人物", "场景", "道具", "镜头", "资产图片"]:
             self.tabs.addTab(title)
         layout.addWidget(self.tabs)
         bar = QHBoxLayout()
@@ -96,18 +100,43 @@ class PromptPage(QWidget):
         self.view_label = QLabel("视图")
         bar.addWidget(self.view_label)
         bar.addWidget(self.views, 1)
-        layout.addLayout(bar)
+        self.selector_bar = QWidget()
+        self.selector_bar.setLayout(bar)
+        layout.addWidget(self.selector_bar)
         self.status = QLabel("从分镜页生成资产提示词。")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.editor = PromptEditor()
         self.editor.changed.connect(self.mark_dirty)
         body = QHBoxLayout()
-        body.addWidget(self.editor, 1)
+        text_widget = QWidget()
+        text_area = QVBoxLayout(text_widget)
+        text_area.setContentsMargins(0, 0, 0, 0)
+        self.shot_assets = ShotAssetsPanel()
+        self.shot_assets.can_use_images = lambda: not workbench.host.runner.busy
+        text_area.addWidget(self.shot_assets)
+        text_area.addWidget(self.editor, 1)
+        self.text_scroll = QScrollArea()
+        self.text_scroll.setWidgetResizable(True)
+        self.text_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.text_scroll.setWidget(text_widget)
+        body.addWidget(self.text_scroll, 1)
         self.media = MediaPreview(workbench)
+        self.media.inputs_changed.connect(self.refresh_image_nodes)
         self.media.hide()
         body.addWidget(self.media, 1)
-        layout.addLayout(body, 1)
+        self.body_stack = QStackedWidget()
+        self.text_body = QWidget()
+        self.text_body.setLayout(body)
+        self.body_stack.addWidget(self.text_body)
+        self.images_page = AssetImagesPage(workbench)
+        self.body_stack.addWidget(self.images_page)
+        layout.addWidget(self.body_stack, 1)
+        self.shot_assets.image_requested.connect(
+            lambda image_id, node_id: workbench.perform(
+                lambda: self.media.use_image(image_id, node_id)
+            )
+        )
         bar = QHBoxLayout()
         self.save_button = create_action_button("保存", self.save, bar, workbench)
         self.generate_button = create_action_button("重新生成", self.generate, bar, workbench)
@@ -121,11 +150,22 @@ class PromptPage(QWidget):
         self.resume_button.hide()
         bar.addStretch()
         create_action_button("导出", workbench.export, bar, workbench, primary=True)
-        layout.addLayout(bar)
+        self.action_bar = QWidget()
+        self.action_bar.setLayout(bar)
+        layout.addWidget(self.action_bar)
         self.tabs.currentChanged.connect(lambda: workbench.perform(self.change_object))
         self.objects.currentIndexChanged.connect(lambda: workbench.perform(self.change_object))
         self.variants.currentIndexChanged.connect(lambda: workbench.perform(self.change_object))
         self.views.currentIndexChanged.connect(lambda: workbench.perform(self.change_view))
+
+    def refresh_image_nodes(self) -> None:
+        self.shot_assets.set_image_nodes(
+            self.workbench.output_dir,
+            [
+                (node_id, label.text().replace("\n", " / "))
+                for node_id, label in self.media.image_labels.items()
+            ],
+        )
 
     def mark_dirty(self) -> None:
         self.dirty = True
@@ -164,6 +204,15 @@ class PromptPage(QWidget):
 
     def refresh(self, selected_key: str | None = None) -> None:
         if self.dirty:
+            return
+        image_tab = self.tabs.currentIndex() == 4
+        self.selector_bar.setVisible(not image_tab)
+        self.action_bar.setVisible(not image_tab)
+        self.status.setVisible(not image_tab)
+        self.body_stack.setCurrentWidget(self.images_page if image_tab else self.text_body)
+        if image_tab:
+            self.images_page.refresh()
+            self.displayed_selection = (4, None, None)
             return
         state = self.workbench.repository.load()
         entity_id = self.objects.currentData()
@@ -255,6 +304,14 @@ class PromptPage(QWidget):
         self.editor.set_content(
             editor_content, self.displayed_view, readonly=kind == "shot" and not self.record
         )
+        self.shot_assets.set_assets(
+            WorkflowService(self.workbench.repository).shot_assets(
+                self.objects.currentData(), state=state
+            )
+            if kind == "shot" and self.objects.currentData()
+            else []
+        )
+        self.refresh_image_nodes()
         show_text_editor = kind != "shot" or bool(editor_content)
         self.editor.setVisible(show_text_editor)
         self.objects.setVisible(show_text_editor)

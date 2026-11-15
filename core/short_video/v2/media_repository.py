@@ -54,13 +54,28 @@ class MediaRepository:
         """Manual UI and future image workflows share this completed-file import contract."""
         path = Path(path)
         data = path.read_bytes()
+        return self.save_image(data, name=path.name, source=source)
+
+    def save_image(
+        self,
+        data: bytes,
+        *,
+        name: str,
+        source: JsonObject | None = None,
+        image_id: str | None = None,
+    ) -> JsonObject:
         suffix = image_suffix(data)
-        image_id = uuid4().hex
+        image_id = image_id or uuid4().hex
+        require(
+            len(image_id) == 32 and all(c in "0123456789abcdef" for c in image_id),
+            "INVALID_INPUT",
+            "图片编号无效",
+        )
         relative_path = f"images/{image_id}{suffix}"
         self.write_file(relative_path, data)
         record = {
             "image_id": image_id,
-            "name": path.name,
+            "name": name,
             "relative_path": relative_path,
             "sha256": hashlib.sha256(data).hexdigest(),
             "created_at": timestamp(),

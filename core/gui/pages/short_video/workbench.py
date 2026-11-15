@@ -73,6 +73,9 @@ class Workbench(QWidget):
         from core.short_video.v2.batches import recover_plans
 
         recover_plans(self.repository)
+        from core.short_video.v2.image_generation import ImageGenerationService
+
+        ImageGenerationService(self.repository).recover()
         self.pages = {}
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -96,6 +99,7 @@ class Workbench(QWidget):
         service_menu = QMenu(self.model_config_button)
         service_menu.addAction("生成模型配置", self.host._configure_model)
         service_menu.addAction("校验模型配置", lambda: self.perform(self.configure_review_model))
+        service_menu.addAction("生图 API 配置", lambda: self.perform(self.configure_image_model))
         service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
         self.model_config_button.setMenu(service_menu)
         top.addWidget(self.model_config_button)
@@ -155,6 +159,15 @@ class Workbench(QWidget):
         finally:
             dialog.deleteLater()
 
+    def configure_image_model(self) -> None:
+        require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改生图配置")
+        dialog = ModelConfigDialog("hosted-llm", self, purpose="image")
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.notice("生图 API 配置已保存")
+        finally:
+            dialog.deleteLater()
+
     def setting_key(self, field: str) -> str:
         return fingerprint(self.output_dir)[:20] + "/" + field
 
@@ -182,6 +195,9 @@ class Workbench(QWidget):
             "project_settings": "项目设置",
             "configure_comfy": "工作流配置",
             "configure_review_model": "校验模型配置",
+            "configure_image_model": "生图 API 配置",
+            "generate_images": "资产图片生成",
+            "resume_images": "资产图片继续",
             "send": "AI 回复",
             "query": "视频任务查询",
             "edit_template": "阶段提示词保存",
@@ -263,6 +279,9 @@ class Workbench(QWidget):
             ],
             self.chat.send_button,
             *self.specs.media.task_controls(),
+            *self.specs.images_page.task_controls(),
+            self.specs.shot_assets.use_image_button,
+            self.specs.shot_assets.image_nodes,
         ]
 
     def artifact_pages(self) -> list[ArtifactPage | PromptPage]:
@@ -530,6 +549,9 @@ class Workbench(QWidget):
             from core.short_video.v2.batches import recover_plans
 
             recover_plans(candidate)
+            from core.short_video.v2.image_generation import ImageGenerationService
+
+            ImageGenerationService(candidate).recover()
         except (WorkspaceError, OSError):
             self.directory.setText(self.output_dir)
             raise

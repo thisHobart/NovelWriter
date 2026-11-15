@@ -18,6 +18,7 @@ from .feedback import (
 )
 from .models import (
     ASSET_KINDS,
+    VIEWS,
     capture_model_snapshot,
     content_key,
     encode,
@@ -131,6 +132,101 @@ class WorkflowService:
         )
         self.max_context_chars = max_context_chars
         self.max_retries, self.quality_check = max_retries, quality_check
+
+    def shot_assets(self, shot_id: str, *, state: JsonObject | None = None) -> list[JsonObject]:
+        """Read this shot's exact assets and image prompts, without preparing generation."""
+        from .image_generation import ImageGenerationStore, image_for_view
+
+        state = self.repository.load() if state is None else state
+        board = self.repository.current("storyboard", state=state)
+        shot = (
+            next((s for s in board["content"]["shots"] if s["shot_id"] == shot_id), None)
+            if board
+            else None
+        )
+        if shot is None:
+            return []
+        catalog_id = board["dependency_refs"]["asset_catalog"]
+        catalog = self.repository.record(catalog_id, state=state)
+        entities = {entity["asset_id"]: entity for entity in catalog["content"]["entities"]}
+        bundle = self.repository.current("prompt_bundle", state=state)
+        compiled = (
+            bundle is not None
+            and bundle["content"]["storyboard_version_id"] == board["id"]
+            and self.repository.is_current(bundle["id"], state=state)
+        )
+        spec_refs = {}
+        if compiled:
+            compiled_shot = next(s for s in bundle["content"]["shots"] if s["shot_id"] == shot_id)
+            spec_refs = {
+                (ref["asset_id"], ref["variant_id"]): ref["spec_version_id"]
+                for ref in compiled_shot.get("asset_refs", [])
+            }
+        result, seen = [], set()
+        image_state = ImageGenerationStore(self.repository.output_dir).load()
+        for kind, refs in (
+            ("scene", [shot["scene_ref"]]),
+            ("character", shot["characters"]),
+            ("prop", shot["props"]),
+        ):
+            for ref in refs:
+                asset_id, variant_id = ref["asset_id"], ref["variant_id"]
+                identity = (asset_id, variant_id)
+                entity = entities[asset_id]
+                if identity in seen or entity.get("usage") == "voice_only":
+                    continue
+                seen.add(identity)
+                key = f"{ASSET_KINDS[kind]}:{asset_id}:{variant_id}"
+                spec_id = spec_refs.get(identity) if compiled else state["current"].get(key)
+                spec = self.repository.record(spec_id, state=state) if spec_id else None
+                if spec and (
+                    spec["key"] != key
+                    or spec["dependency_refs"].get("asset_catalog") != catalog_id
+                    or not self.repository.is_current(spec["id"], state=state)
+                ):
+                    spec = None
+                views = {
+                    view["view_id"]: view
+                    for view in (spec or {}).get("content", {}).get("views", [])
+                }
+                variant = next(v for v in entity["variants"] if v["variant_id"] == variant_id)
+                result.append(
+                    {
+                        "kind": kind,
+                        "asset_id": asset_id,
+                        "variant_id": variant_id,
+                        "name": entity["name"],
+                        "variant_label": variant["label"],
+                        "spec_id": spec["id"] if spec else None,
+                        "views": [
+                            {
+                                "view_id": view_id,
+                                "label": views.get(view_id, {}).get("label", label),
+                                "positive_prompt": views.get(view_id, {}).get(
+                                    "positive_prompt", ""
+                                ),
+                                "negative_prompt": views.get(view_id, {}).get(
+                                    "negative_prompt", ""
+                                ),
+                                "available": bool(
+                                    views.get(view_id, {}).get("positive_prompt", "").strip()
+                                ),
+                            }
+                            for view_id, label in VIEWS[kind]
+                        ],
+                    }
+                )
+                if spec:
+                    for view in result[-1]["views"]:
+                        if view["view_id"] in views:
+                            view["image"] = image_for_view(
+                                self.repository.output_dir,
+                                catalog_id,
+                                spec,
+                                views[view["view_id"]],
+                                state=image_state,
+                            )
+        return result
 
     def prepare(
         self,

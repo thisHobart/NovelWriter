@@ -1,8 +1,8 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.18；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.20；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
 
-关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；资产生图仍未实现。
+关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；第11节记录已实现的可选 Images API 资产生图。
 
 ## 1. 用户动作对应接口
 
@@ -14,6 +14,7 @@
 | 单阶段生成／重新生成 | WorkflowService.prepare(stage, ...) → WorkspaceWork → execute(command, ...) | 冻结输入并执行生成、检查、有限修改和保存 |
 | 生成分镜 | prepare_storyboard_task → CreationWork | 先 asset_catalog，再 storyboard，分别执行质量修复循环 |
 | 生成资产提示词 | prepare_prompt_task → CreationWork | 按待生成实体／状态执行 asset_spec，最后本地编译镜头提示词 |
+| 查看镜头所需参考资产 | WorkflowService.shot_assets(shot_id, *, state=None) | 返回本镜场景、人物、道具及各状态视图的提示词，只读、不调用模型 |
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
@@ -69,6 +70,12 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送。
 
 消息存取与历史筛选由 [ConversationStore](../../core/short_video/v2/conversation_store.py) 实现，上下文构造见 [conversation_context.py](../../core/short_video/v2/conversation_context.py)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 将完整 prompt 作为一次 user 消息提交，模型 SDK 不另行读取会话文件。
+
+### 2.3 镜头资产只读查询
+
+`WorkflowService.shot_assets(shot_id, *, state=None) -> list[JsonObject]` 按当前分镜的 shot_id 取引用，顺序为场景、人物、道具；同一资产／状态去重，不把仅对白或画外音人物加入出镜资产。资产名称和状态来自分镜绑定的目录。返回项包含 kind、asset_id、variant_id、name、variant_label、spec_id，以及 views（view_id、label、positive_prompt、negative_prompt、available）。
+
+有当前有效 prompt_bundle 时按本镜 asset_refs 中的 spec_version_id 读取准确设定，不回退到其他设定；没有有效编排结果时，读取同资产编号、状态编号及同目录的当前设定。缺失或不对应的设定返回空提示词及预定视图，available=false；无分镜或找不到镜头返回空列表。查询不更新清单、运行、媒体或任何持久化字段。
 
 ## 3. 来源依赖与当前内容
 
@@ -301,7 +308,7 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 
 无需先生成分镜或完整 PromptBundle。target 可记录 storyboard_version_id 与 shot_id，不作为生成的前置条件；实际提示词来自 UI 中单独可编辑的视频文字。普通聊天、文字编辑保存和文字 Agent Loop 不触发媒体生成。
 
-后续图片工作流取回图片后可调用 import_image(path, source={kind: image_workflow, job_id: ...})，返回与手动导入相同的 image_id 与文件记录。本轮没有图片生成、图片工作流提交或空实现的生成方法。
+后续图片工作流取回图片后可调用 import_image(path, source={kind: image_workflow, job_id: ...})，返回与手动导入相同的 image_id 与文件记录。当前资产生图通过独立 Images API 实现，复用媒体存储，见第11节；不通过 ComfyUI 图片工作流提交。
 
 ### 10.2 工作流与 MCP 工具
 
@@ -309,7 +316,7 @@ MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析
 
 parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters、kind 与 generator_node。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后串联的两个 MiniMaxH3AddGuide。后一结构必须按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点；新增对应图片输入。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
 
-VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 将已选项标为“参考图片 1～N”，对应 Picture 1～N；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
+VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 显示固定输入位置“图片节点 N”，选图后另显示实际代称 <Picture M>；M 按已选图片顺序连续编号，与提交顺序一致；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
 
 WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。像素量下限为当前 ResolutionSelector 允许的 0.1；保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
 
@@ -357,4 +364,26 @@ short_video/media/
 
 ### 10.5 导出边界
 
-ExportService 继续只负责 Markdown 与文字来源清单。媒体直接保存到项目，UI 提供播放及打开视频位置。暂不实现批量视频队列、自动剪辑、媒体打包导出或多图合成。
+ExportService 继续只负责 Markdown 与文字来源清单。媒体直接保存到项目，UI 只保存当前结果路径并提供“打开视频位置”，通过 QDesktopServices 打开该文件的父目录；没有本地结果时按钮禁用。不加载视频、不创建播放器或音频输出对象。暂不实现批量视频队列、自动剪辑、媒体打包导出或多图合成。
+
+## 11. 可选资产生图接口
+
+| 入口 | 输入与行为 |
+|---|---|
+| api_settings.get_image_config / save_provider(..., purpose="image") | 独立 image 配置保存 base_url、api_key、model；不回退到文字／校验配置，模型获取只查询列表，不用聊天探测 |
+| ImageGenerationService.rows() | 从当前分镜引用按目录／资产／状态／视图去重，返回所用镜头、提示词、可生成原因与当前关联图片；不生成文字或图片 |
+| prepare(keys, concurrency=2) | 只读预检，要求勾选完整有效的视图；并行范围1～8，每视图一张；冻结设计、正负及实际请求提示词、模型／接口指纹和输入哈希 |
+| ImageGenerationWork(repository, command=None, *, batch_id=None, keys=None, transport=None) | 新批次或继续指定原批次，遵守 VideoTask 契约，一个 TaskRunner 工作内部受限并发；keys 可显式允许重试未知项 |
+| ImageGenerationService.recover() | 持有项目生成锁识别中断；有完整响应继续处理，无响应的已发送请求记 unknown；不发网络请求 |
+| MediaRepository.save_image(data, *, name, source=None, image_id=None) | 原子保存 PNG／JPEG／WebP 与来源；固定图片编号使响应处理可重放，import_image 复用同一入口 |
+| MediaPreview.use_image(image_id, node_id) | 用户明确放入指定现有节点，保留其他选图、视频提示词及已有 Picture 引用检查 |
+
+请求仅使用 model、prompt、n=1，正向正文后附“排除或避免的元素”及负向文字，不假定有 negative_prompt 参数；尺寸和质量使用服务默认。支持 b64_json 或 URL，完整响应先保存，之后下载／解码并验证可读取。模型列表不支持时允许手动填写，缺少生图配置只阻止生图，不阻止文字任务。
+
+生图清单在媒体目录 image_generation.json，含 batches 和 bindings；原子更新并持有媒体锁，不混入文字 tasks／runs 或 ComfyUI jobs。批次与每项冻结输入均校验哈希，响应保存在 image_responses。每项使用固定 image_id，图片 source 保存目录／资产／状态／视图、原设定编号、设计和实际提示词、指纹、批次及模型／接口指纹，不保存密钥。
+
+WorkflowService.shot_assets 的 views 可返回 image（含 image_id、relative_path、source、current 等媒体字段）。匹配使用目录／资产／状态／视图及独立视图提示词、设计指纹；改其他视图不影响当前图片。旧图不删除，变更后 current=false，允许查看和手动使用；原文重建新目录不会静默复用旧图。
+
+每项状态为 queued、requesting、retrying、received、saving、succeeded、failed、unknown、paused、stale；收到响应后先落盘，保存成功后在项目锁和媒体锁内核对来源再更新绑定。来源在执行中变化仍保存已返回文件，但不选为当前图片。一次失败不丢失其他成功项，返回 counts 与 image_summary，不使用 AI 审阅状态。
+
+仅连接建立失败和429有限退避，SDK重试为0；请求发出后超时／断连不自动重发，unknown 须显式勾选，界面提示可能重复计费。缓存响应的下载／解码恢复不要求当前生图配置，也不重发生成；响应缓存写盘失败记 unknown 并停止后续请求。停止不启动排队项，等待已发请求返回保存；TaskRunner 仅对 drain_on_cancel 工作允许取消后的进度回报。恢复跳过 succeeded，默认跳过 unknown；认证／配置失败停止后续排队请求。

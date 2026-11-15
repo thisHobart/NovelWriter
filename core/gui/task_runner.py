@@ -85,7 +85,8 @@ class BackgroundTask(QRunnable):
 
     def _report(self, text: str, fraction: float = -1.0) -> None:
         """worker 侧的进度上报入口；只发信号，不碰控件。"""
-        self._token.raise_if_cancelled()
+        if not getattr(self._work, "drain_on_cancel", False):
+            self._token.raise_if_cancelled()
         self.signals.progress.emit(text, fraction)
 
 

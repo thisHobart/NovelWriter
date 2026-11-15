@@ -486,6 +486,10 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
         "首帧图片",
         "尾帧图片",
     ]
+    assert [label.text() for label in panel.image_labels.values()] == [
+        "图片节点 1\n<Picture 1>", "图片节点 2\n<Picture 2>", "图片节点 3\n<Picture 3>",
+        "首帧图片", "尾帧图片",
+    ]
     from PySide6.QtGui import QImage
 
     path = tmp_path / "ui-image.png"
@@ -751,6 +755,9 @@ def test_ui_add_reference_slot_and_skip_blank_slots_through_task_recovery(tmp_pa
     app.processEvents()
     path = tmp_path / "manual.png"
     save_ui_image(path)
+    assert [label.text() for label in panel.image_labels.values()] == [
+        "图片节点 1", "图片节点 2", "图片节点 3",
+    ]
     assert not panel.generate_button.isEnabled()
     panel.prompt.setPlainText("Use <Picture 1> and <Picture 2>.")
     panel.parameter_fields["129.noise_seed"].setText("12345")
@@ -759,16 +766,17 @@ def test_ui_add_reference_slot_and_skip_blank_slots_through_task_recovery(tmp_pa
     assert len(panel.image_fields) == 4
     added_id = panel.additional_reference_slots[0]
     assert added_id == "reference_input_4"
-    assert panel.image_labels[added_id].text() == "待选图片"
+    assert panel.image_labels[added_id].text() == "图片节点 4"
     scroll_position = panel.input_area.verticalScrollBar().value()
     assert scroll_position > 0
     panel.import_image(str(path), "137")
     app.processEvents()
-    assert panel.input_area.verticalScrollBar().value() == scroll_position
+    scrollbar = panel.input_area.verticalScrollBar()
+    assert scrollbar.value() == min(scroll_position, scrollbar.maximum())
     assert panel.generate_button.isEnabled()
     panel.import_image(str(path), added_id)
-    assert panel.image_labels[added_id].text() == "参考图片 2"
-    assert panel.image_labels["139"].text() == "待选图片"
+    assert panel.image_labels[added_id].text() == "图片节点 4\n<Picture 2>"
+    assert panel.image_labels["139"].text() == "图片节点 2"
     assert panel.prompt.toPlainText() == "Use <Picture 1> and <Picture 2>."
     assert panel.parameter_fields["129.noise_seed"].text() == "12345"
     panel.generate_button.click()
@@ -807,7 +815,7 @@ def test_ui_reference_number_changes_require_prompt_review_and_allow_undo(tmp_pa
     original_image = panel.image_fields["139"][0].currentData()
     panel.prompt.setPlainText("Use <Picture 2>.")
     panel.image_fields["139"][0].setCurrentIndex(0)
-    assert panel.image_labels["147"].text() == "参考图片 2"
+    assert panel.image_labels["147"].text() == "图片节点 3\n<Picture 2>"
     panel.refresh()
     with pytest.raises(WorkspaceError, match="图片编号已变化"):
         panel.generate()
@@ -869,3 +877,53 @@ def test_template_refresh_does_not_duplicate_a_previously_added_reference(tmp_pa
     assert panel.additional_reference_slots == []
     assert len(set(panel.image_fields)) == 4
     panel.close()
+
+
+def test_video_settings_stay_readable_and_open_saved_output_without_playback(tmp_path, monkeypatch):
+    from core.gui import theme
+    from core.gui.pages.short_video import media_preview
+
+    app, panel, submitted = reference_panel(tmp_path)
+    previous_style = app.styleSheet()
+    app.setStyleSheet(theme.build_qss())
+    panel.resize(660, 800)
+    panel.show()
+    app.processEvents()
+    assert panel.prompt.height() >= theme.CONTROL_HEIGHT * 5
+    assert panel.input_area.height() >= theme.CONTROL_HEIGHT * 6
+    for control in panel.parameter_fields.values():
+        assert control.height() >= theme.CONTROL_HEIGHT
+    for child in panel.findChildren(media_preview.QWidget):
+        assert child.metaObject().className() != "QVideoWidget"
+    assert not panel.open_button.isEnabled()
+
+    path = tmp_path / "reference.png"
+    save_ui_image(path)
+    panel.import_image(str(path), "137")
+    panel.parameter_fields["132.value"].setValue(3.5)
+    panel.generate_button.click()
+    work = submitted[0]
+    assert work.command["parameters"]["132.value"] == 3.5
+    server = ComfyServer()
+    work.transport = httpx.MockTransport(server.request)
+    work(lambda *_: None)
+    panel.refresh()
+    app.processEvents()
+    assert panel.open_button.isEnabled()
+    assert panel.video_path.is_file()
+    opened = []
+    monkeypatch.setattr(media_preview.QDesktopServices, "openUrl", lambda url: opened.append(url))
+    panel.open_button.click()
+    assert len(opened) == 1
+    assert opened[0].toLocalFile() == str(panel.video_path.parent).replace("\\", "/")
+
+    panel.resize(660, 520)
+    app.processEvents()
+    assert panel.settings_area.verticalScrollBar().maximum() > 0
+    for control in panel.parameter_fields.values():
+        assert control.height() >= theme.CONTROL_HEIGHT
+    panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
+    assert not panel.open_button.isEnabled()
+    assert panel.video_path is None
+    panel.close()
+    app.setStyleSheet(previous_style)

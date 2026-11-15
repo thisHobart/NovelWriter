@@ -1,4 +1,4 @@
-"""Manual reference-image input and local video preview for the prompt workspace."""
+"""Video workflow inputs and the saved output location for the prompt workspace."""
 
 from __future__ import annotations
 
@@ -6,10 +6,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,11 +20,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from core.gui.theme import CONTROL_HEIGHT, SP
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork
 from core.short_video.v2.media_workflows import (
@@ -47,6 +47,8 @@ DEFAULT_VIDEO_PROMPT = (
 
 
 class MediaPreview(QWidget):
+    inputs_changed = Signal()
+
     def __init__(self, workbench: Workbench) -> None:
         super().__init__()
         self.workbench = workbench
@@ -54,8 +56,17 @@ class MediaPreview(QWidget):
         self.target = {}
         self.video_path = None
         self.project_dir = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(SP[2], 0, 0, 0)
+        self.settings_area = QScrollArea()
+        self.settings_area.setWidgetResizable(True)
+        self.settings_area.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(self.settings_area, 1)
+        settings = QWidget()
+        layout = QVBoxLayout(settings)
+        layout.setContentsMargins(0, 0, SP[2], 0)
+        layout.setSpacing(SP[2])
+        self.settings_area.setWidget(settings)
         layout.addWidget(QLabel("ComfyUI 图生视频"))
         bar = QHBoxLayout()
         self.workflows = QComboBox()
@@ -66,7 +77,7 @@ class MediaPreview(QWidget):
         layout.addLayout(bar)
         self.input_area = QScrollArea()
         self.input_area.setWidgetResizable(True)
-        self.input_area.setMaximumHeight(240)
+        self.input_area.setFixedHeight(CONTROL_HEIGHT * 6)
         layout.addWidget(self.input_area)
         self.add_image_button = QPushButton("＋添加参考图片")
         layout.addWidget(self.add_image_button)
@@ -79,11 +90,16 @@ class MediaPreview(QWidget):
         self.loaded_workflow_id = None
         layout.addWidget(QLabel("视频提示词"))
         self.prompt = QPlainTextEdit()
-        self.prompt.setMaximumHeight(130)
+        self.prompt.setMinimumHeight(CONTROL_HEIGHT * 5)
         self.prompt.textChanged.connect(self.capture_prompt_image_bindings)
-        layout.addWidget(self.prompt, 1)
+        layout.addWidget(self.prompt, 3)
         self.parameter_area = QWidget()
+        self.parameter_area.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.parameter_form = QFormLayout(self.parameter_area)
+        self.parameter_form.setContentsMargins(0, SP[2], 0, SP[2])
+        self.parameter_form.setVerticalSpacing(SP[2])
+        self.parameter_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.parameter_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addWidget(self.parameter_area)
         bar = QHBoxLayout()
         self.generate_button = QPushButton("生成视频")
@@ -93,28 +109,17 @@ class MediaPreview(QWidget):
         layout.addLayout(bar)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        self.video = QVideoWidget()
-        self.video.setMinimumHeight(140)
-        layout.addWidget(self.video, 2)
-        self.audio = QAudioOutput(self)
-        self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video)
-        self.player.errorOccurred.connect(self.playback_error)
+        outer.addWidget(self.status)
         bar = QHBoxLayout()
-        self.play_button = QPushButton("播放／暂停")
         self.open_button = QPushButton("打开视频位置")
-        bar.addWidget(self.play_button)
         bar.addWidget(self.open_button)
         bar.addStretch()
-        layout.addLayout(bar)
+        outer.addLayout(bar)
         self.workflows.currentIndexChanged.connect(lambda: workbench.perform(self.select_workflow))
         self.add_image_button.clicked.connect(lambda: workbench.perform(self.add_reference_image))
         self.generate_button.clicked.connect(lambda: workbench.perform(self.generate))
         self.query_button.clicked.connect(lambda: workbench.perform(self.query))
         self.config_button.clicked.connect(lambda: workbench.perform(workbench.configure_comfy))
-        self.play_button.clicked.connect(self.toggle_playback)
         self.open_button.clicked.connect(self.open_location)
 
     def task_controls(self) -> list[QWidget]:
@@ -128,6 +133,15 @@ class MediaPreview(QWidget):
             self.query_button,
             self.config_button,
         ]
+
+    def use_image(self, image_id: str, node_id: str) -> None:
+        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "请在任务结束后选择图片")
+        self.refresh()
+        require(node_id in self.image_fields, "INVALID_INPUT", "请选择有效的图片节点")
+        combo = self.image_fields[node_id][0]
+        index = combo.findData(image_id)
+        require(index >= 0, "INVALID_INPUT", "图片不存在，请刷新后核对")
+        combo.setCurrentIndex(index)
 
     def choose_image(self, node_id: str) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -175,14 +189,26 @@ class MediaPreview(QWidget):
 
     def refresh_reference_labels(self, selection: dict[str, str | None]) -> None:
         if self.template.kind != "reference":
+            references = [
+                image for image in self.template.image_inputs if image.role == "reference"
+            ]
+            for number, image in enumerate(references, 1):
+                self.image_labels[image.node_id].setText(f"图片节点 {number}\n<Picture {number}>")
+                self.image_labels[image.node_id].setToolTip(
+                    f"提示词中使用 <Picture {number}> 引用这张参考图片。"
+                )
             return
         selected_nodes = []
-        for node_id, image_id in selection.items():
+        for slot, (node_id, image_id) in enumerate(selection.items(), 1):
+            label = self.image_labels[node_id]
             if image_id is None:
-                self.image_labels[node_id].setText("待选图片")
+                label.setText(f"图片节点 {slot}")
+                label.setToolTip("选择图片后显示提示词代称；编号按实际已选图片顺序排列。")
             else:
                 selected_nodes.append(node_id)
-                self.image_labels[node_id].setText(f"参考图片 {len(selected_nodes)}")
+                reference = f"<Picture {len(selected_nodes)}>"
+                label.setText(f"图片节点 {slot}\n{reference}")
+                label.setToolTip(f"提示词中使用 {reference} 引用这张图片。")
         if not selected_nodes:
             self.prompt_image_bindings = {}
         for matched in re.findall(r"<Picture\s+(\d+)>", self.prompt.toPlainText(), re.IGNORECASE):
@@ -229,8 +255,6 @@ class MediaPreview(QWidget):
             self.project_dir = self.workbench.output_dir
             self.loaded_workflow_id = None
             self.drafts.clear()
-            self.player.stop()
-            self.player.setSource(QUrl())
             self.video_path = None
         self.remember_draft()
         self.catalog = MediaConfig.load(self.workbench.output_dir)
@@ -265,7 +289,7 @@ class MediaPreview(QWidget):
                 if node_id not in self.template.graph:
                     self.additional_reference_slots.append(node_id)
             for node_id in self.additional_reference_slots:
-                image_inputs.append(ImageInput(node_id, "待选图片"))
+                image_inputs.append(ImageInput(node_id, f"图片节点 {len(image_inputs) + 1}"))
         self.add_image_button.setVisible(self.template.kind == "reference")
         container = QWidget()
         form = QFormLayout(container)
@@ -330,6 +354,7 @@ class MediaPreview(QWidget):
                 control = QDoubleSpinBox()
                 control.setRange(parameter.minimum, parameter.maximum)
                 control.setValue(value)
+            control.setMinimumHeight(CONTROL_HEIGHT)
             form.addRow(parameter.label, control)
             self.parameter_fields[parameter.key] = control
         self.refresh_result()
@@ -389,6 +414,7 @@ class MediaPreview(QWidget):
                 text += "；" + job["feedback"]["summary"]
             elif job.get("error"):
                 from core.short_video.v2.feedback import concise
+
                 text += "；" + concise(f"{job['error']['type']}: {job['error']['message']}")
             if job["status"] == "unknown":
                 text += "；请查询原任务，避免重复提交"
@@ -400,10 +426,7 @@ class MediaPreview(QWidget):
             if job and job["outputs"]
             else None
         )
-        if path != self.video_path:
-            self.player.stop()
-            self.player.setSource(QUrl.fromLocalFile(str(path)) if path else QUrl())
-            self.video_path = path
+        self.video_path = path
         busy = self.workbench.host.runner.busy
         self.generate_button.setEnabled(all(selection.values()) and bool(selection) and not busy)
         self.add_image_button.setEnabled(len(self.image_fields) < MAX_REFERENCE_IMAGES and not busy)
@@ -411,7 +434,7 @@ class MediaPreview(QWidget):
             bool(job and job["status"] not in {"succeeded", "cancelled", "failed"}) and not busy
         )
         self.open_button.setEnabled(path is not None)
-        self.play_button.setEnabled(path is not None)
+        self.inputs_changed.emit()
 
     def generate(self) -> None:
         require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
@@ -425,7 +448,6 @@ class MediaPreview(QWidget):
             parameters=self.parameter_values(),
             target=self.target,
         )
-        self.player.stop()
         self.workbench.submit(MediaWork(self.workbench.output_dir, command), self.generate_button)
 
     def query(self) -> None:
@@ -435,16 +457,6 @@ class MediaPreview(QWidget):
             self.query_button,
         )
 
-    def toggle_playback(self) -> None:
-        if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.player.pause()
-        else:
-            self.player.play()
-
     def open_location(self) -> None:
         if self.video_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.video_path.parent)))
-
-    def playback_error(self, error: QMediaPlayer.Error, message: str) -> None:
-        if error != QMediaPlayer.NoError:
-            self.status.setText(f"视频播放失败：{message}；可打开视频位置使用外部播放器。")

@@ -454,6 +454,8 @@ class MainWindow(QMainWindow):
 
         def success(value: JsonObject) -> None:
             self.refresh_all()
+            if context.action == "资产提示词生成" and value.get("status") == "succeeded":
+                self.video_workspace.specs.tabs.setCurrentIndex(4)
             show_result(value=value)
         def error(exc: Exception) -> None:
             self.refresh_all()

@@ -44,6 +44,10 @@ def _read() -> dict:
         ):
             raise ValueError("模型配置文件 llm_settings.json 字段格式不正确")
     review = document.get("review")
+    image = document.get("image")
+    if image is not None and (not isinstance(image, dict) or any(
+            not isinstance(image.get(field), str) for field in ("base_url", "api_key", "model"))):
+        raise ValueError("生图 API 配置字段格式不正确")
     if review is not None:
         if (not isinstance(review, dict) or review.get("provider") not in VARIABLES
                 or not isinstance(review.get("providers"), dict)):
@@ -78,8 +82,17 @@ def get_review_config(provider: str | None = None) -> APIConfig:
     return validate_provider(selected, **values)
 
 
+def get_image_config() -> APIConfig:
+    values = _read().get("image")
+    if not values:
+        raise ValueError("请先在“服务配置 → 生图 API 配置”中配置图片接口")
+    return validate_provider("hosted-llm", **values)
+
+
 def form_values(provider: str, *, purpose: str = "generation") -> dict[str, str]:
     from .api_providers import get_config
+    if purpose == "image":
+        return dict(_read().get("image", {"base_url": "", "api_key": "", "model": ""}))
     if purpose == "review":
         values = _read().get("review", {}).get("providers", {}).get(provider)
         return dict(values) if values else {
@@ -127,7 +140,9 @@ def save_provider(provider: str, base_url: str, api_key: str, model: str,
     config = validate_provider(provider, base_url, api_key, model)
     values = {"base_url": config.base_url, "api_key": api_key.strip(), "model": config.model}
     document = _read()
-    if purpose == "review":
+    if purpose == "image":
+        document["image"] = values
+    elif purpose == "review":
         review = document.setdefault("review", {"provider": provider, "providers": {}})
         review["provider"] = provider
         review["providers"][provider] = values

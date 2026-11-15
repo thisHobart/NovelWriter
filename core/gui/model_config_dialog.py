@@ -33,10 +33,10 @@ class ModelConfigDialog(QDialog):
     def __init__(self, provider: str = DEFAULT_API_MODEL, parent: QWidget | None = None,
                  *, purpose: str = "generation") -> None:
         super().__init__(parent)
-        if purpose not in {"generation", "review"}:
+        if purpose not in {"generation", "review", "image"}:
             raise ValueError("不支持的模型用途")
         self.purpose = purpose
-        title = "校验模型配置" if purpose == "review" else "模型服务配置"
+        title = {"review": "校验模型配置", "image": "生图 API 配置"}.get(purpose, "模型服务配置")
         self.setObjectName("ModelConfigDialog")
         self.setWindowTitle(title)
         self.setMinimumWidth(620)
@@ -59,7 +59,11 @@ class ModelConfigDialog(QDialog):
         rows = LabeledRow(grid)
         self.provider_combo = QComboBox()
         for key, label in PROVIDER_LABELS.items():
+            if purpose == "image" and key != "hosted-llm":
+                continue
             self.provider_combo.addItem(label, key)
+        if purpose == "image":
+            self.provider_combo.setItemText(0, "OpenAI 兼容生图接口")
         self.url_edit = QLineEdit()
         self.url_edit.setClearButtonEnabled(True)
         self.key_edit = QLineEdit()
@@ -127,6 +131,9 @@ class ModelConfigDialog(QDialog):
         self.test_button.setAutoDefault(False)
         self.test_button.setToolTip("测试当前填写的配置，无需先保存；仅发送一次极短请求，输出上限 2 tokens")
         self.test_button.clicked.connect(self._test_connection)
+        if purpose == "image":
+            self.test_button.setText("检查连接")
+            self.test_button.setToolTip("仅查询模型列表，不发送聊天或生图请求；不支持列表也可手动填模型并保存")
         actions.addWidget(self.test_button)
         actions.addStretch(1)
         self.cancel_button = secondary_button("取消")
@@ -259,6 +266,9 @@ class ModelConfigDialog(QDialog):
         self.test_status.show()
 
     def _test_connection(self) -> None:
+        if self.purpose == "image":
+            self._fetch_models()
+            return
         if self._test_runner.current is not None:
             return
         self.error_label.hide()

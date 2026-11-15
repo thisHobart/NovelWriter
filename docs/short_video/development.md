@@ -1,6 +1,6 @@
 # 短视频工作台：开发文档
 
-文档版本：2.18；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
+文档版本：2.20；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
 整体结构见[架构设计](architecture.md)，字段和接口见[接口设计](interfaces.md)，操作与提示见[交互设计](interaction.md)。历次变更及验收证据见[DEVLOG](../../DEVLOG.md)。
 
 ## 1. 运行与代码入口
@@ -14,12 +14,14 @@
 | 维护内容 | 主要代码入口 |
 |---|---|
 | 工作区、导航与生成入口 | `core/gui/pages/short_video/workbench.py`；`artifact_page.py`、`prompt_page.py`、`source_page.py` |
+| 镜头所需参考资产与视图提示词 | `workflow.py` 的 shot_assets；UI 为 `shot_assets_panel.py`，接入 `prompt_page.py` |
 | 后台线程与 UI 状态 | `core/gui/task_runner.py`；`core/short_video/v2/feedback.py` |
 | 准备阶段输入、多阶段编排 | `core/short_video/v2/workflow.py`、`creation.py` |
 | Agent Loop、检查点与继续执行 | `core/short_video/v2/runtime.py` |
 | 项目与内容存储 | `repository.py`、`storage.py`、`project_service.py`、`models.py`、`contracts.py` |
 | 生成／校验配置与模型调用 | `core/generation/api_settings.py`、`core/gui/model_config_dialog.py`；`llm.py` |
 | 提示词、校验与审阅 | `prompts.py`、`validation.py`、`review.py`、`storyboard_skill.py` |
+| 可选资产生图与来源 | `image_generation.py`、`media_repository.py`；UI 为 `asset_images_page.py`、`asset_image_preview.py` |
 | 会话与上下文 | `conversation.py`、`conversation_store.py`、`conversation_context.py` |
 | 长文分块、编排及导出 | `batches.py`、`prompt_compiler.py`、`storyboard_text.py`、`exporter.py` |
 | 视频工作流与媒体任务 | `media_workflows.py`、`media_service.py`、`media_repository.py`、`comfy_mcp.py`；UI 为 `media_preview.py`、`comfy_settings.py` |
@@ -50,13 +52,29 @@
 
 业务内容保持当前一份。内容 ID、哈希和 revision 用于依赖、完整性与并发控制；不要重新加入历史版本菜单或旧稿沿用路径。
 
+镜头资产查询只从当前分镜与准确设定读取，UI 不从正文猜测资产身份。独立 `ShotAssetsPanel` 展示只读列表和可收起详情，与 PromptEditor 编辑状态分离；空提示词不得用其他资产或状态填补。视图选择仅控制查看，不写视频图片选择、业务内容或任务状态，不触发生成。对应回归见 `tests/test_shot_assets.py`，覆盖同名／不同状态、去重／画外音、缺失／部分视图、准确来源、复制及未保存编辑隔离、视频选择不变、新增／重排和无分镜。
+
 ## 4. 会话与媒体边界
 
 会话通过 ConversationStore 读写，默认按48,000字符容量构造请求，仅裁剪本轮使用的完整历史副本。预检失败不写 pending；执行时保存本轮消息和完整回复。重试仅填回输入框，用户再次发送；聊天不写回业务文档、不进入质量修订循环。
 
-视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数。普通 H3 参考图支持最多九个位置，空位跳过，图片编号与 Picture 引用需一致；首尾帧模板按实际输入要求校验。当前只接入图片导入，不提前实现生图。
+视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数。普通 H3 参考图支持最多九个位置，空位跳过，图片编号与 Picture 引用需一致；首尾帧模板按实际输入要求校验。资产视图另可通过独立 Images API 生图，结果进入同一媒体库；不自动提交视频任务。
+
+media_preview.py 不再导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，按钮打开其父目录；生成、查询和下载保存流程继续复用原接口。设置区可滚动，选图区192px、提示词至少160px、参数控件至少32px，尺寸与间距使用主题 token。相关回归在 test_comfyui_video.py，覆盖生成后打开准确目录、切换工作流后按钮状态、参数传递及小窗口下控件高度。
+
+本次界面调整：54项关联回归和全量420项回归通过，变更生产文件 Ruff 检查与格式通过。离屏 Qt 检查660×900布局可完整显示设置，660×520时可滚动且参数框不压缩；未调用真实媒体生成服务。
 
 提交响应丢失先查询原任务，下载失败只重新取回文件；不自动重提视频任务，也不对共享 ComfyUI 发送全局中断。文字网络错误在共享调用层有限重试，耗尽后原样传播；媒体仍使用其独立提交与查询策略。任务边界记录堆栈，UI 显示操作、对象、阶段和实际原因。
+
+### 4.1 资产生图批次
+
+ImageGenerationService 从已有结果列视图，ImageGenerationWork 单次 asyncio 运行内用 Semaphore 限并发；不为每张图调用 TaskRunner，不使用文字质量修订循环。图片配置仅启动新请求时检查；响应处理无需调用生图模型。同步文件写入保持短事务，后台线程不访问 QWidget，UI 在活动生图期间只读刷新表格。
+
+媒体生图清单维护逐项状态和当前图片绑定，响应先落盘再解码／下载；固定 image_id 保证进程在响应、图片文件或关联提交处退出后可重放。冻结输入校验与实际请求、来源指纹一致，来源变化时不得把旧任务结果绑定到新提示词。关联提交持有项目锁再持有媒体锁，避免与人工编辑竞态。
+
+连接建立失败和429最多重试两次；未知结果、认证、参数及存储错误不自动重发生图。缓存响应写盘失败须记未知，防止恢复时重复付费；图片文件写盘失败从缓存恢复。每项保存，不因单项失败回滚其他图片。停止仅对生图工作 drain_on_cancel 允许继续报告和保存已发送结果，原文字停止语义不变。
+
+测试用真实 SDK＋模拟 HTTP，核对并发上限、两类响应、未知结果、磁盘错误、跨批次恢复、提示词变更、真实退出边界和明确选图；不调用付费 API。新增资源只有 Python 模块，无需新增模型或工作流打包数据。生图配置和图片生成按钮不是文字任务的前置条件。
 
 ## 5. 开发与验证
 
@@ -67,7 +85,7 @@
 .\venv\Scripts\python.exe -m pytest tests -q --tb=short
 
 # 文字存储、恢复、会话与反馈
-.\venv\Scripts\python.exe -m pytest tests/test_video_v2_repository.py tests/test_video_runtime.py tests/test_conversation_management.py tests/test_video_feedback.py tests/test_video_network_retry.py tests/test_video_review_model.py -q
+.\venv\Scripts\python.exe -m pytest tests/test_video_v2_repository.py tests/test_video_runtime.py tests/test_conversation_management.py tests/test_video_feedback.py tests/test_video_network_retry.py tests/test_video_review_model.py tests/test_shot_assets.py tests/test_asset_image_generation.py -q
 
 # 按仓库 Ruff 配置检查生产代码
 .\venv\Scripts\python.exe -m ruff check core/short_video/v2 core/gui/pages/short_video
