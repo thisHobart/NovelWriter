@@ -14,7 +14,6 @@ from .models import encode, require
 from .storage import atomic_write_text
 
 WORKFLOW_DIRECTORY = Path(__file__).with_name("workflows")
-DEFAULT_VIDEO_WORKFLOW = WORKFLOW_DIRECTORY / "minimax_h3_reference.json"
 
 
 def default_workflows() -> list[JsonObject]:
@@ -38,7 +37,6 @@ class MediaConfig:
     base_url: str = "http://127.0.0.1:8188"
     workflows: list[JsonObject] = field(default_factory=default_workflows)
     selected_workflow_id: str = "minimax-reference"
-    image_workflow: str = ""
 
     @classmethod
     def load(cls, output_dir: str | Path) -> MediaConfig:
@@ -46,6 +44,7 @@ class MediaConfig:
         if not path.exists():
             return cls()
         values = json.loads(path.read_text(encoding="utf-8"))
+        values.pop("image_workflow", None)
         if "video_workflow" in values:
             # 原单工作流配置转为项目内 JSON 快照，不再依赖外部文件路径。
             previous = values.pop("video_workflow")
@@ -95,7 +94,6 @@ class MediaConfig:
                     "base_url": self.base_url,
                     "workflows": self.workflows,
                     "selected_workflow_id": self.selected_workflow_id,
-                    "image_workflow": self.image_workflow,
                 }
             ),
         )
@@ -181,10 +179,6 @@ def read_api_workflow(path: str | Path) -> JsonObject:
     graph = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     validate_api_graph(graph)
     return graph
-
-
-def load_video_workflow(path: str | Path) -> VideoWorkflow:
-    return parse_video_workflow(read_api_workflow(path))
 
 
 def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:

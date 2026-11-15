@@ -12,9 +12,7 @@ from core.generation.cancellation import GenerationCancelled
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork, validate_nodes
 from core.short_video.v2.media_workflows import (
-    DEFAULT_VIDEO_WORKFLOW,
     MediaConfig,
-    load_video_workflow,
     parse_video_workflow,
 )
 from core.short_video.v2.models import WorkspaceError
@@ -114,7 +112,7 @@ class ComfyServer:
 
 
 def test_api_workflow_uses_only_connected_image_and_preserves_template():
-    template = load_video_workflow(DEFAULT_VIDEO_WORKFLOW)
+    template = parse_video_workflow(MediaConfig().selected()["graph"])
     assert [image.node_id for image in template.image_inputs] == ["137"]
     assert template.output_node == "92"
     assert not {"139", "147", "149"} & template.graph.keys()
@@ -210,18 +208,22 @@ def test_rejected_submission_is_failed_instead_of_remote_status_unknown(tmp_path
     assert MediaRepository(tmp_path).jobs()[0]["status"] == "failed"
 
 
-def test_reserved_image_workflow_does_not_block_video_preparation(tmp_path, image):
+def test_old_config_discards_unused_image_setting_and_preserves_video(tmp_path, image):
+    previous = tmp_path / "previous-api.json"
+    previous.write_text(json.dumps(MediaConfig().selected()["graph"]), encoding="utf-8")
     repository = MediaRepository(tmp_path)
     repository.write(
         "settings.json",
         {
             "base_url": "http://127.0.0.1:8188",
-            "video_workflow": str(DEFAULT_VIDEO_WORKFLOW),
+            "video_workflow": str(previous),
             "image_workflow": str(tmp_path / "not-implemented.json"),
         },
     )
     command = MediaService(tmp_path).prepare_video({"137": image["image_id"]}, "Use <Picture 1>.")
     assert command["images"]["137"]["image_id"] == image["image_id"]
+    MediaConfig.load(tmp_path).save(tmp_path)
+    assert "image_workflow" not in repository.read("settings.json")
 
 
 def test_local_cancel_never_sends_global_comfy_interrupt(tmp_path, image):
@@ -293,7 +295,7 @@ def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
     image.fill(0xFF0088)
     path = tmp_path / "ui-reference.png"
     assert image.save(str(path))
-    panel.import_images([str(path)])
+    panel.import_image(str(path), "137")
     panel.generate_button.click()
     app.processEvents()
     assert len(submitted) == 1
@@ -308,7 +310,7 @@ def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
 
 
 def reference_graph(count):
-    graph = json.loads(DEFAULT_VIDEO_WORKFLOW.read_text(encoding="utf-8"))
+    graph = MediaConfig().selected()["graph"]
     for index in range(count):
         node_id = f"image-{index}"
         graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": "original.png"}}
@@ -438,9 +440,9 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     ui_image = QImage(8, 8, QImage.Format_RGB32)
     ui_image.fill(0xFF0088)
     assert ui_image.save(str(path))
-    panel.import_images([str(path)], "137")
+    panel.import_image(str(path), "137")
     assert not panel.generate_button.isEnabled()
-    panel.import_images([str(path)], "139")
+    panel.import_image(str(path), "139")
     panel.parameter_fields["132.value"].setValue(5.5)
     panel.parameter_fields["129.noise_seed"].setText("18446744073709551615")
     panel.prompt.setPlainText("首尾衔接")
@@ -495,7 +497,7 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
     image = QImage(8, 8, QImage.Format_RGB32)
     image.fill(0x001188)
     assert image.save(str(path))
-    panel.import_images([str(path)])
+    panel.import_image(str(path), "137")
     selection = panel.image_selection()
     server = ComfyServer()
 

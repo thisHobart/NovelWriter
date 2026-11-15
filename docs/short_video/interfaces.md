@@ -270,8 +270,8 @@ review.check_candidate 对资产使用专门的整组提示词检查要求，检
 
 | 入口 | 输入与行为 |
 |---|---|
-| MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。旧 image_workflow 值保留但不执行、不显示 |
-| load_video_workflow(path) | 读取 API JSON，调用 parse_video_workflow(graph) 适配有效图片、提示词、参数和唯一 SaveVideo |
+| MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。读取旧配置时丢弃未使用的 image_workflow 字段 |
+| parse_video_workflow(graph) | 从已保存的 API JSON 适配有效图片、提示词、参数和唯一 SaveVideo |
 | MediaRepository.import_image(path, source=None) | 导入 PNG／JPEG／WebP，保存独立文件、哈希、原文件名及来源；供手动导图与后续图片工作流共用 |
 | MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为 LoadImage 节点标识到 image_id 的映射，parameters 为参数键到类型值；只读校验并冻结输入与可选目标镜头；不提交 GPU 工作 |
 | MediaWork(output_dir, command) | 符合 VideoTask 调用约定，通过现有 TaskRunner 执行并报告状态 |

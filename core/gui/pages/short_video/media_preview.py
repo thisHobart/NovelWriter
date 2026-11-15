@@ -120,20 +120,16 @@ class MediaPreview(QWidget):
             self, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.webp)"
         )
         if path:
-            self.import_images([path], node_id)
+            self.import_image(path, node_id)
 
-    def import_images(self, paths: list[str], node_id: str | None = None) -> None:
+    def import_image(self, path: str, node_id: str) -> None:
         if self.project_dir != self.workbench.output_dir:
             self.refresh()
         repository = MediaRepository(self.workbench.output_dir)
-        last_id = None
-        for path in paths:
-            require(not QPixmap(path).isNull(), "INVALID_INPUT", f"图片无法解码：{Path(path).name}")
-            last_id = repository.import_image(path)["image_id"]
-        if node_id is None:
-            node_id = self.template.image_inputs[0].node_id
+        require(not QPixmap(path).isNull(), "INVALID_INPUT", f"图片无法解码：{Path(path).name}")
+        image_id = repository.import_image(path)["image_id"]
         self.remember_draft()
-        self.drafts[self.loaded_workflow_id]["images"][node_id] = last_id
+        self.drafts[self.loaded_workflow_id]["images"][node_id] = image_id
         self.load_workflow()
 
     def image_selection(self) -> dict[str, str]:
