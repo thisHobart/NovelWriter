@@ -163,6 +163,50 @@ class VideoWorkflow:
             inputs[f"ref_images.ref_image_{index}"] = [node_id, 0]
         return parse_video_workflow(graph)
 
+    def prepare_image_inputs(self, node_ids: list[str]) -> VideoWorkflow:
+        """Retain selected image slots and bypass unused frame conditions for this run."""
+        if self.kind == "reference":
+            return self.prepare_reference_inputs(node_ids)
+        require(bool(node_ids), "INVALID_INPUT", "请至少选择一张参考图、首帧或尾帧图片")
+        selected = set(node_ids)
+        require(
+            len(selected) == len(node_ids)
+            and selected <= {image.node_id for image in self.image_inputs},
+            "INVALID_INPUT",
+            "选择了当前工作流不存在的图片输入",
+        )
+        graph = deepcopy(self.graph)
+        inputs = graph[self.generator_node]["inputs"]
+        for name in list(inputs):
+            if name.startswith("ref_images.ref_image_"):
+                del inputs[name]
+        references = [
+            image
+            for image in self.image_inputs
+            if image.role == "reference" and image.node_id in selected
+        ]
+        for index, image in enumerate(references):
+            inputs[f"ref_images.ref_image_{index}"] = [image.node_id, 0]
+        for image in self.image_inputs:
+            if image.role == "reference" or image.node_id in selected:
+                continue
+            if graph[self.generator_node]["class_type"] == "MiniMaxH3ImageToVideo":
+                inputs.pop(image.role, None)
+                continue
+            guide_id = next(
+                key
+                for key, node in graph.items()
+                if node["class_type"] == "MiniMaxH3AddGuide"
+                and node["inputs"]["image"] == [image.node_id, 0]
+            )
+            previous = graph[guide_id]["inputs"]["positive"]
+            for node in graph.values():
+                for name, value in node["inputs"].items():
+                    if value == [guide_id, 0]:
+                        node["inputs"][name] = deepcopy(previous)
+            del graph[guide_id]
+        return parse_video_workflow(graph)
+
     def bind(
         self, image_names: dict[str, str], prompt: str, job_id: str, parameters: JsonObject
     ) -> JsonObject:
@@ -244,6 +288,8 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
         kind = "first_last"
         for name, label in (("first_frame", "首帧图片"), ("last_frame", "尾帧图片")):
             value = inputs.get(name)
+            if value is None:
+                continue
             require(isinstance(value, list), "INVALID_INPUT", f"首尾帧工作流需要连接{label}")
             image_inputs.append(ImageInput(value[0], label, name))
     else:
@@ -266,12 +312,13 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
                 )
                 guides[frame_index] = node_id
         if guides:
-            require(set(guides) == {0, -1}, "INVALID_INPUT", "请同时连接首帧和尾帧引导")
             previous = generator
             for frame_index, label, role in (
                 (0, "首帧图片", "first_frame"),
                 (-1, "尾帧图片", "last_frame"),
             ):
+                if frame_index not in guides:
+                    continue
                 guide_id = guides[frame_index]
                 guide = active[guide_id]["inputs"]
                 require(

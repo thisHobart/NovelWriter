@@ -321,6 +321,7 @@ class PromptPage(QWidget):
                 {
                     "storyboard_version_id": board["id"] if board else None,
                     "shot_id": self.objects.currentData(),
+                    "shot_number": self.objects.currentIndex() + 1,
                 }
             )
         self.media.refresh()

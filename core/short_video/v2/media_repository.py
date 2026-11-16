@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -106,6 +107,14 @@ class MediaRepository:
         with project_lock(str(self.root / "media.lock")):
             job["updated_at"] = timestamp()
             self.write(f"jobs/{job['job_id']}.json", job)
+
+    def video_output_path(self, job_id: str, index: int, suffix: str) -> str:
+        """Name outputs by the frozen generation start, independent of download retries."""
+        job = self.job(job_id)
+        created = datetime.fromisoformat(job["created_at"]).astimezone(timezone(timedelta(hours=8)))
+        number = job["input_snapshot"].get("target", {}).get("shot_number")
+        label = f"镜头{number:02d}" if type(number) is int and number > 0 else "视频"
+        return f"videos/{created:%Y-%m-%d_%H-%M-%S}_{label}_{job_id[:8]}_{index + 1:02d}{suffix}"
 
 
 def image_suffix(data: bytes) -> str:

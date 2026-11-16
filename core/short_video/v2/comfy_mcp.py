@@ -197,7 +197,7 @@ class ComfyMCPClient:
                     "INVALID_OUTPUT",
                     "下载内容不是 MP4／MOV／WebM／MKV 视频",
                 )
-                relative_path = f"videos/{job_id}_{index}{suffix}"
+                relative_path = self.repository.video_output_path(job_id, index, suffix)
                 self.repository.write_file(relative_path, data)
                 return {
                     "relative_path": relative_path,

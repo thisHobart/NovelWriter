@@ -260,21 +260,18 @@ class MediaPreview(QWidget):
 
     def capture_prompt_image_bindings(self) -> None:
         self.prompt_image_bindings = {}
-        self.refresh_reference_labels(self.image_selection())
+        self.refresh_reference_labels()
 
-    def refresh_reference_labels(self, selection: dict[str, str | None]) -> None:
-        if self.template.kind != "reference":
-            references = [
-                image for image in self.template.image_inputs if image.role == "reference"
-            ]
-            for number, image in enumerate(references, 1):
-                self.image_labels[image.node_id].setText(f"图片节点 {number}\n<Picture {number}>")
-                self.image_labels[image.node_id].setToolTip(
-                    f"提示词中使用 <Picture {number}> 引用这张参考图片。"
-                )
-            return
+    def reference_selection(self) -> dict[str, str | None]:
+        frames = {
+            image.node_id for image in self.template.image_inputs if image.role != "reference"
+        }
+        return {node: image for node, image in self.image_selection().items() if node not in frames}
+
+    def refresh_reference_labels(self) -> None:
+        reference_nodes = self.reference_selection()
         selected_nodes = []
-        for slot, (node_id, image_id) in enumerate(selection.items(), 1):
+        for slot, (node_id, image_id) in enumerate(reference_nodes.items(), 1):
             label = self.image_labels[node_id]
             if image_id is None:
                 label.setText(f"图片节点 {slot}")
@@ -293,7 +290,7 @@ class MediaPreview(QWidget):
 
     def validate_prompt_image_bindings(self) -> None:
         selected_nodes = []
-        for node_id, image_id in self.image_selection().items():
+        for node_id, image_id in self.reference_selection().items():
             if image_id is not None:
                 selected_nodes.append(node_id)
         for number, node_id in self.prompt_image_bindings.items():
@@ -444,7 +441,7 @@ class MediaPreview(QWidget):
     def refresh_result(self) -> None:
         repository = MediaRepository(self.workbench.output_dir)
         selection = self.image_selection()
-        self.refresh_reference_labels(selection)
+        self.refresh_reference_labels()
         for node_id, (combo, choose, preview) in self.image_fields.items():
             image_id = selection[node_id]
             if image_id:
@@ -455,10 +452,9 @@ class MediaPreview(QWidget):
                 )
             else:
                 preview.clear()
-        if self.template.kind == "reference":
-            selection = {
-                node_id: image_id for node_id, image_id in selection.items() if image_id is not None
-            }
+        selection = {
+            node_id: image_id for node_id, image_id in selection.items() if image_id is not None
+        }
         self.current_job = None
         for job in reversed(repository.jobs()):
             snapshot = job["input_snapshot"]
@@ -582,8 +578,7 @@ class MediaPreview(QWidget):
 
     def generate(self) -> None:
         require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
-        if self.template.kind == "reference":
-            self.validate_prompt_image_bindings()
+        self.validate_prompt_image_bindings()
         prompt = self.prompt.toPlainText().strip()
         command = MediaService(self.workbench.output_dir).prepare_video(
             self.image_selection(),

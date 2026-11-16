@@ -308,7 +308,7 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 | MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。读取旧配置时丢弃未使用的 image_workflow 字段 |
 | parse_video_workflow(graph) | 从已保存的 API JSON 适配有效图片、提示词、参数和唯一 SaveVideo |
 | MediaRepository.import_image(path, source=None) | 导入 PNG／JPEG／WebP，保存独立文件、哈希、原文件名及来源；供手动导图与后续图片工作流共用 |
-| MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为图片位置标识到 image_id 或 None 的映射；普通参考图过滤 None，首尾帧输入仍须完整。parameters 为参数键到类型值；只读校验并冻结实际输入，不提交 GPU 工作 |
+| MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为图片位置标识到 image_id 或 None 的映射；所有模板过滤 None，按实际选图裁剪参考输入及首尾引导，至少选一张。parameters 为参数键到类型值；只读校验并冻结实际输入，不提交 GPU 工作 |
 | MediaWork(output_dir, command) | 符合 VideoTask 调用约定，通过现有 TaskRunner 执行并报告状态 |
 | MediaWork(output_dir, job_id=...) | 查询同一远程任务或重新取回结果，不再次提交 |
 | MediaRepository.images / jobs / image / job | 读取本地图片与任务记录；读取不创建媒体目录 |
@@ -321,13 +321,15 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 
 MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析 JSON 并验证支持的模板；新增时生成标识，更新时保留标识。save 将整个列表原子写入项目；旧 video_workflow 路径配置在读取时转为 JSON 快照，不覆盖旧任务。
 
-parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters、kind 与 generator_node。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后串联的两个 MiniMaxH3AddGuide。后一结构必须按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点；新增对应图片输入。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
+parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters、kind 与 generator_node。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后的 MiniMaxH3AddGuide。允许仅首帧、仅尾帧或二者组合；同时存在时按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
 
 VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 显示固定输入位置“图片节点 N”，选图后另显示实际代称 <Picture M>；M 按已选图片顺序连续编号，与提交顺序一致；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
 
 WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。像素量下限为当前 ResolutionSelector 允许的 0.1；保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
 
-VideoWorkflow.bind(image_names, prompt, job_id, parameters) 核对完整图片集合、参数键、数值类型及范围，再复制模板并替换值。参考图提示词中 Picture N 必须在 reference_count 范围内，组合模板的五个输入中仅前三个对应 Picture 1～3。后端逐张上传，以返回的 subfolder/name 替换对应 LoadImage.image，不向 ComfyUI 发送桌面绝对路径；原配置 JSON 不修改。
+VideoWorkflow.prepare_image_inputs(node_ids) 为本次任务保留实际选中的图片；重排参考图连线，旁路未选帧对应的引导并裁剪无用依赖，独立首尾帧节点移除未选图片参数。MediaService 和 AI 视频提示词输入快照共用这一适配，原配置 JSON 不修改。允许只选首尾帧、只选尾帧、只选参考图及混合组合，全部空白则拒绝。
+
+VideoWorkflow.bind(image_names, prompt, job_id, parameters) 核对裁剪后图片集合、参数键、数值类型及范围，再复制模板并替换值。Picture N 只按实际已选参考图从1连续编号；首尾帧使用角色名称，不占用编号，零参考图时任何 Picture 引用均拒绝。后端仅上传实际已选图片，以返回的 subfolder/name 替换对应 LoadImage.image，不向 ComfyUI 发送桌面绝对路径。
 
 内置 MCPServer 使用官方 Python SDK 2.x，与 Client 在进程内连接；不占端口，不启动子进程。服务端工具由本项目实现，名称并非 ComfyUI 或 MCP 的内置标准：
 
@@ -344,7 +346,7 @@ VideoWorkflow.bind(image_names, prompt, job_id, parameters) 核对完整图片�
 
 ### 10.3 实际数据与文件
 
-MediaCommand 保存 request_id、base_url、workflow_id、workflow_name、images（节点标识到图片记录）、parameters、prompt、target、workflow、workflow_hash 及 output_node。此处均为项目契约中的 JSON 对象；内部字段由 prepare 构造，不由用户填写。
+MediaCommand 保存 request_id、base_url、workflow_id、workflow_name、images（节点标识到图片记录）、parameters、prompt、target、workflow、workflow_hash 及 output_node。target 可含 storyboard_version_id、shot_id 和界面所示 shot_number（从1开始）。此处均为项目契约中的 JSON 对象；内部字段由 prepare 构造，不由用户填写。
 
 MediaJob 保存 job_id、request_id、command_hash、input_snapshot、status、remote_job_id、created_at／updated_at、outputs；提交前保存 submitted_workflow，失败另记 error.type/message。相同 request_id 与相同命令复用已有任务，不同输入报冲突；主动重新生成使用新请求编号。
 
@@ -356,10 +358,12 @@ short_video/media/
   images/<image_id>.png|jpg|webp
   images/<image_id>.json
   jobs/<job_id>.json
-  videos/<job_id>_<index>.mp4|mov|webm|mkv
+  videos/2026-11-16_15-30-45_镜头03_a1b2c3d4_01.mp4|mov|webm|mkv
 ```
 
 文件先写临时文件再原子改名，数据路径限制在项目媒体目录内；视频只接受支持的容器和对应文件头，不将空文件、网页或 GIF 冒充视频。独立文件不会覆盖其他任务产物。媒体没有单独的 current 指针或 index.json，界面按当前工作流及实际图片选择展示最新任务（普通参考图忽略空位）；文字 schema 仍为 2。
+
+新下载视频按“北京时间的任务开始时间_镜头编号_任务ID前8位_结果序号”命名，时间来自冻结的 created_at，镜头编号来自 target.shot_number；没有镜头编号时使用“视频”。结果序号从01开始，同任务重新查询或下载保持同一文件名。已有成功视频不自动重命名，任务内保存的输出路径继续用于定位文件；ComfyUI远端输出名和远端结果引用保持原样。
 
 ### 10.4 状态与恢复
 

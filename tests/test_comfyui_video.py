@@ -39,6 +39,7 @@ class ComfyServer:
         self.running = False
         self.failure = None
         self.calls = []
+        self.extra_nodes = {}
 
     def request(self, request):
         path = request.url.path
@@ -55,6 +56,7 @@ class ComfyServer:
             nodes["LoadImage"] = {
                 "input": {"required": {"image": [["unrelated-server-file.png"], {}]}}
             }
+            nodes.update(self.extra_nodes)
             return httpx.Response(200, json=nodes)
         if path == "/upload/image":
             self.uploads.append(request.content)
@@ -158,14 +160,21 @@ def test_saved_catalog_keeps_json_when_original_resource_moves(tmp_path, monkeyp
     assert parse_video_workflow(reopened.selected()["graph"]).image_inputs[0].node_id == "137"
 
 
-def test_video_runs_through_mcp_upload_submission_download_and_replay(tmp_path, image):
+def test_video_runs_through_mcp_upload_submission_download_and_replay(tmp_path, image, monkeypatch):
+    from core.short_video.v2 import media_service
+
+    monkeypatch.setattr(media_service, "timestamp", lambda: "2026-11-16T01:02:03+00:00")
     server = ComfyServer()
     command = MediaService(tmp_path).prepare_video(
-        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
+        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>.",
+        target={"shot_id": "shot_3", "shot_number": 3},
     )
     transport = httpx.MockTransport(server.request)
     result = MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
     assert result["status"] == "succeeded"
+    assert result["outputs"][0]["relative_path"] == (
+        f"videos/2026-11-16_09-02-03_镜头03_{result['job_id'][:8]}_01.mp4"
+    )
     graph = server.submissions[0]["prompt"]
     assert graph["137"]["inputs"]["image"] == "NovelWriter/server-renamed.png"
     assert PNG in server.uploads[0]
@@ -195,7 +204,10 @@ def test_lost_submission_response_queries_original_job_without_resubmission(tmp_
     assert len(server.submissions) == 1
 
 
-def test_failed_download_only_fetches_existing_video_again(tmp_path, image):
+def test_failed_download_only_fetches_existing_video_again(tmp_path, image, monkeypatch):
+    from core.short_video.v2 import media_service
+
+    monkeypatch.setattr(media_service, "timestamp", lambda: "2026-11-16T01:02:03+00:00")
     server = ComfyServer()
     server.fail_download = True
     command = MediaService(tmp_path).prepare_video(
@@ -206,10 +218,34 @@ def test_failed_download_only_fetches_existing_video_again(tmp_path, image):
         MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
     job = MediaRepository(tmp_path).jobs()[0]
     assert job["status"] == "collecting"
+    monkeypatch.setattr(media_service, "timestamp", lambda: "2026-11-17T04:05:06+00:00")
     server.fail_download = False
     result = MediaWork(str(tmp_path), job_id=job["job_id"], transport=transport)(lambda *_: None)
     assert result["status"] == "succeeded"
     assert len(server.submissions) == 1
+    assert result["outputs"][0]["relative_path"] == (
+        f"videos/2026-11-16_09-02-03_视频_{job['job_id'][:8]}_01.mp4"
+    )
+
+
+def test_videos_generated_in_same_second_have_distinct_names(tmp_path, image, monkeypatch):
+    from core.short_video.v2 import media_service
+
+    monkeypatch.setattr(media_service, "timestamp", lambda: "2026-11-16T23:59:59+00:00")
+    server = ComfyServer()
+    transport = httpx.MockTransport(server.request)
+    paths = []
+    for _ in range(2):
+        command = MediaService(tmp_path).prepare_video(
+            {node_id: image["image_id"] for node_id in ["137", "139", "147"]},
+            "Use <Picture 1>.", target={"shot_number": 1},
+        )
+        result = MediaWork(str(tmp_path), command, transport=transport)(lambda *_: None)
+        relative = result["outputs"][0]["relative_path"]
+        assert relative.startswith("videos/2026-11-17_07-59-59_镜头01_")
+        paths.append(relative)
+    assert paths[0] != paths[1]
+    assert all(MediaRepository(tmp_path).resolve(path).read_bytes() == VIDEO for path in paths)
 
 
 def test_rejected_submission_is_failed_instead_of_remote_status_unknown(tmp_path, image):
@@ -432,9 +468,10 @@ def test_missing_image_wrong_parameter_or_unknown_template_is_explicit(tmp_path,
     config.selected_workflow_id = "minimax-first-last"
     config.save(tmp_path)
     service = MediaService(tmp_path)
-    with pytest.raises(WorkspaceError, match="每个工作流图片输入"):
+    with pytest.raises(WorkspaceError, match="至少选择一张"):
         service.prepare_video(
-            {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "camera movement"
+            {entry.node_id: None for entry in parse_video_workflow(config.selected()["graph"]).image_inputs},
+            "camera movement",
         )
     with pytest.raises(WorkspaceError, match="类型或范围"):
         service.prepare_video(
@@ -487,7 +524,7 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
         "尾帧图片",
     ]
     assert [label.text() for label in panel.image_labels.values()] == [
-        "图片节点 1\n<Picture 1>", "图片节点 2\n<Picture 2>", "图片节点 3\n<Picture 3>",
+        "图片节点 1", "图片节点 2", "图片节点 3",
         "首帧图片", "尾帧图片",
     ]
     from PySide6.QtGui import QImage
@@ -497,7 +534,7 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     ui_image.fill(0xFF0088)
     assert ui_image.save(str(path))
     panel.import_image(str(path), "137")
-    assert not panel.generate_button.isEnabled()
+    assert panel.generate_button.isEnabled()
     for entry in panel.template.image_inputs[1:]:
         panel.import_image(str(path), entry.node_id)
     panel.parameter_fields["132.value"].setValue(5.5)
@@ -635,6 +672,89 @@ def test_independent_first_last_node_remains_supported():
     assert template.kind == "first_last"
     assert template.reference_count == 0
     assert [entry.label for entry in template.image_inputs] == ["首帧图片", "尾帧图片"]
+
+
+@pytest.mark.parametrize("selected", [
+    ("147", "148"), ("148",), ("147",), ("139",), ("139", "148"),
+    ("139", "147"), ("139", "147", "148"), ("137", "139", "152", "148"),
+    ("137", "152", "147"), ("137", "139", "152", "147", "148"),
+])
+def test_combined_workflow_prunes_unselected_images_and_rewires_guides(tmp_path, image, selected):
+    from core.short_video.v2.video_prompt import snapshot_video_inputs, validate_video_inputs
+
+    config = MediaConfig()
+    config.selected_workflow_id = "minimax-first-last"
+    config.save(tmp_path)
+    before = (tmp_path / "short_video/media/settings.json").read_bytes()
+    template = parse_video_workflow(config.selected()["graph"])
+    selection = {entry.node_id: image["image_id"] if entry.node_id in selected else None
+                 for entry in template.image_inputs}
+    command = MediaService(tmp_path).prepare_video(selection, "保持动作与画面连续。")
+    graph = command["workflow"]
+    assert {key for key, node in graph.items() if node["class_type"] == "LoadImage"} == set(selected)
+    assert set(command["images"]) == set(selected)
+    reference_ids = [key for key in ("137", "139", "152") if key in selected]
+    reference_inputs = {key: value for key, value in graph["136"]["inputs"].items()
+                        if key.startswith("ref_images.ref_image_")}
+    assert reference_inputs == {f"ref_images.ref_image_{i}": [key, 0]
+                                for i, key in enumerate(reference_ids)}
+    previous = "136"
+    for node_id, image_id, frame in (("149", "147", 0), ("150", "148", -1)):
+        if image_id in selected:
+            assert graph[node_id]["inputs"]["positive"] == [previous, 0]
+            assert graph[node_id]["inputs"]["latent"] == ["136", 1]
+            assert graph[node_id]["inputs"]["frame_idx"] == frame
+            previous = node_id
+        else:
+            assert node_id not in graph
+    assert graph["126"]["inputs"]["conditioning"] == [previous, 0]
+    binding = snapshot_video_inputs(str(tmp_path), selection, config.selected_workflow_id, {})
+    assert [i["reference"] for i in binding["images"] if i["role"] == "reference"] == [
+        f"<Picture {i + 1}>" for i in range(len(reference_ids))]
+    validate_video_inputs(str(tmp_path), binding)
+    server = ComfyServer()
+    result = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(
+        lambda *_: None)
+    assert result["status"] == "succeeded"
+    assert len(server.uploads) == len(selected) and len(server.submissions) == 1
+    assert (tmp_path / "short_video/media/settings.json").read_bytes() == before
+    # With zero references, Picture numbers must not refer to a first/last frame.
+    if not reference_ids:
+        with pytest.raises(WorkspaceError, match="0 张参考图片"):
+            MediaService(tmp_path).prepare_video(selection, "Use <Picture 1>.")
+
+
+@pytest.mark.parametrize("selected", [("137",), ("139",), ("137", "139")])
+def test_independent_frame_node_omits_unselected_optional_inputs(tmp_path, image, selected):
+    config = MediaConfig()
+    graph = config.selected("minimax-first-last")["graph"]
+    inputs = graph["136"]["inputs"]
+    graph["136"]["class_type"] = "MiniMaxH3ImageToVideo"
+    graph["136"]["inputs"] = {key: inputs[key] for key in (
+        "clip", "vae", "prompt", "width", "height", "length")}
+    graph["136"]["inputs"].update(first_frame=["137", 0], last_frame=["139", 0])
+    graph["126"]["inputs"]["conditioning"] = ["136", 0]
+    config.put_workflow("纯首尾帧", json.dumps(graph))
+    config.save(tmp_path)
+    command = MediaService(tmp_path).prepare_video(
+        {key: image["image_id"] if key in selected else None for key in ("137", "139")},
+        "按所选首尾帧保持连续。")
+    prepared = command["workflow"]
+    for key, node_id in (("first_frame", "137"), ("last_frame", "139")):
+        assert (key in prepared["136"]["inputs"]) == (node_id in selected)
+        assert (node_id in prepared) == (node_id in selected)
+    server = ComfyServer()
+    server.extra_nodes["MiniMaxH3ImageToVideo"] = {"input": {"required": {}}}
+    result = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(
+        lambda *_: None)
+    assert result["status"] == "succeeded" and len(server.uploads) == len(selected)
+
+
+def test_combined_selection_rejects_unknown_nodes_before_upload(tmp_path, image):
+    with pytest.raises(WorkspaceError, match="不存在的图片输入"):
+        MediaService(tmp_path).prepare_video({"149": image["image_id"]}, "视频正文",
+                                             workflow_id="minimax-first-last")
+    assert MediaRepository(tmp_path).jobs() == []
 
 
 def test_optional_combo_is_checked_before_remote_submission():
@@ -832,6 +952,67 @@ def test_ui_reference_number_changes_require_prompt_review_and_allow_undo(tmp_pa
     panel.generate()
     assert list(submitted[-1].command["images"]) == ["137", "147"]
     assert panel.prompt.toPlainText().startswith("Use <Picture 2>")
+    panel.close()
+    app.processEvents()
+
+
+def test_ui_tail_only_can_submit_and_find_job_after_interruption(tmp_path):
+    app, panel, submitted = reference_panel(tmp_path)
+    panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
+    path = tmp_path / "tail.png"
+    save_ui_image(path)
+    panel.import_image(str(path), "148")
+    panel.prompt.setPlainText("以尾帧为结束画面，保持动作和场景连续。")
+    assert panel.generate_button.isEnabled()
+    assert panel.image_labels["148"].text() == "尾帧图片"
+    assert all("Picture" not in label.text() for label in panel.image_labels.values())
+    panel.generate()
+    work = submitted[-1]
+    assert set(work.command["images"]) == {"148"}
+    server = ComfyServer()
+    server.running = True
+    work.transport = httpx.MockTransport(server.request)
+
+    def stop(message, progress):
+        if "正在生成视频" in message:
+            work.token.cancel()
+
+    with pytest.raises(GenerationCancelled):
+        work(stop)
+    panel.refresh()
+    assert panel.current_job["status"] == "interrupted" and panel.query_button.isEnabled()
+    job_id = panel.current_job["job_id"]
+    panel.query()
+    query = submitted[-1]
+    assert query.job_id == job_id
+    server.running = False
+    query.transport = httpx.MockTransport(server.request)
+    result = query(lambda *_: None)
+    assert result["status"] == "succeeded" and len(server.submissions) == 1
+    panel.refresh()
+    assert panel.video_path.is_file()
+    panel.close()
+    app.processEvents()
+
+
+def test_ui_combined_reference_numbering_excludes_frames_and_detects_shifts(tmp_path):
+    app, panel, submitted = reference_panel(tmp_path)
+    panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
+    path = tmp_path / "reference.png"
+    save_ui_image(path)
+    for node_id in ("139", "152", "148"):
+        panel.import_image(str(path), node_id)
+    assert panel.image_labels["139"].text().endswith("<Picture 1>")
+    assert panel.image_labels["152"].text().endswith("<Picture 2>")
+    assert panel.image_labels["148"].text() == "尾帧图片"
+    panel.prompt.setPlainText("Use <Picture 2> as a reference, end at the last frame.")
+    panel.image_fields["139"][0].setCurrentIndex(0)
+    assert panel.image_labels["152"].text().endswith("<Picture 1>")
+    with pytest.raises(WorkspaceError, match="图片编号已变化"):
+        panel.generate()
+    panel.prompt.setPlainText("Use <Picture 1> as a reference, end at the last frame.")
+    panel.generate()
+    assert set(submitted[-1].command["images"]) == {"152", "148"}
     panel.close()
     app.processEvents()
 

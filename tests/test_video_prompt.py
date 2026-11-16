@@ -107,6 +107,29 @@ def test_first_last_frame_roles_never_consume_picture_numbers(ready):
     assert [i["reference"] for i in frames] == ["首帧图片", "尾帧图片"]
 
 
+@pytest.mark.parametrize("nodes", [("147", "148"), ("147",), ("148",)])
+def test_video_prompt_uses_only_selected_frame_roles_and_can_resume_binding(ready, nodes):
+    from core.short_video.v2.video_prompt import validate_video_inputs
+
+    repository, image, _ = ready
+    command = WorkflowService(repository).prepare_video_prompt(
+        "shot_1", {key: image["image_id"] if key in nodes else None
+                   for key in ("137", "139", "152", "147", "148")},
+        workflow_id="minimax-first-last", parameters={})
+    binding = command["context"]["video_input_binding"]
+    assert {i["node_id"] for i in binding["images"]} == set(nodes)
+    assert all(i["role"] != "reference" and "Picture" not in i["reference"]
+               for i in binding["images"])
+    validate_video_inputs(repository.output_dir, binding)
+    with pytest.raises(WorkspaceError, match="未选择的参考图片"):
+        WorkflowService(repository)._validate_output(command, response(repository))
+    body = BODY.replace("以 <Picture 1> 为视觉参考", "以所选首尾帧约束画面")
+    send = Mock(side_effect=[encode(response(repository, body)), '{"issues":[]}'])
+    result = WorkflowService(repository, transport=send).execute(command)
+    assert result["review_status"] == "passed"
+    assert repository.current("prompt_bundle")["content"]["shots"][0]["video_prompt_binding"] == binding
+
+
 def test_generation_review_revision_preserves_shot_text_and_saves_binding(ready):
     repository, _, _ = ready
     command = prepare(ready)
@@ -256,10 +279,12 @@ def test_switching_shots_isolates_video_prompt_and_selected_images(ready, prompt
     page.media.prompt.setPlainText("镜头一的手动视频提示词")
     page.objects.setCurrentIndex(1)
     assert page.media.target["shot_id"] == "shot_2"
+    assert page.media.target["shot_number"] == 2
     assert not any(page.media.image_selection().values())
     assert page.media.prompt.toPlainText() != "镜头一的手动视频提示词"
     page.media.prompt.setPlainText("镜头二的手动视频提示词")
     page.objects.setCurrentIndex(0)
+    assert page.media.target["shot_number"] == 1
     assert page.media.prompt.toPlainText() == "镜头一的手动视频提示词"
     assert page.media.image_selection()["137"] == first["image_id"]
 

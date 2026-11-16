@@ -20,10 +20,7 @@ def snapshot_video_inputs(
     selected = MediaConfig.load(output_dir).selected(workflow_id)
     template = parse_video_workflow(selected["graph"])
     chosen = {node: image for node, image in images.items() if image is not None}
-    if template.kind == "reference":
-        template = template.prepare_reference_inputs(list(chosen))
-    else:
-        require(len(chosen) == len(images), "INVALID_INPUT", "请为每个工作流图片输入选择图片")
+    template = template.prepare_image_inputs(list(chosen))
     template.bind(chosen, "输入结构校验", "validation", parameters)
     media = MediaRepository(output_dir)
     bindings, number = [], 0
