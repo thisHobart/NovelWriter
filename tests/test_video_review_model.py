@@ -2,10 +2,11 @@
 
 from copy import deepcopy
 import json
+import re
 
 import httpx
 import pytest
-from openai import AsyncOpenAI
+from openai import APIConnectionError, AsyncOpenAI
 
 from core.generation import api_providers, api_settings
 from core.short_video.v2 import creation, llm, models, runtime, workflow
@@ -29,6 +30,42 @@ def configured(tmp_path, monkeypatch):
 def issue(explanation="动作节奏需要调整"):
     return {"rule_id": "TEXT-001", "severity": "warning", "target_path": "opening.text",
             "explanation": explanation, "suggestion": "保留核心信息，简化开头", "quote": None, "source_refs": []}
+
+
+def source_issue(repository):
+    source = repository.current("source")
+    quote = "井口响了三声。"
+    start = source["content"]["normalized_text"].index(quote)
+    return {**issue(), "quote": quote, "source_refs": [
+        {"source_id": source["id"], "start": start, "end": start + len(quote)}]}
+
+
+def test_review_binds_quote_to_actual_source_without_duplicate_quote_field(configured):
+    from core.short_video.v2.review import parse_review
+
+    problem = source_issue(configured)
+    result = parse_review(encode({"issues": [problem]}), configured.current("novel_copy"), configured)
+    assert result[0]["quote"] == problem["quote"]
+    assert result[0]["source_refs"] == problem["source_refs"]
+
+
+@pytest.mark.parametrize("invalid", ["candidate_quote", "missing_refs", "wrong_inline_quote", "out_of_range", "non_text_quote"])
+def test_review_still_rejects_unbound_or_invalid_quotes(configured, invalid):
+    from core.short_video.v2.review import parse_review
+
+    problem = source_issue(configured)
+    if invalid == "candidate_quote":
+        problem["quote"] = configured.current("novel_copy")["content"]["opening"]["text"]
+    elif invalid == "missing_refs":
+        problem["source_refs"] = []
+    elif invalid == "wrong_inline_quote":
+        problem["source_refs"][0]["quote"] = "伪造的原文"
+    elif invalid == "out_of_range":
+        problem["source_refs"][0]["end"] = 10000
+    else:
+        problem["quote"] = ["引文不是文字"]
+    with pytest.raises(WorkspaceError):
+        parse_review(encode({"issues": [problem]}), configured.current("novel_copy"), configured)
 
 
 def test_review_configuration_is_independent_and_never_falls_back(configured, monkeypatch):
@@ -187,3 +224,239 @@ def test_storyboard_composition_freezes_same_review_model(configured):
 def test_quality_revision_limit_cannot_exceed_one(configured):
     with pytest.raises(WorkspaceError, match="质量修订次数"):
         workflow.WorkflowService(configured, max_retries=2)
+
+
+def sdk_replies(monkeypatch, replies):
+    """Use the actual SDK routing while keeping every HTTP request in-process."""
+    calls = []
+    sequence = iter(replies)
+    monkeypatch.setattr(llm, "NETWORK_MAX_RETRIES", 0)
+
+    def handler(request):
+        body = json.loads(request.content)
+        model, value = next(sequence)
+        assert body["model"] == model
+        provider = "generate" if model == "generator" else "review"
+        assert request.url.host == provider + ".test"
+        assert request.headers["authorization"] == "Bearer " + (
+            "generation-key" if model == "generator" else "review-key")
+        calls.append(body["messages"][0]["content"])
+        if isinstance(value, Exception):
+            raise value
+        return httpx.Response(200, json={
+            "id": "mock", "object": "chat.completion", "created": 1, "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content":
+                value if isinstance(value, str) else encode(value)}, "finish_reason": "stop"}],
+        })
+
+    def client(**kwargs):
+        return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    monkeypatch.setattr(api_providers, "AsyncOpenAI", client)
+    return calls
+
+
+def test_sdk_accepts_coordinate_only_source_evidence_without_format_repair(configured, monkeypatch):
+    problem = source_issue(configured)
+    content = configured.current("novel_copy")["content"]
+    calls = sdk_replies(monkeypatch, [("generator", content), ("reviewer", {"issues": [problem]})])
+    service = workflow.WorkflowService(configured, max_retries=0)
+    result = service.execute(service.prepare("novel_copy"))
+    assert len(calls) == 2 and result["review_status"] == "issues"
+    assert "Unicode码点、左闭右开" in calls[1]
+    assert configured.load()["runs"][-1]["review_result"]["issues"][0]["quote"] == problem["quote"]
+
+
+@pytest.mark.parametrize("failure", ["generation", "review"])
+def test_json_syntax_feedback_reaches_correct_api_and_retains_content(configured, monkeypatch, failure):
+    quoted = 'reference 字段为"首帧图片"'
+    content = deepcopy(configured.current("novel_copy")["content"])
+    content["opening"]["text"] = quoted
+    problem = issue(quoted)
+    reviewed = {"issues": [problem]}
+    valid = encode(content if failure == "generation" else reviewed)
+    invalid = valid.replace(r'\"首帧图片\"', '"首帧图片"')
+    assert invalid != valid
+    replies = ([("generator", invalid), ("generator", content), ("reviewer", reviewed)]
+               if failure == "generation" else
+               [("generator", content), ("reviewer", invalid), ("reviewer", reviewed)])
+    calls = sdk_replies(monkeypatch, replies)
+    service = workflow.WorkflowService(configured, max_retries=0)
+    result = service.execute(service.prepare("novel_copy"))
+    assert len(calls) == 3 and result["review_status"] == "issues"
+    if failure == "review":
+        repair = json.loads(calls[2].split("【审阅格式修复】\n", 1)[1])
+        assert repair["response"] == invalid
+        details = json.loads(repair["error"].split("JSON解析详情：\n", 1)[1])
+        assert quoted in details["snippet"]
+        assert details["line"] > 0 and details["column"] > 0
+    else:
+        assert "JSON解析详情" in calls[1] and "snippet" in calls[1]
+    assert configured.current("novel_copy")["content"]["opening"]["text"] == quoted
+    run = configured.load()["runs"][-1]
+    assert run["review_result"]["issues"][0]["explanation"] == quoted
+    assert [call["format_attempt"] for call in run["calls"]] == ([0, 1, 0] if failure == "generation" else [0, 0, 1])
+
+
+@pytest.mark.parametrize("repaired", [True, False])
+def test_quote_failure_traces_exact_requests_replies_and_one_feedback(configured, monkeypatch, capsys, repaired):
+    monkeypatch.setenv("NOVELWRITER_LLM_TRACE", "1")
+    original = configured.current("novel_copy")
+    content = deepcopy(original["content"])
+    content["opening"]["text"] += "新增候选内容。"
+    invalid = {**issue(), "quote": content["opening"]["text"]}
+    first = {"issues": [invalid]}
+    second = {"issues": [issue()]} if repaired else first
+    calls = sdk_replies(monkeypatch, [("generator", content), ("reviewer", first), ("reviewer", second)])
+    service = workflow.WorkflowService(configured, max_retries=0)
+    command = service.prepare("novel_copy")
+    if repaired:
+        result = service.execute(command)
+        assert result["review_status"] == "issues"
+    else:
+        with pytest.raises(WorkspaceError, match="审阅引文未绑定原文"):
+            service.execute(command)
+        assert configured.current("novel_copy")["id"] == original["id"]
+    output = capsys.readouterr().err
+    events = [(name, json.loads(header), body) for name, header, body in re.findall(
+        r"\[LLM_TRACE (\w+)\] ([^\n]+)\n(.*?)\n\[END LLM_TRACE \1\]", output, re.S)]
+    requests = [(header, body) for name, header, body in events if name == "REQUEST"]
+    responses = [(header, body) for name, header, body in events if name == "RESPONSE"]
+    assert [body for _, body in requests] == calls
+    assert [body for _, body in responses] == [encode(content), encode(first), encode(second)]
+    assert [header["purpose"] for header, _ in requests] == ["generation", "review", "review"]
+    assert [header["review_format_attempt"] for header, _ in requests] == [0, 0, 1]
+    assert [header["model"] for header, _ in requests] == ["generator", "reviewer", "reviewer"]
+    assert [header["endpoint"] for header, _ in requests] == ["https://generate.test/v1", "https://review.test/v1", "https://review.test/v1"]
+    assert [header["call_id"] for header, _ in requests] == [header["call_id"] for header, _ in responses]
+    assert len({header["call_id"] for header, _ in requests}) == 3
+    assert all(header["finish_reason"] == "stop" for header, _ in responses)
+    assert all(header["task_id"] == command["request_id"] for header, _ in requests)
+    assert any(name == "PARSED_CANDIDATE" and json.loads(body) == content for name, _, body in events)
+    errors = [(header, json.loads(body)) for name, header, body in events if name == "REVIEW_PARSE_ERROR"]
+    assert errors[0][0]["call_id"] == requests[1][0]["call_id"]
+    assert errors[0][1]["will_repair"] is True
+    assert "issues[0].quote" in errors[0][1]["error"]
+    repair = json.loads(calls[2].split("【审阅格式修复】\n", 1)[1])
+    assert repair["response"] == encode(first)
+    message, detail = repair["error"].split("\n审阅校验详情：\n", 1)
+    assert message == errors[0][1]["error"]
+    assert json.loads(detail) == errors[0][1]["details"]
+    assert errors[0][1]["details"]["category"] == "reference"
+    assert content["opening"]["text"] in calls[1] and content["opening"]["text"] in calls[2]
+    if repaired:
+        assert any(name == "PARSED_REVIEW" for name, _, _ in events)
+        assert any(name == "COMMITTED_RESULT" and json.loads(body)["version_id"] == result["version_id"] for name, _, body in events)
+    else:
+        assert len(errors) == 2 and errors[1][1]["will_repair"] is False
+        assert all(name != "COMMITTED_RESULT" for name, _, _ in events)
+    assert "generation-key" not in output and "review-key" not in output
+
+
+@pytest.mark.parametrize("invalid_review", ["审阅不是JSON", {"issues": "错误列表类型"},
+                                            {"issues": [{**issue(), "severity": "error"}]}])
+def test_generation_and_review_format_repairs_use_their_own_apis_once(configured, monkeypatch, invalid_review):
+    content = configured.current("novel_copy")["content"]
+    calls = sdk_replies(monkeypatch, [("generator", "生成不是JSON"), ("generator", content),
+                                     ("reviewer", invalid_review), ("reviewer", {"issues": []})])
+    service = workflow.WorkflowService(configured)
+    result = service.execute(service.prepare("novel_copy"))
+    assert result["review_status"] == "passed" and result["retries_used"] == 0
+    assert len(calls) == 4 and "生成不是JSON" in calls[1]
+    assert "【审阅格式修复】" in calls[3] and "issues" in calls[3]
+    repair = json.loads(calls[3].split("【审阅格式修复】\n", 1)[1])
+    assert repair["response"] == (invalid_review if isinstance(invalid_review, str) else encode(invalid_review))
+    assert repair["error"]
+    run = configured.load()["runs"][-1]
+    assert [c["purpose"] for c in run["calls"]] == ["generation", "generation", "review", "review"]
+    assert [c["format_attempt"] for c in run["calls"]] == [0, 1, 0, 1]
+    assert len({c["step_id"] for c in run["calls"]}) == 4
+
+
+@pytest.mark.parametrize("failure", ["generation", "review"])
+def test_invalid_format_stops_after_one_feedback_repair_and_keeps_original(configured, monkeypatch, failure):
+    original = configured.current("novel_copy")
+    replies = [("generator", "坏格式1"), ("generator", "坏格式2")]
+    if failure == "review":
+        replies = [("generator", original["content"]), ("reviewer", "坏格式1"), ("reviewer", "坏格式2")]
+    calls = sdk_replies(monkeypatch, replies)
+    service = workflow.WorkflowService(configured)
+    command = service.prepare("novel_copy")
+    expected = "未取得可用稿件" if failure == "generation" else "未取得有效校验结果"
+    with pytest.raises(WorkspaceError, match=expected):
+        service.execute(command)
+    assert len(calls) == len(replies)
+    assert configured.current("novel_copy")["id"] == original["id"]
+    task = configured.load()["tasks"][command["request_id"]]
+    assert task["status"] == "failed" and not task["resumable"]
+    assert runtime.get_recovery(configured, "novel_copy") is None
+
+
+def test_each_quality_review_has_one_separate_format_repair(configured, monkeypatch):
+    content = configured.current("novel_copy")["content"]
+    calls = sdk_replies(monkeypatch, [
+        ("generator", content), ("reviewer", "首稿审阅坏格式"),
+        ("reviewer", {"issues": [issue()]}), ("generator", content),
+        ("reviewer", "修订稿审阅坏格式"), ("reviewer", {"issues": []}),
+    ])
+    service = workflow.WorkflowService(configured)
+    result = service.execute(service.prepare("novel_copy"))
+    assert len(calls) == 6 and result["retries_used"] == 1 and result["review_status"] == "passed"
+    assert "首稿审阅坏格式" in calls[2] and "修订稿审阅坏格式" in calls[5]
+    assert "首稿审阅坏格式" not in calls[5]
+    assert [c["format_attempt"] for c in configured.load()["runs"][-1]["calls"]] == [0, 0, 1, 0, 0, 1]
+
+
+@pytest.mark.parametrize("repaired", [True, False])
+def test_review_repair_network_failure_resumes_without_resetting_attempt(configured, monkeypatch, repaired):
+    content = configured.current("novel_copy")["content"]
+    calls = sdk_replies(monkeypatch, [
+        ("generator", content), ("reviewer", "审阅坏格式"),
+        ("reviewer", httpx.ConnectError("review offline")),
+    ])
+    service = workflow.WorkflowService(configured)
+    command = service.prepare("novel_copy")
+    with pytest.raises(APIConnectionError, match="Connection error"):
+        service.execute(command)
+    checkpoint = configured.load()["runs"][-1]["checkpoint"]
+    assert len(calls) == 3 and checkpoint["step"] == "review"
+    assert checkpoint["review_repair"]["response"] == "审阅坏格式" and checkpoint["response"] is None
+    resumed = sdk_replies(monkeypatch, [("reviewer", {"issues": []} if repaired else "仍然坏格式")])
+    work = runtime.ResumeWork(configured, command["request_id"])
+    if repaired:
+        assert work(lambda *_: None)["review_status"] == "passed"
+    else:
+        with pytest.raises(WorkspaceError, match="未取得有效校验结果"):
+            work(lambda *_: None)
+    assert len(resumed) == 1 and "审阅坏格式" in resumed[0] and "【审阅格式修复】" in resumed[0]
+
+
+@pytest.mark.parametrize("repaired", [True, False])
+def test_saved_repair_response_is_replayed_without_another_api_call(configured, monkeypatch, repaired):
+    from core.short_video.v2 import review
+
+    raw = encode({"issues": []}) if repaired else "仍然坏格式"
+    original_parser = review.parse_review
+    calls = sdk_replies(monkeypatch, [("generator", configured.current("novel_copy")["content"]),
+                                     ("reviewer", "第一次坏格式"), ("reviewer", raw)])
+
+    def interrupt(response, *args, **kwargs):
+        if response == raw:
+            raise OSError("interrupt after repair response saved")
+        return original_parser(response, *args, **kwargs)
+
+    monkeypatch.setattr(review, "parse_review", interrupt)
+    service = workflow.WorkflowService(configured)
+    command = service.prepare("novel_copy")
+    with pytest.raises(OSError, match="response saved"):
+        service.execute(command)
+    checkpoint = configured.load()["runs"][-1]["checkpoint"]
+    assert checkpoint["response"] == raw and "review_repair" in checkpoint
+    monkeypatch.setattr(review, "parse_review", original_parser)
+    work = runtime.ResumeWork(configured, command["request_id"])
+    if repaired:
+        assert work(lambda *_: None)["review_status"] == "passed"
+    else:
+        with pytest.raises(WorkspaceError, match="未取得有效校验结果"):
+            work(lambda *_: None)
+    assert len(calls) == 3

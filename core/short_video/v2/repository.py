@@ -180,6 +180,16 @@ class ProjectRepository:
                     "INVALID_PROJECT",
                     "审阅结果缺失",
                 )
+                if "review_repair" in cp:
+                    repair = cp["review_repair"]
+                    require(
+                        cp["step"] == "review"
+                        and isinstance(repair, dict)
+                        and set(repair) == {"error", "response"}
+                        and all(isinstance(value, str) for value in repair.values()),
+                        "INVALID_PROJECT",
+                        "审阅格式修复检查点损坏，原文件保留",
+                    )
             run_ids.add(run["id"])
         return state
 

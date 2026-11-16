@@ -33,7 +33,7 @@
 1. `WorkflowService.prepare` 读取当前有效内容，冻结生成与校验模型、来源、模板、要求和目标内容；分镜组合任务在目录生成前冻结后续分镜规则。
 2. `CreationWork` 编排目录→分镜，或逐项资产→镜头本地编排；单阶段任务通过 `WorkspaceWork` 执行。
 3. `AgentExecution` 执行 request→validate→review→decide→commit；`validation` 保证结构和引用，`review` 返回质量反馈，二者不自行启动新任务。
-4. 质量修订默认最多一次：首次校验失败后由生成模型修订，再用独立校验模型复检，第二次残留质量问题只记录、不触发第三稿。每轮候选的格式修复最多两次，独立计数；分块请求允许一次格式修复。ScriptLLM 另负责最多两次网络重试，SDK 内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
+4. 质量修订默认最多一次：首次校验失败后由生成模型修订，再用独立校验模型复检，第二次残留质量问题只记录、不触发第三稿。每稿生成回复和每轮审阅回复各允许一次格式反馈修复，分别使用生成API和校验API，与质量修订独立计数；分块请求仍允许一次格式修复。审阅修复的错误与原始回复随检查点保存，中断恢复不重置次数，已保存回复不重复请求。ScriptLLM另负责最多两次网络重试，SDK内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
 
 修改内容规则时，阶段任务与样例在 `prompts.py`，硬性约束在 `validation.py`，AI 审阅标准在 `review.py`；保持三者一致。自定义阶段模板优先，不以更新内置提示词为由覆盖用户模板。
 
@@ -107,6 +107,63 @@ ImageGenerationService 从已有结果列视图，ImageGenerationWork 单次 asy
 - 媒体输入和工作流隔离、远程任务对账、下载恢复；真实联调使用隔离项目并单独记录参数与产物。
 
 各次回归与校验模型接入的验收结果见 DEVLOG。离线测试不代表成片质量。
+
+### 5.1 控制台查看模型数据流
+
+在启动程序的同一个 PowerShell 中启用文字请求追踪：
+
+```powershell
+$env:NOVELWRITER_LLM_TRACE="1"
+$env:PYTHONIOENCODING="utf-8"
+.\venv\Scripts\python.exe main.py
+```
+
+PyCharm 运行配置也可设置 `NOVELWRITER_LLM_TRACE=1` 后重启程序。默认关闭；
+停止程序后移除环境变量或设为 `0`，下一次启动不再输出全文。
+
+追踪直接输出控制台，不通过应用的文件日志处理器，也不新增项目内的诊断文件。
+按 `task_id`、`run_id`、`call_id` 对照生成和独立校验 API 的调用：
+
+- `REQUEST`：实际发送的完整 user 消息，以及模型、接口、生成参数、网络尝试和格式修复次数。
+- `RESPONSE`：原始回复正文，以及服务端返回的 `finish_reason`、usage、refusal；未返回的统计为 null。
+- `PARSED_CANDIDATE`：通过本地结构校验后的候选；视频阶段仅显示本镜结果。
+- `GENERATION_PARSE_ERROR`、`REVIEW_PARSE_ERROR`：本地校验原因及是否进入一次反馈修复；修复请求的 REQUEST 包含原始错误和回复。
+- `PARSED_REVIEW`：解析后的问题、反馈及审阅结果；`COMMITTED_RESULT` 表示最终保存的版本。
+- `API_ERROR` 为调用异常；`REUSED_RESPONSE` 表示恢复时使用已保存回复，没有新 API 调用。
+
+认证头不参与输出；当前调用使用的 API 密钥会被替换为 `[REDACTED]`，接口地址去掉账号、查询参数和片段。
+请求与回复内容保留原文和候选，便于逐字核对数据传递。原有运行记录和临时恢复检查点的保存规则保持现状。
+
+HTTP 200 只表示接口成功响应；审阅 JSON、字段和原文引用仍须通过本地校验。
+`quote` 如非空，必须逐字等于 `source_refs` 中某个准确原文区间；区间使用 Unicode 码点、左闭右开，
+无需在引用对象中重复填写 quote。选区边界及视频阶段本次实际提供的原文范围仍会检查。
+评论候选稿原句时将原句放入 explanation，quote=null、source_refs=[]，保留原来的问题和建议。
+
+JSON语法错误会反馈具体行列、字符偏移、解析器原因及最多80字符的错误附近片段，
+原始回复仍按一次格式修复流程携带；首字符即无法解析的纯文本不重复附加全文片段。
+错误片段放在结构化 details 中，只用于反馈和控制台追踪，普通错误消息仅包含位置及原因。
+程序继续按JSON标准严格解析模型返回的对象，格式修复依据实际解析错误，不固定归因为引号问题。
+
+### 5.2 自动审阅契约
+
+`review_contract`使用现有jsonschema依赖，公共Schema描述全部自动审阅的模型输出，
+按审阅类型返回独立副本，视频阶段额外限定target_path；Schema自身在构造请求前验证，
+校验器按类型缓存。字段定义同时用于模型提示和本地校验，类型错误不会被强制转换，
+可选quote／source_refs与额外字段的接受范围保持现状。内部check_report存储规则不变。
+
+普通审阅请求的response_contract包含schema和带问题的合法example；视频审阅使用
+单独的“输出结构约束”分块。示例仅说明结构，不作为检查事实；无问题返回issues空列表。
+首次与格式修复请求均携带同一契约，完整预算包含Schema、示例、错误反馈及原始回复。
+
+控制台REVIEW_PARSE_ERROR的details.category为syntax、schema或reference。
+schema诊断按路径稳定排序，errors最多10项，omitted_count说明省略数；每项包含path、
+rule、message、expected、actual_type、actual_preview，实际值预览最多200字符，
+missing与null分别标记。reference使用同样的定位信息；syntax沿用解析器位置及80字符片段。
+修复反馈通过format_error_feedback序列化到既有error字符串，原始response只在修复块
+保存一次，恢复不新增额度；存储、模型配置、Schema自身或网络异常不伪装成输出格式错误。
+
+`test_video_review_contract.py`覆盖各类型契约、派生隔离、诊断限制、来源与选区、
+独立SDK路由、结构反馈后的正文修订、重复失败、网络恢复和发送前预算。
 
 ## 6. 打包与变更约定
 

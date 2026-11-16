@@ -421,24 +421,27 @@ def test_format_repair_rebuilds_local_request_without_recursive_history(ready):
         calls.append(prompt)
         if prompt.startswith("自动审阅"):
             return '{"issues":[]}'
-        if len(calls) < 3:
+        if len(calls) == 1:
             return "非JSON回复" + str(len(calls))
         return encode(response(repository))
 
     result = WorkflowService(repository, transport=send).execute(command)
-    assert result["status"] == "succeeded" and len(calls) == 4
-    assert "非JSON回复1" in calls[1] and "非JSON回复1" not in calls[2]
-    assert calls[2].count("非JSON回复2") == 1
+    assert result["status"] == "succeeded" and len(calls) == 3
+    assert calls[1].count("非JSON回复1") == 1
+    assert "非JSON回复1" not in calls[2]
     assert all(p.count("【本镜上下文】") == 1 for p in calls)
 
 
-@pytest.mark.parametrize("phase", ["审阅", "修订", "格式修复"])
+@pytest.mark.parametrize("phase", ["审阅", "修订", "格式修复", "审阅格式修复"])
 def test_each_request_checks_frozen_budget_and_preserves_original_on_overflow(ready, phase, caplog):
     import logging
+    from core.short_video.v2.review import video_review_prompt
     caplog.set_level(logging.ERROR)
     repository, _, _ = ready
     command = prepare(ready)
-    command["max_context_chars"] = len(command["prompt"]) + 200
+    # Permit the ordinary review including its schema, then overflow the selected phase.
+    review_prompt = video_review_prompt(command, repository.record(command["candidate_id"]))
+    command["max_context_chars"] = max(len(command["prompt"]), len(review_prompt)) + 1000
     original = repository.current("prompt_bundle")["id"]
     calls = []
 
@@ -447,6 +450,8 @@ def test_each_request_checks_frozen_budget_and_preserves_original_on_overflow(re
         if phase == "格式修复":
             return "无效回复" * 10000
         if prompt.startswith("自动审阅"):
+            if phase == "审阅格式修复":
+                return "不是JSON" * 10000
             return encode({"issues": [{
                 "rule_id": "LONG", "severity": "warning", "target_path": "video_motion_prompt",
                 "explanation": "反馈" * 10000, "suggestion": "精简", "quote": None,
@@ -455,7 +460,7 @@ def test_each_request_checks_frozen_budget_and_preserves_original_on_overflow(re
 
     with pytest.raises(WorkspaceError, match=phase + "上下文超限"):
         WorkflowService(repository, transport=send).execute(command)
-    assert len(calls) == (2 if phase == "修订" else 1)
+    assert len(calls) == (2 if phase in {"修订", "审阅格式修复"} else 1)
     assert repository.current("prompt_bundle")["id"] == original
     assert repository.load()["runs"][-1]["checkpoint"]["step"] in {"request", "review"}
 
@@ -611,6 +616,26 @@ def test_review_cannot_quote_evidence_that_was_not_provided(ready):
     issue = {"rule_id": "FACT", "severity": "warning", "target_path": "video_motion_prompt",
              "explanation": "声称看过原文", "suggestion": "修正", "quote": ref["text"],
              "source_refs": [{k: v for k, v in ref.items() if k != "text"} | {"quote": ref["text"]}]}
-    with pytest.raises(WorkspaceError, match="未提供的原文"):
+    with pytest.raises(WorkspaceError, match="未提供的原文") as caught:
         check_candidate(command, repository.current("prompt_bundle"),
                         Mock(return_value=encode({"issues": [issue]})), repository)
+    assert caught.value.details["category"] == "reference"
+    assert caught.value.details["errors"][0]["path"] == "issues[0].source_refs[0]"
+
+
+def test_video_review_contract_is_metered_and_schema_failure_precedes_internal_mapping(ready, monkeypatch):
+    from core.short_video.v2 import review, video_context
+    from core.short_video.v2.review_contract import output_contract
+
+    repository, _, _ = ready
+    command = prepare(ready)
+    candidate = repository.record(command["candidate_id"])
+    prompt = review.video_review_prompt(command, candidate)
+    assert video_context.request_sizes(prompt)["输出结构约束"] == len(encode(output_contract("video_prompt")))
+    command["max_context_chars"] = len(prompt) - 1
+    with pytest.raises(WorkspaceError, match="审阅上下文超限"):
+        review.check_candidate(command, candidate, Mock(side_effect=AssertionError("over budget")), repository)
+    monkeypatch.setattr(review, "identity", lambda _: pytest.fail("invalid report received internal id"))
+    with pytest.raises(WorkspaceError) as caught:
+        review.parse_review(encode({"issues": [{"suggestion": None}]}), candidate, repository, shot_id="shot_1")
+    assert caught.value.details["category"] == "schema"

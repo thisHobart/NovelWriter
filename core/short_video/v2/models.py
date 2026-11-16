@@ -25,7 +25,7 @@ def fingerprint(value: Any) -> str:
     ).hexdigest()
 
 
-def parse_object(raw: str) -> JsonObject:
+def parse_json(raw: str) -> Any:
     text = raw.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -33,10 +33,40 @@ def parse_object(raw: str) -> JsonObject:
             text = "\n".join(lines[1:-1])
     try:
         value = json.loads(text, parse_constant=reject_json_constant)
+    except json.JSONDecodeError as exc:
+        details = {
+            "json_error": exc.msg,
+            "line": exc.lineno,
+            "column": exc.colno,
+            "position": exc.pos,
+        }
+        # Plain non-JSON replies are already included once in the repair request.
+        if exc.pos > 0:
+            start, end = max(0, exc.pos - 40), min(len(exc.doc), exc.pos + 40)
+            details.update(snippet_start=start, snippet=exc.doc[start:end])
+        raise WorkspaceError(
+            "INVALID_OUTPUT",
+            f"回复不是有效 JSON 对象：{exc.msg}；第{exc.lineno}行、第{exc.colno}列，偏移{exc.pos}",
+            details=details,
+        ) from exc
     except ValueError as exc:
         raise WorkspaceError("INVALID_OUTPUT", "回复不是有效 JSON 对象") from exc
+    return value
+
+
+def parse_object(raw: str) -> JsonObject:
+    value = parse_json(raw)
     require(isinstance(value, dict), "INVALID_OUTPUT", "需要 JSON 对象")
     return value
+
+
+def format_error_feedback(error: WorkspaceError) -> str:
+    """Include bounded syntax evidence in model feedback, without logging source text."""
+    if "json_error" in error.details:
+        return str(error) + "\nJSON解析详情：\n" + encode(error.details)
+    if error.details.get("category") in {"schema", "reference"}:
+        return str(error) + "\n审阅校验详情：\n" + encode(error.details)
+    return str(error)
 
 
 def reject_json_constant(value: str) -> NoReturn:

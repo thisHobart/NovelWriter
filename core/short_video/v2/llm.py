@@ -7,6 +7,7 @@ import random
 import time
 from collections.abc import Callable
 from email.utils import parsedate_to_datetime
+from uuid import uuid4
 
 import httpx
 from openai import APIConnectionError, APIStatusError
@@ -14,7 +15,8 @@ from openai import APIConnectionError, APIStatusError
 from core.generation import api_providers
 from core.generation.cancellation import CancelToken
 
-from .contracts import RequestRecorder, TextTransport
+from .contracts import JsonObject, RequestRecorder, TextTransport
+from .llm_trace import enabled, endpoint_label, trace_event
 from .models import WorkspaceError, require
 
 NETWORK_MAX_RETRIES = 2
@@ -72,6 +74,7 @@ class ScriptLLM:
         before_request: Callable[[], None] | None = None,
         on_retry: RetryReporter | None = None,
         purpose: str = "generation",
+        trace_context: Callable[[], JsonObject] | None = None,
     ) -> None:
         self.model = model
         self.token = token or CancelToken()
@@ -79,6 +82,9 @@ class ScriptLLM:
         self.transport = transport
         require(purpose in {"generation", "review"}, "INVALID_INPUT", "未知模型用途")
         self.purpose = purpose
+        self.trace_context = trace_context
+        self.trace_id = uuid4().hex[:12]
+        self.trace_secrets: tuple[str, ...] = ()
         self.network_retries = NETWORK_MAX_RETRIES if network_retries is None else network_retries
         require(
             type(self.network_retries) is int and self.network_retries >= 0,
@@ -95,6 +101,11 @@ class ScriptLLM:
             try:
                 response = self._request(prompt)
             except Exception as exc:
+                self.trace(
+                    "API_ERROR",
+                    {"type": type(exc).__name__, "message": str(exc)},
+                    network_attempt=attempt,
+                )
                 # Recording is outside the retried operation: a disk/hook failure
                 # must stop immediately, even if it resembles a network exception.
                 self._record(prompt, "", type(exc).__name__)
@@ -112,6 +123,15 @@ class ScriptLLM:
             return response
         raise AssertionError("unreachable")
 
+    def trace(self, event: str, payload: object, **metadata: object) -> None:
+        if not enabled():
+            return
+        context = {"trace_id": self.trace_id, "purpose": self.purpose, "provider": self.model}
+        if self.trace_context is not None:
+            context.update(self.trace_context())
+        context.update(metadata)
+        trace_event(event, context, payload, secrets=self.trace_secrets)
+
     def _wait(self, delay: float) -> None:
         self.token.event.wait(delay)
         self.token.raise_if_cancelled()
@@ -124,7 +144,11 @@ class ScriptLLM:
 
     def _request(self, prompt: str) -> str:
         if self.transport is not None:
+            self.trace("REQUEST", prompt, transport="injected", model=self.model)
             response = self.transport(prompt)
+            self.trace(
+                "RESPONSE", response, transport="injected", response_type=type(response).__name__
+            )
         else:
             if self.purpose == "review":
                 from core.generation.api_settings import get_review_config
@@ -132,6 +156,18 @@ class ScriptLLM:
                 config = get_review_config(self.model)
             else:
                 config = api_providers.get_config(self.model)
+            self.trace_secrets = (config.api_key,)
+            options = api_providers.request_options(self.model)
+            self.trace(
+                "REQUEST",
+                prompt,
+                endpoint=endpoint_label(config.base_url),
+                model=config.model,
+                message_role="user",
+                max_tokens=8192,
+                temperature=0.7,
+                extra_body=options,
+            )
 
             async def request() -> str:
                 async with api_providers.AsyncOpenAI(
@@ -144,9 +180,20 @@ class ScriptLLM:
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=8192,
                         temperature=0.7,
-                        extra_body=api_providers.request_options(self.model),
+                        extra_body=options,
                     )
-                    return result.choices[0].message.content
+                    choice = result.choices[0]
+                    if enabled():
+                        usage = getattr(result, "usage", None)
+                        self.trace(
+                            "RESPONSE",
+                            choice.message.content,
+                            model=getattr(result, "model", config.model),
+                            finish_reason=getattr(choice, "finish_reason", None),
+                            usage=usage.model_dump() if usage is not None else None,
+                            refusal=getattr(choice.message, "refusal", None),
+                        )
+                    return choice.message.content
 
             response = asyncio.run(request())
         if not isinstance(response, str):

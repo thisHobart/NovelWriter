@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.21；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.22；日期：2026-11-16。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；第11节记录已实现的可选 Images API 资产生图。
 
@@ -29,9 +29,9 @@
 
 ## 2. 内部生成与检查契约
 
-`WorkflowService(..., max_retries=1).prepare(...)` 冻结质量修订上限（仅允许0或1），`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入修订；默认最多生成两稿、校验两次。首次通过立即采用；否则反馈给生成模型修订一次，再交给独立校验模型，之后采用最新合法稿件。格式错误每次候选生成最多修复两次，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None, purpose="generation", network_retries=None, before_request=None, on_retry=None)` 默认最多两次网络重试，共最多三次尝试。连接／超时、HTTP 408／409／429／5xx 可重试；认证、权限、参数、格式、代码及存储错误不自动重试。采用约1秒、2秒的指数退避及少量抖动，尊重 Retry-After／retry-after-ms；服务要求等待超过60秒时停止自动重试，转入现有恢复流程。等待使用取消事件，可立即停止；SDK 内部重试保持0，由本层统一重试以避免叠加。
+`WorkflowService(..., max_retries=1).prepare(...)` 冻结质量修订上限（仅允许0或1），`execute(command, *, token=None, report=None, on_request=None, on_context=None)` 执行 Agent Loop。首次生成不计入修订；默认最多生成两稿、审阅两轮，格式修复请求另计。首次通过立即采用；否则反馈给生成模型修订一次，再交给独立校验模型，之后采用最新合法稿件。每稿生成回复和每轮审阅回复各允许一次格式反馈修复，与质量修改分别计数；没有总请求次数或整轮时限。`ScriptLLM(model, *, token=None, record=None, transport=None, purpose="generation", network_retries=None, before_request=None, on_retry=None)` 默认最多两次网络重试，共最多三次尝试。连接／超时、HTTP 408／409／429／5xx 可重试；认证、权限、参数、格式、代码及存储错误不进行网络重试，格式错误由Agent Loop显式反馈修复。采用约1秒、2秒的指数退避及少量抖动，尊重 Retry-After／retry-after-ms；服务要求等待超过60秒时停止自动重试，转入现有恢复流程。等待使用取消事件，可立即停止；SDK 内部重试保持0，由本层统一重试以避免叠加。
 
-外部质量检查函数为 `review.check_candidate(command,candidate,send,repository) -> QualityCheckResult(passed: bool, feedback: str, issue_count: int = 0, issues: list = [])`。command 提供阶段、原始要求和必要上下文；candidate 为最新合法内容。实现复用既有阶段规则、原文引文校验和 AI 判断，不增加评分维度；检查器只返回结果，不重新生成。`quality_check` 注入点用于控制检查替身，不新增服务层或部署要求。
+外部质量检查函数为 `review.check_candidate(command,candidate,send,repository,*,repair=None) -> QualityCheckResult(passed: bool, feedback: str, issue_count: int = 0, issues: list = [])`。command提供阶段、原始要求和必要上下文；candidate为最新合法内容。检查器只执行单次审阅并返回结果，不重新生成候选。Agent Loop在审阅JSON／字段／枚举／引用无效时，将error和原始response存入checkpoint.review_repair，清除待解析回复后，用相同校验API反馈修复一次；修复请求由原审阅任务加本轮错误和回复构建，不递归拼接历史请求。修复计数由检查点中的review_repair表示，恢复不重置；合法审阅完成后清除，下一稿独立计数。`quality_check`注入点继续用于检查替身，不新增服务层。
 
 Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。新生成成功结果的 `review_status` 为 passed（通过）或 issues（检查仍有问题）；审阅网络失败进入可恢复失败，不作为成功结果提交。历史 unavailable／incomplete 状态仅兼容读取。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
 
@@ -58,7 +58,7 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - `api_settings.save_provider(..., purpose="review")` 写入 `llm_settings.json.review={provider, providers:{服务商:{base_url,api_key,model}}}`；原 `providers` 继续用于生成与聊天，互不覆盖。
 - `review_provider()` 读取校验所选服务；`get_review_config(provider=None)` 只读取显式校验配置，不回退到生成或环境变量。缺失时 `prepare` 返回 `REVIEW_CONFIGURATION_MISSING`，不发送生成请求。
 - 阶段命令、组合父任务与新长文计划冻结 `review_model_snapshot={provider, model, endpoint_hash}`；密钥不写任务，允许更新密钥。恢复／每次实际请求前校验当前模型及接口指纹；变化返回 `REVIEW_CONFIGURATION_CHANGED`，可恢复原配置继续或重新生成。
-- `ScriptLLM(..., purpose="review")` 使用校验配置，仅处理 quality_check；初稿、格式修复与唯一一次质量修订使用生成配置。聊天使用生成配置，不进入校验循环。
+- `ScriptLLM(..., purpose="review")` 使用校验配置，处理quality_check及审阅格式反馈修复；初稿、生成格式修复与唯一一次质量修订使用生成配置。调用记录的format_attempt分别表示相应用途的0／1次格式修复。聊天使用生成配置，不进入校验循环。
 - `runs[].snapshot` 保存两份模型快照；`runs[].review_result={passed, feedback, issue_count, issues, candidate_id}` 保存最终完整校验结果及具体字段／原因／建议，绑定实际采用稿。UI 继续使用短摘要，不新增报告页面。
 - 运行格式为2；旧格式检查点通过现有失效机制提示重新生成，已保存当前稿不变。旧长文计划在新请求前补绑校验配置与冻结哈希，成功分块继续复用。
 
@@ -77,6 +77,30 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 `WorkflowService.shot_assets(shot_id, *, state=None) -> list[JsonObject]` 按当前分镜的 shot_id 取引用，顺序为场景、人物、道具；同一资产／状态去重，不把仅对白或画外音人物加入出镜资产。资产名称和状态来自分镜绑定的目录。返回项包含 kind、asset_id、variant_id、name、variant_label、spec_id，以及 views（view_id、label、positive_prompt、negative_prompt、available）。
 
 有当前有效 prompt_bundle 时按本镜 asset_refs 中的 spec_version_id 读取准确设定，不回退到其他设定；没有有效编排结果时，读取同资产编号、状态编号及同目录的当前设定。缺失或不对应的设定返回空提示词及预定视图，available=false；无分镜或找不到镜头返回空列表。查询不更新清单、运行、媒体或任何持久化字段。
+
+### 2.4 自动审阅报告的模型输出契约
+
+所有短视频v2自动审阅的模型输出使用公共JSON Schema，`review_schema(kind)`返回独立副本，
+`output_contract(kind)`提供同一Schema和带问题的合法示例。普通审阅放入response_contract，
+视频审阅放入“输出结构约束”分块；通过提示词提供契约，不新增模型接口参数。
+
+顶层必填issues对象列表，允许空。每项必填rule_id、severity、target_path、explanation、
+suggestion；文字必须包含非空白字符，severity仅warning。quote可省略或为文字／null，
+source_refs可省略或为引用对象列表；引用必填source_id、start、end。保持附加字段接受方式，
+不注入默认值、不转换类型。video_prompt的target_path必须为video_motion_prompt。
+仅在结构和业务引用检查通过后，程序添加id／disposition并映射完整镜头集合中的路径。
+
+`parse_json(raw)`解析任意JSON根类型；既有parse_object仍要求对象。审阅输出的根类型错误
+归类schema，语法错误归类syntax，原文来源、坐标、选区和逐字引文错误归类reference。
+WorkspaceError保留原有错误码；details.category标明类别。schema／reference的errors条目
+包含path、rule、message、expected、actual_type、actual_preview；省略数为omitted_count。
+schema最多反馈10项、预览最多200字符；syntax沿用行列、偏移及最多80字符的附近片段。
+
+完整诊断由format_error_feedback写入既有review_repair.error字符串，response仍保存原始
+回复，不增加检查点字段或重试次数。原始回复只携带一次；每次修复仍携带同一候选、资料
+与Schema，要求保留已有判断和建议。结构、引用错误修复后重验，只有合法审阅结果才进入
+正文修订或提交。Schema定义错误、磁盘损坏、配置变化与网络异常沿用原异常处理路径。
+内部以及人工／代码check_report的存储结构和验证规则不使用该模型输出Schema替换。
 
 ## 3. 来源依赖与当前内容
 

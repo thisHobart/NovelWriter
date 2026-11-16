@@ -25,10 +25,12 @@ from .feedback import (
     readable_fields,
 )
 from .llm import RecordingError, ScriptLLM
+from .llm_trace import trace_event
 from .models import (
     WorkspaceError,
     encode,
     fingerprint,
+    format_error_feedback,
     identity,
     parse_object,
     require,
@@ -56,6 +58,8 @@ PHASES = {
 def checkpoint_phase(cp: JsonObject) -> str:
     if cp["step"] == "request":
         return "格式修复" if cp["format_attempt"] else "质量修订" if cp["revision"] else "生成"
+    if cp["step"] == "review" and "review_repair" in cp:
+        return "审阅格式修复"
     return PHASES[cp["step"]]
 
 
@@ -385,6 +389,7 @@ class AgentExecution:
             on_request,
         )
         self.task_id = task_id
+        self.trace_call_id: str | None = None
         self.tracker = TaskTracker(
             ACTION_NAMES.get(command["stage"], "内容生成"), target=command_target(command)
         )
@@ -411,15 +416,33 @@ class AgentExecution:
             self.on_context(self.tracker.task_context)
         self.report(f"{self.tracker.task_context.target} · {name}…", -1)
 
+    def trace_metadata(self) -> JsonObject:
+        return {
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "stage": self.command["stage"],
+            "phase": checkpoint_phase(self.cp),
+            "quality_revision": self.cp["revision"],
+            "generation_format_attempt": self.cp["format_attempt"],
+            "review_format_attempt": int("review_repair" in self.cp),
+            "candidate_id": self.cp.get("candidate"),
+            "call_id": self.trace_call_id,
+        }
+
     def send(self, prompt: str, call_type: str) -> str:
         if self.cp.get("response") is not None:
+            trace_event(
+                "REUSED_RESPONSE",
+                self.trace_metadata(),
+                {"response_chars": len(self.cp["response"]), "new_api_call": False},
+            )
             return self.cp["response"]
         compact = self.command["stage"] == "video_prompt"
         if compact:
             from .video_context import check_budget
 
             phase = (
-                "审阅"
+                ("审阅格式修复" if "review_repair" in self.cp else "审阅")
                 if call_type == "quality_check"
                 else (
                     "格式修复"
@@ -459,9 +482,16 @@ class AgentExecution:
                 "model_snapshot": deepcopy(snapshot),
                 "step_id": f"{self.run_id}:{self.cp['revision']}:{self.cp['format_attempt']}:{call_type}",
                 "network_attempt": network_attempt,
+                "format_attempt": (
+                    int("review_repair" in self.cp)
+                    if purpose == "review"
+                    else self.cp["format_attempt"]
+                ),
                 "state": "sending",
                 "created_at": timestamp(),
             }
+            if purpose == "review":
+                call["step_id"] += f":review_format_{call['format_attempt']}"
             if compact:
                 from .video_context import request_sizes
 
@@ -481,6 +511,7 @@ class AgentExecution:
                 run = next(r for r in state["runs"] if r["id"] == self.run_id)
                 run["calls"].append(call)
                 state["tasks"][self.task_id]["calls_used"] += 1
+            self.trace_call_id = call["id"]
 
         def record(_prompt: str, response: str, error: str | None) -> None:
             with self.repository.transaction() as state:
@@ -521,6 +552,11 @@ class AgentExecution:
             transport=self.service.transport,
             record=record,
             before_request=begin,
+            trace_context=lambda: {
+                **self.trace_metadata(),
+                "call_id": call.get("id"),
+                "network_attempt": network_attempt,
+            },
             on_retry=lambda error, attempt, maximum, delay: self.tracker.report_network_retry(
                 error, attempt, maximum, delay, self.report, self.on_context
             ),
@@ -599,6 +635,11 @@ class AgentExecution:
             step = self.cp["step"]
             if step == "request":
                 require(
+                    self.cp["format_attempt"] <= MAX_FORMAT_RETRIES,
+                    "INVALID_OUTPUT",
+                    "格式修复次数已用尽；原稿保留",
+                )
+                require(
                     self.command["stage"] == "video_prompt"
                     or len(self.cp["prompt"]) <= self.service.max_context_chars,
                     "CONTEXT_TOO_LARGE",
@@ -614,6 +655,16 @@ class AgentExecution:
                 except WorkspaceError as exc:
                     if exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}:
                         raise
+                    trace_event(
+                        "GENERATION_PARSE_ERROR",
+                        self.trace_metadata(),
+                        {
+                            "code": exc.code,
+                            "error": str(exc),
+                            "details": exc.details,
+                            "will_repair": self.cp["format_attempt"] < MAX_FORMAT_RETRIES,
+                        },
+                    )
                     if self.cp["format_attempt"] >= MAX_FORMAT_RETRIES:
                         raise WorkspaceError(
                             "INVALID_OUTPUT", "未取得可用稿件：" + str(exc) + "；原稿保留"
@@ -621,7 +672,7 @@ class AgentExecution:
                     repair_prompt = (
                         self.video_generation_prompt(
                             repair={
-                                "error": str(exc),
+                                "error": format_error_feedback(exc),
                                 "response": self.cp["response"],
                                 "instruction": "仅修复JSON、字段、枚举或引用，不改动叙事",
                             }
@@ -629,7 +680,7 @@ class AgentExecution:
                         if self.command["stage"] == "video_prompt"
                         else self.cp["generation_prompt"]
                         + "\n仅修复JSON、字段、枚举或引用，不改动叙事。错误："
-                        + str(exc)
+                        + format_error_feedback(exc)
                         + "\n上次回复："
                         + encode({"response": self.cp["response"]})
                     )
@@ -641,6 +692,15 @@ class AgentExecution:
                     )
                     self.save()
                     continue
+                from .video_context import local_result
+
+                trace_event(
+                    "PARSED_CANDIDATE",
+                    self.trace_metadata(),
+                    local_result(content, self.command["shot_ids"][0])
+                    if self.command["stage"] == "video_prompt"
+                    else content,
+                )
                 with self.repository.transaction() as state:
                     candidate = self.repository._save(
                         state,
@@ -659,6 +719,7 @@ class AgentExecution:
                         generation_prompt="",
                     )
                     self.cp.pop("review", None)
+                    self.cp.pop("review_repair", None)
                     run = next(r for r in state["runs"] if r["id"] == self.run_id)
                     run.update(
                         checkpoint=deepcopy(self.cp),
@@ -667,19 +728,60 @@ class AgentExecution:
                     )
             elif step == "review":
                 candidate = self.repository.record(self.cp["candidate"])
-                result = (
-                    self.service.quality_check(self.command, candidate)
-                    if self.service.quality_check
-                    else check_candidate(
-                        self.command,
-                        candidate,
-                        lambda prompt: self.send(prompt, "quality_check"),
-                        self.repository,
+                try:
+                    result = (
+                        self.service.quality_check(self.command, candidate)
+                        if self.service.quality_check
+                        else check_candidate(
+                            self.command,
+                            candidate,
+                            lambda prompt: self.send(prompt, "quality_check"),
+                            self.repository,
+                            **(
+                                {"repair": self.cp["review_repair"]}
+                                if "review_repair" in self.cp
+                                else {}
+                            ),
+                        )
                     )
-                )
+                except WorkspaceError as exc:
+                    trace_event(
+                        "REVIEW_PARSE_ERROR",
+                        self.trace_metadata(),
+                        {
+                            "code": exc.code,
+                            "error": str(exc),
+                            "details": exc.details,
+                            "will_repair": exc.code in {"INVALID_INPUT", "INVALID_OUTPUT"}
+                            and not self.service.quality_check
+                            and self.cp.get("response") is not None
+                            and "review_repair" not in self.cp,
+                        },
+                    )
+                    if (
+                        self.service.quality_check
+                        or exc.code not in {"INVALID_INPUT", "INVALID_OUTPUT"}
+                        or self.cp.get("response") is None
+                    ):
+                        raise
+                    if "review_repair" in self.cp:
+                        raise WorkspaceError(
+                            "INVALID_OUTPUT", "未取得有效校验结果：" + str(exc) + "；原稿保留"
+                        ) from exc
+                    self.cp.update(
+                        review_repair={
+                            "error": format_error_feedback(exc),
+                            "response": self.cp["response"],
+                        },
+                        response=None,
+                    )
+                    self.save()
+                    continue
                 if not result.passed:
                     logger.warning("%s：%s", self.tracker.task_context.target, result.feedback)
+                trace_event("PARSED_REVIEW", self.trace_metadata(), asdict(result))
                 self.cp.update(step="decide", review=asdict(result), response=None)
+                self.cp.pop("review_repair", None)
                 self.save()
             elif step == "decide":
                 result = QualityCheckResult(**self.cp["review"])
@@ -775,6 +877,7 @@ class AgentExecution:
                 ):
                     item.clear()
                     item["result"] = deepcopy(result)
+        trace_event("COMMITTED_RESULT", self.trace_metadata(), result)
         return result
 
 

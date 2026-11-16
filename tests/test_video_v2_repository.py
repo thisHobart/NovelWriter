@@ -355,12 +355,12 @@ def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project,
 
     def send(prompt):
         calls.append(prompt)
-        position = (len(calls) - 1) % 4
-        if position < 2:
+        position = (len(calls) - 1) % 3
+        if position == 0:
             return "invalid JSON"
-        if position == 2:
+        if position == 1:
             return encode(content)
-        if len(calls) < 8:
+        if len(calls) < 6:
             return encode({"issues": [{"rule_id": "SHOT-TIMING-001", "severity": "warning",
                 "target_path": "shots.0.duration_ms", "explanation": "动作节奏需要调整",
                 "suggestion": "结合动作重新安排节奏", "quote": None, "source_refs": []}]})
@@ -369,7 +369,7 @@ def test_format_repairs_do_not_consume_the_quality_repair_rounds(prompt_project,
     service = WorkflowService(prompt_project, transport=send)
     result = service.execute(service.prepare("storyboard"))
 
-    assert len(calls) == 8
+    assert len(calls) == 6
     assert result["review_status"] == "passed"
     assert result["retries_used"] == 1
     assert "budget" not in prompt_project.load()["runs"][-1]["snapshot"]
@@ -389,7 +389,7 @@ def test_invalid_output_still_stops_after_finite_format_repairs(prompt_project, 
     with pytest.raises(WorkspaceError, match="未取得可用稿件"):
         service.execute(service.prepare("storyboard"))
 
-    assert send.call_count == 3
+    assert send.call_count == 2
     assert prompt_project.current("storyboard")["id"] == original
     assert prompt_project.load()["runs"][-1]["status"] == "failed"
 
