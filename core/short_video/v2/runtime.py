@@ -70,6 +70,10 @@ def task_valid(state: JsonObject, task: JsonObject) -> bool:
     return (
         bool(task.get("resumable"))
         and task.get("runtime_version") == RUNTIME_VERSION
+        and (
+            task["stage"] != "video_prompt"
+            or task.get("command", {}).get("video_prompt_contract_version") == 1
+        )
         and all(state["current"].get(k) == v for k, v in task["expected"].items())
     )
 
@@ -77,6 +81,11 @@ def task_valid(state: JsonObject, task: JsonObject) -> bool:
 def invalidation_reason(state: JsonObject, task: JsonObject) -> str:
     if task.get("runtime_version") != RUNTIME_VERSION:
         return "运行格式已变化，请重新生成"
+    if (
+        task["stage"] == "video_prompt"
+        and task.get("command", {}).get("video_prompt_contract_version") != 1
+    ):
+        return "视频提示词任务格式已更新，请重新编写"
     labels = {
         "source": "原文",
         "selection": "原文范围",
@@ -109,6 +118,9 @@ def invalidate(state: JsonObject, task: JsonObject, reason: str) -> None:
 
 def start_task(repository: ProjectRepository, command: JsonObject) -> JsonObject:
     """Admission is durable and only happens while holding the generation lock."""
+    from .video_context import validate_video_command
+
+    validate_video_command(command)
     with repository.transaction() as state:
         task_id = command["request_id"]
         previous = state["tasks"].get(task_id)
@@ -172,7 +184,7 @@ def validate_task(repository: ProjectRepository, task_id: str, *, model: bool = 
     require(
         task.get("resumable") and task_valid(state, task),
         "TARGET_VERSION_CONFLICT",
-        task.get("reason", "原任务输入或目标内容已变化，请重新生成"),
+        task.get("reason") or invalidation_reason(state, task),
     )
     if model and task["command"].get("model_snapshot") is not None:
         validate_model_snapshot(task["command"]["model_snapshot"])
@@ -201,7 +213,7 @@ def finish_failure(
                     "MODEL_CONFIGURATION_MISSING",
                     "REVIEW_CONFIGURATION_CHANGED",
                     "REVIEW_CONFIGURATION_MISSING",
-                }
+                } or (exc.code == "CONTEXT_TOO_LARGE" and task["stage"] == "video_prompt")
             task.update(
                 status="paused" if paused else "failed",
                 resumable=retryable,
@@ -281,6 +293,8 @@ def get_recovery(repository: ProjectRepository, stage: str) -> JsonObject | None
     if not task.get("resumable") and task["status"] != "invalidated" and not legacy_stopped:
         return None
     task["valid"] = bool(task.get("resumable") and task_valid(state, task))
+    if not task["valid"] and "reason" not in task:
+        task["reason"] = invalidation_reason(state, task)
     task["phase"] = (
         "镜头提示词编排"
         if task["stage"] == "prompt_task"
@@ -406,6 +420,22 @@ class AgentExecution:
     def send(self, prompt: str, call_type: str) -> str:
         if self.cp.get("response") is not None:
             return self.cp["response"]
+        compact = self.command["stage"] == "video_prompt"
+        if compact:
+            from .video_context import check_budget
+
+            phase = (
+                "审阅"
+                if call_type == "quality_check"
+                else (
+                    "格式修复"
+                    if self.cp["format_attempt"]
+                    else "修订"
+                    if self.cp["revision"]
+                    else "生成"
+                )
+            )
+            check_budget(prompt, self.command["max_context_chars"], phase)
         call = {}
         network_attempt = -1
         purpose = "review" if call_type == "quality_check" else "generation"
@@ -417,6 +447,12 @@ class AgentExecution:
             nonlocal call, network_attempt
             self.token.raise_if_cancelled()
             validate_task(self.repository, self.task_id)
+            if self.command["stage"] == "video_prompt":
+                from .video_prompt import validate_video_inputs
+
+                validate_video_inputs(
+                    self.repository.output_dir, self.command["context"]["video_input_binding"]
+                )
             model_contracts.validate_review_model_snapshot(self.command["review_model_snapshot"])
             network_attempt += 1
             self.tracker.update_context(network_retries=network_attempt)
@@ -432,6 +468,16 @@ class AgentExecution:
                 "state": "sending",
                 "created_at": timestamp(),
             }
+            if compact:
+                from .video_context import request_sizes
+
+                call.update(
+                    input_chars=len(prompt),
+                    context_sizes=request_sizes(prompt),
+                    supplement_omitted=len(
+                        self.command["context"]["supplement_manifest"]["omitted"]
+                    ),
+                )
             with self.repository.transaction() as state:
                 require(
                     task_valid(state, state["tasks"][self.task_id]),
@@ -486,6 +532,26 @@ class AgentExecution:
             ),
         )(prompt)
 
+    def video_generation_prompt(self, *, repair: JsonObject | None = None) -> str:
+        from .prompts import video_request
+        from .video_context import local_result
+
+        context = self.command["context"]
+        reference = self.cp.get("candidate") or self.command["candidate_id"]
+        draft = local_result(
+            self.repository.record(reference)["content"], self.command["shot_ids"][0]
+        )["video_motion_prompt"]
+        if not self.cp.get("candidate") and context.get("current_video_prompt", "").strip():
+            draft = context["current_video_prompt"]
+        return video_request(
+            context,
+            instruction=self.command["requirements"]["instruction"],
+            asks=self.command["requirements"]["asks"],
+            draft=draft,
+            feedback=self.cp.get("review", {}).get("feedback", ""),
+            repair=repair,
+        )
+
     def execute(self) -> JsonObject:
         from .workflow import MAX_FORMAT_RETRIES, normalize_catalog
 
@@ -539,7 +605,8 @@ class AgentExecution:
             step = self.cp["step"]
             if step == "request":
                 require(
-                    len(self.cp["prompt"]) <= self.service.max_context_chars,
+                    self.command["stage"] == "video_prompt"
+                    or len(self.cp["prompt"]) <= self.service.max_context_chars,
                     "CONTEXT_TOO_LARGE",
                     "当前请求上下文超限",
                 )
@@ -557,14 +624,25 @@ class AgentExecution:
                         raise WorkspaceError(
                             "INVALID_OUTPUT", "未取得可用稿件：" + str(exc) + "；原稿保留"
                         ) from exc
-                    self.cp.update(
-                        step="request",
-                        format_attempt=self.cp["format_attempt"] + 1,
-                        prompt=self.cp["generation_prompt"]
+                    repair_prompt = (
+                        self.video_generation_prompt(
+                            repair={
+                                "error": str(exc),
+                                "response": self.cp["response"],
+                                "instruction": "仅修复JSON、字段、枚举或引用，不改动叙事",
+                            }
+                        )
+                        if self.command["stage"] == "video_prompt"
+                        else self.cp["generation_prompt"]
                         + "\n仅修复JSON、字段、枚举或引用，不改动叙事。错误："
                         + str(exc)
                         + "\n上次回复："
-                        + encode({"response": self.cp["response"]}),
+                        + encode({"response": self.cp["response"]})
+                    )
+                    self.cp.update(
+                        step="request",
+                        format_attempt=self.cp["format_attempt"] + 1,
+                        prompt=repair_prompt,
                         response=None,
                     )
                     self.save()
@@ -616,7 +694,9 @@ class AgentExecution:
                 else:
                     latest = self.repository.record(self.cp["candidate"])
                     prompt = (
-                        self.command["prompt"]
+                        self.video_generation_prompt()
+                        if self.command["stage"] == "video_prompt"
+                        else self.command["prompt"]
                         + "\n根据检查反馈修订最新候选，保留原始任务与上下文，返回完整JSON：\n"
                         + encode({"candidate": latest["content"], "feedback": result.feedback})
                     )
@@ -632,6 +712,12 @@ class AgentExecution:
                 return self.commit()
 
     def commit(self) -> JsonObject:
+        if self.command["stage"] == "video_prompt":
+            from .video_prompt import validate_video_inputs
+
+            validate_video_inputs(
+                self.repository.output_dir, self.command["context"]["video_input_binding"]
+            )
         review = QualityCheckResult(**self.cp["review"])
         feedback = {
             "phase": "自动审阅",
@@ -710,6 +796,9 @@ def execute_stage(
     resume: bool = False,
 ) -> JsonObject:
     """Standalone stages own a task/lock; composed stages share their parent's lock."""
+    from .video_context import validate_video_command
+
+    validate_video_command(command)
     require(
         type(command.get("max_retries")) is int and 0 <= command["max_retries"] <= 1,
         "INVALID_INPUT",

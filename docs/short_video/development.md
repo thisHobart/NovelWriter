@@ -1,6 +1,6 @@
 # 短视频工作台：开发文档
 
-文档版本：2.20；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
+文档版本：2.21；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
 整体结构见[架构设计](architecture.md)，字段和接口见[接口设计](interfaces.md)，操作与提示见[交互设计](interaction.md)。历次变更及验收证据见[DEVLOG](../../DEVLOG.md)。
 
 ## 1. 运行与代码入口
@@ -36,6 +36,10 @@
 4. 质量修订默认最多一次：首次校验失败后由生成模型修订，再用独立校验模型复检，第二次残留质量问题只记录、不触发第三稿。每轮候选的格式修复最多两次，独立计数；分块请求允许一次格式修复。ScriptLLM 另负责最多两次网络重试，SDK 内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
 
 修改内容规则时，阶段任务与样例在 `prompts.py`，硬性约束在 `validation.py`，AI 审阅标准在 `review.py`；保持三者一致。自定义阶段模板优先，不以更新内置提示词为由覆盖用户模板。
+
+视频提示词的单镜头上下文、局部模型返回、引用读取、统一预算及旧任务失效规则见[上下文设计与验收](video_prompt_context.md)。`video_context.py`负责资料投影与证据预算；`video_request`重新组装每次请求，审阅不携带完整任务或镜头集合。已删除视频提示词的完整集合拼接和旧协议回退，旧格式中断任务需重新编写；左侧画面提示词本地编排继续保留。
+
+视频面板的 VIDEO_PROMPT_RULES 在 stage_prompt 的 video_prompt 分支统一加入，保留自定义任务目标。WorkflowService.prepare_video_prompt 冻结本镜分镜、实际使用的资产及视频输入；video_prompt.py依据真实工作流接线生成 Picture 顺序并验证图片哈希，WorkflowParameter.role="duration"标识时长。完整 H3 中文正文位于 video_motion_prompt，video_prompt_binding由代码维护，resolved_prompt／negative_prompt保持原状。沿用 AgentExecution、独立审阅和检查点，模型每次请求及提交前核对媒体来源。UI按镜头与工作流缓存临时编辑，只有选图及时间匹配时回填保存结果，保持手动编辑；文字生成和ComfyUI提交各自独立。回归见 tests/test_video_prompt.py。
 
 分镜 Skill 资源为 [short-video-content-storyboard/SKILL.md](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)。仅显式选择时注入分镜，其他阶段及聊天不注入。当前 Skill 以短片总时长、常规5–8秒镜头、动作复杂度与衔接为主要约束；具体规则以文件为准。
 

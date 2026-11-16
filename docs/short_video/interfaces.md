@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.20；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.21；日期：2026-11-15。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；第11节记录已实现的可选 Images API 资产生图。
 
@@ -16,6 +16,7 @@
 | 生成资产提示词 | prepare_prompt_task → CreationWork | 按待生成实体／状态执行 asset_spec，最后本地编译镜头提示词 |
 | 查看镜头所需参考资产 | WorkflowService.shot_assets(shot_id, *, state=None) | 返回本镜场景、人物、道具及各状态视图的提示词，只读、不调用模型 |
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
+| AI 编写视频提示词 | WorkflowService.prepare_video_prompt(shot_id, images, *, workflow_id, parameters, current_prompt="") → WorkspaceWork | video_prompt 阶段只更新所选镜头的完整视频正文，沿用独立审阅和检查点恢复 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
 | 查看／停止 | repository.load()["runs"] / host.runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
@@ -196,7 +197,7 @@ storyboard 的 prepare 根据当前配置 storyboard_skill_id 明确选择性加
 
 分镜需覆盖已保存视频文案的有效内容；镜头中无人、静物特写是合法情况。人物对白说话者必须在本镜出场或标记 voice_over；旁白不创建虚构出镜人物。
 
-PromptBundle：`storyboard_version_id,asset_spec_refs[],shots[{shot_id,resolved_prompt,negative_prompt,video_motion_prompt?,asset_refs,source_refs}]`。编译时验证资产设定版本和变体，无法解析的引用返回具体内容问题；已生成文字仍可按所选范围导出并说明缺项。video_motion_prompt 是可选的已有镜头运动文字，保留读取和编排，不提供独立生成入口。现有文字编译本身不调用视频模型；新增媒体任务单独读取这些文字。
+PromptBundle：`storyboard_version_id,asset_spec_refs[],shots[{shot_id,resolved_prompt,negative_prompt,video_motion_prompt?,video_prompt_binding?,asset_refs,source_refs}]`。编译时验证资产设定版本和变体，无法解析的引用返回具体内容问题；已生成文字仍可按所选范围导出并说明缺项。video_motion_prompt 由视频面板“AI 编写”生成完整视频正文；video_prompt_binding 由代码记录工作流指纹、实际图片与角色／编号／来源、文件哈希及视频时长。文字编排和视频提示词生成都不提交视频模型；提交仍由独立 MediaWork 执行。
 
 PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 PromptBundle 作为完整可编辑结果。缺少该结果时，在内存中将当前分镜的 visual_prompt_draft 显示为只读、可复制的画面草稿，负面提示词留空；不写入 PromptBundle，不作为完整提示词导出。状态显示缺少的资产设定数，生成按钮复用 start_creation("prompts") 补齐资产并编排；用户查看或切换草稿不触发模型请求和项目写入。
 
@@ -282,7 +283,13 @@ head_front 使用正面头部特写；body_front 正面站立全身；body_side 
 
 第 9.4～9.6 节为用户原始模板，不是最终交付。当前 asset_spec 阶段由 LLM 一次生成具体人物／场景／道具字段及全部计划视图的正负提示词，保存 source_refs 与 inferred_fields；顶层正负提示词为空，具体文字位于 views。finalize_asset_prompts 仅校验完整性、排序并维护内部指纹，不用模板覆盖文字。compile_shots 根据分镜与已有设定生成镜头提示词，用户优化镜头时通过 shot_prompts 调用模型。禁止遗留未替换变量，禁止把文章没有的信息伪装成原文事实。旧模板编译、单独视图优化和视频运动文字生成分支已删除。
 
-review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角及镜头画面文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产不套用文案风格要求，镜头提示词不套用 H3 专用格式。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入一次质量修订流程，最终完整校验结果保存在 run 中；不新增独立报告文件、UI 或图片调用。
+video_prompt 使用专业 AI 视频导演、电影摄影师和 MiniMax H3 提示词工程师角色。VIDEO_PROMPT_RULES 统一约定“参考图 → 场景与构图 → 分阶段动作 → 摄影机运动 → 光影与风格 → 声音 → 负面约束”，完整中文正文写入所选镜头的 video_motion_prompt，包含声音和负面约束，一次复制。现有 resolved_prompt／negative_prompt、精确引用和其他镜头保持不变。前置为已保存分镜、当前有效镜头提示词及实际选图；不齐时明确提示，不隐式生成前置内容。snapshot_video_inputs 依据工作流实际接线压缩 Picture 编号，首尾帧保持角色名称，校验文件哈希与参数；只有图片来源匹配本镜资产、状态和目录时附加资产名和视图，不按文件名猜测。
+
+新阶段沿用已有 Agent Loop、独立校验模型、一次质量修订及步骤检查点。每次模型请求与提交前再次核对工作流／图片输入；模型输出不能引用未选的 Picture 编号，也不能修改画面文字或其他镜头。UI 仅在当前镜头、选图、工作流及视频时长匹配时回填保存结果；继续按钮也核对这组输入。生成结果落盘后再审阅，中断审阅可直接继续，不重复请求已保存的视频文字。
+
+video_prompt 统一使用单镜头协议，任务标记 video_prompt_contract_version=1 用于格式校验，模型仅返回 {shot_id, video_motion_prompt}，程序合并为现有完整 prompt_bundle；旧版完整集合拼接、旧版审阅及兼容回退已删除，旧格式中断任务提示重新编写，已有正文保持可读。生成、审阅和修订使用同一本镜事实资料，补充原文按已有引用读取并受预算约束；审阅不携带完整任务或镜头集合。修订重新组装最新正文和本轮反馈，不拼接旧请求。预算随任务冻结，四类模型请求均在发送前检查字符容量。字段、预算和验收细则见[单镜头上下文](video_prompt_context.md)。
+
+review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角、镜头画面及视频文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产与镜头画面不套用视频文案格式；video_prompt按上述中文视频正文要求检查，复杂动作的必要拆镜建议进入现有 issues，不夹在可复制正文中，不自行拆镜。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入一次质量修订流程，最终完整校验结果保存在 run 中；不新增独立报告文件或图片调用。
 
 
 

@@ -35,7 +35,10 @@ from core.short_video.v2.media_workflows import (
     MediaConfig,
     parse_video_workflow,
 )
-from core.short_video.v2.models import require
+from core.short_video.v2.models import WorkspaceError, fingerprint, require
+from core.short_video.v2.repository import ProjectRepository
+from core.short_video.v2.video_prompt import snapshot_video_inputs
+from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
 if TYPE_CHECKING:
     from .workbench import Workbench
@@ -54,6 +57,9 @@ class MediaPreview(QWidget):
         self.workbench = workbench
         self.current_job = None
         self.target = {}
+        self.shot_drafts = {}
+        self.video_prompt_fingerprint = None
+        self.video_prompt_binding = None
         self.video_path = None
         self.project_dir = None
         outer = QVBoxLayout(self)
@@ -88,7 +94,19 @@ class MediaPreview(QWidget):
         self.parameter_fields = {}
         self.drafts = {}
         self.loaded_workflow_id = None
-        layout.addWidget(QLabel("视频提示词"))
+        prompt_bar = QHBoxLayout()
+        prompt_bar.addWidget(QLabel("视频提示词"))
+        prompt_bar.addStretch()
+        self.generate_prompt_button = QPushButton("AI 编写")
+        self.resume_prompt_button = QPushButton("继续编写")
+        self.copy_prompt_button = QPushButton("复制")
+        prompt_bar.addWidget(self.generate_prompt_button)
+        prompt_bar.addWidget(self.resume_prompt_button)
+        prompt_bar.addWidget(self.copy_prompt_button)
+        layout.addLayout(prompt_bar)
+        self.prompt_status = QLabel()
+        self.prompt_status.setWordWrap(True)
+        layout.addWidget(self.prompt_status)
         self.prompt = QPlainTextEdit()
         self.prompt.setMinimumHeight(CONTROL_HEIGHT * 5)
         self.prompt.textChanged.connect(self.capture_prompt_image_bindings)
@@ -120,6 +138,9 @@ class MediaPreview(QWidget):
         self.generate_button.clicked.connect(lambda: workbench.perform(self.generate))
         self.query_button.clicked.connect(lambda: workbench.perform(self.query))
         self.config_button.clicked.connect(lambda: workbench.perform(workbench.configure_comfy))
+        self.generate_prompt_button.clicked.connect(lambda: workbench.perform(self.generate_prompt))
+        self.resume_prompt_button.clicked.connect(lambda: workbench.perform(self.resume_prompt))
+        self.copy_prompt_button.clicked.connect(self.copy_prompt)
         self.open_button.clicked.connect(self.open_location)
 
     def task_controls(self) -> list[QWidget]:
@@ -132,7 +153,61 @@ class MediaPreview(QWidget):
             self.generate_button,
             self.query_button,
             self.config_button,
+            self.generate_prompt_button,
+            self.resume_prompt_button,
         ]
+
+    def set_target(self, target: dict) -> None:
+        if target != self.target:
+            self.remember_draft()
+            previous = (self.target.get("storyboard_version_id"), self.target.get("shot_id"))
+            self.shot_drafts[previous] = self.drafts
+            key = (target.get("storyboard_version_id"), target.get("shot_id"))
+            self.drafts = self.shot_drafts.setdefault(key, {})
+            self.loaded_workflow_id = None
+            self.target = dict(target)
+
+    def generate_prompt(self) -> None:
+        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        if not self.workbench.resolve_edits():
+            return
+        service = WorkflowService(self.workbench.repository, self.workbench.model())
+        command = service.prepare_video_prompt(
+            self.target.get("shot_id"),
+            self.image_selection(),
+            workflow_id=self.loaded_workflow_id,
+            parameters=self.parameter_values(),
+            current_prompt=self.prompt.toPlainText(),
+        )
+        self.workbench.submit(
+            WorkspaceWork(self.workbench.repository, command, transport=self.workbench.transport),
+            self.generate_prompt_button,
+        )
+
+    def resume_prompt(self) -> None:
+        from core.short_video.v2.runtime import get_recovery
+
+        task = get_recovery(ProjectRepository(self.workbench.output_dir), "video_prompt")
+        inputs = snapshot_video_inputs(
+            self.workbench.output_dir,
+            self.image_selection(),
+            self.loaded_workflow_id,
+            self.parameter_values(),
+        )
+        require(
+            task
+            and task["valid"]
+            and task["command"]["context"].get("video_input_binding") == inputs
+            and task["command"]["shot_ids"] == [self.target.get("shot_id")],
+            "STALE_INPUT",
+            "当前镜头、参考图片或视频时长与中断任务不同，请重新编写",
+        )
+        self.workbench.resume_generation("video_prompt", self.resume_prompt_button)
+
+    def copy_prompt(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(self.prompt.toPlainText())
 
     def use_image(self, image_id: str, node_id: str) -> None:
         require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "请在任务结束后选择图片")
@@ -248,6 +323,8 @@ class MediaPreview(QWidget):
                 "additional_reference_slots": list(self.additional_reference_slots),
                 "prompt_image_bindings": dict(self.prompt_image_bindings),
                 "image_scroll": self.input_area.verticalScrollBar().value(),
+                "video_prompt_fingerprint": self.video_prompt_fingerprint,
+                "video_prompt_binding": self.video_prompt_binding,
             }
 
     def refresh(self) -> None:
@@ -255,6 +332,7 @@ class MediaPreview(QWidget):
             self.project_dir = self.workbench.output_dir
             self.loaded_workflow_id = None
             self.drafts.clear()
+            self.shot_drafts.clear()
             self.video_path = None
         self.remember_draft()
         self.catalog = MediaConfig.load(self.workbench.output_dir)
@@ -335,6 +413,8 @@ class MediaPreview(QWidget):
         )
         self.prompt.blockSignals(False)
         self.prompt_image_bindings = dict(draft.get("prompt_image_bindings", {}))
+        self.video_prompt_fingerprint = draft.get("video_prompt_fingerprint")
+        self.video_prompt_binding = draft.get("video_prompt_binding")
         while self.parameter_form.rowCount():
             self.parameter_form.removeRow(0)
         form = self.parameter_form
@@ -355,6 +435,8 @@ class MediaPreview(QWidget):
                 control.setRange(parameter.minimum, parameter.maximum)
                 control.setValue(value)
             control.setMinimumHeight(CONTROL_HEIGHT)
+            if parameter.role == "duration":
+                control.valueChanged.connect(self.refresh_prompt_state)
             form.addRow(parameter.label, control)
             self.parameter_fields[parameter.key] = control
         self.refresh_result()
@@ -434,7 +516,69 @@ class MediaPreview(QWidget):
             bool(job and job["status"] not in {"succeeded", "cancelled", "failed"}) and not busy
         )
         self.open_button.setEnabled(path is not None)
+        self.refresh_prompt_state()
         self.inputs_changed.emit()
+
+    def refresh_prompt_state(self) -> None:
+        from core.short_video.v2.runtime import get_recovery
+
+        repository = ProjectRepository(self.workbench.output_dir)
+        state = repository.load()
+        bundle = repository.current("prompt_bundle", state=state)
+        shot = next(
+            (
+                s
+                for s in (bundle or {}).get("content", {}).get("shots", [])
+                if s["shot_id"] == self.target.get("shot_id")
+            ),
+            None,
+        )
+        valid = bool(
+            bundle
+            and repository.is_current(bundle["id"], state=state)
+            and bundle["content"]["storyboard_version_id"]
+            == self.target.get("storyboard_version_id")
+            and shot
+        )
+        inputs, reason = None, "请选择当前镜头并先完成资产提示词"
+        if valid:
+            try:
+                inputs = snapshot_video_inputs(
+                    self.workbench.output_dir,
+                    self.image_selection(),
+                    self.loaded_workflow_id,
+                    self.parameter_values(),
+                )
+                reason = "结合当前分镜、相关资产和实际选图编写，可继续手动修改。"
+            except (WorkspaceError, OSError, ValueError) as exc:
+                reason = str(exc)
+        if (
+            inputs
+            and shot.get("video_motion_prompt")
+            and shot.get("video_prompt_binding") == inputs
+        ):
+            generated = fingerprint([shot["video_motion_prompt"], shot["video_prompt_binding"]])
+            if generated != self.video_prompt_fingerprint:
+                self.prompt.setPlainText(shot["video_motion_prompt"])
+                self.video_prompt_fingerprint = generated
+                self.video_prompt_binding = inputs
+        if self.video_prompt_binding and (not valid or inputs != self.video_prompt_binding):
+            reason = "镜头、选图或视频时长已变化，请重新编写并核对当前提示词。"
+        busy = self.workbench.host.runner.busy
+        self.generate_prompt_button.setEnabled(bool(inputs) and not busy)
+        task = get_recovery(repository, "video_prompt")
+        can_resume = bool(
+            task
+            and task["valid"]
+            and inputs
+            and task["command"]["context"].get("video_input_binding") == inputs
+            and task["command"]["shot_ids"] == [self.target.get("shot_id")]
+        )
+        self.resume_prompt_button.setVisible(can_resume)
+        self.resume_prompt_button.setEnabled(can_resume and not busy)
+        if can_resume:
+            reason = "上次编写未完成，可从已保存的检查点继续。"
+        self.prompt_status.setText(reason)
 
     def generate(self) -> None:
         require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")

@@ -133,6 +133,42 @@ class WorkflowService:
         self.max_context_chars = max_context_chars
         self.max_retries, self.quality_check = max_retries, quality_check
 
+    def prepare_video_prompt(
+        self,
+        shot_id: str,
+        images: dict[str, str | None],
+        *,
+        workflow_id: str,
+        parameters: JsonObject,
+        current_prompt: str = "",
+    ) -> JsonObject:
+        from .video_prompt import snapshot_video_inputs
+
+        state = self.repository.load()
+        board = self.repository.current("storyboard", state=state)
+        require(board is not None, "MISSING_UPSTREAM", "请先生成并保存分镜")
+        require(
+            any(s["shot_id"] == shot_id for s in board["content"]["shots"]),
+            "STALE_INPUT",
+            "请选择当前分镜中的镜头",
+        )
+        bundle = self.repository.current("prompt_bundle", state=state)
+        require(
+            bundle is not None and self.repository.is_current(bundle["id"], state=state),
+            "MISSING_UPSTREAM",
+            "请先生成资产提示词并编排镜头提示词",
+        )
+        inputs = snapshot_video_inputs(self.repository.output_dir, images, workflow_id, parameters)
+        return self.prepare(
+            "video_prompt",
+            mode="revise",
+            target_id=bundle["id"],
+            asks=["结合当前镜头、资产及实际选图，编写完整中文视频提示词"],
+            shot_ids=[shot_id],
+            video_inputs=inputs,
+            current_video_prompt=current_prompt,
+        )
+
     def shot_assets(self, shot_id: str, *, state: JsonObject | None = None) -> list[JsonObject]:
         """Read this shot's exact assets and image prompts, without preparing generation."""
         from .image_generation import ImageGenerationStore, image_for_view
@@ -243,6 +279,8 @@ class WorkflowService:
         fact_table_id: str | None = None,
         upstream_ids: dict[str, str] | None = None,
         frozen_rules: JsonObject | None = None,
+        video_inputs: JsonObject | None = None,
+        current_video_prompt: str = "",
     ) -> JsonObject:
         require(stage in INSTRUCTIONS, "INVALID_INPUT", "未知生成阶段")
         require(mode in {"generate", "revise"}, "INVALID_INPUT", "未知生成方式")
@@ -275,8 +313,9 @@ class WorkflowService:
                 "representation": "explicit_chunk_fact_table",
             }
         context = {"article": article, "config": config["content"]}
+        video_task = stage == "video_prompt"
         candidate = self.repository.record(target_id, state=state) if target_id else None
-        if stage == "shot_prompts":
+        if stage in {"shot_prompts", "video_prompt"}:
             require(candidate is not None, "INVALID_INPUT", "请选择需补充提示词的版本")
             kind = candidate["kind"]
             require(
@@ -305,6 +344,80 @@ class WorkflowService:
                     "content"
                 ],
             }
+            if stage == "video_prompt":
+                from .video_prompt import validate_video_inputs
+
+                require(
+                    video_inputs is not None and shot_ids is not None and len(shot_ids) == 1,
+                    "INVALID_INPUT",
+                    "请选择一个镜头和实际参考图片",
+                )
+                validate_video_inputs(self.repository.output_dir, video_inputs)
+                selected = [s for s in board["content"]["shots"] if s["shot_id"] in shot_ids]
+                require(len(selected) == 1, "INVALID_INPUT", "镜头不在当前分镜中")
+                selected_refs = next(
+                    s["asset_refs"]
+                    for s in candidate["content"]["shots"]
+                    if s["shot_id"] == shot_ids[0]
+                )
+                used = {r["spec_version_id"] for r in selected_refs}
+                context["storyboard"] = {**board, "content": {"shots": deepcopy(selected)}}
+                context["asset_specs"] = [
+                    {
+                        **spec,
+                        "content": {
+                            k: v
+                            for k, v in spec["content"].items()
+                            if k not in {"views", "positive_prompt", "negative_prompt"}
+                        },
+                    }
+                    for spec in context["asset_specs"]
+                    if spec["id"] in used
+                ]
+                context["video_inputs"] = deepcopy(video_inputs)
+                context["current_video_prompt"] = current_video_prompt
+                context["shot_assets"] = self.shot_assets(shot_ids[0], state=state)
+                # Only the selected image's actual view needs a description, not every asset sheet.
+                catalog_id = board["dependency_refs"]["asset_catalog"]
+                for image in context["video_inputs"]["images"]:
+                    source = image["asset_source"]
+                    asset = next(
+                        (
+                            a
+                            for a in context["shot_assets"]
+                            if a["asset_id"] == source.get("asset_id")
+                            and a["variant_id"] == source.get("variant_id")
+                            and source.get("catalog_id") == catalog_id
+                        ),
+                        None,
+                    )
+                    image["asset_description"] = (
+                        {
+                            "name": asset["name"],
+                            "state": asset["variant_label"],
+                            "view": next(
+                                (
+                                    v["label"]
+                                    for v in asset["views"]
+                                    if v["view_id"] == source.get("view_id")
+                                ),
+                                "未确认视图",
+                            ),
+                        }
+                        if asset
+                        else None
+                    )
+                context["shot_assets"] = [
+                    {k: v for k, v in a.items() if k != "views"} for a in context["shot_assets"]
+                ]
+                # The binding itself contains only the original input snapshot, not display labels.
+                context["video_input_binding"] = deepcopy(video_inputs)
+                from .video_context import prepare_evidence
+
+                source = self.repository.record(article["source_id"], state=state)
+                prepare_evidence(
+                    context, board, source["content"]["normalized_text"], self.max_context_chars
+                )
         else:
             for key in PREREQUISITES[stage]:
                 record = (
@@ -363,7 +476,10 @@ class WorkflowService:
                 "请填写具体修改意见",
             )
             require(candidate["dependency_refs"] == deps, "STALE_INPUT", "待修订稿的来源已变化")
-        if stage != "novel_copy" and len(encode(context["article"])) > self.max_context_chars // 2:
+        if (
+            stage not in {"novel_copy", "video_prompt"}
+            and len(encode(context["article"])) > self.max_context_chars // 2
+        ):
             # Traverse the actual frozen lineage, including explicitly reused old drafts.
             pending = list(deps.values())
             visited = set()
@@ -415,12 +531,21 @@ class WorkflowService:
             entity=entity,
             kind=kind,
         )
+        if video_task:
+            from .video_context import check_budget
+
+            check_budget(prompt, self.max_context_chars, "生成", code="INPUT_TOO_LARGE")
         require(
             len(prompt) <= self.max_context_chars,
             "INPUT_TOO_LARGE",
             f"当前输入约 {len(prompt)} 字符，超过本次 {self.max_context_chars} 字符容量；请缩小选区或确认分块计划",
         )
         return {
+            **(
+                {"video_prompt_contract_version": 1, "max_context_chars": self.max_context_chars}
+                if video_task
+                else {}
+            ),
             "selection_snapshot": {key: state["current"].get(key) for key in deps},
             "stage": stage,
             "max_retries": self.max_retries,
@@ -477,6 +602,11 @@ class WorkflowService:
     def _validate_output(self, command: JsonObject, content: JsonObject) -> JsonObject:
         state = self.repository.load()
         kind = command["kind"]
+        if command["stage"] == "video_prompt":
+            from .video_context import merge_result
+
+            original = self.repository.record(command["candidate_id"], state=state)["content"]
+            content = merge_result(content, original, command["shot_ids"][0])
         if kind == "storyboard" and isinstance(content.get("shots"), list):
             # Resolve an exact, unambiguous video speaker label to the catalog's stable ID.
             # Resolve provider labels before structural validation; raw requests stay transient.
@@ -564,6 +694,43 @@ class WorkflowService:
                 "视觉补充必须与原文事实分开",
             )
             content = finalize_asset_prompts(kind, content)
+        if command["stage"] == "video_prompt":
+            from .video_prompt import validate_video_inputs
+
+            validate_video_inputs(
+                self.repository.output_dir, command["context"]["video_input_binding"]
+            )
+            selected = set(command["shot_ids"])
+            old = {s["shot_id"]: s for s in original["shots"]}
+            allowed = {"video_motion_prompt", "video_prompt_binding"}
+            for shot in content["shots"]:
+                if shot["shot_id"] not in selected:
+                    continue
+                require(
+                    {k: v for k, v in shot.items() if k not in allowed}
+                    == {k: v for k, v in old[shot["shot_id"]].items() if k not in allowed},
+                    "INVALID_OUTPUT",
+                    "视频提示词生成不能修改镜头画面文字或其他内容",
+                )
+                text(shot.get("video_motion_prompt"), "完整视频提示词")
+                import re
+
+                valid_refs = {
+                    image["reference"].lower()
+                    for image in command["context"]["video_inputs"]["images"]
+                    if image["role"] == "reference"
+                }
+                require(
+                    all(
+                        f"<picture {int(number)}>" in valid_refs
+                        for number in re.findall(
+                            r"<Picture\s+(\d+)>", shot["video_motion_prompt"], re.IGNORECASE
+                        )
+                    ),
+                    "INVALID_OUTPUT",
+                    "视频提示词引用了未选择的参考图片编号",
+                )
+                shot["video_prompt_binding"] = deepcopy(command["context"]["video_input_binding"])
         return content
 
     def compile_storyboard_prompts(

@@ -115,6 +115,7 @@ class WorkflowParameter:
     default: int | float | bool
     minimum: float
     maximum: float
+    role: str = ""
 
     @property
     def key(self) -> str:
@@ -356,6 +357,7 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
                         float(active[duration_node]["inputs"]["value"]),
                         1,
                         150,
+                        role="duration",
                     )
                 )
     return VideoWorkflow(

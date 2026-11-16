@@ -224,7 +224,6 @@ class PromptPage(QWidget):
         self.views.clear()
         kind = ["character", "scene", "prop", "shot"][self.tabs.currentIndex()]
         self.media.setVisible(kind == "shot")
-        self.media.refresh()
         records = [
             self.workbench.repository.record(ref, state=state)
             for key, ref in state["current"].items()
@@ -311,7 +310,6 @@ class PromptPage(QWidget):
             if kind == "shot" and self.objects.currentData()
             else []
         )
-        self.refresh_image_nodes()
         show_text_editor = kind != "shot" or bool(editor_content)
         self.editor.setVisible(show_text_editor)
         self.objects.setVisible(show_text_editor)
@@ -319,10 +317,14 @@ class PromptPage(QWidget):
         self.save_button.setVisible(show_text_editor)
         self.generate_button.setVisible(show_text_editor)
         if kind == "shot":
-            self.media.target = {
-                "storyboard_version_id": board["id"] if board else None,
-                "shot_id": self.objects.currentData(),
-            }
+            self.media.set_target(
+                {
+                    "storyboard_version_id": board["id"] if board else None,
+                    "shot_id": self.objects.currentData(),
+                }
+            )
+        self.media.refresh()
+        self.refresh_image_nodes()
         self.save_button.setEnabled(self.record is not None)
         self.generate_button.setText(
             "生成镜头提示词" if kind == "shot" and not self.record else "重新生成"

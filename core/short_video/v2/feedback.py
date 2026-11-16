@@ -28,6 +28,7 @@ ACTION_NAMES = {
     "prompt_task": "资产提示词生成",
     "asset_spec": "资产提示词生成",
     "shot_prompts": "镜头提示词优化",
+    "video_prompt": "视频提示词生成",
     "chat": "AI 回复",
 }
 

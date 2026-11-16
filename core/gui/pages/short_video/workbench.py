@@ -197,6 +197,8 @@ class Workbench(QWidget):
             "configure_review_model": "校验模型配置",
             "configure_image_model": "生图 API 配置",
             "generate_images": "资产图片生成",
+            "generate_prompt": "视频提示词生成",
+            "resume_prompt": "视频提示词继续",
             "resume_images": "资产图片继续",
             "send": "AI 回复",
             "query": "视频任务查询",
