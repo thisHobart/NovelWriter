@@ -11,6 +11,7 @@ llm_settings.json
 # Virtual environments
 venv/
 .venv/
+practice
 
 # Executable build artifacts
 /build/
