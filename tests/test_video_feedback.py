@@ -82,32 +82,40 @@ def test_window_uses_worker_context_and_refresh_keeps_final_notice(
     from core.gui.main_window import MainWindow
     from core.gui.widgets.status_bar import AppStatusBar
 
+    from PySide6.QtCore import QElapsedTimer
+    from core.gui.task_runner import TaskRunner
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    from core.generation.cancellation import CancelToken
+
     status = AppStatusBar()
-    callbacks = {}
-    runner = SimpleNamespace(busy=False, run=lambda *args, **kwargs: callbacks.update(kwargs))
+    runner = TaskRunner()
+    channels = TaskChannels(runner)
     refreshes = []
     window = SimpleNamespace(
-        _mode="video",
-        runner=runner,
-        status=status,
+        _mode="video", runner=runner, status=status,
         refresh_all=lambda: refreshes.append(True),
-        rail=SimpleNamespace(backend_combo=None, model_combo=None, config_button=None),
-        video_workspace=SimpleNamespace(task_controls=lambda: []),
+        _update_task_guards=lambda: None,
+        video_workspace=SimpleNamespace(tasks=channels, refresh_task_controls=lambda: None),
     )
-    work = SimpleNamespace(
-        output_dir=str(tmp_path),
-        token=object(),
-        task_context=TaskContext(
+
+    class Work:
+        token = CancelToken()
+        task_context = TaskContext(
             "资产提示词生成", target="场景「木屋」", phase="生成", completed=2, total=5
-        ),
-    )
-    MainWindow._on_video_task_requested(window, work, None, "正在生成…")
-    callbacks["on_error"](TimeoutError("raw error"))
-    callbacks["on_done"]()
+        )
+        def __call__(self, report):
+            raise TimeoutError("raw error")
+
+    MainWindow._on_video_task_requested(window, Work(), None, "正在生成…")
+    timer = QElapsedTimer()
+    timer.start()
+    while channels.any_busy and timer.elapsed() < 5000:
+        app.processEvents()
+    assert not channels.any_busy
     assert status._state._text.text() == "资产提示词生成中断"
     assert "木屋" in status._context.text() and "请求超时" in status._context.text()
     assert "2/5" in status._context.text() and "短视频任务" not in status._state._text.text()
-    assert len(refreshes) == 2
+    assert len(refreshes) == 1
     status.close()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.generation.locks import project_lock
 from core.gui.theme import CONTROL_HEIGHT, SP
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork
@@ -141,21 +143,7 @@ class MediaPreview(QWidget):
         self.generate_prompt_button.clicked.connect(lambda: workbench.perform(self.generate_prompt))
         self.resume_prompt_button.clicked.connect(lambda: workbench.perform(self.resume_prompt))
         self.copy_prompt_button.clicked.connect(self.copy_prompt)
-        self.open_button.clicked.connect(self.open_location)
-
-    def task_controls(self) -> list[QWidget]:
-        return [
-            self.workflows,
-            self.input_area,
-            self.add_image_button,
-            self.parameter_area,
-            self.prompt,
-            self.generate_button,
-            self.query_button,
-            self.config_button,
-            self.generate_prompt_button,
-            self.resume_prompt_button,
-        ]
+        self.open_button.clicked.connect(lambda: workbench.perform(self.open_location))
 
     def set_target(self, target: dict) -> None:
         if target != self.target:
@@ -210,7 +198,7 @@ class MediaPreview(QWidget):
         QApplication.clipboard().setText(self.prompt.toPlainText())
 
     def use_image(self, image_id: str, node_id: str) -> None:
-        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "请在任务结束后选择图片")
+        self.require_editable_inputs()
         self.refresh()
         require(node_id in self.image_fields, "INVALID_INPUT", "请选择有效的图片节点")
         combo = self.image_fields[node_id][0]
@@ -226,6 +214,7 @@ class MediaPreview(QWidget):
             self.import_image(path, node_id)
 
     def import_image(self, path: str, node_id: str) -> None:
+        self.require_editable_inputs()
         if self.project_dir != self.workbench.output_dir:
             self.refresh()
         repository = MediaRepository(self.workbench.output_dir)
@@ -236,6 +225,7 @@ class MediaPreview(QWidget):
         self.load_workflow()
 
     def add_reference_image(self) -> None:
+        self.require_editable_inputs()
         require(
             len(self.image_fields) < MAX_REFERENCE_IMAGES,
             "INVALID_INPUT",
@@ -342,6 +332,7 @@ class MediaPreview(QWidget):
         self.load_workflow()
 
     def select_workflow(self) -> None:
+        self.require_editable_inputs()
         self.remember_draft()
         self.catalog.selected_workflow_id = self.workflows.currentData()
         self.catalog.save(self.workbench.output_dir)
@@ -439,6 +430,15 @@ class MediaPreview(QWidget):
         self.refresh_result()
 
     def refresh_result(self) -> None:
+        root = ProjectRepository(self.workbench.output_dir).root
+        with (
+            project_lock(str(root / ".v2-project.lock"), timeout=5)
+            if root.exists()
+            else nullcontext()
+        ):
+            self._refresh_result()
+
+    def _refresh_result(self) -> None:
         repository = MediaRepository(self.workbench.output_dir)
         selection = self.image_selection()
         self.refresh_reference_labels()
@@ -505,17 +505,35 @@ class MediaPreview(QWidget):
             else None
         )
         self.video_path = path
-        busy = self.workbench.host.runner.busy
-        self.generate_button.setEnabled(all(selection.values()) and bool(selection) and not busy)
-        self.add_image_button.setEnabled(len(self.image_fields) < MAX_REFERENCE_IMAGES and not busy)
+        busy = self.workbench.tasks.busy("video")
+        prompt_busy = self.workbench.tasks.prompt_busy(self.target)
+        self.generate_button.setEnabled(any(selection.values()) and not busy and not prompt_busy)
+        self.generate_button.setToolTip(
+            "当前镜头的视频提示词正在编写，请完成后再生成视频" if prompt_busy else ""
+        )
+        self.add_image_button.setEnabled(
+            len(self.image_fields) < MAX_REFERENCE_IMAGES and not prompt_busy
+        )
+        for control in (self.workflows, self.input_area, self.parameter_area, self.prompt):
+            control.setEnabled(not prompt_busy)
+        self.config_button.setEnabled(not self.workbench.tasks.any_busy)
         self.query_button.setEnabled(
             bool(job and job["status"] not in {"succeeded", "cancelled", "failed"}) and not busy
         )
-        self.open_button.setEnabled(path is not None)
+        self.open_button.setEnabled(bool(self.workbench.output_dir))
         self.refresh_prompt_state()
         self.inputs_changed.emit()
 
     def refresh_prompt_state(self) -> None:
+        root = ProjectRepository(self.workbench.output_dir).root
+        with (
+            project_lock(str(root / ".v2-project.lock"), timeout=5)
+            if root.exists()
+            else nullcontext()
+        ):
+            self._refresh_prompt_state()
+
+    def _refresh_prompt_state(self) -> None:
         from core.short_video.v2.runtime import get_recovery
 
         repository = ProjectRepository(self.workbench.output_dir)
@@ -574,10 +592,17 @@ class MediaPreview(QWidget):
         self.resume_prompt_button.setEnabled(can_resume and not busy)
         if can_resume:
             reason = "上次编写未完成，可从已保存的检查点继续。"
+        if self.workbench.tasks.prompt_busy(self.target):
+            reason = "当前镜头的视频提示词正在编写，请完成后再生成视频。"
         self.prompt_status.setText(reason)
 
     def generate(self) -> None:
-        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        require(not self.workbench.tasks.busy("video"), "PROJECT_BUSY", "已有视频任务在运行")
+        require(
+            not self.workbench.tasks.prompt_busy(self.target),
+            "PROJECT_BUSY",
+            "当前镜头的视频提示词正在编写，请完成后再生成视频",
+        )
         self.validate_prompt_image_bindings()
         prompt = self.prompt.toPlainText().strip()
         command = MediaService(self.workbench.output_dir).prepare_video(
@@ -590,6 +615,7 @@ class MediaPreview(QWidget):
         self.workbench.submit(MediaWork(self.workbench.output_dir, command), self.generate_button)
 
     def query(self) -> None:
+        require(not self.workbench.tasks.busy("video"), "PROJECT_BUSY", "已有视频任务在运行")
         require(self.current_job is not None, "INVALID_INPUT", "尚无视频任务")
         self.workbench.submit(
             MediaWork(self.workbench.output_dir, job_id=self.current_job["job_id"]),
@@ -597,5 +623,18 @@ class MediaPreview(QWidget):
         )
 
     def open_location(self) -> None:
-        if self.video_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.video_path.parent)))
+        require(bool(self.workbench.output_dir), "INVALID_INPUT", "请先打开项目")
+        directory = MediaRepository(self.workbench.output_dir).resolve("videos")
+        directory.mkdir(parents=True, exist_ok=True)
+        require(
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory))),
+            "OPEN_LOCATION_FAILED",
+            f"无法打开视频目录：{directory}",
+        )
+
+    def require_editable_inputs(self) -> None:
+        require(
+            not self.workbench.tasks.prompt_busy(self.target),
+            "PROJECT_BUSY",
+            "当前镜头的视频提示词正在编写，请完成后再修改输入",
+        )

@@ -810,6 +810,8 @@ def prompt_page(prompt_project):
         perform=lambda operation: operation(),
         resolve_page=lambda page: page.save() if page.dirty else True, export=lambda: None,
         start_creation=lambda stage, button, **kwargs: started.append((stage, kwargs)))
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    workbench.tasks = TaskChannels(workbench.host.runner)
     page = PromptPage(workbench)
     workbench.refresh = page.refresh
     yield page, started

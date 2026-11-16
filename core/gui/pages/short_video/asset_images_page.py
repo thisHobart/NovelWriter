@@ -48,6 +48,7 @@ class AssetImagesPage(QWidget):
         self.workbench = workbench
         self.rows = []
         self.batch_id = None
+        self.can_resume = False
         self.project_dir = None
         self.last_statuses = {}
         self.batches = {}
@@ -115,21 +116,8 @@ class AssetImagesPage(QWidget):
         self.poll.timeout.connect(self.poll_progress)
         self.poll.start()
 
-    def task_controls(self) -> list[QWidget]:
-        return [
-            self.generate_button,
-            self.resume_button,
-            self.select_all_button,
-            self.clear_button,
-            self.concurrency,
-        ]
-
     def poll_progress(self) -> None:
-        if (
-            self.isVisible()
-            and self.workbench.host.runner.busy
-            and isinstance(getattr(self.workbench, "active_work", None), ImageGenerationWork)
-        ):
+        if self.isVisible() and self.workbench.tasks.busy("image"):
             self.workbench.perform(self.refresh)
 
     def checked_keys(self) -> list[str]:
@@ -145,7 +133,7 @@ class AssetImagesPage(QWidget):
                 self.table.item(index, 0).setCheckState(Qt.Checked if checked else Qt.Unchecked)
 
     def update_controls(self) -> None:
-        busy = self.workbench.host.runner.busy
+        busy = self.workbench.tasks.busy("image")
         self.generate_button.setEnabled(not busy and bool(self.checked_keys()))
         self.select_all_button.setEnabled(not busy and bool(self.rows))
         self.clear_button.setEnabled(not busy and bool(self.rows))
@@ -173,7 +161,7 @@ class AssetImagesPage(QWidget):
         )
         self.resume_button.setVisible(self.can_resume)
         items = {i["key"]: (b["id"], i) for b in batches for i in b["items"]}
-        busy = self.workbench.host.runner.busy
+        busy = self.workbench.tasks.busy("image")
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.rows))
         for index, row in enumerate(self.rows):
@@ -248,7 +236,7 @@ class AssetImagesPage(QWidget):
                 "提示词就绪后，勾选所需视图并点击生成；也可以继续使用现有文字功能。"
             )
         self.select_batch(self.batch_id)
-        active = getattr(self.workbench, "active_work", None)
+        active = self.workbench.tasks.works.get("image")
         if busy and isinstance(active, ImageGenerationWork) and active.token.cancelled:
             self.status.setText(
                 "正在停止，等待已发送请求返回；已返回的图片会保存，不再启动排队项。"
@@ -286,7 +274,7 @@ class AssetImagesPage(QWidget):
         )
 
     def generate_images(self) -> None:
-        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        require(not self.workbench.tasks.busy("image"), "PROJECT_BUSY", "已有生图任务在运行")
         command = ImageGenerationService(self.workbench.repository).prepare(
             self.checked_keys(), concurrency=self.concurrency.value()
         )
@@ -296,7 +284,7 @@ class AssetImagesPage(QWidget):
 
     def resume_images(self) -> None:
         require(
-            not self.workbench.host.runner.busy and bool(self.batch_id),
+            not self.workbench.tasks.busy("image") and bool(self.batch_id),
             "PROJECT_BUSY",
             "请在当前任务结束后继续",
         )

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from core.generation.api_providers import PROVIDER_LABELS, configuration_status
 from core.generation.api_settings import get_review_config, review_provider
+from core.generation.locks import project_lock
 from core.gui.model_config_dialog import ModelConfigDialog
 from core.short_video.v2.contracts import OperationResult, VideoTask
 from core.short_video.v2.conversation import ConversationService
@@ -43,6 +44,7 @@ from .artifact_page import ArtifactPage
 from .chat_panel import ChatPanel
 from .prompt_page import PromptPage
 from .source_page import SourcePage
+from .task_channels import TaskChannels
 from .ui_helpers import create_action_button
 
 if TYPE_CHECKING:
@@ -62,7 +64,8 @@ class Workbench(QWidget):
 
     def __init__(self, host: MainWindow) -> None:
         super().__init__()
-        self.host, self.transport, self.active_work = host, None, None
+        self.host, self.transport = host, None
+        self.tasks = TaskChannels(host.runner)
         self.settings = QSettings("NovelWriter", "VideoWorkbench")
         self.output_dir = str(
             Path(self.settings.value("last_project", "current_video_work")).resolve()
@@ -153,7 +156,7 @@ class Workbench(QWidget):
         self.model_config_button.setToolTip(f"生成模型：{detail}\n{review_detail}")
 
     def configure_review_model(self) -> None:
-        require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改校验模型配置")
+        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改校验模型配置")
         dialog = ModelConfigDialog(review_provider(), self, purpose="review")
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -163,7 +166,7 @@ class Workbench(QWidget):
             dialog.deleteLater()
 
     def configure_image_model(self) -> None:
-        require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改生图配置")
+        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改生图配置")
         dialog = ModelConfigDialog("hosted-llm", self, purpose="image")
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -177,7 +180,7 @@ class Workbench(QWidget):
     def configure_comfy(self) -> None:
         from .comfy_settings import ComfySettingsDialog
 
-        require(not self.host.runner.busy, "PROJECT_BUSY", "请在任务结束后修改工作流配置")
+        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改工作流配置")
         ComfySettingsDialog(self.output_dir, self).exec()
         self.specs.media.refresh()
 
@@ -205,6 +208,7 @@ class Workbench(QWidget):
             "resume_images": "资产图片继续",
             "send": "AI 回复",
             "query": "视频任务查询",
+            "open_location": "视频目录打开",
             "edit_template": "阶段提示词保存",
             "new_project": "项目创建",
             "select_workflow": "视频工作流切换",
@@ -251,27 +255,27 @@ class Workbench(QWidget):
                     detail = record_message(
                         self.repository, owner.record, self.repository.load()
                     ).removeprefix("已保存；")
-                self.host.status.set_done(name.removesuffix("保存") + "已保存", detail)
+                self.host.status.show_notice(
+                    "success", name.removesuffix("保存") + "已保存", detail
+                )
             return result
         except (WorkspaceError, OSError) as exc:
-            self.host.status.set_error(name + "失败", error_reason(exc))
+            self.host.status.show_notice("error", name + "失败", error_reason(exc))
             logging.getLogger(__name__).error("%s失败", name, exc_info=True)
             return False
 
     def notice(self, text: str) -> None:
-        self.host.status.set_done(text, "")
+        self.host.status.show_notice("success", text)
 
     def submit(self, work: VideoTask, busy_button: QPushButton | None = None) -> None:
-        require(not self.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
-        self.active_work = work
         context = work.task_context
         self.host._on_video_task_requested(work, busy_button, context.action + "中…")
         self.chat.refresh()
 
-    def task_controls(self) -> list[QWidget]:
-        return [
-            self.project_button,
-            self.model_config_button,
+    def refresh_task_controls(self) -> None:
+        self.project_button.setEnabled(not self.tasks.any_busy)
+        self.model_config_button.setEnabled(not self.tasks.any_busy)
+        for control in [
             self.source.generate_button,
             *[
                 button
@@ -283,11 +287,11 @@ class Workbench(QWidget):
                 )
             ],
             self.chat.send_button,
-            *self.specs.media.task_controls(),
-            *self.specs.images_page.task_controls(),
-            self.specs.shot_assets.use_image_button,
-            self.specs.shot_assets.image_nodes,
-        ]
+        ]:
+            control.setEnabled(not self.tasks.busy("text"))
+        self.specs.media.refresh_result()
+        self.specs.images_page.update_controls()
+        self.specs.refresh_image_nodes()
 
     def artifact_pages(self) -> list[ArtifactPage | PromptPage]:
         return [self.novel, self.video, self.storyboard, self.specs]
@@ -339,6 +343,13 @@ class Workbench(QWidget):
         return True
 
     def refresh(self) -> None:
+        if self.repository.root.exists():
+            with project_lock(str(self.repository.root / ".v2-project.lock"), timeout=5):
+                self._refresh()
+        else:
+            self._refresh()
+
+    def _refresh(self) -> None:
         self.refresh_model_status()
         self.source.refresh()
         for page in self.artifact_pages():
@@ -348,6 +359,7 @@ class Workbench(QWidget):
             (config["content"]["title"] if config else "新项目") or "新项目"
         )
         self.chat.refresh()
+        self.refresh_task_controls()
 
     def resume_generation(self, stage: str, button: QPushButton | None = None) -> None:
         from core.short_video.v2.runtime import ResumeWork, get_recovery
@@ -526,6 +538,7 @@ class Workbench(QWidget):
         dialog.exec()
 
     def new_project(self) -> None:
+        require(not self.tasks.any_busy, "PROJECT_BUSY", "运行中无法切换项目")
         path = QFileDialog.getExistingDirectory(self, "选择新项目目录", self.output_dir)
         if path:
             require(
@@ -537,13 +550,14 @@ class Workbench(QWidget):
             self.open_project()
 
     def browse_project(self) -> None:
+        require(not self.tasks.any_busy, "PROJECT_BUSY", "运行中无法切换项目")
         path = QFileDialog.getExistingDirectory(self, "打开项目目录", self.output_dir)
         if path:
             self.directory.setText(path)
             self.open_project()
 
     def open_project(self) -> None:
-        require(not self.host.runner.busy, "PROJECT_BUSY", "运行中无法切换项目")
+        require(not self.tasks.any_busy, "PROJECT_BUSY", "运行中无法切换项目")
         if not self.resolve_edits():
             self.directory.setText(self.output_dir)
             return
@@ -561,6 +575,7 @@ class Workbench(QWidget):
             self.directory.setText(self.output_dir)
             raise
         self.repository, self.output_dir = candidate, candidate.output_dir
+        self.host.status.clear_tasks()
         self.settings.setValue("last_project", self.output_dir)
         self.chat.conversation_id = None
         self.chat.input.clear()

@@ -91,10 +91,10 @@ class BackgroundTask(QRunnable):
 
 
 class TaskRunner(QObject):
-    """全局单实例，由 MainWindow 持有。
+    """一个实例对应一个任务通道，由窗口或工作台持有。
 
-    同一时刻只允许一个前台可见任务（状态栏是单通道），第二个 run() 会被拒绝
-    并回调 on_busy，避免两个生成任务互相覆盖进度显示。
+    同一实例只允许一个任务，第二个 run() 会被拒绝并回调 on_busy。
+    短视频的文字、图片、视频分别使用独立实例，共用线程池。
     """
 
     task_started = Signal(object)   # BackgroundTask
@@ -104,13 +104,14 @@ class TaskRunner(QObject):
     def __init__(self, logger: Optional[logging.Logger] = None) -> None:
         super().__init__()
         self._pool = QThreadPool.globalInstance()
-        self._pool.setMaxThreadCount(max(2, self._pool.maxThreadCount()))
+        self._pool.setMaxThreadCount(max(3, self._pool.maxThreadCount()))
         self._logger = logger or logging.getLogger("core.gui.task")
         self._current: Optional[BackgroundTask] = None
 
     @property
     def busy(self) -> bool:
-        return self._current is not None and self._current.running
+        # Queued success/finished callbacks still own this channel after run() returns.
+        return self._current is not None
 
     @property
     def current(self) -> Optional[BackgroundTask]:
@@ -170,7 +171,8 @@ class TaskRunner(QObject):
                 if (original_text is not None
                         and (busy_text is None or busy_button.text() == busy_text)):
                     busy_button.setText(original_text)
-            self._current = None
+            if self._current is task:
+                self._current = None
             self.task_finished.emit()
             if on_done:
                 on_done()

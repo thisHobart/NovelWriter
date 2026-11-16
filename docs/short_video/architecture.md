@@ -1,6 +1,6 @@
 # 短视频工作台：架构设计
 
-文档版本：2.21；日期：2026-11-15。本文说明核心结构与技术决策。
+文档版本：2.23；日期：2026-11-16。本文说明核心结构与技术决策。
 字段与调用见[接口设计](interfaces.md)，界面行为见[交互设计](interaction.md)，代码入口与验证见[开发文档](development.md)。
 
 ## 1. 系统结构
@@ -10,7 +10,7 @@ Python／PySide6 桌面应用：主线程处理交互，后台线程执行生成
 ```mermaid
 flowchart TB
     subgraph APP[桌面进程内]
-        UI[四个工作区 + 共享对话] --> TASK[TaskRunner 后台任务调度]
+        UI[四个工作区 + 共享对话] --> TASK[TaskChannels<br/>文字、图片、视频各一条 TaskRunner]
         TASK --> TEXT[文字生成编排<br/>WorkflowService / CreationWork]
         TEXT --> LOOP[AgentExecution<br/>生成、校验、审阅、修订]
         LOOP --> MODEL[ScriptLLM 模型适配]
@@ -36,6 +36,20 @@ flowchart TB
 | ConversationService／Store／Context | 保存会话，筛选完整历史并构造本轮模型输入 |
 | ImageGenerationService／Work | 资产视图清单、受限并发、响应检查点及提示词与图片关联 |
 | MediaService／MediaWork／MCP | 独立管理图片输入、视频任务与远程结果取回 |
+
+### 三通道后台执行
+
+文字（含聊天、自动审阅与修订）、图片批次、ComfyUI 视频各允许一个任务，三类可同时运行。
+TaskRunner 单实例仍互斥，直到主线程处理完成回调才释放通道。TaskChannels 按通道绑定工作对象；
+底部选择任务查看进度与耗时，停止只作用于所选任务，每通道保留本次会话最近结果。
+项目／创作模式切换和公共服务配置检查全部通道，退出向全部活动任务发出本地停止。
+
+文字保留 `.v2-generation.lock`，生图执行与恢复改用媒体目录 `.image-generation.lock`。
+项目内容提交／来源读取使用短时 `.v2-project.lock`，媒体更新保留 `media.lock`，网络等待不占用写锁。
+运行中的生图不被其他通道的恢复操作标为中断；来源变更后保存已返回图片但不作为当前视图绑定。
+
+同一分镜版本、同一镜头正在编写视频提示词时，锁定该镜头输入并阻止新视频提交，其他镜头照常。
+已经提交的视频使用原输入快照，后续文字或生图结果不修改它；查询原视频仅受视频通道互斥约束。
 
 ## 2. 核心数据流
 

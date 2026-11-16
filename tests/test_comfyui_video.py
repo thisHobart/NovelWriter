@@ -358,6 +358,8 @@ def test_video_ui_accepts_manual_image_without_storyboard(tmp_path):
         configure_comfy=lambda: None,
         submit=lambda work, button: submitted.append(work),
     )
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    workbench.tasks = TaskChannels(workbench.host.runner)
     panel = MediaPreview(workbench)
     image = QImage(8, 8, QImage.Format_RGB32)
     image.fill(0xFF0088)
@@ -508,6 +510,8 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
         configure_comfy=lambda: None,
         submit=lambda work, button: submitted.append(work),
     )
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    workbench.tasks = TaskChannels(workbench.host.runner)
     panel = MediaPreview(workbench)
     panel.refresh()
     assert len(panel.image_fields) == 3
@@ -586,6 +590,8 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
         perform=lambda operation: operation(),
         configure_comfy=lambda: None,
     )
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    workbench.tasks = TaskChannels(workbench.host.runner)
     panel = MediaPreview(workbench)
     panel.refresh()
     path = tmp_path / "input.png"
@@ -595,22 +601,24 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
     for node_id in ["137", "139", "147"]:
         panel.import_image(str(path), node_id)
     selection = panel.image_selection()
+    workbench.tasks.runners["video"] = runner
     server = ComfyServer()
 
     def submit(work, button):
         work.transport = httpx.MockTransport(server.request)
         runner.run(
             work,
-            disable=panel.task_controls(),
             pass_progress=True,
             on_success=lambda _: panel.refresh(),
             on_error=failures.append,
             on_done=panel.refresh_result,
         )
+        panel.refresh_result()
 
     workbench.submit = submit
     panel.generate_button.click()
-    assert not panel.add_image_button.isEnabled()
+    assert panel.add_image_button.isEnabled()
+    assert not panel.generate_button.isEnabled()
     timer = QElapsedTimer()
     timer.start()
     while runner.busy and timer.elapsed() < 5000:
@@ -855,6 +863,8 @@ def reference_panel(tmp_path):
         configure_comfy=lambda: None,
         submit=lambda work, button: submitted.append(work),
     )
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    workbench.tasks = TaskChannels(workbench.host.runner)
     panel = MediaPreview(workbench)
     panel.refresh()
     return app, panel, submitted
@@ -1076,7 +1086,7 @@ def test_video_settings_stay_readable_and_open_saved_output_without_playback(tmp
         assert control.height() >= theme.CONTROL_HEIGHT
     for child in panel.findChildren(media_preview.QWidget):
         assert child.metaObject().className() != "QVideoWidget"
-    assert not panel.open_button.isEnabled()
+    assert panel.open_button.isEnabled()
 
     path = tmp_path / "reference.png"
     save_ui_image(path)
@@ -1093,7 +1103,7 @@ def test_video_settings_stay_readable_and_open_saved_output_without_playback(tmp
     assert panel.open_button.isEnabled()
     assert panel.video_path.is_file()
     opened = []
-    monkeypatch.setattr(media_preview.QDesktopServices, "openUrl", lambda url: opened.append(url))
+    monkeypatch.setattr(media_preview.QDesktopServices, "openUrl", lambda url: (opened.append(url), True)[1])
     panel.open_button.click()
     assert len(opened) == 1
     assert opened[0].toLocalFile() == str(panel.video_path.parent).replace("\\", "/")
@@ -1104,7 +1114,7 @@ def test_video_settings_stay_readable_and_open_saved_output_without_playback(tmp
     for control in panel.parameter_fields.values():
         assert control.height() >= theme.CONTROL_HEIGHT
     panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
-    assert not panel.open_button.isEnabled()
+    assert panel.open_button.isEnabled()
     assert panel.video_path is None
     panel.close()
     app.setStyleSheet(previous_style)

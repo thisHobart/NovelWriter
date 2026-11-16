@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.22；日期：2026-11-16。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.23；日期：2026-11-16。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；第11节记录已实现的可选 Images API 资产生图。
 
@@ -19,7 +19,7 @@
 | AI 编写视频提示词 | WorkflowService.prepare_video_prompt(shot_id, images, *, workflow_id, parameters, current_prompt="") → WorkspaceWork | video_prompt 阶段只更新所选镜头的完整视频正文，沿用独立审阅和检查点恢复 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
-| 查看／停止 | repository.load()["runs"] / host.runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
+| 查看／停止 | repository.load()["runs"] / 所选通道 runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
 | 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
 | 聊天讨论 | ConversationService.prepare / execute | 用户消息、有效历史及可选的当前分镜只读上下文；回复供手动修改，不自动写回；保留项目隔离和手动重试 |
 
@@ -401,7 +401,7 @@ short_video/media/
 
 ### 10.5 导出边界
 
-ExportService 继续只负责 Markdown 与文字来源清单。媒体直接保存到项目，UI 只保存当前结果路径并提供“打开视频位置”，通过 QDesktopServices 打开该文件的父目录；没有本地结果时按钮禁用。不加载视频、不创建播放器或音频输出对象。暂不实现批量视频队列、自动剪辑、媒体打包导出或多图合成。
+ExportService 继续只负责 Markdown 与文字来源清单。媒体直接保存到项目，UI 保存当前结果路径并提供始终可用的“打开视频位置”，通过 QDesktopServices 打开项目 short_video/media/videos；没有目录时点击创建，不依赖本地结果或任务状态，失败返回具体原因。不加载视频、不创建播放器或音频输出对象。暂不实现批量视频队列、自动剪辑、媒体打包导出或多图合成。
 
 ## 11. 可选资产生图接口
 
@@ -424,3 +424,15 @@ WorkflowService.shot_assets 的 views 可返回 image（含 image_id、relative_
 每项状态为 queued、requesting、retrying、received、saving、succeeded、failed、unknown、paused、stale；收到响应后先落盘，保存成功后在项目锁和媒体锁内核对来源再更新绑定。来源在执行中变化仍保存已返回文件，但不选为当前图片。一次失败不丢失其他成功项，返回 counts 与 image_summary，不使用 AI 审阅状态。
 
 仅连接建立失败和429有限退避，SDK重试为0；请求发出后超时／断连不自动重发，unknown 须显式勾选，界面提示可能重复计费。缓存响应的下载／解码恢复不要求当前生图配置，也不重发生成；响应缓存写盘失败记 unknown 并停止后续请求。停止不启动排队项，等待已发请求返回保存；TaskRunner 仅对 drain_on_cancel 工作允许取消后的进度回报。恢复跳过 succeeded，默认跳过 unknown；认证／配置失败停止后续排队请求。
+
+## 12. 短视频 UI 三通道调度
+
+TaskChannels 维护 text／image／video 三个 TaskRunner，text 复用主窗口原实例。
+channel(work) 按 ImageGenerationWork／MediaWork 分类，其余为文字任务。
+admit 在启动前检查同类互斥；同镜头 video_prompt 任务阻止新视频，查询原任务例外。
+prompt_busy 按冻结的分镜版本和 shot_id 匹配，恢复任务也在启动前读取原命令的目标。
+finish 按工作对象身份清理，旧回调不影响新任务。any_busy 用于项目、模式、配置和退出检查。
+
+AppStatusBar.start_task／update_task／finish_task 绑定通道和工作对象，选择器按通道保留最近结果。
+取消按当前选择路由，不通过最后提交任务推断对象。TaskRunner.busy 在主线程处理完结束前保持为真。
+以上均为进程内 UI 状态，不增加检查点或媒体任务字段，不改模型协议与恢复次数。

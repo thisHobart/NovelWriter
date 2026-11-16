@@ -113,7 +113,7 @@ class PromptPage(QWidget):
         text_area = QVBoxLayout(text_widget)
         text_area.setContentsMargins(0, 0, 0, 0)
         self.shot_assets = ShotAssetsPanel()
-        self.shot_assets.can_use_images = lambda: not workbench.host.runner.busy
+        self.shot_assets.can_use_images = lambda: not workbench.tasks.prompt_busy(self.media.target)
         text_area.addWidget(self.shot_assets)
         text_area.addWidget(self.editor, 1)
         self.text_scroll = QScrollArea()

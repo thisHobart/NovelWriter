@@ -197,10 +197,11 @@ class ChatPanel(QWidget):
             else []
         )
         self.render_messages(messages)
+        active = self.workbench.tasks.works.get("text")
         self.stop_button.setEnabled(
-            isinstance(self.workbench.active_work, ChatWork)
+            isinstance(active, ChatWork)
             and self.workbench.host.runner.busy
-            and self.workbench.active_work.command["conversation_id"] == self.conversation_id
+            and active.command["conversation_id"] == self.conversation_id
         )
 
     def render_messages(self, messages: Sequence[JsonObject]) -> None:
@@ -245,9 +246,10 @@ class ChatPanel(QWidget):
         scrollbar.setValue(scrollbar.maximum() if follow_latest else previous_position)
 
     def stop(self) -> None:
+        active = self.workbench.tasks.works.get("text")
         if (
-            isinstance(self.workbench.active_work, ChatWork)
-            and self.workbench.active_work.command["conversation_id"] == self.conversation_id
+            isinstance(active, ChatWork)
+            and active.command["conversation_id"] == self.conversation_id
         ):
             self.workbench.host.runner.cancel_current()
 

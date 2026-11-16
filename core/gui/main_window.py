@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """主窗壳：左侧步骤栏 + 页面堆栈 + 底部状态栏。
 
-只做四件事：装配页面、路由、把页面的任务请求交给唯一的 TaskRunner、
+只做四件事：装配页面、路由、把页面的任务请求交给对应通道的 TaskRunner、
 把工作流状态分发给步骤栏与总览页。业务逻辑一律在 services/ 与 core/ 里。
 """
 from __future__ import annotations
@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QDialog,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
@@ -24,6 +24,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.generation.ai_helper import (
+    DEFAULT_API_MODEL,
+    get_available_backends,
+    get_supported_models,
+)
+from core.generation.api_providers import PROVIDER_LABELS, configuration_status
+from core.generation.lore_repository import LoreRepository
+from core.generation.parameters import creation_parameters, normalize_parameters
+from core.generation.stage_pipeline import load_stage_parameters
+from core.generation.workflow_status import (
+    BLOCKED,
+    COMPLETE,
+    PARTIAL,
+    assess_workflow,
+)
 from core.gui import theme
 from core.gui.model_config_dialog import ModelConfigDialog
 from core.gui.pages import (
@@ -35,27 +50,12 @@ from core.gui.pages import (
     StructurePage,
     WorkflowPage,
 )
+from core.gui.services.step_runner import GenerationWork
 from core.gui.task_runner import TaskRunner
 from core.gui.widgets import AppStatusBar, StepRail
 from core.gui.widgets.step_rail import StepState
-from core.generation.lore_repository import LoreRepository
 from core.lore_localization import file_label
 from core.short_video.v2.models import WorkspaceError
-from core.gui.services.step_runner import GenerationWork
-from core.generation.parameters import normalize_parameters, creation_parameters
-from core.generation.stage_pipeline import load_stage_parameters
-from core.generation.ai_helper import (
-    DEFAULT_API_MODEL,
-    get_available_backends,
-    get_supported_models,
-)
-from core.generation.api_providers import PROVIDER_LABELS, configuration_status
-from core.generation.workflow_status import (
-    BLOCKED,
-    COMPLETE,
-    PARTIAL,
-    assess_workflow,
-)
 
 logger = logging.getLogger("core.gui.main")
 
@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         self.runner.task_finished.connect(lambda: self.workflow_page.video_button.setEnabled(True))
         self.rail.step_selected.connect(self._on_step_selected)
         self.rail.configuration_requested.connect(self._configure_model)
-        self.status.cancel_requested.connect(self.runner.cancel_current)
+        self.status.cancel_requested.connect(self._cancel_selected_task)
         self.runner.progress.connect(self._on_task_progress)
         self.runner.task_finished.connect(
             lambda: self.chapter_page.finish_generation_progress() if self._mode == "novel" else None
@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         self.rail.model_combo.setToolTip(detail)
 
     def _configure_model(self) -> None:
-        if self.runner.busy:
+        if self._any_task_busy():
             return
         dialog = ModelConfigDialog(self.selected_model(), self)
         try:
@@ -253,8 +253,8 @@ class MainWindow(QMainWindow):
 
     def _on_task_requested(self, work: Callable, busy_button, busy_text: str,
                            on_success: Optional[Callable]) -> None:
-        from core.short_video.v2.workflow import WorkspaceWork
         from core.short_video.v2.conversation import ChatWork
+        from core.short_video.v2.workflow import WorkspaceWork
         if isinstance(work, (WorkspaceWork, ChatWork)):
             self._on_video_task_requested(work, busy_button, busy_text)
             return
@@ -369,12 +369,7 @@ class MainWindow(QMainWindow):
     def _on_task_progress(self, text: str, fraction: float) -> None:
         """Update the status bar and refresh chapters at durable checkpoints."""
         if self._mode == "video":
-            work = self.video_workspace.active_work
-            if work is not None:
-                context = work.task_context
-                self.status.set_progress(context.action + "中…", fraction)
-                self.status.set_context(context.location())
-                return
+            return  # Video progress is bound to its task and channel below.
         self.status.set_progress(text, fraction)
         if self._mode == "novel":
             self.chapter_page.handle_generation_progress(text)
@@ -393,8 +388,8 @@ class MainWindow(QMainWindow):
     def switch_mode(self, mode):
         if mode not in {"novel", "video"} or mode == self._mode:
             return
-        if self.runner.current is not None:
-            self.status.set_progress("任务运行中，暂不能切换模式")
+        if self._any_task_busy():
+            self.status.show_notice("warning", "任务运行中，暂不能切换模式")
             return
         if self._mode == "video":
             if not self.video_workspace.resolve_edits():
@@ -412,6 +407,7 @@ class MainWindow(QMainWindow):
                 if answer == QMessageBox.Discard:
                     self.parameters_page.load()
         previous_key = next((key for key, page in self.pages.items() if page is self.stack.currentWidget()), None)
+        self.status.clear_tasks()
         if previous_key and self._mode != "video":
             self._last_pages[self._mode] = previous_key
         if mode == "video" and self.video_workspace is None:
@@ -437,37 +433,66 @@ class MainWindow(QMainWindow):
     ) -> None:
         from core.short_video.v2.feedback import task_message
 
-        if self._mode != "video" or self.runner.busy:
+        if self._mode != "video":
             self.status.set_dirty("已有任务在运行或当前模式不匹配")
             return
-        context = work.task_context
-        self.status.set_busy(context.action + "中…", context.location())
+        channels = self.video_workspace.tasks
+        channel = channels.admit(work)
+        runner = channels.runners[channel]
 
         def show_result(
             *, value: JsonObject | None = None, exc: BaseException | None = None,
             stopped: bool = False,
         ) -> None:
             context = work.task_context
-            severity, title, detail = task_message(context, result=value, error=exc, cancelled=stopped)
-            {"error": self.status.set_error, "warning": self.status.set_dirty,
-             "success": self.status.set_done}[severity](title, detail)
+            self.status.finish_task(
+                channel, work, task_message(context, result=value, error=exc, cancelled=stopped)
+            )
 
         def success(value: JsonObject) -> None:
-            self.refresh_all()
-            if context.action == "资产提示词生成" and value.get("status") == "succeeded":
-                self.video_workspace.specs.tabs.setCurrentIndex(4)
             show_result(value=value)
         def error(exc: Exception) -> None:
-            self.refresh_all()
             show_result(exc=exc)
         def cancelled() -> None:
-            self.refresh_all()
             show_result(stopped=True)
-        self.runner.run(work, pass_progress=True, cancel_token=work.token,
-            disable=[self.rail.backend_combo, self.rail.model_combo, self.rail.config_button,
-                     *self.video_workspace.task_controls()], busy_button=busy_button, busy_text=busy_text,
+
+        def done() -> None:
+            channels.finish(channel, work)
+            self._update_task_guards()
+            self.refresh_all()
+
+        task = runner.run(work, pass_progress=True, cancel_token=work.token,
             on_success=success, on_error=error, on_cancelled=cancelled,
-            on_done=self.refresh_all)
+            on_done=done)
+        if task is None:
+            channels.finish(channel, work)
+            return
+        self.status.start_task(channel, work)
+        task.signals.progress.connect(
+            lambda _text, fraction: self.status.update_task(channel, work, fraction),
+            Qt.QueuedConnection,
+        )
+        self._update_task_guards()
+        self.video_workspace.refresh_task_controls()
+
+    def _any_task_busy(self) -> bool:
+        return self.runner.busy or bool(
+            self.video_workspace is not None and self.video_workspace.tasks.any_busy
+        )
+
+    def _update_task_guards(self) -> None:
+        for control in (self.rail.backend_combo, self.rail.model_combo, self.rail.config_button,
+                        self.workflow_page.video_button):
+            control.setEnabled(not self._any_task_busy())
+
+    def _cancel_selected_task(self) -> None:
+        if self._mode == "video":
+            channel = self.status.tasks.currentData()
+            if channel in self.video_workspace.tasks.runners:
+                self.video_workspace.tasks.runners[channel].cancel_current()
+                self.status.render_task()
+        else:
+            self.runner.cancel_current()
 
     # ================================================== 路由
     def _navigate(self, key: str) -> None:
@@ -636,7 +661,7 @@ class MainWindow(QMainWindow):
         if self._mode == "novel" and not self.lore_page.resolve_draft():
             event.ignore()
             return
-        if self.runner.busy:
+        if self._any_task_busy():
             answer = QMessageBox.question(
                 self, "仍有任务在运行", "后台任务尚未结束，确定要退出吗？",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
@@ -644,5 +669,8 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.Yes:
                 event.ignore()
                 return
-            self.runner.cancel_current()
+            if self._mode == "video":
+                self.video_workspace.tasks.cancel_all()
+            else:
+                self.runner.cancel_current()
         event.accept()

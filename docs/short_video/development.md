@@ -1,6 +1,6 @@
 # 短视频工作台：开发文档
 
-文档版本：2.21；日期：2026-11-15。本文用于定位代码、维护实现与执行验证。
+文档版本：2.23；日期：2026-11-16。本文用于定位代码、维护实现与执行验证。
 整体结构见[架构设计](architecture.md)，字段和接口见[接口设计](interfaces.md)，操作与提示见[交互设计](interaction.md)。历次变更及验收证据见[DEVLOG](../../DEVLOG.md)。
 
 ## 1. 运行与代码入口
@@ -16,6 +16,7 @@
 | 工作区、导航与生成入口 | `core/gui/pages/short_video/workbench.py`；`artifact_page.py`、`prompt_page.py`、`source_page.py` |
 | 镜头所需参考资产与视图提示词 | `workflow.py` 的 shot_assets；UI 为 `shot_assets_panel.py`，接入 `prompt_page.py` |
 | 后台线程与 UI 状态 | `core/gui/task_runner.py`；`core/short_video/v2/feedback.py` |
+| 短视频三通道调度与状态栏 | `core/gui/pages/short_video/task_channels.py`；`core/gui/widgets/status_bar.py` |
 | 准备阶段输入、多阶段编排 | `core/short_video/v2/workflow.py`、`creation.py` |
 | Agent Loop、检查点与继续执行 | `core/short_video/v2/runtime.py` |
 | 项目与内容存储 | `repository.py`、`storage.py`、`project_service.py`、`models.py`、`contracts.py` |
@@ -192,3 +193,15 @@ Windows 单文件构建入口：
 - 时间使用整数毫秒，原文偏移使用 Unicode 码点；缺失目标使用 None。
 - 函数边界写明类型，阶段 JSON 在对应校验器检查；异常只在有恢复或反馈职责的边界捕获。
 - 提交前运行与改动相关的验证，并更新对应文档；历史过程和验收写入 DEVLOG，四份维护文档只描述当前实现。
+
+## 三通道并行维护
+
+短视频通过 TaskChannels 分开调度文字／图片／视频，不使用全局禁用控件列表。
+按钮从各通道实时状态和当前镜头输入派生；配置与项目切换仍检查全部通道。
+图片改用独立跨进程生图锁，保留项目／媒体短事务锁；来源投影读取须和旧文件清理互斥。
+底部回调绑定工作身份，完成事件处理前不能复用该通道。
+
+新增 tests/test_video_task_channels.py：阻塞任务验证同时运行、独立停止和结束边界；
+真实 OpenAI SDK 配合模拟 HTTP 同时执行文字、生图及 ComfyUI，验证冻结输入和运行中恢复。
+另覆盖同镜头输入锁、不同镜头并行、查询例外、继续任务目标、项目／配置／退出保护、
+未保存稿保留及无视频时打开目录和失败路径。所有测试使用临时项目，不调用真实服务。

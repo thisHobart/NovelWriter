@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from collections.abc import Callable
-from contextlib import AsyncExitStack
+from collections.abc import Callable, Iterator
+from contextlib import AsyncExitStack, contextmanager
 from copy import deepcopy
 from uuid import uuid4
 
 import httpx
+from filelock import Timeout
 from openai import APIConnectionError, AsyncOpenAI
 from PySide6.QtGui import QImage
 
@@ -81,6 +82,15 @@ def image_view_key(catalog_id: str, asset_id: str, variant_id: str, view_id: str
 class ImageGenerationStore:
     def __init__(self, output_dir: str) -> None:
         self.media = MediaRepository(output_dir)
+
+    @contextmanager
+    def generation_lock(self) -> Iterator[None]:
+        self.media.root.mkdir(parents=True, exist_ok=True)
+        try:
+            with project_lock(str(self.media.root / ".image-generation.lock"), timeout=0):
+                yield
+        except Timeout as exc:
+            raise WorkspaceError("PROJECT_BUSY", "项目已有生图任务，请等待完成或停止") from exc
 
     def load(self) -> JsonObject:
         try:
@@ -154,10 +164,22 @@ class ImageGenerationService:
 
     def recover(self) -> None:
         if self.store.media.resolve("image_generation.json").exists():
-            with self.repository.generation_lock():
-                self.store.recover()
+            try:
+                with self.store.generation_lock():
+                    self.store.recover()
+            except WorkspaceError as exc:
+                if exc.code != "PROJECT_BUSY":
+                    raise
 
     def rows(self) -> list[JsonObject]:
+        # Prompt commits can remove superseded artifact files. Read the complete
+        # provenance projection under the same short project lock as those commits.
+        if not self.repository.root.exists():
+            return []
+        with project_lock(str(self.repository.root / ".v2-project.lock"), timeout=5):
+            return self._rows()
+
+    def _rows(self) -> list[JsonObject]:
         from .workflow import WorkflowService
 
         state = self.repository.load()
@@ -324,7 +346,7 @@ class ImageGenerationWork(TaskTracker):
         )
 
     def __call__(self, report: ProgressReporter) -> JsonObject:
-        with self.repository.generation_lock():
+        with self.store.generation_lock():
             if self.command:
 
                 def start(state: JsonObject) -> None:
@@ -563,7 +585,7 @@ class ImageGenerationWork(TaskTracker):
                     }
 
             # Serialize provenance selection with manual project edits.
-            with project_lock(str(self.repository.root / ".v2-project.lock")):
+            with project_lock(str(self.repository.root / ".v2-project.lock"), timeout=5):
                 current = self.source_current(item)
                 self.store.update(finish)
         except GenerationCancelled:

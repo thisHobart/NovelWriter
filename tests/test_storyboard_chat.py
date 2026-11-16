@@ -196,6 +196,8 @@ def chat_ui(scenario, tmp_path, offline):
         perform=lambda operation: operation(), notice=notices.append, active_work=None,
         host=SimpleNamespace(runner=SimpleNamespace(busy=False, cancel_current=Mock())),
     )
+    from core.gui.pages.short_video.task_channels import TaskChannels
+    workbench.tasks = TaskChannels(workbench.host.runner)
     page = ArtifactPage(workbench, "storyboard", "分镜")
     workbench.storyboard = page
     active = [page]
@@ -204,7 +206,7 @@ def chat_ui(scenario, tmp_path, offline):
     workbench.chat = panel
 
     def submit(work, button):
-        workbench.active_work = work
+        workbench.tasks.works["text"] = work
         pending.append(work)
 
     workbench.submit = submit
