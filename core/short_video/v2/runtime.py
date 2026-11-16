@@ -36,6 +36,7 @@ from .models import (
     validate_model_snapshot,
 )
 from .review import QualityCheckResult, check_candidate
+from .video_context import validate_video_command, video_command_ready
 
 if TYPE_CHECKING:
     from .repository import ProjectRepository
@@ -70,10 +71,7 @@ def task_valid(state: JsonObject, task: JsonObject) -> bool:
     return (
         bool(task.get("resumable"))
         and task.get("runtime_version") == RUNTIME_VERSION
-        and (
-            task["stage"] != "video_prompt"
-            or task.get("command", {}).get("video_prompt_contract_version") == 1
-        )
+        and (task["stage"] != "video_prompt" or video_command_ready(task.get("command", {})))
         and all(state["current"].get(k) == v for k, v in task["expected"].items())
     )
 
@@ -81,11 +79,6 @@ def task_valid(state: JsonObject, task: JsonObject) -> bool:
 def invalidation_reason(state: JsonObject, task: JsonObject) -> str:
     if task.get("runtime_version") != RUNTIME_VERSION:
         return "运行格式已变化，请重新生成"
-    if (
-        task["stage"] == "video_prompt"
-        and task.get("command", {}).get("video_prompt_contract_version") != 1
-    ):
-        return "视频提示词任务格式已更新，请重新编写"
     labels = {
         "source": "原文",
         "selection": "原文范围",
@@ -101,7 +94,11 @@ def invalidation_reason(state: JsonObject, task: JsonObject) -> str:
         for k, v in task["expected"].items()
         if state["current"].get(k) != v
     ]
-    return "、".join(dict.fromkeys(changed)) + "已变化，请重新生成"
+    return (
+        "、".join(dict.fromkeys(changed)) + "已变化，请重新生成"
+        if changed
+        else "任务输入不完整，请重新生成"
+    )
 
 
 def invalidate(state: JsonObject, task: JsonObject, reason: str) -> None:
@@ -118,8 +115,6 @@ def invalidate(state: JsonObject, task: JsonObject, reason: str) -> None:
 
 def start_task(repository: ProjectRepository, command: JsonObject) -> JsonObject:
     """Admission is durable and only happens while holding the generation lock."""
-    from .video_context import validate_video_command
-
     validate_video_command(command)
     with repository.transaction() as state:
         task_id = command["request_id"]
@@ -289,8 +284,7 @@ def get_recovery(repository: ProjectRepository, stage: str) -> JsonObject | None
     if not tasks:
         return None
     task = deepcopy(tasks[-1])
-    legacy_stopped = task.get("runtime_version") == 0 and task["status"] != "succeeded"
-    if not task.get("resumable") and task["status"] != "invalidated" and not legacy_stopped:
+    if not task.get("resumable") and task["status"] != "invalidated":
         return None
     task["valid"] = bool(task.get("resumable") and task_valid(state, task))
     if not task["valid"] and "reason" not in task:
@@ -565,7 +559,7 @@ class AgentExecution:
             require(
                 run.get("task_id") == self.task_id and "checkpoint" in run,
                 "TASK_STOPPED",
-                "旧任务没有可恢复检查点，请重新生成",
+                "运行检查点缺失，无法继续，请重新生成",
             )
             self.command = deepcopy(run["checkpoint"]["command"])
             self.cp = deepcopy(run["checkpoint"])
@@ -796,8 +790,6 @@ def execute_stage(
     resume: bool = False,
 ) -> JsonObject:
     """Standalone stages own a task/lock; composed stages share their parent's lock."""
-    from .video_context import validate_video_command
-
     validate_video_command(command)
     require(
         type(command.get("max_retries")) is int and 0 <= command["max_retries"] <= 1,

@@ -239,17 +239,28 @@ def test_duplicate_request_cannot_change_inputs(project):
         service.execute(changed)
 
 
-def test_legacy_task_migration_is_local_and_keeps_current_content(project):
+def test_recovery_reads_only_manifest_tasks_and_keeps_current_content(project):
     before = dict(project.load()["current"])
     folder = project.root / "tasks"
     folder.mkdir()
-    path = folder / "creation_old.json"
-    path.write_text(json.dumps({"status": "running", "outputs": [], "command_hash": "old", "command": {"stage": "prompt_task"}}), encoding="utf-8")
+    path = folder / "standalone.json"
+    path.write_text("not a task document", encoding="utf-8")
     project.recover()
-    assert not path.exists()
+    assert path.read_text(encoding="utf-8") == "not a task document"
     assert project.load()["current"] == before
-    assert not project.load()["tasks"][path.stem]["resumable"]
-    assert "没有步骤检查点" in runtime.get_recovery(project, "prompt_task")["reason"]
+    assert project.load()["tasks"] == {}
+    assert runtime.get_recovery(project, "prompt_task") is None
+
+
+@pytest.mark.parametrize("field", ["tasks", "runtime_schema_version"])
+def test_repository_requires_current_task_storage_fields_without_rewriting(project, field):
+    state = project.load()
+    state.pop(field)
+    project.path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    before = project.path.read_bytes()
+    with pytest.raises(WorkspaceError, match="任务|运行任务格式"):
+        project.load()
+    assert project.path.read_bytes() == before
 
 
 def test_unknown_runtime_version_is_invalidated(project):

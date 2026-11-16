@@ -460,14 +460,17 @@ def test_review_rejects_other_field_and_maps_current_field_to_full_index(ready):
         parse_review(encode({"issues": [problem]}), target, repository, shot_id="shot_3")
 
 
-def test_legacy_video_command_is_rejected_before_any_write_or_request(ready):
+@pytest.mark.parametrize("field", ["max_context_chars", "article", "selected_shot_ids"])
+def test_incomplete_video_command_is_rejected_before_any_write_or_request(ready, field):
     repository, _, _ = ready
     command = prepare(ready)
-    command.pop("video_prompt_contract_version")
-    command["prompt"] = "旧版完整集合请求"
+    if field == "max_context_chars":
+        command.pop(field)
+    else:
+        command["context"].pop(field)
     before = repository.path.read_bytes()
-    send = Mock(side_effect=AssertionError("legacy requests must not be sent"))
-    with pytest.raises(WorkspaceError, match="任务格式已更新"):
+    send = Mock(side_effect=AssertionError("incomplete requests must not be sent"))
+    with pytest.raises(WorkspaceError, match="缺少本镜资料或输入预算"):
         WorkflowService(repository, transport=send).execute(command)
     send.assert_not_called()
     assert repository.path.read_bytes() == before
@@ -520,7 +523,7 @@ def test_changed_storyboard_invalidates_old_context_and_prevents_any_request(rea
     send.assert_not_called()
 
 
-def test_legacy_interrupted_video_task_requires_regeneration_without_model_request(ready):
+def test_incomplete_interrupted_video_task_is_rejected_without_model_request(ready):
     from core.short_video.v2.models import fingerprint
 
     repository, _, _ = ready
@@ -530,20 +533,19 @@ def test_legacy_interrupted_video_task_requires_regeneration_without_model_reque
                               quality_check=Mock(side_effect=ConnectionError("interrupted")))
     with pytest.raises(ConnectionError):
         service.execute(command)
-    # Represent an old on-disk checkpoint, without invoking a deleted legacy builder.
+    # A consistent fingerprint cannot substitute for required task data.
     with repository.transaction() as state:
         task = state["tasks"][command["request_id"]]
-        task["command"].pop("video_prompt_contract_version")
-        task["command"]["prompt"] = "旧版完整集合请求"
+        task["command"]["context"].pop("supplement_manifest")
         task["command_hash"] = fingerprint(task["command"])
         run = state["runs"][-1]
         run["checkpoint"]["command"] = deepcopy(task["command"])
         run["checkpoint_hash"] = fingerprint(run["checkpoint"])
     recovery = runtime.get_recovery(repository, "video_prompt")
-    assert recovery and not recovery["valid"] and "格式已更新" in recovery["reason"]
+    assert recovery and not recovery["valid"] and "任务输入不完整" in recovery["reason"]
     before = repository.path.read_bytes()
-    reviewed = Mock(side_effect=AssertionError("legacy tasks must not resume"))
-    with pytest.raises(WorkspaceError, match="任务格式已更新"):
+    reviewed = Mock(side_effect=AssertionError("incomplete tasks must not resume"))
+    with pytest.raises(WorkspaceError, match="任务输入不完整"):
         runtime.ResumeWork(repository, command["request_id"], transport=reviewed)(lambda *_: None)
     reviewed.assert_not_called()
     assert repository.path.read_bytes() == before
@@ -556,7 +558,7 @@ def test_video_stage_has_only_local_output_and_never_copies_full_candidate(ready
     repository, _, _ = ready
     command = prepare(ready)
     candidate = deepcopy(repository.current("prompt_bundle"))
-    candidate["content"]["unrelated_legacy_marker"] = "不应发送的完整集合数据"
+    candidate["content"]["unused_metadata"] = "不应发送的完整集合数据"
     prompt = stage_prompt("video_prompt", command["context"], candidate=candidate)
     assert "完整当前稿" not in prompt and "不应发送的完整集合数据" not in prompt
     assert set(output_example("video_prompt", command["context"])) == {

@@ -41,7 +41,7 @@ Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时
 
 - `ResumeWork(repository, task_id, *, transport=None)`：符合 VideoTask 契约，继续指定任务；任务选择不按资产名称或最近文件猜测。
 - `get_recovery(repository, stage)`：返回同类最近任务的编号、状态、有效性、完成数、对象、阶段、结果不明提示或失效原因；已成功任务不提供恢复入口。
-- `ProjectRepository.recover()`：在生成锁内迁移旧任务、识别 interrupted 和 unknown、清理失效检查点；不发送模型请求。
+- `ProjectRepository.recover()`：在生成锁内识别当前项目任务的 interrupted 和 unknown、清理失效检查点；不扫描或迁移独立任务文件，不发送模型请求。
 
 统一清单 `tasks[id]` 保存任务命令、输入与目标 expected 指针、阶段规则、已完成输出、调用次数及当前项目命令；`runs[].checkpoint` 保存 `step=request|validate|review|decide|commit`、原阶段命令、最新候选引用、待处理 response、审阅反馈和格式／质量次数；冻结命令和检查点均校验指纹。任务状态为 running、paused、interrupted、failed、succeeded、invalidated，resumable 单独表示是否允许继续。仅 pending 检查点保存必要正文，结束后移除；不恢复历史候选接口。
 
@@ -287,7 +287,7 @@ video_prompt 使用专业 AI 视频导演、电影摄影师和 MiniMax H3 提示
 
 新阶段沿用已有 Agent Loop、独立校验模型、一次质量修订及步骤检查点。每次模型请求与提交前再次核对工作流／图片输入；模型输出不能引用未选的 Picture 编号，也不能修改画面文字或其他镜头。UI 仅在当前镜头、选图、工作流及视频时长匹配时回填保存结果；继续按钮也核对这组输入。生成结果落盘后再审阅，中断审阅可直接继续，不重复请求已保存的视频文字。
 
-video_prompt 统一使用单镜头协议，任务标记 video_prompt_contract_version=1 用于格式校验，模型仅返回 {shot_id, video_motion_prompt}，程序合并为现有完整 prompt_bundle；旧版完整集合拼接、旧版审阅及兼容回退已删除，旧格式中断任务提示重新编写，已有正文保持可读。生成、审阅和修订使用同一本镜事实资料，补充原文按已有引用读取并受预算约束；审阅不携带完整任务或镜头集合。修订重新组装最新正文和本轮反馈，不拼接旧请求。预算随任务冻结，四类模型请求均在发送前检查字符容量。字段、预算和验收细则见[单镜头上下文](video_prompt_context.md)。
+video_prompt 只使用当前单镜头协议，无专用协议版本标记或旧协议分支，模型仅返回 {shot_id, video_motion_prompt}，程序合并为当前完整 prompt_bundle。入口和恢复按当前本镜资料及预算字段校验，不支持旧任务迁移或旧请求。生成、审阅和修订使用同一本镜事实资料，补充原文按已有引用读取并受预算约束；审阅不携带完整任务或镜头集合。修订重新组装最新正文和本轮反馈，不拼接旧请求。预算随任务冻结，四类模型请求均在发送前检查字符容量。字段、预算和验收细则见[单镜头上下文](video_prompt_context.md)。
 
 review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角、镜头画面及视频文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产与镜头画面不套用视频文案格式；video_prompt按上述中文视频正文要求检查，复杂动作的必要拆镜建议进入现有 issues，不夹在可复制正文中，不自行拆镜。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入一次质量修订流程，最终完整校验结果保存在 run 中；不新增独立报告文件或图片调用。
 

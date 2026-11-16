@@ -88,8 +88,13 @@ class ProjectRepository:
             require(isinstance(state.get(key), dict), "INVALID_PROJECT", f"项目缺少 {key}")
         for key in ("runs", "exports"):
             require(isinstance(state.get(key), list), "INVALID_PROJECT", f"项目缺少 {key}")
-        state.setdefault("tasks", {})
-        state.setdefault("runtime_schema_version", 1)
+        require(
+            type(state.get("runtime_schema_version")) is int
+            and state["runtime_schema_version"] == 1,
+            "INVALID_PROJECT",
+            "不支持的运行任务格式",
+        )
+        require("tasks" in state, "INVALID_PROJECT", "项目缺少运行任务索引")
         require(isinstance(state["tasks"], dict), "INVALID_PROJECT", "运行任务索引损坏")
         for task_id, task in state["tasks"].items():
             require(
@@ -334,7 +339,7 @@ class ProjectRepository:
             for task in state["tasks"].values():
                 if task.get("resumable") and not task_valid(state, task):
                     invalidate(state, task, invalidation_reason(state, task))
-        # Legacy chat/batch runs have no text checkpoint; retain their in-flight data.
+        # Runs without text checkpoints (e.g. chat) retain their in-flight data.
         if any(r["status"] in ACTIVE_RUNS and "checkpoint" not in r for r in state["runs"]):
             return
         pinned = {
@@ -561,7 +566,6 @@ class ProjectRepository:
         try:
             with self.generation_lock():
                 with self.transaction() as state:
-                    self._migrate_tasks(state)
                     for task in state["tasks"].values():
                         if task["status"] == "running":
                             task.update(status="interrupted", ended_at=timestamp())
@@ -571,48 +575,6 @@ class ProjectRepository:
                         for call in run.get("calls", []):
                             if call.get("state") == "sending":
                                 call["state"] = "unknown"
-                for path in (self.root / "tasks").glob("*.json"):
-                    if path.stem in self.load()["tasks"] and path.resolve().is_relative_to(
-                        self.root.resolve()
-                    ):
-                        path.unlink()
         except WorkspaceError as exc:
             if exc.code != "PROJECT_BUSY":
                 raise
-
-    def _migrate_tasks(self, state: JsonObject) -> None:
-        """Legacy tasks cannot resume without a checkpoint; never infer one."""
-        for path in (self.root / "tasks").glob("*.json"):
-            if path.stem in state["tasks"]:
-                continue
-            try:
-                old = json.loads(
-                    path.read_text(encoding="utf-8"), parse_constant=reject_json_constant
-                )
-            except (OSError, ValueError) as exc:
-                raise WorkspaceError("INVALID_TASK", "旧任务记录损坏，原文件保留") from exc
-            require(
-                isinstance(old, dict)
-                and isinstance(old.get("outputs"), list)
-                and isinstance(old.get("command_hash"), str)
-                and isinstance(old.get("command", {}), dict)
-                and isinstance(old.get("status"), str)
-                and all(isinstance(ref, str) for ref in old["outputs"])
-                and (old["status"] != "succeeded" or isinstance(old.get("result"), dict)),
-                "INVALID_TASK",
-                "旧任务记录不完整，原文件保留",
-            )
-            stage = old.get("command", {}).get("stage", "legacy")
-            state["tasks"][path.stem] = {
-                "id": path.stem,
-                "runtime_version": 0,
-                "family": stage,
-                "stage": stage,
-                "command_hash": old["command_hash"],
-                "status": "succeeded" if old.get("status") == "succeeded" else "interrupted",
-                "resumable": False,
-                "outputs": old["outputs"],
-                "calls_used": old.get("calls_used", 0),
-                "result": old.get("result"),
-                "reason": "旧任务没有步骤检查点，请基于当前内容重新生成",
-            }

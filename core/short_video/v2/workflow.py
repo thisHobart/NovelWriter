@@ -541,11 +541,7 @@ class WorkflowService:
             f"当前输入约 {len(prompt)} 字符，超过本次 {self.max_context_chars} 字符容量；请缩小选区或确认分块计划",
         )
         return {
-            **(
-                {"video_prompt_contract_version": 1, "max_context_chars": self.max_context_chars}
-                if video_task
-                else {}
-            ),
+            **({"max_context_chars": self.max_context_chars} if video_task else {}),
             "selection_snapshot": {key: state["current"].get(key) for key in deps},
             "stage": stage,
             "max_retries": self.max_retries,

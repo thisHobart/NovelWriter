@@ -11,12 +11,30 @@ from .models import encode, reference_text, require, text
 logger = logging.getLogger(__name__)
 
 
+def video_command_ready(command: JsonObject) -> bool:
+    context = command.get("context")
+    if not isinstance(context, dict):
+        return False
+    article = context.get("article")
+    return (
+        type(command.get("max_context_chars")) is int
+        and command["max_context_chars"] > 0
+        and isinstance(article, dict)
+        and isinstance(article.get("segments"), list)
+        and isinstance(article.get("adjacent_shots"), list)
+        and isinstance(context.get("supplement_manifest"), dict)
+        and isinstance(command.get("shot_ids"), list)
+        and len(command["shot_ids"]) == 1
+        and context.get("selected_shot_ids") == command["shot_ids"]
+    )
+
+
 def validate_video_command(command: JsonObject) -> None:
     if command["stage"] == "video_prompt":
         require(
-            command.get("video_prompt_contract_version") == 1,
-            "STALE_INPUT",
-            "视频提示词任务格式已更新，请重新编写",
+            video_command_ready(command),
+            "INVALID_INPUT",
+            "视频提示词任务缺少本镜资料或输入预算，请重新编写",
         )
 
 
