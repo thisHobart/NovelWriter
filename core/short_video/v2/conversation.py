@@ -1,4 +1,4 @@
-"""Project-local text conversations without document references."""
+"""Project-local discussions with optional read-only storyboard evidence."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from .models import (
     validate_model_snapshot,
 )
 from .repository import ProjectRepository
+from .storyboard_chat import validate_storyboard_reference
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class ConversationService:
         user_text: str,
         *,
         request_id: str | None = None,
+        storyboard_context: JsonObject | None = None,
     ) -> JsonObject:
         text(user_text, "消息")
         conversation = self.store.get(conversation_id)
@@ -67,16 +69,24 @@ class ConversationService:
             "content": user_text,
             "status": "pending",
         }
+        if storyboard_context is not None:
+            storyboard_context = deepcopy(storyboard_context)
+            current_message["storyboard_reference"] = validate_storyboard_reference(
+                storyboard_context.get("reference")
+            )
         history = select_completed_turns(conversation["messages"])
         context = build_conversation_context(
             history + [current_message],
             current_message["id"],
             max_context_chars=self.max_context_chars,
+            storyboard_context=storyboard_context,
         )
         snapshot = {
             "history_message_ids": [message["id"] for message in context.messages[:-1]],
             "context_hash": fingerprint(context.prompt),
         }
+        if "storyboard_reference" in current_message:
+            snapshot["storyboard_reference"] = current_message["storyboard_reference"]
         return {
             "stage": "chat",
             "model": self.model,
@@ -134,6 +144,7 @@ class ConversationService:
                     turn_id=run["id"],
                     model_snapshot=command["model_snapshot"],
                     expected_revision=command["conversation_revision"],
+                    storyboard_reference=command["context_snapshot"].get("storyboard_reference"),
                 )
 
                 def record_call(prompt: str, response: str, error: str | None) -> None:
@@ -158,6 +169,14 @@ class ConversationService:
                     on_retry=lambda error, attempt, maximum, delay: tracker.report_network_retry(
                         error, attempt, maximum, delay, report, on_context
                     ),
+                    trace_context=lambda: {
+                        "run_id": run["id"],
+                        "conversation_id": command["conversation_id"],
+                        "stage": "chat",
+                        "storyboard_reference": command["context_snapshot"].get(
+                            "storyboard_reference"
+                        ),
+                    },
                 )
                 token.raise_if_cancelled()
                 report("等待 LLM 回复", -1)

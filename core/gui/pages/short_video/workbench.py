@@ -127,6 +127,9 @@ class Workbench(QWidget):
         self.add_page("video_adaptation", self.adaptation)
         self.storyboard = ArtifactPage(self, "storyboard", "分镜")
         self.add_page("video_storyboard", self.storyboard)
+        self.storyboard.editor.selection_changed.connect(self.chat.refresh_reference)
+        self.storyboard.editor.changed.connect(self.chat.refresh_reference)
+        self.right.currentChanged.connect(self.chat.refresh_reference)
         self.specs = PromptPage(self)
         self.add_page("video_prompts", self.specs)
         self.splitter.splitterMoved.connect(

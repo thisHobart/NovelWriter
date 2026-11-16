@@ -249,6 +249,10 @@ class StoryboardEditor(QWidget):
         bar.addStretch()
         layout.addLayout(bar)
 
+    def draft_snapshot(self) -> JsonObject:
+        """Read visible edits without saving or validating incomplete free text."""
+        return deepcopy(self.content) if self.content is not None else {"shots": []}
+
     def value(self) -> JsonObject:
         require(self.content is not None, "INVALID_INPUT", "请先生成分镜")
         # Deferred free-text name/dialogue validation leaves incomplete typing editable.

@@ -25,6 +25,7 @@ from .models import (
 )
 from .repository import ProjectRepository
 from .storage import atomic_write_text
+from .storyboard_chat import validate_storyboard_reference
 
 
 def select_completed_turns(messages: Sequence[JsonObject]) -> list[JsonObject]:
@@ -118,6 +119,8 @@ class ConversationStore:
                 "消息记录损坏",
             )
             validate_model_snapshot_format(message.get("model_snapshot"))
+            if "storyboard_reference" in message:
+                validate_storyboard_reference(message["storyboard_reference"])
             message_ids.add(message["id"])
         return conversation
 
@@ -161,6 +164,7 @@ class ConversationStore:
         turn_id: str,
         model_snapshot: ModelSnapshot,
         expected_revision: int | None = None,
+        storyboard_reference: JsonObject | None = None,
     ) -> JsonObject:
         text(user_text, "消息")
         require(
@@ -169,6 +173,11 @@ class ConversationStore:
             "轮次编号无效",
         )
         model_snapshot = deepcopy(validate_model_snapshot_format(model_snapshot))
+        reference = (
+            validate_storyboard_reference(storyboard_reference)
+            if storyboard_reference is not None
+            else None
+        )
 
         def append_user(conversation: JsonObject) -> JsonObject:
             require(
@@ -190,6 +199,8 @@ class ConversationStore:
                 "model_snapshot": model_snapshot,
                 "created_at": timestamp(),
             }
+            if reference is not None:
+                message["storyboard_reference"] = deepcopy(reference)
             conversation["messages"].append(message)
             return message
 

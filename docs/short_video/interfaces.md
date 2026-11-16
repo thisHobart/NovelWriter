@@ -21,7 +21,7 @@
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
 | 查看／停止 | repository.load()["runs"] / host.runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
 | 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
-| 聊天讨论 | ConversationService.prepare / execute | 仅接收用户消息和历史对话，不接收文章／稿件／镜头／视图引用；保留项目隔离和手动重试 |
+| 聊天讨论 | ConversationService.prepare / execute | 用户消息、有效历史及可选的当前分镜只读上下文；回复供手动修改，不自动写回；保留项目隔离和手动重试 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
 
@@ -62,13 +62,15 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - `runs[].snapshot` 保存两份模型快照；`runs[].review_result={passed, feedback, issue_count, issues, candidate_id}` 保存最终完整校验结果及具体字段／原因／建议，绑定实际采用稿。UI 继续使用短摘要，不新增报告页面。
 - 运行格式为2；旧格式检查点通过现有失效机制提示重新生成，已保存当前稿不变。旧长文计划在新请求前补绑校验配置与冻结哈希，成功分块继续复用。
 
-### 2.2 纯聊天实际契约
+### 2.2 聊天与分镜只读上下文
 
-- `ConversationService.prepare(conversation_id, user_text, *, request_id=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息，调用上下文纯函数；冻结实际历史 ID、context_hash、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
+- `ConversationService.prepare(conversation_id, user_text, *, request_id=None, storyboard_context=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息和可选的分镜上下文，调用上下文纯函数；冻结实际历史 ID、context_hash、镜头标注、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
 - `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
-- `ConversationStore` 是唯一会话文件读写入口；仅保存 user／assistant 文本和状态，不保存项目引用、检查反馈或候选。
-- `build_conversation_context(...)` 是纯函数，48,000 字符默认上限包含系统规则与序列化文本；按最早完整轮次裁剪副本，保留本轮完整消息。规则和本轮仍超限返回 CONTEXT_TOO_LARGE，不删除磁盘历史。
-- 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送。
+- `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带轻量 `storyboard_reference={shot_id, storyboard_id, order, unsaved}`，不将完整资料写入消息正文，也不保存检查反馈或候选。
+- `build_conversation_context(..., storyboard_context=None)` 是纯函数，48,000 字符默认上限包含系统规则、序列化消息和本轮附带资料；按最早完整轮次裁剪副本，保留本轮完整消息与上下文。仍超限返回 CONTEXT_TOO_LARGE，不截断镜头／问题，不删除磁盘历史。
+- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000)` 组装本镜、紧邻前后镜、引用的文案块、资产基础设定及本镜引用的有效原文；不带全稿、整组视图提示词或全文。
+- 原文区间限制在绑定选区，合并重叠／重复引用，按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
+- 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送，并按当前选择重新取得上下文。聊天只调用生成模型，不进入质量检查或自动写回。
 
 消息存取与历史筛选由 [ConversationStore](../../core/short_video/v2/conversation_store.py) 实现，上下文构造见 [conversation_context.py](../../core/short_video/v2/conversation_context.py)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 将完整 prompt 作为一次 user 消息提交，模型 SDK 不另行读取会话文件。
 
