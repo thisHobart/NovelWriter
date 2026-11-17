@@ -84,7 +84,7 @@ class ChatPanel(QWidget):
         self.context_label = QLabel("未附带分镜")
         self.context_label.setWordWrap(True)
         context_layout.addWidget(self.context_label)
-        self.context_note = QLabel("本镜 · 前后镜 · 关联文案 · 相关资产 · 原文片段")
+        self.context_note = QLabel("本镜 · 前后镜 · 全稿概要 · 相关资产 · 原文片段")
         self.context_note.setWordWrap(True)
         self.context_note.setStyleSheet(f"font-size:{theme.FS_XS}px; color:{theme.ACCENT}")
         context_layout.addWidget(self.context_note)

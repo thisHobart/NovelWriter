@@ -11,9 +11,11 @@ import pytest
 from core.short_video.v2 import conversation
 from core.short_video.v2.conversation_context import build_conversation_context
 from core.short_video.v2.models import WorkspaceError, encode, identity
+from core.short_video.v2.source import sentence_range
 from core.short_video.v2.storyboard_chat import (
     build_storyboard_chat_context,
     read_storyboard_chat_context,
+    storyboard_outline,
 )
 from test_shot_assets import scenario, snapshot  # noqa: F401
 from test_video_v2_repository import project, prompt_project  # noqa: F401
@@ -46,10 +48,10 @@ def test_read_only_context_uses_current_shot_neighbours_exact_assets_and_merged_
                                   "storyboard_id": scenario.current("storyboard")["id"]}
     assert value["shot"]["action"] == "界面最新动作"
     assert [(s["relation"], s["shot_id"]) for s in value["adjacent_shots"]] == [("previous", "shot_1"), ("next", "shot_3")]
-    assert [b["id"] for b in value["video_blocks"]] == ["b1"]
+    assert "video_blocks" not in value and "video_copy" not in value["sources"]
     assert [(a["asset_id"], a["variant_id"]) for a in value["assets"]] == [("asset_scene", "base"), ("asset_character", "summer")]
     assert all("views" not in a.get("spec", {}) and "positive_prompt" not in a.get("spec", {}) for a in value["assets"])
-    assert value["source_segments"] == [{"source_id": scenario.current("source")["id"], "start": 6, "end": 13, "text": "井口响了三声。"}]
+    assert value["source_segments"] == ["井口响了三声。"]
     assert "井口响了三声。" in encode(value) and encode(value).count("井口响了三声。") == 1
     assert "asset_unused" not in encode(value) and "shots" not in value
     assert (snapshot(scenario), draft) == before
@@ -97,8 +99,9 @@ def test_missing_bound_material_is_reported_without_latest_version_fallback(scen
     old = records.pop(board["dependency_refs"]["video_copy"])
     records["unrelated-new-video"] = {**old, "id": "unrelated-new-video", "content": {"blocks": [{"id": "b1", "narration": "不能代入的新版本"}]}}
     value = build_storyboard_chat_context(draft, "shot_2", board, records)
-    assert value["video_blocks"] == [] and "不能代入的新版本" not in encode(value)
-    assert any("文案块缺失" in note for note in value["missing"])
+    # Video copy is no longer attached, so neither version appears nor counts as missing.
+    assert "不能代入的新版本" not in encode(value)
+    assert not any("文案" in note for note in value["missing"])
     missing = build_storyboard_chat_context(draft, "shot_2", board, {})
     assert missing["assets"] == missing["source_segments"] == []
     assert any("资产目录缺失" in note for note in missing["missing"])
@@ -116,6 +119,86 @@ def test_invalid_or_oversized_original_evidence_is_omitted_whole(scenario, draft
     value = build_storyboard_chat_context(draft, "shot_2", scenario.current("storyboard"), all_records(scenario), max_source_chars=1 if failure == "budget" else 6000)
     assert value["source_segments"] == [] and value["missing"]
     assert "不能声称已核实原文" in encode(value)
+
+
+@pytest.mark.parametrize("start,end", [(7, 15), (8, 10), (5, 12)])
+def test_drifted_original_positions_are_sent_as_whole_sentences_without_coordinates(scenario, draft, start, end):
+    source_id = scenario.current("source")["id"]
+    draft["shots"][1]["source_refs"] = [{"source_id": source_id, "start": start, "end": end}]
+    value = context(scenario, draft)
+    assert value["source_segments"] == ["井口响了三声。"]
+    assert value["missing"] == []
+
+
+def long_draft(draft):
+    for number in range(4, 8):
+        shot = deepcopy(draft["shots"][2])
+        shot.update(shot_id=f"shot_{number}", action=f"动作{number}" + "很长的描述" * 20)
+        draft["shots"].append(shot)
+    draft["shots"][4]["character_text"] = "还未保存的新人物"
+    return draft
+
+
+def test_outline_lists_every_other_shot_from_the_draft(scenario, draft):
+    value = context(scenario, long_draft(draft), "shot_2")
+    assert value["shot_count"] == 7
+    outline = value["storyboard_outline"]
+    assert [entry["order"] for entry in outline] == [4, 5, 6, 7]
+    assert outline[0]["action"].startswith("动作4") and not outline[0]["action"].endswith("…")
+    assert outline[1]["characters"] == "还未保存的新人物"
+    assert outline[0]["scene"].startswith("老宅/") and outline[0]["characters"][0].startswith("寻井人/")
+    assert "visual_prompt_draft" not in encode(outline)
+    # At the last shot, the far earlier shots are visible too.
+    assert [e["order"] for e in context(scenario, draft, "shot_7")["storyboard_outline"]] == [1, 2, 3, 4, 5]
+
+
+def test_outline_shrinks_in_steps_and_drops_farthest_shots(scenario, draft):
+    shots = long_draft(draft)["shots"]
+    entities = scenario.current("asset_catalog")["content"]["entities"]
+    detailed = {0, 1, 2}
+    full, notes = storyboard_outline(shots, detailed, entities, 1, 100000)
+    assert notes == []
+    clipped, notes = storyboard_outline(shots, detailed, entities, 1, len(encode(full)) - 1)
+    assert all(entry["action"].endswith("…") for entry in clipped) and "截取" in notes[0]
+    assets_only = [{k: v for k, v in e.items() if k not in {"action", "dialogue_text"}} for e in clipped]
+    kept, notes = storyboard_outline(shots, detailed, entities, 1, len(encode(assets_only[:2])))
+    assert [entry["order"] for entry in kept] == [4, 5] and "action" not in kept[0]
+    assert "最远的2个镜头" in notes[0]
+
+
+SNAP_TEXT ="周围死寂。\n\n就在他快要撑不住时，小羊从天而降。暴风雪吞没了视线。\n\n他说：“走吧。”然后离开。"
+
+
+def snap(start, end, lo=0, hi=len(SNAP_TEXT), value=SNAP_TEXT):
+    s, e = sentence_range(value, start, end, lo, hi)
+    return value[s:e]
+
+
+def test_sentence_range_pulls_back_small_overshoot_and_extends_mid_sentence_cuts():
+    after_first = SNAP_TEXT.index("就")
+    # End overshoots a few characters into the next sentence: pulled back, not extended.
+    assert snap(0, after_first + 3) == "周围死寂。"
+    # Start drops the first character of a sentence: moved back to the sentence start.
+    # End stops mid-sentence, nearer the next full stop: extended to it.
+    begin = SNAP_TEXT.index("在他快")
+    cut = SNAP_TEXT.index("了视线")
+    assert snap(begin, cut) == "就在他快要撑不住时，小羊从天而降。暴风雪吞没了视线。"
+    # Start a few characters before the next sentence: the fragment is dropped.
+    assert snap(SNAP_TEXT.index("了视线"), len(SNAP_TEXT)) == "他说：“走吧。”然后离开。"
+
+
+def test_sentence_range_keeps_closing_quotes_and_selection_limits():
+    quote_end = SNAP_TEXT.index("。”") + 1
+    assert snap(SNAP_TEXT.index("他说"), quote_end) == "他说：“走吧。”"
+    lo, hi = SNAP_TEXT.index("小羊"), SNAP_TEXT.index("暴风雪") + 2
+    assert snap(lo + 1, hi - 1, lo, hi) == "小羊从天而降。暴风"
+    # A short piece inside one sentence becomes that sentence.
+    assert snap(SNAP_TEXT.index("撑不住"), SNAP_TEXT.index("撑不住") + 3) == "就在他快要撑不住时，小羊从天而降。"
+
+
+def test_sentence_range_keeps_coordinates_without_nearby_punctuation():
+    value = "甲" * 400
+    assert sentence_range(value, 180, 220, 0, len(value)) == (180, 220)
 
 
 def test_single_new_shot_can_be_discussed_without_generated_specs(scenario, draft):

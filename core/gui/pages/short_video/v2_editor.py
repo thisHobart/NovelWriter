@@ -193,11 +193,13 @@ class ShotTable(QTableWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        # Ctrl／Shift selects several shots for one revision; editing still follows the current row.
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
     def dropEvent(self, event: QDropEvent) -> None:
         target = self.indexAt(event.position().toPoint()).row()
-        if event.source() is self and self.currentRow() >= 0:
+        single = len(self.selectionModel().selectedRows()) <= 1
+        if event.source() is self and self.currentRow() >= 0 and single:
             self.row_moved.emit(self.currentRow(), target if target >= 0 else self.rowCount() - 1)
             event.acceptProposedAction()
         else:
@@ -207,6 +209,7 @@ class ShotTable(QTableWidget):
 class StoryboardEditor(QWidget):
     changed = Signal()
     selection_changed = Signal()
+    revise_requested = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -452,15 +455,32 @@ class StoryboardEditor(QWidget):
         )
         self.changed.emit()
 
+    def selected_shot_ids(self) -> list[str]:
+        """All selected rows in storyboard order (Ctrl／Shift adds rows)."""
+        shots = (self.content or {}).get("shots", [])
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        return [shots[row]["shot_id"] for row in rows if 0 <= row < len(shots)]
+
     def show_row_menu(self, position: object) -> None:
         row = self.table.indexAt(position).row()
         if row < 0:
             return
-        self.table.selectRow(row)
+        if row not in {index.row() for index in self.table.selectionModel().selectedRows()}:
+            self.table.selectRow(row)
+        selected = self.selected_shot_ids()
         menu = QMenu(self)
-        menu.addAction("拆成两镜", self.split)
-        menu.addAction("与下一镜合并", self.merge)
-        menu.addAction("删除镜头", self.delete_shot)
+        menu.addAction(
+            "按意见修订所选镜头…", lambda: self.revise_requested.emit(self.selected_shot_ids())
+        )
+        menu.addSeparator()
+        # Structural edits act on one shot; with several rows selected they would be ambiguous.
+        single = len(selected) == 1
+        for label, action in (
+            ("拆成两镜", self.split),
+            ("与下一镜合并", self.merge),
+            ("删除镜头", self.delete_shot),
+        ):
+            menu.addAction(label, action).setEnabled(single)
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def move_shot(self, source: int, target: int) -> None:

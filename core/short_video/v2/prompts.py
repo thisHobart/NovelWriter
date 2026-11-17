@@ -321,6 +321,19 @@ def stage_prompt(
     prompt += f"输出结构样例（只说明字段，不代表实际内容或完整镜数）：\n{encode(example)}"
     if candidate:
         prompt += f"\n完整当前稿：\n{encode(candidate['content'])}\n仅执行以下修改，保留其他有效内容：\n{encode(asks or [])}"
+        selected = context.get("selected_shot_ids") or []
+        if stage == "storyboard" and selected:
+            orders = [
+                str(i + 1)
+                for i, shot in enumerate(candidate["content"]["shots"])
+                if shot["shot_id"] in selected
+            ]
+            prompt += (
+                f"\n本次只修订第{'、'.join(orders)}镜（shot_id：{'、'.join(selected)}）："
+                "按修改意见调整这些镜头的动作、画面、对白、声音、人物与道具引用和时长，并与前后镜衔接；"
+                "其他镜头照原稿返回，程序只采用所选镜头。人物、场景、道具只能引用资产目录中已有的资产和状态，"
+                "修改需要目录中没有的对象时，写在动作和画面描述里，不虚构资产编号。"
+            )
     if stage == "asset_spec":
         prompt += "\n" + ASSET_PROMPT_RULES + "\n" + ASSET_VIEW_RULES[kind]
         prompt += '\n当前任务最终字段约束：完整返回样例中全部 view_id 及各视角提示词；顶层 positive_prompt=""、negative_prompt=""，design_confirmed=false。'

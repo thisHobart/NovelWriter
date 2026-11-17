@@ -16,6 +16,9 @@ from .contracts import JsonObject
 from .models import WorkspaceError, encode, require, timestamp
 from .storage import atomic_write_text
 
+# Image records stay as imported; the picker's removed entries are listed separately.
+HIDDEN_IMAGES = "hidden_images.json"
+
 
 class MediaRepository:
     def __init__(self, output_dir: str | Path) -> None:
@@ -85,11 +88,31 @@ class MediaRepository:
         self.write(f"images/{image_id}.json", record)
         return record
 
-    def images(self) -> list[JsonObject]:
+    def images(self, *, include_hidden: bool = False) -> list[JsonObject]:
+        hidden = set() if include_hidden else self.hidden_images()
         records = []
         for path in (self.root / "images").glob("*.json"):
-            records.append(json.loads(path.read_text(encoding="utf-8")))
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record["image_id"] not in hidden:
+                records.append(record)
         return sorted(records, key=lambda record: record["created_at"])
+
+    def hidden_images(self) -> set[str]:
+        path = self.root / HIDDEN_IMAGES
+        if not path.exists():
+            return set()
+        return set(json.loads(path.read_text(encoding="utf-8"))["image_ids"])
+
+    def set_image_hidden(self, image_id: str, hidden: bool) -> None:
+        """Hide only from the reference picker; asset views and video jobs keep the file."""
+        self.image(image_id)
+        with project_lock(str(self.root / "media.lock")):
+            image_ids = self.hidden_images()
+            if hidden:
+                image_ids.add(image_id)
+            else:
+                image_ids.discard(image_id)
+            self.write(HIDDEN_IMAGES, {"image_ids": sorted(image_ids)})
 
     def image(self, image_id: str) -> JsonObject:
         return self.read(f"images/{image_id}.json")

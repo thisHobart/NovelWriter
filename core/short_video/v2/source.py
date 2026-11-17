@@ -128,6 +128,60 @@ def validate_source_ref(ref: JsonObject, source: ArtifactRecord) -> None:
         )
 
 
+TERMINAL_MARKS = frozenset("。！？!?…")
+CLOSING_MARKS = frozenset("”’」』）)】》")
+SENTENCE_SHRINK_LIMIT = 10
+SENTENCE_GROW_LIMIT = 150
+
+
+def _sentence_start(value: str, position: int, lo: int, hi: int) -> bool:
+    """A boundary follows terminal punctuation or a line break, plus any closing quotes."""
+    if position in (lo, hi):
+        return True
+    if value[position] in TERMINAL_MARKS or value[position] in CLOSING_MARKS:
+        return False
+    index = position - 1
+    while index > lo and value[index] in CLOSING_MARKS:
+        index -= 1
+    return value[index] in TERMINAL_MARKS or value[index] == "\n"
+
+
+def _nearest_sentence_start(
+    value: str, position: int, lo: int, hi: int, inward: int, shrink_limit: int
+) -> int:
+    for distance in range(SENTENCE_GROW_LIMIT + 1):
+        # On a tie the outward boundary wins, so no referenced text is dropped.
+        for candidate, shrinking in (
+            (position - inward * distance, False),
+            (position + inward * distance, True),
+        ):
+            if shrinking and distance > shrink_limit:
+                continue
+            if lo <= candidate <= hi and _sentence_start(value, candidate, lo, hi):
+                return candidate
+    return position
+
+
+def sentence_range(value: str, start: int, end: int, lo: int, hi: int) -> tuple[int, int]:
+    """Move model-written coordinates to whole sentences inside the selected range [lo, hi).
+
+    Coordinates usually drift by a few characters, so each end moves to its nearest boundary:
+    at most 10 characters inward (dropping a neighbour's fragment) or 150 outward. A piece
+    inside a single sentence becomes that whole sentence; without punctuation nearby, the
+    original coordinate is kept.
+    """
+    snapped_start = _nearest_sentence_start(value, start, lo, hi, 1, SENTENCE_SHRINK_LIMIT)
+    snapped_end = _nearest_sentence_start(value, end, lo, hi, -1, SENTENCE_SHRINK_LIMIT)
+    if snapped_start >= snapped_end:
+        snapped_start = _nearest_sentence_start(value, start, lo, hi, 1, 0)
+        snapped_end = _nearest_sentence_start(value, end, lo, hi, -1, 0)
+    while snapped_start < snapped_end and value[snapped_start].isspace():
+        snapped_start += 1
+    while snapped_end > snapped_start and value[snapped_end - 1].isspace():
+        snapped_end -= 1
+    return snapped_start, snapped_end
+
+
 def qt_to_codepoint(value: str, utf16_position: int) -> int:
     require(type(utf16_position) is int and utf16_position >= 0, "INVALID_INPUT", "光标位置无效")
     offset = 0

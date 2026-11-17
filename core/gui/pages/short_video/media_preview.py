@@ -42,6 +42,8 @@ from core.short_video.v2.repository import ProjectRepository
 from core.short_video.v2.video_prompt import snapshot_video_inputs
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
+from .removable_combo import RemovableComboBox
+
 if TYPE_CHECKING:
     from .workbench import Workbench
 
@@ -199,6 +201,10 @@ class MediaPreview(QWidget):
 
     def use_image(self, image_id: str, node_id: str) -> None:
         self.require_editable_inputs()
+        repository = MediaRepository(self.workbench.output_dir)
+        if image_id in repository.hidden_images():
+            # Choosing an asset image again brings it back into the reference list.
+            repository.set_image_hidden(image_id, False)
         self.refresh()
         require(node_id in self.image_fields, "INVALID_INPUT", "请选择有效的图片节点")
         combo = self.image_fields[node_id][0]
@@ -223,6 +229,21 @@ class MediaPreview(QWidget):
         self.remember_draft()
         self.drafts[self.loaded_workflow_id]["images"][node_id] = image_id
         self.load_workflow()
+
+    def remove_image(self, image_id: str) -> None:
+        """Remove an entry from every image list; the file stays for asset views and jobs."""
+        self.require_editable_inputs()
+        MediaRepository(self.workbench.output_dir).set_image_hidden(image_id, True)
+        for combo, _, _ in self.image_fields.values():
+            index = combo.findData(image_id)
+            if index < 0:
+                continue
+            combo.blockSignals(True)
+            if combo.currentIndex() == index:
+                combo.setCurrentIndex(0)
+            combo.removeItem(index)
+            combo.blockSignals(False)
+        self.refresh_result()
 
     def add_reference_image(self) -> None:
         self.require_editable_inputs()
@@ -364,10 +385,14 @@ class MediaPreview(QWidget):
         for image_input in image_inputs:
             row = QWidget()
             bar = QHBoxLayout(row)
-            combo = QComboBox()
+            combo = RemovableComboBox()
             combo.addItem("请选择图片", None)
             for image in images:
                 combo.addItem(image["name"], image["image_id"])
+            combo.setItemData(0, "点图片右侧的 × 可从列表移除，图片文件保留", Qt.ToolTipRole)
+            combo.remove_requested.connect(
+                lambda image_id: self.workbench.perform(lambda: self.remove_image(image_id))
+            )
             selected_id = draft.get("images", {}).get(image_input.node_id)
             combo.setCurrentIndex(max(0, combo.findData(selected_id)))
             choose = QPushButton("选图")
