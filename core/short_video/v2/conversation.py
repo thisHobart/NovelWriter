@@ -29,6 +29,7 @@ from .models import (
 )
 from .repository import ProjectRepository
 from .storyboard_chat import validate_storyboard_reference
+from .storyboard_edits import edit_base, reply_problems, validate_storyboard_edit
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,11 @@ class ConversationService:
         *,
         request_id: str | None = None,
         storyboard_context: JsonObject | None = None,
+        storyboard_edit: JsonObject | None = None,
     ) -> JsonObject:
+        """storyboard_edit asks for revised shots: {"shots": draft shots being revised,
+        "entities": the bound asset catalog}; storyboard_context must carry the same edit_request.
+        """
         text(user_text, "消息")
         conversation = self.store.get(conversation_id)
         require(
@@ -74,6 +79,26 @@ class ConversationService:
             current_message["storyboard_reference"] = validate_storyboard_reference(
                 storyboard_context.get("reference")
             )
+        edit_check = None
+        if storyboard_edit is not None:
+            shots = deepcopy(storyboard_edit.get("shots"))
+            require(
+                storyboard_context is not None
+                and isinstance(shots, list)
+                and [s.get("shot_id") for s in shots]
+                == [i["shot_id"] for i in storyboard_context.get("edit_request", [])],
+                "INVALID_INPUT",
+                "镜头修改请求与附带分镜不一致",
+            )
+            shot_ids = [s["shot_id"] for s in shots]
+            current_message["storyboard_edit"] = validate_storyboard_edit(
+                {"shot_ids": shot_ids, "base": edit_base(shots, shot_ids)}
+            )
+            # The shots as sent let one format repair check the reply before it is saved.
+            edit_check = {
+                "shots": {s["shot_id"]: s for s in shots},
+                "entities": deepcopy(storyboard_edit.get("entities", [])),
+            }
         history = select_completed_turns(conversation["messages"])
         context = build_conversation_context(
             history + [current_message],
@@ -87,7 +112,10 @@ class ConversationService:
         }
         if "storyboard_reference" in current_message:
             snapshot["storyboard_reference"] = current_message["storyboard_reference"]
+        if "storyboard_edit" in current_message:
+            snapshot["storyboard_edit"] = current_message["storyboard_edit"]
         return {
+            **({"edit_check": edit_check} if edit_check else {}),
             "stage": "chat",
             "model": self.model,
             "request_id": request_id or identity("request"),
@@ -145,6 +173,7 @@ class ConversationService:
                     model_snapshot=command["model_snapshot"],
                     expected_revision=command["conversation_revision"],
                     storyboard_reference=command["context_snapshot"].get("storyboard_reference"),
+                    storyboard_edit=command["context_snapshot"].get("storyboard_edit"),
                 )
 
                 def record_call(prompt: str, response: str, error: str | None) -> None:
@@ -183,6 +212,27 @@ class ConversationService:
                 phase("等待回复")
                 response = send(command["prompt"])
                 require(bool(response.strip()), "INVALID_OUTPUT", "模型未返回有效回复")
+                check = command.get("edit_check")
+                passed, problems = (
+                    reply_problems(response, check["shots"], check["entities"])
+                    if check and not token.cancelled
+                    else (0, [])
+                )
+                if problems:
+                    report("修正修改结果", -1)
+                    phase("修正修改结果")
+                    repaired = send(
+                        command["prompt"]
+                        + "\n\n上次回复：\n"
+                        + response
+                        + "\n\n上次回复的revised_shots有以下问题。保留修改内容，只修正这些问题，"
+                        "重新给出完整回复（说明和revised_shots代码块）：\n"
+                        + "\n".join(problems)
+                    )
+                    # The repair is kept only when more shots pass, or as many with fewer problems.
+                    fixed, remaining = reply_problems(repaired, check["shots"], check["entities"])
+                    if repaired.strip() and (fixed, -len(remaining)) > (passed, -len(problems)):
+                        response = repaired
                 status = "cancelled" if token.cancelled else "complete"
 
                 phase("保存回复")

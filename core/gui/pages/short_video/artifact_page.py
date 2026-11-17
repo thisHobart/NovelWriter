@@ -6,11 +6,8 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -19,46 +16,12 @@ from core.short_video.v2.feedback import record_message
 from core.short_video.v2.models import require
 from core.short_video.v2.prompts import INSTRUCTIONS
 from core.short_video.v2.storyboard_text import render_storyboard_text
-from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
 from .ui_helpers import create_action_button, show_text_dialog
 from .v2_editor import CopyEditor, StoryboardEditor
 
 if TYPE_CHECKING:
     from .workbench import Workbench
-
-
-def ask_revision(parent: QWidget, orders: list[int]) -> str | None:
-    """Return the written feedback, or None when cancelled."""
-    dialog = QDialog(parent)
-    dialog.setWindowTitle("按意见修订所选镜头")
-    dialog.resize(640, 420)
-    layout = QVBoxLayout(dialog)
-    note = QLabel(
-        f"只修订第 {'、'.join(map(str, orders))} 镜，其他镜头保持原样。"
-        "AI 会参考整份分镜、资产目录和原文修改，再经过一次 AI 审阅，结果保存为分镜新版本；"
-        "未保存的编辑会先保存。"
-    )
-    note.setWordWrap(True)
-    layout.addWidget(note)
-    editor = QPlainTextEdit()
-    editor.setPlaceholderText(
-        "写明要怎么改，例如：坠落物由毛绒小羊改为房子，所选镜头的动作、画面和对白随之调整。"
-        "\n也可以直接粘贴聊天里 AI 列出的修改清单。"
-    )
-    layout.addWidget(editor, 1)
-    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-    start = buttons.button(QDialogButtonBox.Ok)
-    start.setText("开始修订")
-    start.setEnabled(False)
-    buttons.button(QDialogButtonBox.Cancel).setText("取消")
-    editor.textChanged.connect(lambda: start.setEnabled(bool(editor.toPlainText().strip())))
-    buttons.accepted.connect(dialog.accept)
-    buttons.rejected.connect(dialog.reject)
-    layout.addWidget(buttons)
-    if dialog.exec() != QDialog.Accepted:
-        return None
-    return editor.toPlainText().strip() or None
 
 
 class ArtifactPage(QWidget):
@@ -76,10 +39,6 @@ class ArtifactPage(QWidget):
         self.editor = StoryboardEditor() if stage == "storyboard" else CopyEditor()
         layout.addWidget(self.editor, 1)
         self.editor.changed.connect(self.mark_dirty)
-        if stage == "storyboard":
-            self.editor.revise_requested.connect(
-                lambda shot_ids: workbench.perform(lambda: self.revise_shots(shot_ids))
-            )
         bar = QHBoxLayout()
         create_action_button("查看原文", self.locate_source, bar, workbench)
         if stage == "storyboard":
@@ -177,31 +136,6 @@ class ArtifactPage(QWidget):
             self.workbench.update_shot_prompts()
         self.workbench.refresh()
         return True
-
-    def revise_shots(self, shot_ids: list[str]) -> None:
-        """Revise only the chosen shots from written feedback, through the reviewed text loop."""
-        require(self.record is not None, "INVALID_INPUT", "请先生成分镜")
-        require(bool(shot_ids), "INVALID_INPUT", "请先在分镜表格中选中要修订的镜头")
-        require(not self.workbench.tasks.busy("text"), "PROJECT_BUSY", "已有文字任务运行，请等待或停止")
-        shots = self.editor.draft_snapshot()["shots"]
-        orders = [i + 1 for i, shot in enumerate(shots) if shot["shot_id"] in shot_ids]
-        asks = ask_revision(self, orders)
-        if asks is None:
-            return
-        # The revision starts from the saved version, so unsaved edits are saved first.
-        if self.dirty and not self.save():
-            return
-        command = WorkflowService(self.workbench.repository, self.workbench.model()).prepare(
-            "storyboard",
-            mode="revise",
-            target_id=self.record["id"],
-            asks=[asks],
-            shot_ids=shot_ids,
-        )
-        self.workbench.submit(
-            WorkspaceWork(self.workbench.repository, command, transport=self.workbench.transport),
-            self.generate_button,
-        )
 
     def continue_creation(self) -> None:
         if not self.save():

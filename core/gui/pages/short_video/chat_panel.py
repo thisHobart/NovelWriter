@@ -31,9 +31,11 @@ from PySide6.QtWidgets import (
 from core.gui import theme
 from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.conversation import ChatWork, ConversationService
-from core.short_video.v2.models import encode, require
+from core.short_video.v2.models import WorkspaceError, encode, require
 from core.short_video.v2.storyboard_chat import read_storyboard_chat_context
+from core.short_video.v2.storyboard_edits import display_text
 
+from .shot_edit_panel import ShotEditPanel
 from .ui_helpers import create_action_button, show_text_dialog
 
 if TYPE_CHECKING:
@@ -66,6 +68,9 @@ class ChatPanel(QWidget):
         self.messages.setOpenLinks(False)
         self.messages.document().setDocumentMargin(theme.SP[3])
         layout.addWidget(self.messages, 2)
+        self.current_messages: list[JsonObject] = []
+        self.edit_panel = ShotEditPanel(self, workbench)
+        layout.addWidget(self.edit_panel)
         self.context_panel = QWidget()
         self.context_panel.setObjectName("storyboardChatContext")
         self.context_panel.setStyleSheet(
@@ -84,7 +89,7 @@ class ChatPanel(QWidget):
         self.context_label = QLabel("未附带分镜")
         self.context_label.setWordWrap(True)
         context_layout.addWidget(self.context_label)
-        self.context_note = QLabel("本镜 · 前后镜 · 全稿概要 · 相关资产 · 原文片段")
+        self.context_note = QLabel("本镜 · 前后镜 · 全稿概要 · 资产目录 · 相关资产 · 原文片段")
         self.context_note.setWordWrap(True)
         self.context_note.setStyleSheet(f"font-size:{theme.FS_XS}px; color:{theme.ACCENT}")
         context_layout.addWidget(self.context_note)
@@ -103,6 +108,7 @@ class ChatPanel(QWidget):
         self.setMinimumWidth(270)
 
     def refresh_reference(self) -> None:
+        self.edit_panel.update_from(self.current_messages)
         page = getattr(self.workbench, "storyboard", None)
         active = page is not None and self.workbench.current_artifact_page() is page
         self.context_panel.setVisible(active)
@@ -197,6 +203,8 @@ class ChatPanel(QWidget):
             else []
         )
         self.render_messages(messages)
+        self.current_messages = list(messages)
+        self.edit_panel.update_from(self.current_messages)
         active = self.workbench.tasks.works.get("text")
         self.stop_button.setEnabled(
             isinstance(active, ChatWork)
@@ -232,7 +240,7 @@ class ChatPanel(QWidget):
             cursor.insertBlock(content_format, QTextCharFormat())
             if message["role"] == "assistant":
                 cursor.insertMarkdown(
-                    message["content"],
+                    display_text(message["content"]),
                     QTextDocument.MarkdownDialectGitHub | QTextDocument.MarkdownNoHTML,
                 )
             else:
@@ -266,6 +274,46 @@ class ChatPanel(QWidget):
             self.send_button,
         )
         self.input.clear()
+
+    def send_edit(self, items: list[JsonObject]) -> None:
+        """Ask for revised shots; the selected shot stays the discussion's current shot."""
+        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务运行，请等待或停止")
+        page = self.workbench.storyboard
+        require(page.record is not None, "INVALID_INPUT", "请先生成分镜")
+        draft = page.editor.draft_snapshot()
+        selected = page.editor.selected_shots()
+        wanted = {item["shot_id"] for item in items}
+        context = read_storyboard_chat_context(
+            self.workbench.repository,
+            draft,
+            selected[0] if selected else items[0]["shot_id"],
+            page.record,
+            unsaved=page.dirty,
+            edit_items=items,
+        )
+        if not self.conversation_id:
+            self.create()
+        text = "按清单修改第 " + "、".join(str(item["order"]) for item in items) + " 镜"
+        try:
+            command = self.service().prepare(
+                self.conversation_id,
+                text,
+                storyboard_context=context,
+                storyboard_edit={
+                    "shots": [s for s in draft["shots"] if s["shot_id"] in wanted],
+                    "entities": page.editor.catalog,
+                },
+            )
+        except WorkspaceError as exc:
+            if exc.code == "CONTEXT_TOO_LARGE":
+                raise WorkspaceError(
+                    "CONTEXT_TOO_LARGE", "所选镜头的内容超过对话容量，请少勾选几个镜头"
+                ) from exc
+            raise
+        self.workbench.submit(
+            ChatWork(self.workbench.repository, command, transport=self.workbench.transport),
+            self.send_button,
+        )
 
     def retry(self) -> None:
         require(self.conversation_id is not None, "INVALID_INPUT", "尚无历史消息")

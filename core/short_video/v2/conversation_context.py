@@ -24,10 +24,28 @@ STORYBOARD_SYSTEM_RULES = (
     "不推断未给出的衔接状态，不声称核实了未提供的原文或实际画面。"
     "需要修改时用Markdown说明问题、标明镜头编号的建议字段，以及对前后镜、时长和声音的影响。"
     "storyboard_outline是其余镜头的概要：改动涉及关键情节、人物、道具或场景时，按全稿检查，"
-    "列出所有受影响的镜号及每镜要改的字段和改法，并指出与镜头绑定资产不符之处；"
-    "这份清单可整段粘贴到分镜页的“按意见修订所选镜头”。"
+    "列出所有受影响的镜号及每镜要改的字段和改法，并指出与镜头绑定资产不符之处。"
+    "改动牵涉两个及以上镜头时，在回复最后另附一个```affected_shots代码块，内容为JSON："
+    '{"shots":[{"shot_id":"镜头的shot_id","order":3,"fields":["动作","对白"],"change":"这一镜具体怎么改"}],'
+    '"missing_assets":["改动需要、asset_catalog中没有的对象"]}；'
+    "只列确实要改的镜头（含当前镜头），按镜号排序；没有缺少的对象时missing_assets为[]；"
+    "只牵涉一个镜头或只是回答问题时不附。"
     "用户仅询问原因或方案时按问题回答，不强制改写整镜。"
-    "所有回复仅供用户手动编辑和保存分镜，不执行写回、重新生成、软件操作或自动审阅。"
+    "回复只是建议，用户在界面确认后才写入编辑稿；不执行写回、重新生成、软件操作或自动审阅。"
+)
+
+STORYBOARD_EDIT_RULES = (
+    "本轮按edit_request修改edit_shots中的镜头，以本轮编辑稿为底稿，其他镜头不改。"
+    "先用Markdown逐镜简要说明改了什么、与前后镜如何衔接；最后附一个```revised_shots代码块，内容为JSON："
+    '{"shots":[{"shot_id":"…","shot_size":"…","camera_movement":"…",'
+    '"scene_ref":{"asset_id":"…","variant_id":"…"},"characters":[{"asset_id":"…","variant_id":"…"}],'
+    '"props":[],"action":"…","dialogue":[{"character_id":"人物asset_id","text":"…","voice_over":false}],'
+    '"narration":"…","sound":"…","duration_ms":3500,"visual_prompt_draft":"…"}]}。'
+    "edit_request中的每个镜头都返回以上全部字段，未改的字段按底稿照抄。"
+    "场景、人物、道具及状态只用asset_catalog中已有的asset_id和variant_id；"
+    "characters只列画面中可见的人物，仅声音人物不入画，说话人不在画面时voice_over=true；"
+    "目录中没有的对象写进动作和画面提示词，不编造编号。duration_ms为正整数毫秒，按动作与声音估算。"
+    "不增删、拆分或合并镜头，不改shot_id；确需增删镜头时在说明里提出，由用户手动操作。"
 )
 
 
@@ -56,6 +74,8 @@ def build_conversation_context(
         storyboard_context = deepcopy(storyboard_context)
         validate_storyboard_reference(storyboard_context.get("reference"))
         system_rules += STORYBOARD_SYSTEM_RULES
+        if storyboard_context.get("edit_request"):
+            system_rules += STORYBOARD_EDIT_RULES
     require(
         type(max_context_chars) is int and max_context_chars > 0,
         "INVALID_INPUT",
