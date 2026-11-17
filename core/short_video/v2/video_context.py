@@ -1,4 +1,4 @@
-"""Bounded, immutable evidence and local model results for one video shot."""
+"""Bounded, immutable storyboard context and local model results for one video shot."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ def video_command_ready(command: JsonObject) -> bool:
         type(command.get("max_context_chars")) is int
         and command["max_context_chars"] > 0
         and isinstance(article, dict)
-        and isinstance(article.get("segments"), list)
         and isinstance(article.get("adjacent_shots"), list)
         and isinstance(context.get("supplement_manifest"), dict)
         and isinstance(command.get("shot_ids"), list)
@@ -38,37 +37,13 @@ def validate_video_command(command: JsonObject) -> None:
         )
 
 
-def prepare_evidence(context: JsonObject, board: JsonObject, source: str, limit: int) -> None:
-    """Read exact cited ranges, then immediate neighbours; never truncate a quote."""
+def prepare_evidence(context: JsonObject, board: JsonObject, limit: int) -> None:
+    """Attach the immediate neighbour shots; video prompts are written from the storyboard only."""
     article = context["article"]
     shot = context["storyboard"]["content"]["shots"][0]
-    ranges = []
-    for ref in shot.get("source_refs", []):
-        if ref["source_id"] != article["source_id"]:
-            continue
-        for selected in article["ranges"]:
-            start, end = max(ref["start"], selected["start"]), min(ref["end"], selected["end"])
-            if start < end:
-                ranges.append((start, end))
-    merged: list[tuple[int, int]] = []
-    for start, end in sorted(set(ranges)):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
-        else:
-            merged.append((start, end))
-    evidence: JsonObject = {"segments": [], "adjacent_shots": []}
+    evidence: JsonObject = {"adjacent_shots": []}
     omitted = []
     budget = min(6000, limit // 4)
-
-    def add(key: str, value: JsonObject, locator: JsonObject) -> None:
-        evidence[key].append(value)
-        if len(encode(evidence)) > budget:
-            evidence[key].pop()
-            omitted.append(locator)
-
-    for start, end in merged:
-        locator = {"source_id": article["source_id"], "start": start, "end": end}
-        add("segments", {**locator, "text": source[start:end]}, locator)
     shots = board["content"]["shots"]
     index = next(i for i, s in enumerate(shots) if s["shot_id"] == shot["shot_id"])
     for neighbour in (index - 1, index + 1):
@@ -81,15 +56,17 @@ def prepare_evidence(context: JsonObject, board: JsonObject, source: str, limit:
                 }
             )
             value["relation"] = "previous" if neighbour < index else "next"
-            add("adjacent_shots", value, {"shot_id": value["shot_id"]})
+            evidence["adjacent_shots"].append(value)
+            if len(encode(evidence)) > budget:
+                evidence["adjacent_shots"].pop()
+                omitted.append({"shot_id": value["shot_id"]})
+    # Source ids stay for task binding; no original text is read or sent.
     context["article"] = {
         "selection_id": article["selection_id"],
         "source_id": article["source_id"],
         **evidence,
-        "representation": "shot_reference_retrieval_v1",
-        "notice": "仅提供已读取的本镜引用片段与相邻镜头线索，分镜是动作及声音依据；不能声称已核实未提供的原文。",
+        "representation": "storyboard_only_v1",
     }
-    # Complete omission coordinates stay available to diagnostics, not repeated in requests.
     context["supplement_manifest"] = {
         "budget_chars": budget,
         "included_chars": len(encode(evidence)),
@@ -114,10 +91,16 @@ def model_context(context: JsonObject) -> JsonObject:
     config = context["config"]
     return reference_text(
         {
-            "shot": context["storyboard"]["content"]["shots"][0],
+            # Without original text, the shot's source coordinates carry no usable meaning.
+            "shot": {
+                k: v
+                for k, v in context["storyboard"]["content"]["shots"][0].items()
+                if k != "source_refs"
+            },
             "assets": assets,
             "video_inputs": context["video_inputs"],
-            "article": context["article"],
+            # Older commands may still hold original fragments; they are not sent any more.
+            "adjacent_shots": context["article"]["adjacent_shots"],
             "requirements": {
                 k: config[k]
                 for k in ("audience", "tone", "required", "forbidden", "permitted_adaptations")

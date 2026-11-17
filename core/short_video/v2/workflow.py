@@ -393,10 +393,7 @@ class WorkflowService:
                 context["video_input_binding"] = deepcopy(video_inputs)
                 from .video_context import prepare_evidence
 
-                source = self.repository.record(article["source_id"], state=state)
-                prepare_evidence(
-                    context, board, source["content"]["normalized_text"], self.max_context_chars
-                )
+                prepare_evidence(context, board, self.max_context_chars)
         else:
             for key in PREREQUISITES[stage]:
                 record = (

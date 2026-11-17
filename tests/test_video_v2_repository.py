@@ -92,8 +92,9 @@ def test_multiple_ranges_reference_original_coordinates(project):
     service.save_inputs(project.current("config")["content"], source, ranges,
                         expected_revision=project.load()["revision"])
     context = service.context()
-    assert context["segments"][1]["start"] == 14
+    assert context["source_refs"][1]["start"] == 14
     assert context["text"] == "乡村\n父亲留下铜钥匙。"
+    assert "segments" not in context  # the selected text is not repeated per range
     before = project.path.read_bytes()
     with pytest.raises(WorkspaceError):
         service.save_inputs(project.current("config")["content"], source,
@@ -985,6 +986,50 @@ def test_custom_stage_instruction_is_preserved_and_prepare_is_readonly(project, 
     assert command["requirements"]["instruction"] == custom["content"]["instruction"]
     assert custom["content"]["instruction"] in command["prompt"]
     assert project.path.read_bytes() == before
+
+
+def test_copy_requests_send_only_the_config_fields_the_stage_uses(project, monkeypatch):
+    from core.short_video.v2.prompts import STAGE_CONFIG_FIELDS
+    from core.short_video.v2.review import build_review_prompt
+    from core.short_video.v2.workflow import WorkflowService
+    import core.short_video.v2.workflow as workflow_module
+
+    monkeypatch.setattr(workflow_module, "capture_model_snapshot", lambda _: {"model": "offline"})
+    command = WorkflowService(project).prepare("novel_copy")
+    stored = project.current("config")["content"]
+    assert command["context"]["config"] == stored  # code-side checks still see every field
+    material = command["prompt"].split("冻结的输入资料（只读）：\n", 1)[1]
+    sent = json.JSONDecoder().raw_decode(material)[0]["config"]
+    assert list(sent) == list(STAGE_CONFIG_FIELDS["novel_copy"])
+    for noise in ("tracks", "shot_duration_range_ms", "storyboard_skill_id", "text_provider"):
+        assert f'"{noise}"' not in command["prompt"]
+    review = build_review_prompt(
+        command["context"]["article"],
+        {"id": "candidate", "kind": "novel_copy", "content": {}},
+        task={"stage": "novel_copy", "requirements": {}, "context": {"config": stored}},
+    )
+    shown = json.loads(review[review.index("\n{") + 1:])["task"]["context"]["config"]
+    assert list(shown) == list(STAGE_CONFIG_FIELDS["novel_copy"])
+
+
+def test_video_copy_request_puts_the_draft_first_without_storage_fields(project):
+    from core.short_video.v2.prompts import stage_prompt
+
+    article = ProjectService(project).context()
+    novel = {"id": "artifact_novel", "kind": "novel_copy", "content_hash": "hash",
+             "metadata": {"run_id": "run_hidden"},
+             "content": {"opening": {"text": "开头", "source_refs": article["source_refs"]},
+                         "paragraphs": [], "cliffhanger": {"text": "结尾", "source_refs": []},
+                         "changes": [{"type": "delete", "reason": "删去旧支线", "source_refs": []}],
+                         "unresolved_facts": []}}
+    prompt = stage_prompt("video_copy", {"article": article, "novel_copy": novel,
+                                         "config": project.current("config")["content"]})
+    material = json.JSONDecoder().raw_decode(prompt.split("冻结的输入资料（只读）：\n", 1)[1])[0]
+    assert list(material) == ["novel_copy", "article", "config"]
+    assert list(material["novel_copy"]) == ["opening", "paragraphs", "cliffhanger", "unresolved_facts"]
+    assert list(material["article"]) == ["source_id", "ranges", "text"]
+    for hidden in ("run_hidden", "删去旧支线", "content_hash", article["selection_id"]):
+        assert hidden not in prompt
 
 
 def test_storyboard_format_example_does_not_pack_the_whole_catalog(prompt_project):
