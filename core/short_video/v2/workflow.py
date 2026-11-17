@@ -21,7 +21,6 @@ from .models import (
     VIEWS,
     capture_model_snapshot,
     content_key,
-    encode,
     identity,
     require,
     text,
@@ -29,7 +28,7 @@ from .models import (
 )
 from .project_service import ProjectService
 from .prompt_compiler import compile_shots, finalize_asset_prompts
-from .prompts import INSTRUCTIONS, stage_prompt
+from .prompts import INSTRUCTIONS, default_prompt_ref, stage_prompt
 from .repository import ProjectRepository
 from .review import QualityCheckResult
 from .storyboard_skill import STORYBOARD_SKILLS, load_storyboard_skill
@@ -109,7 +108,7 @@ def freeze_stage_rules(
     return {
         "instruction": instruction,
         "skill_id": skill_id,
-        "prompt_ref": custom["id"] if custom else f"{stage}-default-v3",
+        "prompt_ref": custom["id"] if custom else default_prompt_ref(stage),
     }
 
 
@@ -276,7 +275,6 @@ class WorkflowService:
         kind: str | None = None,
         shot_ids: list[str] | None = None,
         request_id: str | None = None,
-        fact_table_id: str | None = None,
         upstream_ids: dict[str, str] | None = None,
         frozen_rules: JsonObject | None = None,
         video_inputs: JsonObject | None = None,
@@ -293,25 +291,6 @@ class WorkflowService:
             "请先保存当前有效文章与创作配置",
         )
         deps = {"config": config["id"], "selection": article["selection_id"]}
-        if fact_table_id:
-            facts = self.repository.record(fact_table_id, state=state)
-            require(
-                facts["kind"] == "fact_table"
-                and facts["dependency_refs"]["selection"] == article["selection_id"],
-                "STALE_INPUT",
-                "分段事实表与文章范围不一致",
-            )
-            deps["fact_table"] = fact_table_id
-            article = {
-                **article,
-                "text": "全文已按用户选择分段处理，使用共享事实表；原文按坐标保留。",
-                "source_refs": [
-                    {k: v for k, v in ref.items() if k != "quote"} for ref in article["source_refs"]
-                ],
-                "segments": [],
-                "facts": facts["content"]["facts"],
-                "representation": "explicit_chunk_fact_table",
-            }
         context = {"article": article, "config": config["content"]}
         video_task = stage == "video_prompt"
         candidate = self.repository.record(target_id, state=state) if target_id else None
@@ -476,40 +455,6 @@ class WorkflowService:
                 "请填写具体修改意见",
             )
             require(candidate["dependency_refs"] == deps, "STALE_INPUT", "待修订稿的来源已变化")
-        if (
-            stage not in {"novel_copy", "video_prompt"}
-            and len(encode(context["article"])) > self.max_context_chars // 2
-        ):
-            # Traverse the actual frozen lineage, including explicitly reused old drafts.
-            pending = list(deps.values())
-            visited = set()
-            while pending:
-                reference = pending.pop()
-                if reference in visited:
-                    continue
-                visited.add(reference)
-                record = self.repository.record(reference, state=state)
-                if (
-                    record["kind"] == "fact_table"
-                    and record["dependency_refs"]["selection"] == context["article"]["selection_id"]
-                ):
-                    article = context["article"]
-                    context["article"] = {
-                        **article,
-                        "text": "本次文章资料见共享事实表。",
-                        "segments": [],
-                        "source_refs": [
-                            {k: v for k, v in ref.items() if k != "quote"}
-                            for ref in article["source_refs"]
-                        ],
-                        "facts": record["content"]["facts"],
-                        "representation": "explicit_chunk_fact_table",
-                        "fact_table_version_id": record["id"],
-                        "notice": "全文经用户启用的分段计划处理；未将全文直接放入本次请求，原文按坐标保留。",
-                    }
-                    deps["fact_table"] = record["id"]
-                    break
-                pending.extend(record["dependency_refs"].values())
         key = content_key(
             kind,
             candidate["content"]
@@ -538,7 +483,7 @@ class WorkflowService:
         require(
             len(prompt) <= self.max_context_chars,
             "INPUT_TOO_LARGE",
-            f"当前输入约 {len(prompt)} 字符，超过本次 {self.max_context_chars} 字符容量；请缩小选区或确认分块计划",
+            f"当前输入约 {len(prompt)} 字符，超过本次 {self.max_context_chars} 字符容量；请在原文页缩小改编范围",
         )
         return {
             **({"max_context_chars": self.max_context_chars} if video_task else {}),

@@ -393,34 +393,6 @@ def test_continue_button_appears_only_for_valid_pending_task(prompt_project, sta
     app.processEvents()
 
 
-def test_long_chunk_plan_resumes_merge_review_without_repeating_chunks(project, monkeypatch):
-    from core.short_video.v2 import batches
-
-    monkeypatch.setattr(batches, "capture_model_snapshot", lambda _: {"provider": "hosted-llm", "model": "offline"})
-    monkeypatch.setattr(batches, "validate_model_snapshot", lambda _: None)
-    original = novel(project)
-    replies = iter(['{"facts":[]}', encode(original["content"]), encode(original["content"])])
-    calls = []
-
-    def send(prompt):
-        calls.append(prompt)
-        if len(calls) == 4:
-            raise TimeoutError("merge review timeout")
-        return next(replies)
-
-    service = batches.ChunkService(project, transport=send)
-    plan = service.create_plan()
-    with pytest.raises(TimeoutError):
-        service.execute(plan["id"])
-    saved = service.load_plan(plan["id"])
-    assert saved["merge_task_id"] in project.load()["tasks"]
-    project.recover()
-    calls.clear()
-    result = batches.ChunkService(project, transport=lambda p: calls.append(p) or '{"issues":[]}').execute(plan["id"])
-    assert result["status"] == "succeeded"
-    assert len(calls) == 1 and "自动审阅" in calls[0]
-
-
 def test_fatal_invalid_output_has_no_resume_or_saved_candidate_claim(project):
     original = novel(project)
     command = workflow.WorkflowService(project).prepare("novel_copy")
@@ -454,20 +426,3 @@ def test_compile_cannot_overwrite_prompt_bundle_edited_during_task(prompt_projec
         creation.CreationWork(prompt_project, command, transport=lambda _: pytest.fail("local-only task"))(report)
     assert prompt_project.current("prompt_bundle")["id"] != original["id"]
     assert prompt_project.load()["tasks"][command["request_id"]]["status"] == "invalidated"
-
-
-def test_exhausted_merge_does_not_reset_attempts_when_resumed(project, monkeypatch):
-    from core.short_video.v2 import batches
-
-    monkeypatch.setattr(batches, "capture_model_snapshot", lambda _: {"provider": "hosted-llm", "model": "offline"})
-    monkeypatch.setattr(batches, "validate_model_snapshot", lambda _: None)
-    original = novel(project)
-    replies = iter(['{"facts":[]}', encode(original["content"]), "bad", "bad", "bad"])
-    service = batches.ChunkService(project, transport=lambda _: next(replies))
-    plan = service.create_plan()
-    with pytest.raises(WorkspaceError, match="未取得可用稿件"):
-        service.execute(plan["id"])
-    assert service.find_resumable_plan() is None
-    service.transport = lambda _: pytest.fail("must not reset merge attempts")
-    with pytest.raises(WorkspaceError, match="没有可继续的检查点"):
-        service.execute(plan["id"])

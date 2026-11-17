@@ -37,6 +37,7 @@ from .models import (
     timestamp,
     validate_model_snapshot,
 )
+from .prompts import default_prompt_ref
 from .review import QualityCheckResult, check_candidate
 from .video_context import validate_video_command, video_command_ready
 
@@ -148,7 +149,7 @@ def start_task(repository: ProjectRepository, command: JsonObject) -> JsonObject
                 else command.get("stage_rules", command)
             )
             ref = rules["prompt_ref"]
-            expected[key] = None if ref == f"{stage}-default-v3" else ref
+            expected[key] = None if ref == default_prompt_ref(stage) else ref
         require(
             all(state["current"].get(k) == v for k, v in expected.items()),
             "STALE_INPUT",

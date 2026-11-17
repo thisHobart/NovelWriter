@@ -73,9 +73,6 @@ class Workbench(QWidget):
         self.repository = ProjectRepository(self.output_dir)
         self.repository.load()
         ConversationService(self.repository).recover()
-        from core.short_video.v2.batches import recover_plans
-
-        recover_plans(self.repository)
         from core.short_video.v2.image_generation import ImageGenerationService
 
         ImageGenerationService(self.repository).recover()
@@ -396,13 +393,7 @@ class Workbench(QWidget):
             work = prepare()
         except WorkspaceError as exc:
             if exc.code == "INPUT_TOO_LARGE":
-                if (
-                    QMessageBox.question(
-                        self, "原文超出容量", "可以缩小原文选区，或分段处理全文。现在分段处理？"
-                    )
-                    == QMessageBox.Yes
-                ):
-                    self.chunk_plan()
+                QMessageBox.warning(self, "超出输入容量", str(exc))
                 return
             raise
         target = {
@@ -565,9 +556,6 @@ class Workbench(QWidget):
         try:
             candidate.load()
             ConversationService(candidate).recover()
-            from core.short_video.v2.batches import recover_plans
-
-            recover_plans(candidate)
             from core.short_video.v2.image_generation import ImageGenerationService
 
             ImageGenerationService(candidate).recover()
@@ -585,18 +573,3 @@ class Workbench(QWidget):
         self.host._navigate(restored if restored in self.pages else "video_source")
         self.host.refresh_all()
         self.notice("已打开项目")
-
-    def chunk_plan(self) -> None:
-        from core.short_video.v2.batches import BatchWork, ChunkService
-
-        service = ChunkService(self.repository, self.model())
-        plan = service.find_resumable_plan() or service.create_plan()
-        if (
-            QMessageBox.question(
-                self,
-                "分段处理全文",
-                f"将全文分为 {len(plan['chunks'])} 段，提取事实并改编，最后合并全文。继续？",
-            )
-            == QMessageBox.Yes
-        ):
-            self.submit(BatchWork(self.repository, plan, mode="chunks", transport=self.transport))

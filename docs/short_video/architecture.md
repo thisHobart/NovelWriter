@@ -109,7 +109,6 @@ short_video/
 ├─ project_v2.json     当前索引、tasks、runs、检查点及导出记录
 ├─ artifacts/         当前内容与未完成任务的临时候选
 ├─ conversations/     会话消息
-├─ plans/             长文分块进度
 └─ media/             工作流配置、图片、视频及远程任务记录
 ```
 

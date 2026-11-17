@@ -442,45 +442,6 @@ def test_creation_task_uses_request_counts_only_for_recording(prompt_project, mo
     assert send.call_count == 2
 
 
-def test_legacy_exhausted_chunk_plan_can_resume_without_budget_checks(project, monkeypatch):
-    from unittest.mock import Mock
-    from core.short_video.v2 import batches, workflow
-    from core.short_video.v2.models import encode, fingerprint
-
-    snapshot = {"provider": "hosted-llm", "model": "offline"}
-    for module in (batches, workflow):
-        monkeypatch.setattr(module, "capture_model_snapshot", lambda _: snapshot)
-        monkeypatch.setattr(runtime_module, "validate_model_snapshot", lambda _: None)
-    monkeypatch.setattr(batches, "validate_model_snapshot", lambda _: None)
-    content = novel(project)["content"]
-    custom_instruction = "按我的简短口语风格整理素材，不编造结果。"
-    project.save("prompt_template", {"stage": "novel_copy", "instruction": custom_instruction},
-                 {}, key="prompt_template:novel_copy", expected_revision=project.load()["revision"])
-    send = Mock(side_effect=['{"facts":[]}', encode(content), encode(content), '{"issues":[]}'])
-    service = batches.ChunkService(project, transport=send)
-    plan = service.create_plan()
-    assert "max_calls" not in plan and "seconds" not in plan
-    plan.update(max_calls=0, seconds=0, calls_used=100, status="failed")
-    plan.pop("review_model_snapshot")  # Simulate an actual legacy plan without reviewer binding.
-    frozen = {key: plan[key] for key in (
-        "project_id", "mode", "model", "model_snapshot", "input_refs", "max_calls", "seconds", "selected_before",
-    )}
-    frozen["chunks"] = [
-        {key: chunk[key] for key in ("id", "source_id", "start", "end", "text")} for chunk in plan["chunks"]
-    ]
-    plan["input_hash"] = fingerprint(frozen)
-    service.save_plan(plan)
-
-    result = service.execute(plan["id"])
-
-    assert result["status"] == "succeeded"
-    assert result["review_status"] == "passed"
-    assert service.load_plan(plan["id"])["calls_used"] == 104
-    assert service.execute(plan["id"])["version_id"] == result["version_id"]
-    assert send.call_count == 4
-    assert all(custom_instruction in send.call_args_list[index].args[0] for index in (1, 2))
-
-
 def test_interrupted_prompt_candidates_are_removed_without_losing_current_content(prompt_project):
     repository = prompt_project
     original = repository.current("prop_spec:asset_prop:base")
@@ -950,7 +911,7 @@ def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, m
     service = WorkflowService(project, transport=send)
     for stage in ("novel_copy", "video_copy", "asset_catalog", "storyboard"):
         command = service.prepare(stage)
-        assert command["prompt_ref"] == f"{stage}-default-v3"
+        assert command["prompt_ref"] == f"{stage}-default-v{4 if stage.endswith('_copy') else 3}"
         result = service.execute(command)
         assert result["review_status"] == "passed"
     assert len(calls) == 8
