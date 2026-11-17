@@ -116,16 +116,8 @@ class ProjectService:
             "source_id": source["id"],
             "ranges": deepcopy(selection["content"]["ranges"]),
             "source_refs": refs,
+            # Selected text appears once; requests drop the per-ref quotes and keep coordinates.
             "text": "\n".join(ref["quote"] for ref in refs),
-            "segments": [
-                {
-                    "source_id": source["id"],
-                    "start": ref["start"],
-                    "end": ref["end"],
-                    "text": ref["quote"],
-                }
-                for ref in refs
-            ],
         }
 
 

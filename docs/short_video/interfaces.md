@@ -16,6 +16,7 @@
 | 生成资产提示词 | prepare_prompt_task → CreationWork | 按待生成实体／状态执行 asset_spec，最后本地编译镜头提示词 |
 | 查看镜头所需参考资产 | WorkflowService.shot_assets(shot_id, *, state=None) | 返回本镜场景、人物、道具及各状态视图的提示词，只读、不调用模型 |
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
+| 按意见修订所选分镜镜头 | WorkflowService.prepare("storyboard", mode="revise", target_id=当前分镜, asks=[修改意见], shot_ids=[...]) → WorkspaceWork | 模型返回整份分镜，`keep_unselected_shots` 只取所选镜头，其余镜头、顺序和顶层字段以原稿为准，缺少所选镜头按格式错误修复；生成与审阅提示写明所选镜号，审阅只报告所选镜头、衔接及修改要求落实情况 |
 | AI 编写视频提示词 | WorkflowService.prepare_video_prompt(shot_id, images, *, workflow_id, parameters, current_prompt="") → WorkspaceWork | video_prompt 阶段只更新所选镜头的完整视频正文，沿用独立审阅和检查点恢复 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
@@ -35,7 +36,7 @@
 
 Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。新生成成功结果的 `review_status` 为 passed（通过）或 issues（检查仍有问题）；审阅网络失败进入可恢复失败，不作为成功结果提交。历史 unavailable／incomplete 状态仅兼容读取。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
 
-分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行；长文计划逐段提取事实、改编并最终合稿，不按累计调用次数或耗时停止。新任务和分段计划不含 max_calls、seconds；calls_used 仅记录调用次数。旧分段计划保留原冻结哈希核验，历史限制字段不参与执行判断。长文续跑不重发成功分段，复用统一任务与运行存储。
+分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行，不按累计调用次数或耗时停止。新任务不含 max_calls、seconds；calls_used 仅记录调用次数，历史限制字段不参与执行判断。长文分段计划已移除，旧项目 plans/ 目录中的计划文件不再读取或继续。
 
 文字执行交由 runtime 管理，`WorkflowService.execute` 新增内部 `task_id=None` 和 `resume=False`：独立阶段持有生成锁并创建任务，组合阶段传入父任务编号并共享顶层锁。`prepare` 新增可选 `frozen_rules`，分镜组合任务从目录生成前就冻结分镜模板与 Skill 正文；资产任务冻结整批共用的阶段要求。恢复不得重新读取新 Skill 正文替换旧请求。
 
@@ -57,10 +58,10 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - `ModelConfigDialog(provider, parent=None, *, purpose="generation")` 复用服务商、接口地址、API 密钥、模型及获取列表／测试连接，`purpose="review"` 使用独立配置。
 - `api_settings.save_provider(..., purpose="review")` 写入 `llm_settings.json.review={provider, providers:{服务商:{base_url,api_key,model}}}`；原 `providers` 继续用于生成与聊天，互不覆盖。
 - `review_provider()` 读取校验所选服务；`get_review_config(provider=None)` 只读取显式校验配置，不回退到生成或环境变量。缺失时 `prepare` 返回 `REVIEW_CONFIGURATION_MISSING`，不发送生成请求。
-- 阶段命令、组合父任务与新长文计划冻结 `review_model_snapshot={provider, model, endpoint_hash}`；密钥不写任务，允许更新密钥。恢复／每次实际请求前校验当前模型及接口指纹；变化返回 `REVIEW_CONFIGURATION_CHANGED`，可恢复原配置继续或重新生成。
+- 阶段命令与组合父任务冻结 `review_model_snapshot={provider, model, endpoint_hash}`；密钥不写任务，允许更新密钥。恢复／每次实际请求前校验当前模型及接口指纹；变化返回 `REVIEW_CONFIGURATION_CHANGED`，可恢复原配置继续或重新生成。
 - `ScriptLLM(..., purpose="review")` 使用校验配置，处理quality_check及审阅格式反馈修复；初稿、生成格式修复与唯一一次质量修订使用生成配置。调用记录的format_attempt分别表示相应用途的0／1次格式修复。聊天使用生成配置，不进入校验循环。
 - `runs[].snapshot` 保存两份模型快照；`runs[].review_result={passed, feedback, issue_count, issues, candidate_id}` 保存最终完整校验结果及具体字段／原因／建议，绑定实际采用稿。UI 继续使用短摘要，不新增报告页面。
-- 运行格式为2；旧格式检查点通过现有失效机制提示重新生成，已保存当前稿不变。旧长文计划在新请求前补绑校验配置与冻结哈希，成功分块继续复用。
+- 运行格式为2；旧格式检查点通过现有失效机制提示重新生成，已保存当前稿不变。
 
 ### 2.2 聊天与分镜只读上下文
 
@@ -68,8 +69,8 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
 - `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带轻量 `storyboard_reference={shot_id, storyboard_id, order, unsaved}`，不将完整资料写入消息正文，也不保存检查反馈或候选。
 - `build_conversation_context(..., storyboard_context=None)` 是纯函数，48,000 字符默认上限包含系统规则、序列化消息和本轮附带资料；按最早完整轮次裁剪副本，保留本轮完整消息与上下文。仍超限返回 CONTEXT_TOO_LARGE，不截断镜头／问题，不删除磁盘历史。
-- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000)` 组装本镜、紧邻前后镜、引用的文案块、资产基础设定及本镜引用的有效原文；不带全稿、整组视图提示词或全文。
-- 原文区间限制在绑定选区，合并重叠／重复引用，按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
+- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000, max_outline_chars=12000)` 组装本镜、紧邻前后镜、`shot_count` 与其余镜头的 `storyboard_outline`、资产基础设定及本镜引用的有效原文；不带整组视图提示词或原文全文。概要每镜含镜号、时长、场景／人物／道具（名称／状态，人物列编辑过时为原样文字）、动作和对白旁白，不含景别、运镜和画面提示词；超出预算依次截取动作与对白前60字、只留资产、从离本镜最远处整镜省略，并写入 `missing`。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由本镜、邻镜和原文覆盖。
+- 原文区间限制在绑定选区。镜头的原文坐标由模型写出，常差几个字，`sentence_range(value, start, end, lo, hi)` 将首尾各移到最近的句子边界（句号、问号、叹号、省略号或换行之后，句末右引号／括号归上一句）：向内最多10字，向外最多150字，不越出选区；片段落在一句之内时取整句，150字内无标点时保留原坐标。之后合并重叠或只隔空白的片段，`source_segments` 只含文字，不带原文编号和起止坐标；按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送，并按当前选择重新取得上下文。聊天只调用生成模型，不进入质量检查或自动写回。
 
 消息存取与历史筛选由 [ConversationStore](../../core/short_video/v2/conversation_store.py) 实现，上下文构造见 [conversation_context.py](../../core/short_video/v2/conversation_context.py)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 将完整 prompt 作为一次 user 消息提交，模型 SDK 不另行读取会话文件。
@@ -147,7 +148,7 @@ schema最多反馈10项、预览最多200字符；syntax沿用行列、偏移及
 - `paragraphs[]`：`paragraph_id, start, end`。来源位置基于这一 Source 的规范化文本：移除 BOM、统一换行为 LF，以 Unicode 码点计数，使用 `[start,end)`；Qt UTF-16 光标位置必须显式转换。
 - Selection：`id, source_id, ranges[{start,end}], selected_text_sha256`，范围有效、非空、排序后不重叠。显示选区拼接文本时保留映射，不能用拼接后的偏移冒充原文偏移。
 - SourceRef：`source_id, paragraph_id?, start, end`；可选 `quote` 用于展示，提供时必须与对应切片一致。
-- 超过模型有效上下文时，返回 INPUT_TOO_LARGE 和统计信息；允许缩小选区，或用户启用分块计划。分块记录范围、顺序、共用事实表和最终合稿依赖；不得静默截断后声称处理全文。
+- 超过模型有效上下文时，返回 INPUT_TOO_LARGE 和统计信息，提示在原文页缩小改编范围；不得静默截断后声称处理全文。长文分段已移除，原文较长时再考虑语义检索等提取方式。
 
 ## 6. 文案模型
 
@@ -240,19 +241,19 @@ PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 Pro
 
 分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
-模板库以阶段区分 instruction；自定义模板保存为当前 prompt_template 内容（content: stage,instruction），替换后清理旧记录，并继续优先，默认模板引用升级为阶段 default-v3。任务冻结完整Prompt、输入、模型与所选Skill；旧运行快照与稿件不改。Prompt由共享事实／格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例组成。演示与当前素材隔离，不能混入实际人物与事件。
+模板库以阶段区分 instruction；自定义模板保存为当前 prompt_template 内容（content: stage,instruction），替换后清理旧记录，并继续优先，默认模板引用为阶段 default-v3，小说推文与视频推广文案改写后为 default-v4；版本号随默认任务文字更新，旧版本运行中的任务恢复时提示重新生成。任务冻结完整Prompt、输入、模型与所选Skill；旧运行快照与稿件不改。Prompt由共享事实／格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例组成。演示与当前素材隔离，不能混入实际人物与事件。
 
 ### 9.1 第一阶段：小说推文
 
-默认任务：从原文组织一个适合独立短视频的完整事件，保留必要人物、动机、行动、因果与已有结果，压缩背景、重复说明和无关支线；开头直接进入事件，结尾交代结果或落点，不强制悬念、反转或笑点。
+默认任务：把原文改写成观众不看原书也能听懂的一条推文。先定一句话能说清的主事件，只留必要人物、动机、行动、因果与已有结果；开头一两句直接交代处境、异常、冲突或关键动作，不用空泛口播套话；正文一段一个推进，背景首次需要时一句带过，称呼统一；口语短句；结尾交代结果或落点，不加评论、说教或预告，不强制悬念、反转或笑点。未指定 target_words 时一般3–6段、约300字以内；人称、语气、必须与禁止内容按配置。
 
-输入为原文选区与配置，输出 NovelCopy。允许合理外化，不新增关键事实；changes 使用原枚举说明删改依据。素材无结果时保留实际停点并说明缺失，不能编造收束。
+输入为原文选区与配置，输出 NovelCopy。请求和 AI 审阅只带配置中的 audience、tone、narrative_person、target_words、required、forbidden、permitted_adaptations；保存的配置保持完整。允许合理外化，不新增关键事实；changes 使用原枚举说明删改依据。素材无结果时保留实际停点并说明缺失，不能编造收束。
 
 ### 9.2 第二阶段：视频推广文案
 
-默认任务：将当前故事文案转为可观看、可听懂的内容，分别安排可见动作、必要对白和旁白；不重复解释已展示的画面，不继续文学润色。保留理解事件所需的因果和已有结果。
+默认任务：把当前小说推文改成看画面、听声音就能懂的视频文案。一块一个视频节拍（一个地点里的一个主要动作或一次信息变化），一般4–8块，推文各段都有承接或删改说明；可见动作写具体可拍的画面，不写镜头术语；旁白只补画面拍不出的时间、前因、心理、关系和数字，提到的人和物在同块画面中出现；对白只留关键短句。开头块直接进入事件，结尾块落在结果画面，不加预告或引导语。未指定目标时长时旁白和对白合计一般不超过约200字，不继续文学润色。
 
-输入为当前小说推文和原文依据，输出 VideoCopy。少于一分钟；有效 target_duration_ms 按目标规划，未指定时自然结束，超范围目标如实报告。清晰中文声音可从每秒3–4字估算，另考虑停顿、换人和情绪；顺序累计、并行取覆盖时长，不假称已测配音。
+输入为当前小说推文和原文依据，输出 VideoCopy。配置只带 audience、tone、target_duration_ms、required、forbidden、permitted_adaptations。请求资料先放小说推文正文（opening、paragraphs、cliffhanger、unresolved_facts，不带其 changes 和记录外壳字段），再放原文与配置；AI 审阅看到同样精简的资料。各文字阶段发给模型的原文只含 source_id、ranges 和 text，不再重复 source_refs 与 selection_id，程序侧任务仍保留完整记录。少于一分钟；有效 target_duration_ms 按目标规划，未指定时自然结束，超范围目标如实报告。清晰中文声音可从每秒3–4字估算，另考虑停顿、换人和情绪；顺序累计、并行取覆盖时长，不假称已测配音。
 
 ### 9.3 第三阶段：分镜
 
@@ -337,7 +338,8 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 | MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为图片位置标识到 image_id 或 None 的映射；所有模板过滤 None，按实际选图裁剪参考输入及首尾引导，至少选一张。parameters 为参数键到类型值；只读校验并冻结实际输入，不提交 GPU 工作 |
 | MediaWork(output_dir, command) | 符合 VideoTask 调用约定，通过现有 TaskRunner 执行并报告状态 |
 | MediaWork(output_dir, job_id=...) | 查询同一远程任务或重新取回结果，不再次提交 |
-| MediaRepository.images / jobs / image / job | 读取本地图片与任务记录；读取不创建媒体目录 |
+| MediaRepository.images / jobs / image / job | 读取本地图片与任务记录；读取不创建媒体目录。images 默认不含已从选图列表移除的图片，include_hidden=True 时全部返回；image 始终可读 |
+| MediaRepository.set_image_hidden(image_id, hidden) / hidden_images() | 从视频页选图列表移除或恢复图片，写入 hidden_images.json；图片文件与记录不变，资产视图、视频提示词绑定和已提交任务继续使用 |
 
 无需先生成分镜或完整 PromptBundle。target 可记录 storyboard_version_id 与 shot_id，不作为生成的前置条件；实际提示词来自 UI 中单独可编辑的视频文字。普通聊天、文字编辑保存和文字 Agent Loop 不触发媒体生成。
 
@@ -383,6 +385,7 @@ short_video/media/
   settings.json
   images/<image_id>.png|jpg|webp
   images/<image_id>.json
+  hidden_images.json        # 选图列表中已移除的 image_id
   jobs/<job_id>.json
   videos/2026-11-16_15-30-45_镜头03_a1b2c3d4_01.mp4|mov|webm|mkv
 ```

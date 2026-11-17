@@ -1,4 +1,4 @@
-"""Durable atomic text writes for workspace records, conversations and batch plans."""
+"""Durable atomic text writes for workspace records and conversations."""
 
 from __future__ import annotations
 

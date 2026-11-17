@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from .contracts import ArtifactRecord, JsonObject
 from .models import WorkspaceError, encode, reference_text, require
-from .source import validate_source_ref
+from .source import sentence_range, validate_source_ref
 from .validation import SPEC_FIELDS
 
 if TYPE_CHECKING:
@@ -92,6 +92,87 @@ def _shot(
     return reference_text(result)
 
 
+OUTLINE_CLIP = 60
+
+
+def _asset_label(ref: JsonObject, entities: list[JsonObject]) -> str:
+    entity = next((e for e in entities if e["asset_id"] == ref.get("asset_id")), None)
+    if entity is None:
+        return str(ref.get("asset_id"))
+    variant = next(
+        (v for v in entity["variants"] if v["variant_id"] == ref.get("variant_id")), None
+    )
+    return entity["name"] + ("/" + variant["label"] if variant else "")
+
+
+def _dialogue_text(shot: JsonObject, entities: list[JsonObject]) -> str:
+    """Same wording as the storyboard's dialogue column, including unsaved free text."""
+    if "dialogue_text" in shot:
+        return shot["dialogue_text"]
+    names = {e["asset_id"]: e["name"] for e in entities}
+    lines = [
+        ("画外/" if line.get("voice_over") else "")
+        + names.get(line.get("character_id"), line.get("speaker_label", "旁白"))
+        + "："
+        + line.get("text", "")
+        for line in shot.get("dialogue", [])
+    ]
+    if shot.get("narration"):
+        lines.append("旁白：" + shot["narration"])
+    return "\n".join(lines)
+
+
+def _clip(value: str) -> str:
+    return value if len(value) <= OUTLINE_CLIP else value[:OUTLINE_CLIP] + "…"
+
+
+def _outline_entry(
+    shot: JsonObject, order: int, entities: list[JsonObject], level: int
+) -> JsonObject:
+    """level 0 is complete, 1 clips action and dialogue, 2 keeps only assets."""
+    entry: JsonObject = {"order": order, "duration_ms": shot.get("duration_ms")}
+    if shot.get("scene_ref"):
+        entry["scene"] = _asset_label(shot["scene_ref"], entities)
+    if "character_text" in shot:
+        entry["characters"] = shot["character_text"]
+    else:
+        entry["characters"] = [_asset_label(r, entities) for r in shot.get("characters", [])]
+    entry["props"] = [_asset_label(r, entities) for r in shot.get("props", [])]
+    if level < 2:
+        action, dialogue = shot.get("action", ""), _dialogue_text(shot, entities)
+        entry["action"] = _clip(action) if level else action
+        if dialogue:
+            entry["dialogue_text"] = _clip(dialogue) if level else dialogue
+    return entry
+
+
+def storyboard_outline(
+    shots: list[JsonObject],
+    detailed: set[int],
+    entities: list[JsonObject],
+    current: int,
+    limit: int,
+) -> tuple[list[JsonObject], list[str]]:
+    """One entry per other shot, shortened in steps and then dropped farthest-first to fit."""
+    indexes = [i for i in range(len(shots)) if i not in detailed]
+    for level in (0, 1, 2):
+        outline = [_outline_entry(shots[i], i + 1, entities, level) for i in indexes]
+        if len(encode(outline)) <= limit:
+            notes = []
+            if level == 1:
+                notes.append(f"全稿概要超出预算，动作与对白已截取前{OUTLINE_CLIP}字")
+            elif level == 2:
+                notes.append("全稿概要超出预算，只保留镜号、时长和资产")
+            return outline, notes
+    kept = sorted(indexes, key=lambda i: abs(i - current))
+    while kept and len(encode([_outline_entry(shots[i], i + 1, entities, 2) for i in kept])) > limit:
+        kept.pop()
+    kept.sort()
+    omitted = len(indexes) - len(kept)
+    outline = [_outline_entry(shots[i], i + 1, entities, 2) for i in kept]
+    return outline, [f"全稿概要超出预算，只保留镜号、时长和资产，离本镜最远的{omitted}个镜头未列出"]
+
+
 def _speakers(shot: JsonObject, entities: list[JsonObject]) -> tuple[list[JsonObject], list[str]]:
     """Resolve raw speaker names only when unique; never reuse a stale dialogue identity."""
     refs, unresolved = [], []
@@ -132,6 +213,7 @@ def build_storyboard_chat_context(
     *,
     unsaved: bool = False,
     max_source_chars: int = 6000,
+    max_outline_chars: int = 12000,
 ) -> JsonObject:
     """Pure projection of a UI snapshot and already-read, provenance-bound records."""
     shots = draft.get("shots", [])
@@ -139,6 +221,11 @@ def build_storyboard_chat_context(
     require(index is not None, "INVALID_INPUT", "当前选中的镜头已不存在，请重新选择")
     require(
         type(max_source_chars) is int and max_source_chars >= 0, "INVALID_INPUT", "原文预算无效"
+    )
+    require(
+        type(max_outline_chars) is int and max_outline_chars >= 0,
+        "INVALID_INPUT",
+        "全稿概要预算无效",
     )
     deps = storyboard["dependency_refs"]
     catalog = records.get(deps.get("asset_catalog"))
@@ -163,7 +250,8 @@ def build_storyboard_chat_context(
             for i in (index - 1, index + 1)
             if 0 <= i < len(shots)
         ],
-        "video_blocks": [],
+        "shot_count": len(shots),
+        "storyboard_outline": [],
         "assets": [],
         "source_segments": [],
         "requirements": {},
@@ -172,7 +260,7 @@ def build_storyboard_chat_context(
             "storyboard_id": storyboard["id"],
             **{
                 k: deps[k]
-                for k in ("asset_catalog", "video_copy", "config", "selection")
+                for k in ("asset_catalog", "config", "selection")
                 if k in deps
             },
         },
@@ -180,18 +268,13 @@ def build_storyboard_chat_context(
     }
     if not catalog:
         missing.append("本版分镜绑定的资产目录缺失，不能确认人物与资产身份")
-    video = records.get(deps.get("video_copy"))
-    if not video:
-        missing.append("本版分镜绑定的视频文案缺失")
-    blocks = {b["id"]: b for b in video["content"]["blocks"]} if video else {}
-    for block_id in dict.fromkeys(shots[index].get("video_block_refs", [])):
-        if block_id in blocks:
-            # Evidence is carried once below, rather than repeated inside each video block.
-            result["video_blocks"].append(
-                {k: deepcopy(v) for k, v in blocks[block_id].items() if k != "source_refs"}
-            )
-        else:
-            missing.append(f"关联视频文案块缺失：{block_id}")
+    # Changes to a key plot element span many shots; the outline shows the whole storyboard.
+    result["storyboard_outline"], notes = storyboard_outline(
+        shots, {index - 1, index, index + 1}, entities, index, max_outline_chars
+    )
+    missing.extend(notes)
+    # Video copy blocks are not attached: their narration is already in the shot, and their
+    # multi-shot action summary is covered by the shot, its neighbours and the original text.
     config = records.get(deps.get("config"))
     if config:
         result["requirements"] = {
@@ -257,6 +340,7 @@ def build_storyboard_chat_context(
     source = records.get(selection["content"]["source_id"]) if selection else None
     if source:
         result["sources"]["source_id"] = source["id"]
+    text = source["content"]["normalized_text"] if source else ""
     ranges = []
     for ref in shots[index].get("source_refs", []):
         if not source:
@@ -270,24 +354,25 @@ def build_storyboard_chat_context(
         for selected in selection["content"]["ranges"]:
             start, end = max(ref["start"], selected["start"]), min(ref["end"], selected["end"])
             if start < end:
+                # Model-written coordinates drift; the excerpt is widened or trimmed to sentences.
+                start, end = sentence_range(
+                    text, start, end, selected["start"], selected["end"]
+                )
+            if start < end:
                 ranges.append((start, end))
     merged = []
     for start, end in sorted(set(ranges)):
-        if merged and start <= merged[-1][1]:
+        if merged and not text[merged[-1][1] : start].strip():
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
     for start, end in merged:
-        segment = {
-            "source_id": source["id"],
-            "start": start,
-            "end": end,
-            "text": source["content"]["normalized_text"][start:end],
-        }
+        # Only the text is sent: the model has no numbered original to place coordinates in.
+        segment = text[start:end]
         if len(encode([*result["source_segments"], segment])) <= max_source_chars:
             result["source_segments"].append(segment)
         else:
-            missing.append(f"原文片段超出补充预算，未提供：{start}–{end}")
+            missing.append(f"一段原文超出补充预算，未提供（{end - start} 字）")
     if not result["source_segments"]:
         missing.append("本轮未提供可用原文片段，不能声称已核实原文")
     return deepcopy(result)

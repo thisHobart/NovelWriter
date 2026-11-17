@@ -344,43 +344,37 @@ def test_all_request_sizes_ignore_unrelated_shot_collection_and_merge_only_targe
     assert call["input_chars"] == len(sent[0]) and "本镜上下文" in call["context_sizes"]
 
 
-def test_exact_reference_evidence_merges_overlaps_and_preserves_unicode_offsets():
+def test_video_context_keeps_neighbour_shots_but_reads_no_original_text():
     from core.short_video.v2.video_context import prepare_evidence
 
     source = "开头😀本镜原文。中间空白。第二个片段。结尾不读取。"
-    refs = [{"source_id": "s", "start": 2, "end": 8},
-            {"source_id": "s", "start": 4, "end": 9},
-            {"source_id": "s", "start": 14, "end": 19}]
-    shot = {"shot_id": "selected", "source_refs": refs}
+    shot = {"shot_id": "selected", "source_refs": [{"source_id": "s", "start": 2, "end": 8}]}
     board = {"content": {"shots": [{"shot_id": "prev", "action": "前镜"}, shot,
                                     {"shot_id": "next", "action": "后镜"},
                                     {"shot_id": "far", "action": "不读取"}]}}
     context = {"article": {"source_id": "s", "selection_id": "sel", "text": source,
                            "ranges": [{"start": 0, "end": len(source)}]},
                "storyboard": {"content": {"shots": [shot]}}}
-    prepare_evidence(context, board, source, 48000)
+    prepare_evidence(context, board, 48000)
     article = context["article"]
-    assert "text" not in article
-    assert [(s["start"], s["end"]) for s in article["segments"]] == [(2, 9), (14, 19)]
-    assert all(s["text"] == source[s["start"]:s["end"]] for s in article["segments"])
+    assert "text" not in article and "segments" not in article
     assert [s["shot_id"] for s in article["adjacent_shots"]] == ["prev", "next"]
+    assert "本镜原文" not in encode(context)
     assert not context["supplement_manifest"]["omitted"]
 
 
-def test_broad_reference_is_omitted_without_truncation_or_full_text_fallback():
+def test_neighbour_shots_over_budget_are_omitted_whole():
     from core.short_video.v2.video_context import prepare_evidence
 
-    source = "超长原文😀" * 10000
-    shot = {"shot_id": "one", "source_refs": [{"source_id": "s", "start": 0,
-                                               "end": len(source)}]}
-    context = {"article": {"source_id": "s", "selection_id": "sel",
-                           "ranges": [{"start": 0, "end": len(source)}], "text": source},
+    shot = {"shot_id": "one", "source_refs": []}
+    board = {"content": {"shots": [{"shot_id": "prev", "action": "前镜动作" * 50}, shot,
+                                    {"shot_id": "next", "action": "后镜动作" * 50}]}}
+    context = {"article": {"source_id": "s", "selection_id": "sel", "ranges": [], "text": ""},
                "storyboard": {"content": {"shots": [shot]}}}
-    prepare_evidence(context, context["storyboard"], source, 8000)
-    assert context["article"]["segments"] == []
-    assert context["article"]["omitted_items"] == 1
-    assert context["supplement_manifest"]["omitted"] == shot["source_refs"]
-    assert len(encode(context["article"])) < 1000
+    prepare_evidence(context, board, 400)
+    assert context["article"]["adjacent_shots"] == []
+    assert context["article"]["omitted_items"] == 2
+    assert context["supplement_manifest"]["omitted"] == [{"shot_id": "prev"}, {"shot_id": "next"}]
 
 
 def test_revision_replaces_old_draft_and_preserves_custom_goal(ready):
@@ -597,25 +591,21 @@ def test_video_stage_has_only_local_output_and_never_copies_full_candidate(ready
         WorkflowService(repository)._validate_output(command, candidate["content"])
 
 
-def test_review_cannot_quote_evidence_that_was_not_provided(ready):
+def test_video_request_and_review_use_no_original_text(ready):
     from core.short_video.v2.review import check_candidate
-    from core.short_video.v2.project_service import ProjectService
+    from core.short_video.v2.video_context import model_context
 
     repository, _, _ = ready
-    board = repository.current("storyboard")
-    content = deepcopy(board["content"])
-    content["shots"][0]["source_refs"] = ProjectService(repository).context()["source_refs"]
-    repository.save("storyboard", content, board["dependency_refs"],
-                    expected_revision=repository.load()["revision"])
-    WorkflowService(repository).compile_storyboard_prompts(
-        expected_revision=repository.load()["revision"]
-    )
     command = prepare(ready)
-    ref = command["context"]["article"]["segments"][0]
-    command["context"]["article"]["segments"] = []
+    source = repository.current("source")
+    sent = model_context(command["context"])
+    assert "segments" not in command["context"]["article"]
+    assert set(sent) == {"shot", "assets", "video_inputs", "adjacent_shots", "requirements"}
+    assert "source_refs" not in sent["shot"]
+    quote = source["content"]["normalized_text"][:4]
     issue = {"rule_id": "FACT", "severity": "warning", "target_path": "video_motion_prompt",
-             "explanation": "声称看过原文", "suggestion": "修正", "quote": ref["text"],
-             "source_refs": [{k: v for k, v in ref.items() if k != "text"} | {"quote": ref["text"]}]}
+             "explanation": "声称看过原文", "suggestion": "修正", "quote": quote,
+             "source_refs": [{"source_id": source["id"], "start": 0, "end": 4, "quote": quote}]}
     with pytest.raises(WorkspaceError, match="未提供的原文") as caught:
         check_candidate(command, repository.current("prompt_bundle"),
                         Mock(return_value=encode({"issues": [issue]})), repository)

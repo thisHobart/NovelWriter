@@ -24,7 +24,7 @@
 | 提示词、校验与审阅 | `prompts.py`、`validation.py`、`review.py`、`storyboard_skill.py` |
 | 可选资产生图与来源 | `image_generation.py`、`media_repository.py`；UI 为 `asset_images_page.py`、`asset_image_preview.py` |
 | 会话与上下文 | `conversation.py`、`conversation_store.py`、`conversation_context.py` |
-| 长文分块、编排及导出 | `batches.py`、`prompt_compiler.py`、`storyboard_text.py`、`exporter.py` |
+| 编排及导出 | `prompt_compiler.py`、`storyboard_text.py`、`exporter.py` |
 | 视频工作流与媒体任务 | `media_workflows.py`、`media_service.py`、`media_repository.py`、`comfy_mcp.py`；UI 为 `media_preview.py`、`comfy_settings.py` |
 
 表中省略目录的领域文件均位于 `core/short_video/v2/`，UI 文件位于 `core/gui/pages/short_video/`。
@@ -34,15 +34,15 @@
 1. `WorkflowService.prepare` 读取当前有效内容，冻结生成与校验模型、来源、模板、要求和目标内容；分镜组合任务在目录生成前冻结后续分镜规则。
 2. `CreationWork` 编排目录→分镜，或逐项资产→镜头本地编排；单阶段任务通过 `WorkspaceWork` 执行。
 3. `AgentExecution` 执行 request→validate→review→decide→commit；`validation` 保证结构和引用，`review` 返回质量反馈，二者不自行启动新任务。
-4. 质量修订默认最多一次：首次校验失败后由生成模型修订，再用独立校验模型复检，第二次残留质量问题只记录、不触发第三稿。每稿生成回复和每轮审阅回复各允许一次格式反馈修复，分别使用生成API和校验API，与质量修订独立计数；分块请求仍允许一次格式修复。审阅修复的错误与原始回复随检查点保存，中断恢复不重置次数，已保存回复不重复请求。ScriptLLM另负责最多两次网络重试，SDK内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
+4. 质量修订默认最多一次：首次校验失败后由生成模型修订，再用独立校验模型复检，第二次残留质量问题只记录、不触发第三稿。每稿生成回复和每轮审阅回复各允许一次格式反馈修复，分别使用生成API和校验API，与质量修订独立计数。审阅修复的错误与原始回复随检查点保存，中断恢复不重置次数，已保存回复不重复请求。ScriptLLM另负责最多两次网络重试，SDK内部重试保持0，避免嵌套重试；不设置整轮调用预算或总时限。
 
-修改内容规则时，阶段任务与样例在 `prompts.py`，硬性约束在 `validation.py`，AI 审阅标准在 `review.py`；保持三者一致。自定义阶段模板优先，不以更新内置提示词为由覆盖用户模板。
+修改内容规则时，阶段任务与样例在 `prompts.py`，硬性约束在 `validation.py`，AI 审阅标准在 `review.py`；保持三者一致。改动某阶段默认任务文字时，在 `prompts.py` 的 `DEFAULT_PROMPT_VERSIONS` 中提升该阶段版本，新稿据此记录所用提示词版本。自定义阶段模板优先，不以更新内置提示词为由覆盖用户模板。
 
 视频提示词的单镜头上下文、局部模型返回、引用读取及统一预算见[上下文设计与验收](video_prompt_context.md)。`video_context.py`负责资料投影与证据预算；`video_request`重新组装每次请求，审阅不携带完整任务或镜头集合。只保留当前任务数据校验，无专用旧协议版本标记、旧生成回退或独立任务文件迁移；左侧画面提示词本地编排继续保留。
 
 视频面板的 VIDEO_PROMPT_RULES 在 stage_prompt 的 video_prompt 分支统一加入，保留自定义任务目标。WorkflowService.prepare_video_prompt 冻结本镜分镜、实际使用的资产及视频输入；video_prompt.py依据真实工作流接线生成 Picture 顺序并验证图片哈希，WorkflowParameter.role="duration"标识时长。完整 H3 中文正文位于 video_motion_prompt，video_prompt_binding由代码维护，resolved_prompt／negative_prompt保持原状。沿用 AgentExecution、独立审阅和检查点，模型每次请求及提交前核对媒体来源。UI按镜头与工作流缓存临时编辑，只有选图及时间匹配时回填保存结果，保持手动编辑；文字生成和ComfyUI提交各自独立。回归见 tests/test_video_prompt.py。
 
-分镜 Skill 资源为 [short-video-content-storyboard/SKILL.md](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)。仅显式选择时注入分镜，其他阶段及聊天不注入。当前 Skill 以短片总时长、常规5–8秒镜头、动作复杂度与衔接为主要约束；具体规则以文件为准。
+分镜 Skill 资源为 [short-video-content-storyboard/SKILL.md](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)。仅显式选择时注入分镜，其他阶段及聊天不注入。当前 Skill 除短片总时长、常规5–8秒镜头、动作复杂度与衔接外，还规定镜头顺序与景别、对话正反打与轴线视线、旁白与画面分工、开头结尾，并附一镜写法正反例；具体规则以文件为准。Skill 正文只保留模型可执行的规则；H3 时长依据见 [MiniMax H3 官方模型卡](https://huggingface.co/MiniMaxAI/MiniMax-H3) 和 [官方镜头与首尾帧提示词指南](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)，官方输出范围为4–15秒，5–8秒是本项目制作策略。
 
 ## 3. 检查点、依赖与提交
 
@@ -53,7 +53,6 @@
 - 网络错误先有限退避重试；停止或重试耗尽后保留可恢复状态；修订次数跨恢复保持。质量修订耗尽仍提交合法候选并标为 issues，格式修复耗尽则失败。
 - 恢复先核对输入与人工目标。外部修改使原任务失效；任务自身更新产生的指针变化须同步到预期引用。清理依赖后再次校验任务，避免旧原文残留检查点。
 - 普通读取保持只读；中断识别放在持有生成锁的 recover 中，只处理项目清单中的当前任务。当前任务字段缺失时拒绝，不推测执行位置或迁移独立任务文件。
-- 长文通过 `merge_task_id` 关联合稿任务，继续时跳过成功分块并恢复合稿；已耗尽修复次数的合稿不能靠继续重置上限。
 
 业务内容保持当前一份。内容 ID、哈希和 revision 用于依赖、完整性与并发控制；不要重新加入历史版本菜单或旧稿沿用路径。
 
@@ -66,12 +65,13 @@
 分镜页默认附带当前选中镜头，关闭复选框或离开分镜页后按普通聊天发送。`draft_snapshot()`
 只复制编辑器内容，避免未填完整的人物／对白或其他镜头阻断讨论；发送和查看上下文均不调用
 `value()`或保存。选中镜头、编辑、页面切换信号更新附带标注；预览只读，发送时重新冻结。
-`storyboard_chat`将本镜与邻镜从同一编辑稿投影，关联文案／目录／原文按该分镜的依赖读取，
-资产只取本镜所需状态的基础设定，未生成设定也可讨论。原文补充按有效坐标合并，完整片段
-最多6,000字符；缺失资料或无法解析的名字明确标记，不回退到其他版本。聊天消息仅保留
+`storyboard_chat`将本镜、邻镜和其余镜头的全稿概要（最多12,000字，逐级截短）从同一编辑稿投影，目录／原文按该分镜的依赖读取（不附带视频推广文案块），
+资产只取本镜所需状态的基础设定，未生成设定也可讨论。原文补充按有效坐标截取后，首尾各移到
+最近的句子边界（向内最多10字、向外最多150字，见`source.sentence_range`），重叠或只隔空白的片段
+合并，只发送文字、不带原文编号和坐标，完整片段最多6,000字符；缺失资料或无法解析的名字明确标记，不回退到其他版本。聊天消息仅保留
 轻量镜头标注，完整上下文只组装到本轮请求，避免历史重复携带旧稿；历史建议不视为已应用。
 
-`tests/test_storyboard_chat.py`覆盖只读取值、未保存与未完成编辑、状态与同名人物、原文预算、
+`tests/test_storyboard_chat.py`覆盖只读取值、未保存与未完成编辑、状态与同名人物、原文补整句与预算、
 前后镜、请求冻结和容量、UI标注与预览、普通聊天、失败重试和停止，验证不改写或失效下游。
 
 视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数。普通 H3 参考图支持最多九个位置；所有模板空位跳过，prepare_image_inputs统一裁剪未选参考输入、首尾帧参数与引导依赖。首尾帧可单独选择；Picture编号只对应实际参考图，首尾帧不占编号。MediaService与AI提示词快照共用裁剪逻辑，恢复按实际已选图片匹配。资产视图另可通过独立 Images API 生图，结果进入同一媒体库；不自动提交视频任务。
