@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QColor, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDoubleSpinBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.gui import theme
 from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.models import identity, require
 from core.short_video.v2.validation import recalculate_timeline
@@ -193,13 +194,11 @@ class ShotTable(QTableWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
-        # Ctrl／Shift selects several shots for one revision; editing still follows the current row.
-        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
 
     def dropEvent(self, event: QDropEvent) -> None:
         target = self.indexAt(event.position().toPoint()).row()
-        single = len(self.selectionModel().selectedRows()) <= 1
-        if event.source() is self and self.currentRow() >= 0 and single:
+        if event.source() is self and self.currentRow() >= 0:
             self.row_moved.emit(self.currentRow(), target if target >= 0 else self.rowCount() - 1)
             event.acceptProposedAction()
         else:
@@ -209,11 +208,12 @@ class ShotTable(QTableWidget):
 class StoryboardEditor(QWidget):
     changed = Signal()
     selection_changed = Signal()
-    revise_requested = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.content, self.loading, self.names, self.catalog = None, False, {}, []
+        # Shots written in from chat, tinted until the storyboard is saved or reloaded.
+        self.marked: set[str] = set()
         layout = QVBoxLayout(self)
         self.table = ShotTable()
         self.table.setHorizontalHeaderLabels(STORYBOARD_COLUMNS)
@@ -328,7 +328,28 @@ class StoryboardEditor(QWidget):
     def set_content(self, content: JsonObject | None) -> None:
         selected = self.selected_shots()
         self.content = deepcopy(content)
+        self.marked.clear()
         self.refresh_table(selected[0] if selected else None)
+
+    def apply_shots(self, shots: list[JsonObject]) -> None:
+        """Replace draft shots by shot_id, as an unsaved edit."""
+        require(self.content is not None, "INVALID_INPUT", "请先生成分镜")
+        replacements = {shot["shot_id"]: deepcopy(shot) for shot in shots}
+        self.content["shots"] = [
+            replacements.get(shot["shot_id"], shot) for shot in self.content["shots"]
+        ]
+        self.marked |= replacements.keys()
+        selected = self.selected_shots()
+        self.refresh_table(selected[0] if selected else None)
+        self.changed.emit()
+
+    def restore(self, content: JsonObject, marked: set[str]) -> None:
+        """Put back an earlier draft, e.g. to undo shots applied from chat."""
+        selected = self.selected_shots()
+        self.content = deepcopy(content)
+        self.marked = set(marked)
+        self.refresh_table(selected[0] if selected else None)
+        self.changed.emit()
 
     def refresh_table(self, shot_id: str | None = None) -> None:
         self.loading = True
@@ -357,6 +378,9 @@ class StoryboardEditor(QWidget):
                 item = QTableWidgetItem(value)
                 if col in {0, 1, 6}:
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if shot["shot_id"] in self.marked:
+                    item.setBackground(QColor(theme.ACCENT_TINT))
+                    item.setToolTip("由 AI 讨论修改，尚未保存")
                 self.table.setItem(row, col, item)
             if shot["shot_id"] == shot_id:
                 selected = row
@@ -455,32 +479,15 @@ class StoryboardEditor(QWidget):
         )
         self.changed.emit()
 
-    def selected_shot_ids(self) -> list[str]:
-        """All selected rows in storyboard order (Ctrl／Shift adds rows)."""
-        shots = (self.content or {}).get("shots", [])
-        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
-        return [shots[row]["shot_id"] for row in rows if 0 <= row < len(shots)]
-
     def show_row_menu(self, position: object) -> None:
         row = self.table.indexAt(position).row()
         if row < 0:
             return
-        if row not in {index.row() for index in self.table.selectionModel().selectedRows()}:
-            self.table.selectRow(row)
-        selected = self.selected_shot_ids()
+        self.table.selectRow(row)
         menu = QMenu(self)
-        menu.addAction(
-            "按意见修订所选镜头…", lambda: self.revise_requested.emit(self.selected_shot_ids())
-        )
-        menu.addSeparator()
-        # Structural edits act on one shot; with several rows selected they would be ambiguous.
-        single = len(selected) == 1
-        for label, action in (
-            ("拆成两镜", self.split),
-            ("与下一镜合并", self.merge),
-            ("删除镜头", self.delete_shot),
-        ):
-            menu.addAction(label, action).setEnabled(single)
+        menu.addAction("拆成两镜", self.split)
+        menu.addAction("与下一镜合并", self.merge)
+        menu.addAction("删除镜头", self.delete_shot)
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def move_shot(self, source: int, target: int) -> None:

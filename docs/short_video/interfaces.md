@@ -16,13 +16,13 @@
 | 生成资产提示词 | prepare_prompt_task → CreationWork | 按待生成实体／状态执行 asset_spec，最后本地编译镜头提示词 |
 | 查看镜头所需参考资产 | WorkflowService.shot_assets(shot_id, *, state=None) | 返回本镜场景、人物、道具及各状态视图的提示词，只读、不调用模型 |
 | 优化当前镜头提示词 | prepare("shot_prompts", mode="revise", target_id=..., asks=..., shot_ids=...) → WorkspaceWork | 保留其他镜头内容，执行单阶段循环 |
-| 按意见修订所选分镜镜头 | WorkflowService.prepare("storyboard", mode="revise", target_id=当前分镜, asks=[修改意见], shot_ids=[...]) → WorkspaceWork | 模型返回整份分镜，`keep_unselected_shots` 只取所选镜头，其余镜头、顺序和顶层字段以原稿为准，缺少所选镜头按格式错误修复；生成与审阅提示写明所选镜号，审阅只报告所选镜头、衔接及修改要求落实情况 |
 | AI 编写视频提示词 | WorkflowService.prepare_video_prompt(shot_id, images, *, workflow_id, parameters, current_prompt="") → WorkspaceWork | video_prompt 阶段只更新所选镜头的完整视频正文，沿用独立审阅和检查点恢复 |
 | 用当前稿继续 | ArtifactPage.continue_creation → Workbench.start_creation | 先保存可见稿，再准备下阶段；保存失败不请求模型 |
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
 | 查看／停止 | repository.load()["runs"] / 所选通道 runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
 | 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
 | 聊天讨论 | ConversationService.prepare / execute | 用户消息、有效历史及可选的当前分镜只读上下文；回复供手动修改，不自动写回；保留项目隔离和手动重试 |
+| 聊天修改多个镜头 | ChatPanel.send_edit(items) → ConversationService.prepare(..., storyboard_edit=...) → ChatWork；ShotEditPanel.apply / undo_apply | 回复中的 affected_shots 清单选镜，revised_shots 逐镜检查后由用户应用到编辑稿（未保存），可撤销 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
 
@@ -65,11 +65,13 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 
 ### 2.2 聊天与分镜只读上下文
 
-- `ConversationService.prepare(conversation_id, user_text, *, request_id=None, storyboard_context=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息和可选的分镜上下文，调用上下文纯函数；冻结实际历史 ID、context_hash、镜头标注、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
+- `ConversationService.prepare(conversation_id, user_text, *, request_id=None, storyboard_context=None, storyboard_edit=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息和可选的分镜上下文，调用上下文纯函数；冻结实际历史 ID、context_hash、镜头标注、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
 - `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
-- `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带轻量 `storyboard_reference={shot_id, storyboard_id, order, unsaved}`，不将完整资料写入消息正文，也不保存检查反馈或候选。
+- `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带轻量 `storyboard_reference={shot_id, storyboard_id, order, unsaved}`，修改镜头的请求另带 `storyboard_edit={shot_ids, base}`（base 为各镜请求时的内容指纹，不含序号与时间轴），不将完整资料写入消息正文，也不保存检查反馈或候选。
+- 修改镜头：`storyboard_edit={shots: 编辑稿中所选镜头, entities: 本版资产目录}`，须与 `storyboard_context.edit_request` 的镜头一致；命令另带 `edit_check` 供回复检查。`execute` 收到回复后用 `reply_problems` 检查 revised_shots，有问题时把上次回复和问题附在原 prompt 后再请求 1 次，修正后通过的镜头更多（或一样多而问题更少）才采用，否则保存第一次回复。
+- [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)：`reply_blocks`／`display_text` 读取并隐藏回复末尾的 ```affected_shots``` 与 ```revised_shots``` JSON 代码块；`affected_shots(content, shots)` 按 shot_id（未知时按镜号）对应编辑稿，丢弃不存在与重复的镜头；`revised_shots(content, base, entities)` 要求 EDIT_FIELDS 全部字段，`merge_shot` 保留 shot_id、原文与视频块引用，丢弃编辑中的自由文字，再用 `validation.validate_shot` 与正整数时长检查；`shot_changes` 给出（列名，原来，改成）；`shot_fingerprint` 忽略 order／start_ms／end_ms。`StoryboardEditor.apply_shots(shots)` 按 shot_id 替换并标记底色，`restore(content, marked)` 用于撤销，`set_content` 清除标记。
 - `build_conversation_context(..., storyboard_context=None)` 是纯函数，48,000 字符默认上限包含系统规则、序列化消息和本轮附带资料；按最早完整轮次裁剪副本，保留本轮完整消息与上下文。仍超限返回 CONTEXT_TOO_LARGE，不截断镜头／问题，不删除磁盘历史。
-- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000, max_outline_chars=12000)` 组装本镜、紧邻前后镜、`shot_count` 与其余镜头的 `storyboard_outline`、资产基础设定及本镜引用的有效原文；不带整组视图提示词或原文全文。概要每镜含镜号、时长、场景／人物／道具（名称／状态，人物列编辑过时为原样文字）、动作和对白旁白，不含景别、运镜和画面提示词；超出预算依次截取动作与对白前60字、只留资产、从离本镜最远处整镜省略，并写入 `missing`。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由本镜、邻镜和原文覆盖。
+- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000, max_outline_chars=12000, edit_items=None)` 组装本镜、紧邻前后镜、`shot_count` 与其余镜头的 `storyboard_outline`（每条带 shot_id）、`asset_catalog`（全部对象的编号、类型、名称、别名、仅声音标记与状态，不含设定）、资产基础设定及本镜引用的有效原文；传入 `edit_items=[{shot_id, fields, change}]` 时另加按镜号排序的 `edit_request` 与完整的 `edit_shots`，这些镜头不再列入概要，原文片段也包含它们的引用；不带整组视图提示词或原文全文。概要每镜含镜号、时长、场景／人物／道具（名称／状态，人物列编辑过时为原样文字）、动作和对白旁白，不含景别、运镜和画面提示词；超出预算依次截取动作与对白前60字、只留资产、从离本镜最远处整镜省略，并写入 `missing`。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由本镜、邻镜和原文覆盖。
 - 原文区间限制在绑定选区。镜头的原文坐标由模型写出，常差几个字，`sentence_range(value, start, end, lo, hi)` 将首尾各移到最近的句子边界（句号、问号、叹号、省略号或换行之后，句末右引号／括号归上一句）：向内最多10字，向外最多150字，不越出选区；片段落在一句之内时取整句，150字内无标点时保留原坐标。之后合并重叠或只隔空白的片段，`source_segments` 只含文字，不带原文编号和起止坐标；按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送，并按当前选择重新取得上下文。聊天只调用生成模型，不进入质量检查或自动写回。
 

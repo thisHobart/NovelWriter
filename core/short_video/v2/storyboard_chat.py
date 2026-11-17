@@ -95,7 +95,7 @@ def _shot(
 OUTLINE_CLIP = 60
 
 
-def _asset_label(ref: JsonObject, entities: list[JsonObject]) -> str:
+def asset_label(ref: JsonObject, entities: list[JsonObject]) -> str:
     entity = next((e for e in entities if e["asset_id"] == ref.get("asset_id")), None)
     if entity is None:
         return str(ref.get("asset_id"))
@@ -105,7 +105,7 @@ def _asset_label(ref: JsonObject, entities: list[JsonObject]) -> str:
     return entity["name"] + ("/" + variant["label"] if variant else "")
 
 
-def _dialogue_text(shot: JsonObject, entities: list[JsonObject]) -> str:
+def shot_dialogue_text(shot: JsonObject, entities: list[JsonObject]) -> str:
     """Same wording as the storyboard's dialogue column, including unsaved free text."""
     if "dialogue_text" in shot:
         return shot["dialogue_text"]
@@ -130,16 +130,20 @@ def _outline_entry(
     shot: JsonObject, order: int, entities: list[JsonObject], level: int
 ) -> JsonObject:
     """level 0 is complete, 1 clips action and dialogue, 2 keeps only assets."""
-    entry: JsonObject = {"order": order, "duration_ms": shot.get("duration_ms")}
+    entry: JsonObject = {
+        "shot_id": shot.get("shot_id"),
+        "order": order,
+        "duration_ms": shot.get("duration_ms"),
+    }
     if shot.get("scene_ref"):
-        entry["scene"] = _asset_label(shot["scene_ref"], entities)
+        entry["scene"] = asset_label(shot["scene_ref"], entities)
     if "character_text" in shot:
         entry["characters"] = shot["character_text"]
     else:
-        entry["characters"] = [_asset_label(r, entities) for r in shot.get("characters", [])]
-    entry["props"] = [_asset_label(r, entities) for r in shot.get("props", [])]
+        entry["characters"] = [asset_label(r, entities) for r in shot.get("characters", [])]
+    entry["props"] = [asset_label(r, entities) for r in shot.get("props", [])]
     if level < 2:
-        action, dialogue = shot.get("action", ""), _dialogue_text(shot, entities)
+        action, dialogue = shot.get("action", ""), shot_dialogue_text(shot, entities)
         entry["action"] = _clip(action) if level else action
         if dialogue:
             entry["dialogue_text"] = _clip(dialogue) if level else dialogue
@@ -171,6 +175,23 @@ def storyboard_outline(
     omitted = len(indexes) - len(kept)
     outline = [_outline_entry(shots[i], i + 1, entities, 2) for i in kept]
     return outline, [f"全稿概要超出预算，只保留镜号、时长和资产，离本镜最远的{omitted}个镜头未列出"]
+
+
+def catalog_summary(entities: list[JsonObject]) -> list[JsonObject]:
+    """Every catalog object with its states, so changes can name what exists and what is missing."""
+    return [
+        {
+            "asset_id": e["asset_id"],
+            "kind": e["kind"],
+            "name": e["name"],
+            **({"aliases": list(e["aliases"])} if e.get("aliases") else {}),
+            **({"usage": e["usage"]} if e.get("usage") == "voice_only" else {}),
+            "variants": [
+                {"variant_id": v["variant_id"], "label": v["label"]} for v in e["variants"]
+            ],
+        }
+        for e in entities
+    ]
 
 
 def _speakers(shot: JsonObject, entities: list[JsonObject]) -> tuple[list[JsonObject], list[str]]:
@@ -214,11 +235,29 @@ def build_storyboard_chat_context(
     unsaved: bool = False,
     max_source_chars: int = 6000,
     max_outline_chars: int = 12000,
+    edit_items: list[JsonObject] | None = None,
 ) -> JsonObject:
-    """Pure projection of a UI snapshot and already-read, provenance-bound records."""
+    """Pure projection of a UI snapshot and already-read, provenance-bound records.
+
+    edit_items asks for revised shots: each item names a shot and how to change it, and those
+    shots are attached in full instead of in the outline.
+    """
     shots = draft.get("shots", [])
     index = next((i for i, s in enumerate(shots) if s["shot_id"] == shot_id), None)
     require(index is not None, "INVALID_INPUT", "当前选中的镜头已不存在，请重新选择")
+    positions = {s["shot_id"]: i for i, s in enumerate(shots)}
+    edits = []
+    for item in edit_items or []:
+        require(
+            item.get("shot_id") in positions,
+            "INVALID_INPUT",
+            "要修改的镜头已不在分镜中，请重新选择",
+        )
+        edits.append((positions[item["shot_id"]], item))
+    edits.sort(key=lambda pair: pair[0])
+    require(
+        len({i for i, _ in edits}) == len(edits), "INVALID_INPUT", "要修改的镜头重复"
+    )
     require(
         type(max_source_chars) is int and max_source_chars >= 0, "INVALID_INPUT", "原文预算无效"
     )
@@ -252,6 +291,7 @@ def build_storyboard_chat_context(
         ],
         "shot_count": len(shots),
         "storyboard_outline": [],
+        "asset_catalog": catalog_summary(entities),
         "assets": [],
         "source_segments": [],
         "requirements": {},
@@ -268,9 +308,24 @@ def build_storyboard_chat_context(
     }
     if not catalog:
         missing.append("本版分镜绑定的资产目录缺失，不能确认人物与资产身份")
+    if edits:
+        result["edit_request"] = [
+            {
+                "shot_id": item["shot_id"],
+                "order": i + 1,
+                "fields": item.get("fields", ""),
+                "change": item.get("change", ""),
+            }
+            for i, item in edits
+        ]
+        result["edit_shots"] = [_shot(shots[i], i + 1, entities) for i, _ in edits]
     # Changes to a key plot element span many shots; the outline shows the whole storyboard.
     result["storyboard_outline"], notes = storyboard_outline(
-        shots, {index - 1, index, index + 1}, entities, index, max_outline_chars
+        shots,
+        {index - 1, index, index + 1, *(i for i, _ in edits)},
+        entities,
+        index,
+        max_outline_chars,
     )
     missing.extend(notes)
     # Video copy blocks are not attached: their narration is already in the shot, and their
@@ -342,7 +397,13 @@ def build_storyboard_chat_context(
         result["sources"]["source_id"] = source["id"]
     text = source["content"]["normalized_text"] if source else ""
     ranges = []
-    for ref in shots[index].get("source_refs", []):
+    # Shots being revised need their own original text too.
+    refs = [
+        ref
+        for i in dict.fromkeys([index, *(i for i, _ in edits)])
+        for ref in shots[i].get("source_refs", [])
+    ]
+    for ref in refs:
         if not source:
             missing.append("本版分镜绑定的原文或选区缺失")
             break
@@ -385,6 +446,7 @@ def read_storyboard_chat_context(
     storyboard: ArtifactRecord,
     *,
     unsaved: bool = False,
+    edit_items: list[JsonObject] | None = None,
 ) -> JsonObject:
     """Read only bound dependencies and relevant specs; never replace them with latest drafts."""
     state = repository.load()
@@ -422,4 +484,6 @@ def read_storyboard_chat_context(
                 "asset_catalog"
             ):
                 records[ref] = spec
-    return build_storyboard_chat_context(draft, shot_id, storyboard, records, unsaved=unsaved)
+    return build_storyboard_chat_context(
+        draft, shot_id, storyboard, records, unsaved=unsaved, edit_items=edit_items
+    )

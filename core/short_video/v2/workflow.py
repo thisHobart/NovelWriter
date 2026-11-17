@@ -88,36 +88,6 @@ def normalize_catalog(content: JsonObject, previous: ArtifactRecord | None = Non
     return value
 
 
-def keep_unselected_shots(
-    content: JsonObject, original: JsonObject, shot_ids: list[str]
-) -> JsonObject:
-    """A partial storyboard revision only takes the selected shots from the model.
-
-    The model returns the whole storyboard; copying a dozen untouched shots verbatim is error
-    prone, so every other shot, the shot order and top-level fields come from the original.
-    """
-    require(isinstance(content.get("shots"), list), "INVALID_OUTPUT", "分镜必须包含镜头列表")
-    returned = {
-        shot["shot_id"]: shot
-        for shot in content["shots"]
-        if isinstance(shot, dict) and isinstance(shot.get("shot_id"), str)
-    }
-    selected = set(shot_ids)
-    missing = [
-        str(i + 1)
-        for i, shot in enumerate(original["shots"])
-        if shot["shot_id"] in selected and shot["shot_id"] not in returned
-    ]
-    require(not missing, "INVALID_OUTPUT", f"修订结果缺少所选镜头：第{'、'.join(missing)}镜")
-    return {
-        **deepcopy(original),
-        "shots": [
-            deepcopy(returned[shot["shot_id"]] if shot["shot_id"] in selected else shot)
-            for shot in original["shots"]
-        ],
-    }
-
-
 def freeze_stage_rules(
     repository: ProjectRepository,
     stage: str,
@@ -575,9 +545,6 @@ class WorkflowService:
 
             original = self.repository.record(command["candidate_id"], state=state)["content"]
             content = merge_result(content, original, command["shot_ids"][0])
-        if kind == "storyboard" and command["candidate_id"] and command["shot_ids"]:
-            original = self.repository.record(command["candidate_id"], state=state)["content"]
-            content = keep_unselected_shots(content, original, command["shot_ids"])
         if kind == "storyboard" and isinstance(content.get("shots"), list):
             # Resolve an exact, unambiguous video speaker label to the catalog's stable ID.
             # Resolve provider labels before structural validation; raw requests stay transient.

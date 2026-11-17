@@ -196,14 +196,56 @@ def _asset_ref(value: Any, kind: str, entities: dict[str, JsonObject]) -> JsonOb
     )
     entity = entities.get(asset_id)
     require(
-        entity is not None and entity["kind"] == kind, "INVALID_OUTPUT", f"引用了未知{kind}实体"
+        entity is not None and entity["kind"] == kind,
+        "INVALID_OUTPUT",
+        f"引用了资产目录中没有的{KIND_LABELS.get(kind, kind)}：{asset_id}",
     )
     require(
         variant in {v["variant_id"] for v in entity["variants"]},
         "INVALID_OUTPUT",
-        "引用了未知资产状态",
+        f"引用了资产目录中没有的状态：{entity['name']} / {variant}",
     )
     return entity
+
+
+KIND_LABELS = {"character": "人物", "scene": "场景", "prop": "道具"}
+SHOT_TEXT_FIELDS = {
+    "shot_size": "景别",
+    "camera_movement": "镜头运动",
+    "action": "动作",
+    "visual_prompt_draft": "画面提示词",
+}
+
+
+def validate_shot(shot: JsonObject, entities: dict[str, JsonObject]) -> None:
+    """One shot against the asset catalog; video block coverage is the whole storyboard's job."""
+    for field, label in SHOT_TEXT_FIELDS.items():
+        text(shot.get(field), f"镜头{shot.get('order', '')}的{label}")
+    for field, label in (("sound", "音效"), ("narration", "旁白")):
+        text(shot.get(field), label, empty=True)
+    _asset_ref(shot.get("scene_ref"), "scene", entities)
+    for field, entity_kind in (("characters", "character"), ("props", "prop")):
+        for ref in rows(shot.get(field), KIND_LABELS[entity_kind], key=None, empty=True):
+            entity = _asset_ref(ref, entity_kind, entities)
+            require(
+                entity.get("usage") != "voice_only",
+                "INVALID_OUTPUT",
+                "仅声音人物不能出现在画面人物列表",
+            )
+    _dialogue(shot.get("dialogue"))
+    cast = {r["asset_id"] for r in shot["characters"]}
+    for line in shot["dialogue"]:
+        require(
+            line.get("character_id") in entities
+            and entities[line["character_id"]]["kind"] == "character",
+            "INVALID_OUTPUT",
+            "对白人物不存在",
+        )
+        require(
+            line["character_id"] in cast or line.get("voice_over") is True,
+            "INVALID_OUTPUT",
+            "对白人物不在本镜，需明确画外音",
+        )
 
 
 def validate_content(
@@ -312,39 +354,7 @@ def validate_content(
         covered = set()
         value = recalculate_timeline(value)
         for shot in value["shots"]:
-            for field in ("shot_size", "camera_movement", "action", "visual_prompt_draft"):
-                label = {
-                    "shot_size": "景别",
-                    "camera_movement": "镜头运动",
-                    "action": "动作",
-                    "visual_prompt_draft": "画面提示词",
-                }[field]
-                text(shot.get(field), f"镜头{shot['order']}的{label}")
-            for field in ("sound", "narration"):
-                text(shot.get(field), field, empty=True)
-            _asset_ref(shot.get("scene_ref"), "scene", entities)
-            for field, entity_kind in (("characters", "character"), ("props", "prop")):
-                for ref in rows(shot.get(field), field, key=None, empty=True):
-                    entity = _asset_ref(ref, entity_kind, entities)
-                    require(
-                        entity.get("usage") != "voice_only",
-                        "INVALID_OUTPUT",
-                        "仅声音人物不能出现在画面人物列表",
-                    )
-            _dialogue(shot.get("dialogue"))
-            cast = {r["asset_id"] for r in shot["characters"]}
-            for line in shot["dialogue"]:
-                require(
-                    line.get("character_id") in entities
-                    and entities[line["character_id"]]["kind"] == "character",
-                    "INVALID_OUTPUT",
-                    "对白人物不存在",
-                )
-                require(
-                    line["character_id"] in cast or line.get("voice_over") is True,
-                    "INVALID_OUTPUT",
-                    "对白人物不在本镜，需明确画外音",
-                )
+            validate_shot(shot, entities)
             refs = shot.get("video_block_refs")
             strings(refs, "视频块引用")
             require(

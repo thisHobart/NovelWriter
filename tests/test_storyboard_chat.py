@@ -53,6 +53,11 @@ def test_read_only_context_uses_current_shot_neighbours_exact_assets_and_merged_
     assert all("views" not in a.get("spec", {}) and "positive_prompt" not in a.get("spec", {}) for a in value["assets"])
     assert value["source_segments"] == ["井口响了三声。"]
     assert "井口响了三声。" in encode(value) and encode(value).count("井口响了三声。") == 1
+    # The catalog lists every object by name and state only; specs come only for this shot.
+    catalog = value.pop("asset_catalog")
+    assert [e["asset_id"] for e in catalog][-1] == "asset_unused" and "spec" not in encode(catalog)
+    assert {"asset_id": "asset_voice", "kind": "character"}.items() <= catalog[4].items()
+    assert catalog[4]["usage"] == "voice_only" and catalog[0]["variants"][1]["variant_id"] == "summer"
     assert "asset_unused" not in encode(value) and "shots" not in value
     assert (snapshot(scenario), draft) == before
     value["shot"]["action"] = "修改返回值不影响编辑稿"
