@@ -254,6 +254,8 @@ class MediaPreview(QWidget):
         self.frame_grid = SlotGrid()
         slots_layout.addWidget(self.frame_grid)
         self.add_image_button = AddSlotButton()
+        # In the grid from the start: shown or hidden before that, it would be its own window.
+        self.slot_grid.set_cells([self.add_image_button])
 
         # Video prompt.
         self.prompt_section = QWidget()

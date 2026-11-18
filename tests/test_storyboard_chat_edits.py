@@ -302,3 +302,35 @@ def test_panel_ignores_plain_replies_and_narrow_widths(chat_ui):
     assert panel.rows.width() <= ui.panel.width()
     assert ui.panel.messages.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
     ui.panel.hide()
+
+
+def test_switching_away_and_back_never_opens_chat_messages_as_windows(chat_ui):
+    from test_comfyui_video import watch_windows
+
+    ui = chat_ui
+    ui.panel.resize(384, 700)
+    ui.panel.show()
+    ui.page.editor.table.selectRow(1)
+    run_chat(ui, affected_reply(
+        {"shot_id": "shot_1", "fields": ["动作"], "change": "放下钥匙"},
+        {"shot_id": "shot_3", "fields": ["动作"], "change": "落点改为房子"},
+    ))
+    ui.panel.input.setPlainText("坠落物改成房子，后面怎么改？")
+    ui.panel.send()
+    finish(ui)
+    ui.app.processEvents()
+    assert ui.panel.edit_panel.isVisible()
+    watch = watch_windows(ui.app)
+    try:
+        # A page switch redraws the chat twice in a row: once for the page change, once for the
+        # workbench refresh. Messages from the first redraw must not open as windows.
+        for active in (None, ui.page, None, ui.page):
+            ui.active[0] = active
+            ui.panel.refresh_reference()
+            ui.panel.refresh()
+            for _ in range(3):
+                ui.app.processEvents()
+        assert watch.opened == []
+    finally:
+        ui.app.removeEventFilter(watch)
+    assert ui.panel.edit_panel.isVisible() and ui.panel.edit_panel.mode == "affected"

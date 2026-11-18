@@ -312,7 +312,8 @@ class ShotEditPanel(QFrame):
         while self.rows_layout.count():
             widget = self.rows_layout.takeAt(0).widget()
             if widget:
-                widget.setParent(None)
+                # Hidden rather than detached, so a pending queued show cannot open a window.
+                widget.hide()
                 widget.deleteLater()
 
     def add_row(self, shot_id: str, title: str, *, enabled: bool) -> ShotRow:

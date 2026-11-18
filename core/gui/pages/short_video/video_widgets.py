@@ -256,7 +256,8 @@ class SlotGrid(QWidget):
     def set_cells(self, cells: list[QWidget]) -> None:
         for cell in self.cells:
             if cell not in cells:
-                cell.setParent(None)
+                # Hidden rather than detached, so it never shows as a window of its own.
+                cell.hide()
                 cell.deleteLater()
         self.cells = list(cells)
         for cell in self.cells:

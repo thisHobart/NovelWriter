@@ -190,7 +190,9 @@ class MessageStream(VScrollArea):
         for widget in self.items:
             self.column.removeWidget(widget)
             if widget is not keep:
-                widget.setParent(None)
+                # Hide, never detach: a message added moment ago still has Qt's queued show
+                # pending, and a detached widget would open as its own window until deleted.
+                widget.hide()
                 widget.deleteLater()
         self.items.clear()
 

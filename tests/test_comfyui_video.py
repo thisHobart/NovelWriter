@@ -1247,3 +1247,42 @@ def test_image_picker_lists_shot_assets_project_images_and_a_file(tmp_path):
     assert "cabin.png" not in {image["name"] for image in MediaRepository(str(tmp_path)).images()}
     panel.close()
     app.processEvents()
+
+
+def watch_windows(app):
+    """Record widgets that open as a window of their own (a stray one flashes on screen)."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QWidget
+
+    class Watch(QObject):
+        def __init__(self):
+            super().__init__()
+            self.opened = []
+
+        def eventFilter(self, obj, event):  # noqa: N802 - Qt 命名
+            if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow():
+                self.opened.append(type(obj).__name__)
+            return False
+
+    watch = Watch()
+    app.installEventFilter(watch)
+    return watch
+
+
+def test_building_and_switching_the_video_area_opens_no_stray_window(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    watch = watch_windows(app)
+    try:
+        _, panel, _ = reference_panel(tmp_path)
+        panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-first-last"))
+        panel.workflows.setCurrentIndex(panel.workflows.findData("minimax-reference"))
+        panel.add_image_button.click()
+        app.processEvents()
+        assert watch.opened == []
+        assert panel.add_image_button.parentWidget() is panel.slot_grid
+    finally:
+        app.removeEventFilter(watch)
+    panel.close()
