@@ -23,6 +23,7 @@
 | 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
 | 聊天讨论 | ConversationService.prepare / execute | 用户消息、有效历史及可选的当前分镜只读上下文；回复供手动修改，不自动写回；保留项目隔离和手动重试 |
 | 聊天修改多个镜头 | ChatPanel.send_edit(items) → ConversationService.prepare(..., storyboard_edit=...) → ChatWork；ShotEditPanel.apply / undo_apply | 回复中的 affected_shots 清单选镜，revised_shots 逐镜检查后由用户应用到编辑稿（未保存），可撤销 |
+| 镜头检查行 | feedback.record_check(repository, record, state, *, shot_index=None) → {status, summary, issues, stale} | status 为 passed／issues／other_shots／incomplete／unchecked；按 target_path 的 shots[i] 筛出本镜问题，issues 是可读的问题加建议；stale 为已更新的来源名称。record_message 保持原有一行文字 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
 
@@ -353,7 +354,7 @@ MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析
 
 parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters、kind 与 generator_node。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后的 MiniMaxH3AddGuide。允许仅首帧、仅尾帧或二者组合；同时存在时按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
 
-VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 显示固定输入位置“图片节点 N”，选图后另显示实际代称 <Picture M>；M 按已选图片顺序连续编号，与提交顺序一致；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
+VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 卡片底部显示固定位置“图片 N”，选图后角标显示实际代称 <Picture M>；M 按已选图片顺序连续编号，与提交顺序一致；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
 
 WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。像素量下限为当前 ResolutionSelector 允许的 0.1；保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
 

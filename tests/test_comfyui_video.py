@@ -527,10 +527,11 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
         "首帧图片",
         "尾帧图片",
     ]
-    assert [label.text() for label in panel.image_labels.values()] == [
-        "图片节点 1", "图片节点 2", "图片节点 3",
-        "首帧图片", "尾帧图片",
+    assert [slot.summary() for slot in panel.image_fields.values()] == [
+        "图片 1 · 未选", "图片 2 · 未选", "图片 3 · 未选",
+        "首帧图片 · 未选", "尾帧图片 · 未选",
     ]
+    assert panel.frames_head.isVisibleTo(panel) and not panel.add_image_button.isVisibleTo(panel)
     from PySide6.QtGui import QImage
 
     path = tmp_path / "ui-image.png"
@@ -634,8 +635,7 @@ def test_video_task_boundary_refreshes_controls_and_keeps_workflow_jobs_separate
     config.save(tmp_path)
     panel.refresh()
     for node_id, image_id in selection.items():
-        combo = panel.image_fields[node_id][0]
-        combo.setCurrentIndex(combo.findData(image_id))
+        panel.image_fields[node_id].set_image(image_id)
     assert panel.loaded_workflow_id == other_id
     assert panel.current_job is None
     panel.close()
@@ -880,14 +880,15 @@ def save_ui_image(path):
 
 def test_ui_add_reference_slot_and_skip_blank_slots_through_task_recovery(tmp_path):
     app, panel, submitted = reference_panel(tmp_path)
-    panel.resize(900, 1000)
+    panel.resize(600, 300)
     panel.show()
     app.processEvents()
     path = tmp_path / "manual.png"
     save_ui_image(path)
-    assert [label.text() for label in panel.image_labels.values()] == [
-        "图片节点 1", "图片节点 2", "图片节点 3",
+    assert [slot.summary() for slot in panel.image_fields.values()] == [
+        "图片 1 · 未选", "图片 2 · 未选", "图片 3 · 未选",
     ]
+    assert panel.add_image_button.text() == "＋ 添加参考图片\n还能加 6 张"
     assert not panel.generate_button.isEnabled()
     panel.prompt.setPlainText("Use <Picture 1> and <Picture 2>.")
     panel.parameter_fields["129.noise_seed"].setText("12345")
@@ -896,17 +897,24 @@ def test_ui_add_reference_slot_and_skip_blank_slots_through_task_recovery(tmp_pa
     assert len(panel.image_fields) == 4
     added_id = panel.additional_reference_slots[0]
     assert added_id == "reference_input_4"
-    assert panel.image_labels[added_id].text() == "图片节点 4"
-    scroll_position = panel.input_area.verticalScrollBar().value()
+    added = panel.image_fields[added_id]
+    assert added.summary() == "图片 4 · 未选"
+    assert panel.add_image_button.text() == "＋ 添加参考图片\n还能加 5 张"
+    # The page scrolls to the new position, and keeps its place when the inputs reload.
+    scroll_position = panel.settings_area.verticalScrollBar().value()
     assert scroll_position > 0
+    viewport = panel.settings_area.viewport()
+    assert viewport.rect().contains(added.mapTo(viewport, added.rect().topLeft()))
+    assert viewport.rect().contains(added.mapTo(viewport, added.rect().bottomRight()))
     panel.import_image(str(path), "137")
     app.processEvents()
-    scrollbar = panel.input_area.verticalScrollBar()
+    scrollbar = panel.settings_area.verticalScrollBar()
     assert scrollbar.value() == min(scroll_position, scrollbar.maximum())
     assert panel.generate_button.isEnabled()
     panel.import_image(str(path), added_id)
-    assert panel.image_labels[added_id].text() == "图片节点 4\n<Picture 2>"
-    assert panel.image_labels["139"].text() == "图片节点 2"
+    assert panel.image_fields[added_id].summary() == "图片 4 · <Picture 2>"
+    assert panel.image_fields["139"].summary() == "图片 2 · 未选"
+    assert panel.slots_note.text() == "已选 2 / 4 · 编号按已选顺序"
     assert panel.prompt.toPlainText() == "Use <Picture 1> and <Picture 2>."
     assert panel.parameter_fields["129.noise_seed"].text() == "12345"
     panel.generate_button.click()
@@ -942,20 +950,21 @@ def test_ui_reference_number_changes_require_prompt_review_and_allow_undo(tmp_pa
     save_ui_image(path)
     for node_id in ["137", "139", "147"]:
         panel.import_image(str(path), node_id)
-    original_image = panel.image_fields["139"][0].currentData()
+    original_image = panel.image_fields["139"].image_id
     panel.prompt.setPlainText("Use <Picture 2>.")
-    panel.image_fields["139"][0].setCurrentIndex(0)
-    assert panel.image_labels["147"].text() == "图片节点 3\n<Picture 2>"
+    assert panel.prompt_shift.isHidden()
+    panel.image_fields["139"].clear_button.click()
+    assert panel.image_fields["147"].summary() == "图片 3 · <Picture 2>"
+    assert not panel.prompt_shift.isHidden()
     panel.refresh()
     with pytest.raises(WorkspaceError, match="图片编号已变化"):
         panel.generate()
     assert submitted == []
-    panel.image_fields["139"][0].setCurrentIndex(
-        panel.image_fields["139"][0].findData(original_image)
-    )
+    panel.image_fields["139"].set_image(original_image)
+    assert panel.prompt_shift.isHidden()
     panel.generate()
     assert len(submitted) == 1
-    panel.image_fields["139"][0].setCurrentIndex(0)
+    panel.image_fields["139"].set_image(None)
     with pytest.raises(WorkspaceError, match="图片编号已变化"):
         panel.generate()
     panel.prompt.setPlainText("Use <Picture 2>, now the second visible reference.")
@@ -974,8 +983,9 @@ def test_ui_tail_only_can_submit_and_find_job_after_interruption(tmp_path):
     panel.import_image(str(path), "148")
     panel.prompt.setPlainText("以尾帧为结束画面，保持动作和场景连续。")
     assert panel.generate_button.isEnabled()
-    assert panel.image_labels["148"].text() == "尾帧图片"
-    assert all("Picture" not in label.text() for label in panel.image_labels.values())
+    assert panel.image_fields["148"].summary() == "尾帧图片"
+    assert panel.image_fields["148"].tag_text() == "尾帧图片"
+    assert all("Picture" not in slot.summary() for slot in panel.image_fields.values())
     panel.generate()
     work = submitted[-1]
     assert set(work.command["images"]) == {"148"}
@@ -1012,12 +1022,12 @@ def test_ui_combined_reference_numbering_excludes_frames_and_detects_shifts(tmp_
     save_ui_image(path)
     for node_id in ("139", "152", "148"):
         panel.import_image(str(path), node_id)
-    assert panel.image_labels["139"].text().endswith("<Picture 1>")
-    assert panel.image_labels["152"].text().endswith("<Picture 2>")
-    assert panel.image_labels["148"].text() == "尾帧图片"
+    assert panel.image_fields["139"].summary().endswith("<Picture 1>")
+    assert panel.image_fields["152"].summary().endswith("<Picture 2>")
+    assert panel.image_fields["148"].summary() == "尾帧图片"
     panel.prompt.setPlainText("Use <Picture 2> as a reference, end at the last frame.")
-    panel.image_fields["139"][0].setCurrentIndex(0)
-    assert panel.image_labels["152"].text().endswith("<Picture 1>")
+    panel.image_fields["139"].set_image(None)
+    assert panel.image_fields["152"].summary().endswith("<Picture 1>")
     with pytest.raises(WorkspaceError, match="图片编号已变化"):
         panel.generate()
     panel.prompt.setPlainText("Use <Picture 1> as a reference, end at the last frame.")
@@ -1081,9 +1091,12 @@ def test_video_settings_stay_readable_and_open_saved_output_without_playback(tmp
     panel.show()
     app.processEvents()
     assert panel.prompt.height() >= theme.CONTROL_HEIGHT * 5
-    assert panel.input_area.height() >= theme.CONTROL_HEIGHT * 6
+    for slot in panel.image_fields.values():
+        assert slot.width() >= 148 and slot.height() >= 110
+    panel.advanced.head.click()
+    app.processEvents()
     for control in panel.parameter_fields.values():
-        assert control.height() >= theme.CONTROL_HEIGHT
+        assert control.isVisibleTo(panel) and control.height() >= theme.CONTROL_HEIGHT
     for child in panel.findChildren(media_preview.QWidget):
         assert child.metaObject().className() != "QVideoWidget"
     assert panel.open_button.isEnabled()
@@ -1118,3 +1131,119 @@ def test_video_settings_stay_readable_and_open_saved_output_without_playback(tmp
     assert panel.video_path is None
     panel.close()
     app.setStyleSheet(previous_style)
+
+
+def test_saved_video_card_opens_the_file_and_states_follow_the_job(tmp_path, monkeypatch):
+    from core.gui.pages.short_video import media_preview
+
+    app, panel, submitted = reference_panel(tmp_path)
+    assert panel.pill.text() == "未生成" and panel.query_button.isHidden()
+    assert not panel.open_video_button.isEnabled()
+    assert panel.status.text() == "请至少选择一张参考图片"
+    path = tmp_path / "reference.png"
+    save_ui_image(path)
+    panel.import_image(str(path), "137")
+    assert panel.status.text() == "还没有生成视频"
+    panel.generate_button.click()
+    work = submitted[0]
+    server = ComfyServer()
+    server.running = True
+    work.transport = httpx.MockTransport(server.request)
+
+    def stop(message, progress):
+        if "正在生成视频" in message:
+            work.token.cancel()
+
+    with pytest.raises(GenerationCancelled):
+        work(stop)
+    panel.refresh()
+    assert panel.pill.text() == "待确认" and panel.pill.property("tone") == "warn"
+    assert panel.query_button.isVisibleTo(panel) and "查询原任务" in panel.preview_box.text()
+    panel.query()
+    query = submitted[-1]
+    server.running = False
+    query.transport = httpx.MockTransport(server.request)
+    query(lambda *_: None)
+    panel.refresh()
+    assert panel.pill.text() == "已保存" and panel.pill.property("tone") == "ok"
+    assert panel.query_button.isHidden() and panel.status.text().startswith("视频已保存")
+    opened = []
+    monkeypatch.setattr(
+        media_preview.QDesktopServices, "openUrl", lambda url: (opened.append(url), True)[1]
+    )
+    panel.open_video_button.click()
+    assert opened[-1].toLocalFile() == str(panel.video_path).replace("\\", "/")
+    panel.image_fields["137"].clear_button.click()
+    assert panel.pill.text() == "未生成" and not panel.open_video_button.isEnabled()
+    panel.close()
+    app.processEvents()
+
+
+def test_duration_hint_offers_the_storyboard_length(tmp_path):
+    app, panel, _ = reference_panel(tmp_path)
+    duration = panel.duration_control()
+    assert duration is not None and panel.duration_hint.isHidden()
+    seconds = int(duration.value()) + 2
+    panel.set_shot(seconds * 1000, [])
+    assert f"分镜 {seconds} 秒" in panel.duration_hint.text()
+    assert f"改成 {seconds}" in panel.duration_hint.text()
+    panel.duration_hint.linkActivated.emit("match")
+    assert duration.value() == seconds and "与分镜一致" in panel.duration_hint.text()
+    key = next(p.key for p in panel.template.parameters if p.role == "duration")
+    assert panel.parameter_values()[key] == seconds
+    panel.close()
+
+
+def test_image_picker_lists_shot_assets_project_images_and_a_file(tmp_path):
+    from PySide6.QtWidgets import QWidgetAction
+
+    from core.gui.pages.short_video.media_preview import PickRow
+    from core.short_video.v2.media_repository import MediaRepository
+
+    app, panel, _ = reference_panel(tmp_path)
+    for name in ("snow.png", "cabin.png"):
+        save_ui_image(tmp_path / name)
+    panel.import_image(str(tmp_path / "snow.png"), "137")
+    panel.import_image(str(tmp_path / "cabin.png"), "139")
+    images = {image["name"]: image for image in MediaRepository(str(tmp_path)).images()}
+    panel.set_shot(None, [
+        {"kind": "scene", "name": "雪地", "views": [
+            {"label": "全景", "image": images["snow.png"]},
+            {"label": "近景", "image": None},
+        ]},
+    ])
+    menu = panel.picker_menu("147")
+    texts = [action.text() for action in menu.actions() if action.text()]
+    assert texts == ["场景 · 雪地 · 全景", "场景 · 雪地 · 近景（未生成图片）", "从文件选择…"]
+    assert not menu.actions()[2].isEnabled()
+    headers = [
+        action.defaultWidget().text()
+        for action in menu.actions()
+        if isinstance(action, QWidgetAction) and not isinstance(action.defaultWidget(), PickRow)
+    ]
+    assert headers == ["本镜资产", "项目图片"]
+    rows = {
+        action.defaultWidget().pick.text(): action.defaultWidget()
+        for action in menu.actions()
+        if isinstance(action, QWidgetAction) and isinstance(action.defaultWidget(), PickRow)
+    }
+    assert set(rows) == {"snow.png", "cabin.png"}
+    menu.actions()[1].trigger()
+    assert panel.image_fields["147"].image_id == images["snow.png"]["image_id"]
+    rows["cabin.png"].pick.click()
+    assert panel.image_fields["147"].image_id == images["cabin.png"]["image_id"]
+    menu = panel.picker_menu("137")
+    row = next(
+        action.defaultWidget()
+        for action in menu.actions()
+        if isinstance(action, QWidgetAction)
+        and isinstance(action.defaultWidget(), PickRow)
+        and action.defaultWidget().pick.text() == "cabin.png"
+    )
+    row.remove.click()
+    # Removed from lists: every position that showed it is empty, the file stays.
+    assert panel.image_fields["139"].image_id is None and panel.image_fields["147"].image_id is None
+    assert images["cabin.png"]["image_id"] in MediaRepository(str(tmp_path)).hidden_images()
+    assert "cabin.png" not in {image["name"] for image in MediaRepository(str(tmp_path)).images()}
+    panel.close()
+    app.processEvents()

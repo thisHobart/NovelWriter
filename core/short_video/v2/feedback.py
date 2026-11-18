@@ -207,14 +207,9 @@ def review_message(status: str | None, feedback: dict | None) -> str:
     return "尚未自动检查"
 
 
-def record_message(repository: ProjectRepository, record: dict, state: dict) -> str:
-    run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
-    parts = ["已保存"]
-    if record.get("origin") == "model" and run:
-        parts.append(review_message(run.get("review_status"), run.get("feedback")))
-    else:
-        parts.append("当前内容尚未自动检查")
-    changed = []
+def stale_sources(repository: ProjectRepository, record: dict, state: dict) -> list[str]:
+    """Inputs that changed after the record was made, as names people know."""
+    changed: list[str] = []
     seen = set()
 
     def visit(item: dict) -> None:
@@ -239,9 +234,77 @@ def record_message(repository: ProjectRepository, record: dict, state: dict) -> 
                 visit(repository.record(ref, state=state))
 
     visit(record)
+    return changed
+
+
+def record_message(repository: ProjectRepository, record: dict, state: dict) -> str:
+    run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
+    parts = ["已保存"]
+    if record.get("origin") == "model" and run:
+        parts.append(review_message(run.get("review_status"), run.get("feedback")))
+    else:
+        parts.append("当前内容尚未自动检查")
+    changed = stale_sources(repository, record, state)
     if changed:
         parts.append("、".join(changed) + "已更新，当前内容仍使用旧版来源")
     return "；".join(parts)
+
+
+_SHOT_PATH = re.compile(r"^shots(?:\[(\d+)\]|\.(\d+))")
+
+
+def record_check(
+    repository: ProjectRepository, record: dict, state: dict, *, shot_index: int | None = None
+) -> dict:
+    """The check result as one short line plus the issues behind it, for one shot when given.
+
+    status is passed / issues / other_shots / incomplete / unchecked; issues are readable
+    sentences; stale names inputs that changed since the record was made.
+    """
+    run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
+    stale = stale_sources(repository, record, state)
+    result = {"status": "unchecked", "summary": "尚未自动检查", "issues": [], "stale": stale}
+    if record.get("origin") != "model" or not run:
+        return result
+    status = run.get("review_status")
+    if status == "passed":
+        return {**result, "status": "passed", "summary": "检查通过"}
+    if status in {"unavailable", "incomplete"}:
+        return {**result, "status": "incomplete", "summary": review_message(status, run.get("feedback"))}
+    if status != "issues":
+        return result
+    found = (run.get("review_result") or {}).get("issues") or []
+    if not found:
+        # Runs saved before issues were stored keep only the summary.
+        summary = (run.get("feedback") or {}).get("summary") or "检查发现问题，未记录具体问题"
+        return {**result, "status": "issues", "summary": "检查发现问题", "issues": [summary]}
+
+    def shot_of(issue: dict) -> int | None:
+        match = _SHOT_PATH.match(issue.get("target_path", ""))
+        return int(match[1] or match[2]) if match else None
+
+    mine = [
+        issue
+        for issue in found
+        if shot_index is None or shot_of(issue) in (None, shot_index)
+    ]
+    sentences = []
+    for issue in mine:
+        sentence = readable_fields(concise(issue.get("explanation", ""))) or "未说明原因"
+        suggestion = readable_fields(concise(issue.get("suggestion", "")))
+        sentences.append(sentence + (f"建议：{suggestion}" if suggestion else ""))
+    if not mine:
+        return {
+            **result,
+            "status": "other_shots",
+            "summary": f"其他镜头有 {len(found)} 项问题",
+        }
+    return {
+        **result,
+        "status": "issues",
+        "summary": f"检查发现 {len(mine)} 项问题",
+        "issues": sentences,
+    }
 
 
 def task_message(

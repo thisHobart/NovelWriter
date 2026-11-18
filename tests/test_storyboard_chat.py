@@ -329,9 +329,12 @@ def test_ui_preview_reads_unsaved_edits_without_validation_or_model_and_tracks_s
     assert snapshot(scenario) == before and ui.pending == []
     ui.page.editor.table.selectRow(2)
     assert "第 3 镜" in ui.panel.context_label.text()
-    ui.panel.attach_shot.setChecked(False)
-    assert ui.panel.selected_context() is None and "普通聊天" in ui.panel.context_label.text()
-    ui.panel.attach_shot.setChecked(True)
+    ui.panel.attach_shot.detach_button.click()
+    assert ui.panel.selected_context() is None and not ui.panel.attach_shot.isChecked()
+    assert ui.panel.attach_shot.chip.isHidden() and not ui.panel.attach_shot.attach_button.isHidden()
+    assert ui.panel.preview_context_button.isHidden()
+    ui.panel.attach_shot.attach_button.click()
+    assert "第 3 镜" in ui.panel.context_label.text() and not ui.panel.attach_shot.chip.isHidden()
     ui.active[0] = None
     ui.panel.refresh_reference()
     assert ui.panel.context_panel.isHidden() and ui.panel.selected_context() is None
@@ -380,7 +383,8 @@ def test_plain_chat_and_missing_selection_dont_carry_last_shot(chat_ui):
     ui.page.editor.set_content(None)
     ui.panel.refresh_reference()
     assert ui.panel.selected_context() is None
-    assert "未附带分镜" in ui.panel.context_label.text()
+    assert not ui.panel.attach_shot.isEnabled() and ui.panel.attach_shot.chip.isHidden()
+    assert ui.panel.attach_shot.attach_button.toolTip() == "先在分镜表格里选中要讨论的镜头"
 
 
 def test_failed_chat_retry_reads_new_draft_and_cancel_preserves_documents(chat_ui, scenario):
@@ -418,8 +422,31 @@ def test_attachment_controls_fit_narrow_chat_and_toggling_never_discards_input(c
     ui.app.processEvents()
     ui.panel.input.setPlainText("还未发送的问题")
     assert ui.panel.context_panel.width() <= ui.panel.width()
-    assert ui.panel.preview_context_button.isVisible() and ui.panel.input.height() >= 60
+    assert ui.panel.preview_context_button.isVisible() and ui.panel.input.height() >= 52
+    assert "原文片段" in ui.panel.attach_shot.chip.toolTip()
     ui.panel.attach_shot.setChecked(False)
-    assert ui.panel.input.toPlainText() == "还未发送的问题" and ui.panel.context_note.isHidden()
+    assert ui.panel.input.toPlainText() == "还未发送的问题" and not ui.panel.preview_context_button.isVisible()
     ui.panel.attach_shot.setChecked(True)
-    assert not ui.panel.context_note.isHidden()
+    assert ui.panel.preview_context_button.isVisible() and ui.panel.attach_shot.chip.isVisible()
+    # The input grows with long text but stops at about five lines.
+    ui.panel.input.setPlainText("\n".join(["一行"] * 20))
+    assert 52 < ui.panel.input.height() <= 120
+
+
+def test_send_turns_into_stop_while_this_conversation_waits_for_a_reply(chat_ui):
+    ui = chat_ui
+    ui.panel.input.setPlainText("问个问题")
+    ui.panel.send()
+    ui.workbench.host.runner.busy = True
+    ui.panel.refresh()
+    assert ui.panel.send_button.text() == "停止" and ui.panel.send_button.isEnabled()
+    assert ui.panel.messages.toPlainText().endswith("正在回复…")
+    ui.panel.send_button.click()
+    ui.workbench.host.runner.cancel_current.assert_called_once()
+    # Another conversation's reply does not turn this one's button into 「停止」.
+    ui.panel.create()
+    assert ui.panel.send_button.text() == "发送"
+    ui.workbench.host.runner.busy = False
+    ui.workbench.tasks.works.pop("text")
+    ui.panel.refresh_send_button()
+    assert ui.panel.send_button.text() == "发送" and ui.panel.send_button.isEnabled()

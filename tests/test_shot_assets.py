@@ -142,86 +142,84 @@ def test_fallback_rejects_spec_from_another_catalog(scenario, monkeypatch):
     assert not any(v["available"] for v in scene["views"])
 
 
-def test_inline_view_copy_preserves_unsaved_shot_and_video_selection(scenario, prompt_page, tmp_path, monkeypatch):
-    from PySide6.QtCore import Qt
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
-    from test_comfyui_video import save_ui_image
+def picker_texts(page, node_id="137"):
+    return [action.text() for action in page.media.picker_menu(node_id).actions() if action.text()]
 
+
+def test_shot_tab_puts_chips_header_and_shot_assets_in_the_video_area(scenario, prompt_page):
     page, started = prompt_page
     page.resize(1400, 1000)
     page.tabs.setCurrentIndex(3)
     page.show()
-    app = QApplication.instance()
-    app.processEvents()
-    panel = page.shot_assets
-    assert panel.table.rowCount() == 3 and panel.details.isHidden()
-    path = tmp_path / "manual.png"
-    save_ui_image(path)
-    page.media.import_image(str(path), "137")
-    page.media.prompt.setPlainText("Use <Picture 1>.")
-    media_before = (page.media.image_selection(), page.media.prompt.toPlainText(),
-                    dict(page.media.prompt_image_bindings), page.media.image_labels["137"].text())
-    page.editor.positive.setPlainText("镜头正文的未保存修改")
-    before = snapshot(scenario)
-    sent = Mock(side_effect=AssertionError("browsing must not call a model"))
-    monkeypatch.setattr(llm.ScriptLLM, "_request", sent)
-    rect = panel.table.visualItemRect(panel.table.item(1, 0))
-    QTest.mouseClick(panel.table.viewport(), Qt.LeftButton, pos=rect.center())
-    assert not panel.details.isHidden()
-    assert panel.positive.isReadOnly() and panel.negative.isReadOnly()
-    panel.views.setCurrentIndex(panel.views.findData("body_side"))
-    panel.copy_positive.click()
-    assert app.clipboard().text() == "asset_character / base / body_side"
-    panel.copy_negative.click()
-    assert app.clipboard().text() == "禁止改变 asset_character 的 body_side"
-    assert page.dirty and page.editor.positive.toPlainText() == "镜头正文的未保存修改"
-    assert media_before == (page.media.image_selection(), page.media.prompt.toPlainText(),
-                            page.media.prompt_image_bindings, page.media.image_labels["137"].text())
-    assert snapshot(scenario) == before and started == []
-    sent.assert_not_called()
-    panel.collapse_button.click()
-    assert panel.details.isHidden()
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance().processEvents()
+    board = scenario.current("storyboard")["content"]["shots"]
+    assert page.body_stack.currentWidget() is page.media
+    assert page.selector_bar.isHidden() and page.action_bar.isHidden() and page.status.isHidden()
+    chips = page.shot_header.chips
+    assert [chip.text() for chip in chips.chips] == ["01", "02", "03"]
+    assert chips.chips[0].isChecked()
+    assert page.shot_header.title.text() == "镜头 01"
+    assert page.shot_header.duration.text() == f"分镜 {board[0]['duration_ms'] / 1000:g} 秒"
+    assert page.shot_header.action.toolTip() == " ".join(board[0]["action"].split())
+    assert page.media.shot_duration_ms == board[0]["duration_ms"]
+    texts = picker_texts(page)
+    assert [text.split(" · ")[0] for text in texts if text != "从文件选择…"][:1] == ["场景"]
+    assert any(text.startswith("人物 · ") for text in texts)
+    assert any(text.startswith("道具 · ") for text in texts)
+    # The image prompts are folded under the video prompt, with their own buttons.
+    assert page.image_fold.isVisibleTo(page) and not page.image_fold.expanded()
+    assert page.image_fold.body.isAncestorOf(page.editor)
+    assert page.image_fold.body.isAncestorOf(page.save_button)
+    assert page.save_button.isVisibleTo(page.image_fold.body)
+    chips.chips[1].click()
+    assert page.objects.currentData() == "shot_2" and chips.chips[1].isChecked()
+    assert page.shot_header.title.text() == "镜头 02"
+    assert any("夏装" in text for text in picker_texts(page))
+    page.tabs.setCurrentIndex(0)
+    assert page.body_stack.currentWidget() is page.text_body
+    assert page.text_scroll.widget().isAncestorOf(page.editor)
+    assert page.action_bar.isAncestorOf(page.save_button) and page.selector_bar.isVisibleTo(page)
+    assert started == []
 
 
-def test_switching_shots_clears_details_and_hides_assets_on_other_tabs(scenario, prompt_page):
+def test_folded_image_prompt_edits_stay_marked_and_switching_shots_saves_them(scenario, prompt_page):
     page, _ = prompt_page
     page.tabs.setCurrentIndex(3)
-    panel = page.shot_assets
-    panel.show_asset(1)
-    page.objects.setCurrentIndex(page.objects.findData("shot_2"))
-    assert panel.details.isHidden() and panel.positive.toPlainText() == ""
-    assert panel.table.rowCount() == 2
-    panel.show_asset(1)
-    assert "夏装" in panel.title.text()
-    assert "asset_character / summer" in panel.positive.toPlainText()
-    page.objects.setCurrentIndex(page.objects.findData("shot_3"))
-    assert panel.details.isHidden()
-    panel.show_asset(1)
-    assert "asset_twin / base" in panel.positive.toPlainText()
-    page.tabs.setCurrentIndex(0)
-    assert panel.isHidden()
+    page.image_fold.head.click()
+    assert page.image_fold.expanded()
+    page.editor.positive.setPlainText("镜头正文的未保存修改")
+    assert page.dirty and "有未保存修改" in page.image_fold.note.text()
+    assert page.shot_header.notice.text() == "镜头画面提示词有未保存修改"
+    before = snapshot(scenario)
+    page.shot_header.chips.chips[2].click()
+    # The fixture saves on a switch; the saved bundle holds the edit and shot 3 shows.
+    assert snapshot(scenario) != before and not page.dirty
+    assert page.objects.currentData() == "shot_3" and page.shot_header.title.text() == "镜头 03"
+    saved = scenario.current("prompt_bundle")["content"]["shots"][0]["resolved_prompt"]
+    assert saved == "镜头正文的未保存修改"
+    assert page.image_fold.note.text() == "正向 · 负面" and page.shot_header.notice.isHidden()
+    assert page.image_fold.expanded()
 
 
-def test_missing_first_view_opens_first_available_and_missing_asset_is_explicit(scenario, prompt_page):
-    record = scenario.current("character_spec:asset_character:base")
-    content = deepcopy(record["content"])
-    content["views"][0]["positive_prompt"] = ""
-    content["views"][0]["negative_prompt"] = ""
-    scenario.save(record["kind"], content, record["dependency_refs"], expected_revision=scenario.load()["revision"])
+def test_refused_shot_switch_keeps_the_chip_on_the_current_shot(scenario, prompt_page):
+    page, _ = prompt_page
+    page.tabs.setCurrentIndex(3)
+    page.workbench.resolve_page = lambda page: False
+    page.editor.positive.setPlainText("未保存")
+    page.shot_header.chips.chips[1].click()
+    assert page.objects.currentData() == "shot_1" and page.shot_header.chips.chips[0].isChecked()
+
+
+def test_missing_views_show_as_unavailable_picker_entries(scenario, prompt_page):
     with scenario.transaction() as state:
         state["current"].pop("prop_spec:asset_prop:base")
     page, _ = prompt_page
     page.tabs.setCurrentIndex(3)
-    panel = page.shot_assets
-    panel.show_asset(1)
-    assert panel.views.currentData() == "body_front"
-    panel.views.setCurrentIndex(panel.views.findData("head_front"))
-    assert panel.status.text() == "提示词尚未生成"
-    assert not panel.copy_positive.isEnabled() and not panel.copy_negative.isEnabled()
-    panel.show_asset(2)
-    assert panel.status.text() == "提示词尚未生成" and panel.views.count() == 3
-    assert "提示词尚未生成" in panel.table.item(2, 1).text()
+    texts = picker_texts(page)
+    props = [text for text in texts if text.startswith("道具 · ")]
+    assert props and all(text.endswith("（未生成图片）") for text in props)
 
 
 def test_manual_added_and_reordered_shots_refresh_by_id(scenario, prompt_page):
@@ -240,27 +238,29 @@ def test_manual_added_and_reordered_shots_refresh_by_id(scenario, prompt_page):
     added = content["shots"][2]["shot_id"]
     scenario.save("storyboard", content, board["dependency_refs"], expected_revision=scenario.load()["revision"])
     page.refresh()
-    page.objects.setCurrentIndex(page.objects.findData(added))
-    assert page.shot_assets.table.rowCount() == 2
-    assert "夏装" in page.shot_assets.table.item(1, 0).text()
-    page.shot_assets.show_asset(1)
+    assert len(page.shot_header.chips.chips) == 4
+    page.shot_header.chips.chips[2].click()
+    assert page.objects.currentData() == added
+    assert len(page.media.shot_assets) == 2 and "夏装" in page.media.shot_assets[1]["variant_label"]
     board = scenario.current("storyboard")
     content = deepcopy(board["content"])
     content["shots"].reverse()
     scenario.save("storyboard", content, board["dependency_refs"], expected_revision=scenario.load()["revision"])
     page.refresh()
     assert page.objects.currentData() == added
-    assert page.shot_assets.details.isHidden()
-    assert "夏装" in page.shot_assets.table.item(1, 0).text()
+    assert page.shot_header.chips.chips[1].isChecked() and page.shot_header.title.text() == "镜头 02"
+    assert "夏装" in page.media.shot_assets[1]["variant_label"]
     editor.close()
 
 
-def test_no_storyboard_hides_assets_without_writing(project, prompt_project, prompt_page):
+def test_no_storyboard_hides_the_shot_header_without_writing(project, prompt_project, prompt_page):
     with project.transaction() as state:
         state["current"].pop("storyboard")
     before = snapshot(project)
     page, _ = prompt_page
     page.tabs.setCurrentIndex(3)
-    assert page.shot_assets.isHidden() and page.objects.count() == 0
+    assert page.shot_header.isHidden() and page.objects.count() == 0
+    assert page.media.shot_assets == [] and not page.status.isHidden()
+    assert page.image_fold.isHidden()
     assert WorkflowService(project).shot_assets("shot_1") == []
     assert snapshot(project) == before

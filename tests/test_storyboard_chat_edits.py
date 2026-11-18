@@ -216,14 +216,20 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     assert [i["shot_id"] for i in payload["storyboard_context"]["edit_request"]] == ["shot_1"]
     assert payload["storyboard_context"]["reference"]["shot_id"] == "shot_3"
     finish(ui)
-    assert panel.title.text() == "AI 修改结果" and panel.boxes["shot_1"].text() == "第 1 镜 · 改了 3 处"
+    assert panel.title.text() == "AI 修改结果" and panel.row_text("shot_1") == "第 1 镜 · 改了 3 处"
     assert panel.apply_button.isEnabled() and not panel.undo_button.isEnabled()
     assert "〔已给出修改后的镜头内容〕" in ui.panel.messages.toPlainText()
+    # The card follows the latest reply; the earlier list folds to one line.
+    assert panel.parentWidget() is ui.panel.messages.items[-1]
+    folded = ui.panel.messages.findChildren(shot_edit_panel.CollapsedCard)
+    assert [(c.head.title.text(), c.head.count.text(), c.head.sub.text()) for c in folded] == [
+        ("受影响的镜头", "2", "已按第 1 镜发出修改")
+    ]
 
     # The shot was edited after the request: applying asks first, and No changes nothing.
     ui.page.editor.table.selectRow(0)
     ui.page.editor.detail_fields["visual_prompt_draft"].setPlainText("用户之后写的画面")
-    assert "又被编辑过" in panel.rows.findChildren(shot_edit_panel.QLabel)[0].text()
+    assert any("又被编辑过" in label.text() for label in panel.rows.findChildren(shot_edit_panel.QLabel))
     edited = ui.page.editor.draft_snapshot()
     answers = [shot_edit_panel.QMessageBox.No, shot_edit_panel.QMessageBox.Yes]
     monkeypatch.setattr(shot_edit_panel.QMessageBox, "question", lambda *a: answers.pop(0))
@@ -236,12 +242,15 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     assert ui.page.editor.draft_snapshot()["shots"][1]["start_ms"] == 5000
     assert ui.page.dirty and ui.page.editor.marked == {"shot_1"}
     assert ui.page.editor.table.item(0, 5).background().color().name().upper() == "#EDF1F8"
-    assert panel.boxes["shot_1"].text() == "第 1 镜 · 与分镜一致" and not panel.apply_button.isEnabled()
+    assert panel.row_text("shot_1") == "第 1 镜 · 已写入分镜" and not panel.apply_button.isEnabled()
+    assert panel.foot_text.text() == "已写入第 1 镜，尚未保存"
     assert documents() == saved_before and "尚未保存" in ui.notices[-1]
 
     panel.undo_button.click()
     assert ui.page.editor.draft_snapshot() == edited and ui.page.editor.marked == set()
     assert ui.page.dirty and not panel.undo_button.isEnabled()
+    # Undo brings back the later visual-prompt edit too, so the revision differs in one more field.
+    assert panel.row_text("shot_1") == "第 1 镜 · 改了 4 处" and panel.apply_button.isEnabled()
 
 
 def test_undo_returns_a_clean_page_and_later_edits_block_undo(chat_ui, scenario):
@@ -255,7 +264,7 @@ def test_undo_returns_a_clean_page_and_later_edits_block_undo(chat_ui, scenario)
     run_chat(ui, revised_reply(revised(shot, action="放下钥匙")))
     panel.request_edit()
     finish(ui)
-    assert panel.boxes["shot_2"].text() == "第 2 镜 · 未通过检查"
+    assert panel.row_text("shot_2") == "第 2 镜 · 未通过检查" and not panel.boxes["shot_2"].isEnabled()
     clean = ui.page.editor.draft_snapshot()
     panel.apply()
     assert ui.page.dirty and panel.undo_button.isEnabled()
@@ -288,7 +297,8 @@ def test_panel_ignores_plain_replies_and_narrow_widths(chat_ui):
     ui.panel.resize(280, 700)
     ui.panel.show()
     ui.app.processEvents()
-    label = panel.rows.findChildren(type(panel.title))[0]
-    assert label.wordWrap() and panel.rows.width() <= ui.panel.width()
-    assert panel.rows.parentWidget().parentWidget().horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    labels = panel.rows.findChildren(type(panel.title), "rowText")
+    assert labels and all(label.wordWrap() for label in labels)
+    assert panel.rows.width() <= ui.panel.width()
+    assert ui.panel.messages.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
     ui.panel.hide()

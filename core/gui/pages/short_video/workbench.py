@@ -50,6 +50,8 @@ from .ui_helpers import create_action_button
 if TYPE_CHECKING:
     from core.gui.main_window import MainWindow
 
+# Default width of the 「与 AI 讨论」 panel; dragging the splitter is remembered per project.
+CHAT_WIDTH = 384
 STEPS = [
     ("video_source", "原文"),
     ("video_adaptation", "改写"),
@@ -112,7 +114,7 @@ class Workbench(QWidget):
         self.splitter.addWidget(self.chat)
         self.splitter.addWidget(self.right)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([320, 850])
+        self.splitter.setSizes([CHAT_WIDTH, 850])
         layout.addWidget(self.splitter, 1)
         self.source = SourcePage(self)
         source_scroll = QScrollArea()
@@ -283,12 +285,12 @@ class Workbench(QWidget):
                     else [page.generate_button, page.resume_button]
                 )
             ],
-            self.chat.send_button,
         ]:
             control.setEnabled(not self.tasks.busy("text"))
+        self.chat.refresh_send_button()
         self.specs.media.refresh_result()
         self.specs.images_page.update_controls()
-        self.specs.refresh_image_nodes()
+        self.specs.refresh_shot_marks()
 
     def artifact_pages(self) -> list[ArtifactPage | PromptPage]:
         return [self.novel, self.video, self.storyboard, self.specs]
@@ -426,7 +428,7 @@ class Workbench(QWidget):
 
     def restore_layout(self) -> None:
         sizes = self.settings.value(self.setting_key("sizes"))
-        self.splitter.setSizes([int(v) for v in sizes] if sizes else [320, 850])
+        self.splitter.setSizes([int(v) for v in sizes] if sizes else [CHAT_WIDTH, 850])
         hidden = self.settings.value(self.setting_key("chat_hidden"), False, type=bool)
         self.chat.setVisible(not hidden)
         self.chat_toggle.setText("展开对话" if hidden else "收起对话")

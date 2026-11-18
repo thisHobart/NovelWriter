@@ -42,60 +42,6 @@ def test_hidden_images_leave_the_list_but_keep_record_and_file(tmp_path, app):
         repository.set_image_hidden("0" * 32, True)
 
 
-def popup_combo(app):
-    from core.gui.pages.short_video.removable_combo import RemovableComboBox
-
-    combo = RemovableComboBox()
-    combo.addItem("请选择图片", None)
-    for name in ("场景1.png", "三视角.png", "小羊.png"):
-        combo.addItem(name, name)
-    combo.setCurrentIndex(2)
-    combo.resize(300, 30)
-    combo.show()
-    combo.showPopup()
-    app.processEvents()
-    return combo
-
-
-def click(app, combo, row, *, on_remove):
-    from PySide6.QtCore import Qt
-    from PySide6.QtTest import QTest
-
-    from core.gui.pages.short_video.removable_combo import remove_rect
-
-    view = combo.view()
-    rect = view.visualRect(combo.model().index(row, 0))
-    point = remove_rect(rect).center() if on_remove else rect.adjusted(0, 0, -60, 0).center()
-    QTest.mouseClick(view.viewport(), Qt.LeftButton, Qt.NoModifier, point)
-    app.processEvents()
-
-
-def test_clicking_the_cross_requests_removal_without_selecting_or_closing(app):
-    combo = popup_combo(app)
-    requested = []
-    combo.remove_requested.connect(requested.append)
-    click(app, combo, 1, on_remove=True)
-    assert requested == ["场景1.png"]
-    assert combo.currentIndex() == 2 and combo.view().isVisible()
-    # The placeholder row has no cross; clicking where it would be requests nothing.
-    click(app, combo, 0, on_remove=True)
-    assert requested == ["场景1.png"]
-    click(app, combo, 0, on_remove=False)
-    assert combo.currentIndex() == 0 and not combo.view().isVisible()
-    combo.close()
-
-
-def test_owner_removal_keeps_the_popup_open_with_remaining_rows(app):
-    combo = popup_combo(app)
-    combo.remove_requested.connect(lambda data: combo.removeItem(combo.findData(data)))
-    click(app, combo, 3, on_remove=True)
-    assert [combo.itemText(i) for i in range(combo.count())] == ["请选择图片", "场景1.png", "三视角.png"]
-    assert combo.view().isVisible() and combo.currentData() == "三视角.png"
-    click(app, combo, 1, on_remove=False)
-    assert combo.currentData() == "场景1.png" and not combo.view().isVisible()
-    combo.close()
-
-
 def test_video_page_removes_an_image_from_every_slot_and_asset_use_restores_it(tmp_path, app):
     from core.gui.pages.short_video.media_preview import MediaPreview
     from core.gui.pages.short_video.task_channels import TaskChannels
@@ -114,13 +60,30 @@ def test_video_page_removes_an_image_from_every_slot_and_asset_use_restores_it(t
     scene, sheep = panel.image_selection()["137"], panel.image_selection()["139"]
     panel.remove_image(scene)
     assert panel.image_selection() == {"137": None, "139": sheep, "147": None}
-    for combo, _, _ in panel.image_fields.values():
-        assert combo.findData(scene) < 0 and combo.findData(sheep) > 0
+    listed = picker_images(panel, "147")
+    assert scene not in listed and sheep in listed
     repository = MediaRepository(tmp_path)
     assert repository.resolve(repository.image(scene)["relative_path"]).exists()
     panel.refresh()
-    assert all(combo.findData(scene) < 0 for combo, _, _ in panel.image_fields.values())
+    assert panel.image_selection()["137"] is None and scene not in picker_images(panel, "137")
     panel.use_image(scene, "147")
     assert panel.image_selection()["147"] == scene
     assert scene not in repository.hidden_images()
     panel.close()
+
+
+def picker_images(panel, node_id):
+    """Names of the project images the slot's picker lists, as image ids."""
+    from PySide6.QtWidgets import QWidgetAction
+
+    from core.gui.pages.short_video.media_preview import PickRow
+
+    names = {
+        image["name"]: image["image_id"]
+        for image in MediaRepository(panel.workbench.output_dir).images(include_hidden=True)
+    }
+    return [
+        names[action.defaultWidget().pick.text()]
+        for action in panel.picker_menu(node_id).actions()
+        if isinstance(action, QWidgetAction) and isinstance(action.defaultWidget(), PickRow)
+    ]

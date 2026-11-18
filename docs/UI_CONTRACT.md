@@ -20,6 +20,7 @@
 | `accent` | `#2C4A7C` | 主按钮、当前步骤、生成中 |
 | `accent.tint` | `#EDF1F8` | 聚焦光晕、选中行 |
 | `success / warn / danger` | `#2F7D4F` / `#B4761D` / `#B3392F` | 语义 |
+| 语义浅底 | 语义色 + 透明度（`theme.tint`，默认 26/255） | 提示条、状态标签底色 |
 
 间距只用 4 的倍数；字号只用 11 / 12 / 13 / 16 / 19；控件高 32px；圆角 4px（卡片 6px）。
 字体：界面 `Noto Sans SC`（回退 `PingFang SC` / `Microsoft YaHei`）；

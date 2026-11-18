@@ -226,7 +226,7 @@ def test_same_shot_prompt_guards_inputs_and_new_video_but_not_other_shots_or_que
     channels.admit(text)
     channels.runners["text"].busy = True
     panel.refresh_result()
-    assert not panel.generate_button.isEnabled() and not panel.input_area.isEnabled()
+    assert not panel.generate_button.isEnabled() and not panel.slots_section.isEnabled()
     assert not panel.parameter_area.isEnabled() and not panel.prompt.isEnabled()
     assert "正在编写" in panel.prompt_status.text()
     with pytest.raises(WorkspaceError, match="正在编写"):
@@ -240,7 +240,7 @@ def test_same_shot_prompt_guards_inputs_and_new_video_but_not_other_shots_or_que
     assert submitted[-1].job_id == "a" * 32
     page.objects.setCurrentIndex(page.objects.findData("shot_2"))
     panel.use_image(image["image_id"], "137")
-    assert panel.generate_button.isEnabled() and panel.input_area.isEnabled()
+    assert panel.generate_button.isEnabled() and panel.slots_section.isEnabled()
     panel.generate()
     assert submitted[-1].command["target"]["shot_id"] == "shot_2"
     page.objects.setCurrentIndex(page.objects.findData("shot_1"))

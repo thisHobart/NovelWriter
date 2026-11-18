@@ -1,6 +1,6 @@
 # 短视频工作台：开发文档
 
-文档版本：2.23；日期：2026-11-16。本文用于定位代码、维护实现与执行验证。
+文档版本：2.24；日期：2026-11-18。本文用于定位代码、维护实现与执行验证。
 整体结构见[架构设计](architecture.md)，字段和接口见[接口设计](interfaces.md)，操作与提示见[交互设计](interaction.md)。历次变更及验收证据见[DEVLOG](../../DEVLOG.md)。
 
 ## 1. 运行与代码入口
@@ -14,7 +14,9 @@
 | 维护内容 | 主要代码入口 |
 |---|---|
 | 工作区、导航与生成入口 | `core/gui/pages/short_video/workbench.py`；`artifact_page.py`、`prompt_page.py`、`source_page.py` |
-| 镜头所需参考资产与视图提示词 | `workflow.py` 的 shot_assets；UI 为 `shot_assets_panel.py`，接入 `prompt_page.py` |
+| 「镜头」标签：镜头号、镜头卡片与检查行 | `shot_header.py`，接入 `prompt_page.py`；检查结果由 `feedback.record_check` 按镜筛选 |
+| 「镜头」标签的视频区与选图菜单 | `media_preview.py`（选图菜单读 `workflow.py` 的 shot_assets）；图片卡片、两栏布局、折叠区、开关在 `video_widgets.py` |
+| 「与 AI 讨论」面板 | `chat_panel.py`（标题栏、附带标签、输入框、发送／停止）；`chat_stream.py`（消息流、气泡、Markdown）；`shot_edit_panel.py`（回复下的镜头卡片） |
 | 后台线程与 UI 状态 | `core/gui/task_runner.py`；`core/short_video/v2/feedback.py` |
 | 短视频三通道调度与状态栏 | `core/gui/pages/short_video/task_channels.py`；`core/gui/widgets/status_bar.py` |
 | 准备阶段输入、多阶段编排 | `core/short_video/v2/workflow.py`、`creation.py` |
@@ -62,7 +64,7 @@
 
 会话通过 ConversationStore 读写，默认按48,000字符容量构造请求，仅裁剪本轮使用的完整历史副本。预检失败不写 pending；执行时保存本轮消息和完整回复。重试仅填回输入框，用户再次发送；聊天不写回业务文档、不进入质量修订循环。
 
-分镜页默认附带当前选中镜头，关闭复选框或离开分镜页后按普通聊天发送。`draft_snapshot()`
+分镜页默认附带当前选中镜头，点附带标签的“×”或离开分镜页后按普通聊天发送。`draft_snapshot()`
 只复制编辑器内容，避免未填完整的人物／对白或其他镜头阻断讨论；发送和查看上下文均不调用
 `value()`或保存。选中镜头、编辑、页面切换信号更新附带标注；预览只读，发送时重新冻结。
 `storyboard_chat`将本镜、邻镜和其余镜头的全稿概要（最多12,000字，逐级截短）从同一编辑稿投影，目录／原文按该分镜的依赖读取（不附带视频推广文案块），
@@ -72,7 +74,7 @@
 轻量镜头标注，完整上下文只组装到本轮请求，避免历史重复携带旧稿；历史建议不视为已应用。
 
 跨镜头修改走两轮聊天：规则要求改动牵涉多个镜头时在回复末尾附 affected_shots 代码块，聊天面板的
-[ShotEditPanel](../../core/gui/pages/short_video/shot_edit_panel.py)只读最后一条完整回复，按当前编辑稿列出镜头供勾选；
+[ShotEditPanel](../../core/gui/pages/short_video/shot_edit_panel.py)只读最后一条完整回复，按当前编辑稿列出镜头供勾选，作为卡片挂在消息流中这条回复下方（较早回复的卡片由 earlier_card 收成一行）；
 “修改所选镜头”带 `edit_items` 重新组装上下文并追加修改规则，回复的 revised_shots 由
 [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)逐镜合并、检查，与正式保存共用`validation.validate_shot`。
 格式修正只在聊天服务内做一次，不进入阶段任务的审阅循环。应用只改编辑稿并标记底色，保存仍走原有“保存”；
@@ -84,7 +86,9 @@
 
 视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数。普通 H3 参考图支持最多九个位置；所有模板空位跳过，prepare_image_inputs统一裁剪未选参考输入、首尾帧参数与引导依赖。首尾帧可单独选择；Picture编号只对应实际参考图，首尾帧不占编号。MediaService与AI提示词快照共用裁剪逻辑，恢复按实际已选图片匹配。资产视图另可通过独立 Images API 生图，结果进入同一媒体库；不自动提交视频任务。
 
-media_preview.py 不再导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，按钮打开其父目录；生成、查询和下载保存流程继续复用原接口。设置区可滚动，选图区192px、提示词至少160px、参数控件至少32px，尺寸与间距使用主题 token。相关回归在 test_comfyui_video.py，覆盖生成后打开准确目录、切换工作流后按钮状态、参数传递及小窗口下控件高度。
+media_preview.py 不导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，“打开视频”交给系统打开文件，“打开视频位置”打开其父目录；生成、查询和下载保存流程继续复用原接口。整页是 VScrollArea：图片卡片（SlotCard／SlotGrid）每张至少148px宽、缩略图16:9，ColumnGrid 在宽度≥820时分两栏，视频卡片的 SplitBody 在≥560时让状态区与参数并排；提示词至少200px、参数控件至少32px，尺寸与间距使用主题 token。图片选择仍是 image_selection()／image_fields（节点→SlotCard），提示词编号错位由 binding_shifts() 同时驱动即时提示和生成前校验。相关回归在 test_comfyui_video.py，覆盖卡片代称、添加位置后滚动与恢复、打开文件和目录、状态标签、时长提示、选图菜单及小窗口下控件高度。
+
+Qt 布局注意：控件加入已显示的父控件后要等排队的显示事件才可见，隐藏期间不计入 heightForWidth，消息流和视频页因此在加入后立即 show 并 reveal 子控件；两栏或并排改排后，各级布局和 QWidgetItem 的尺寸缓存仍是旧值，MediaPreview.relayout 先逐个 updateGeometry／invalidate 再按宽度测高，否则页面底部会留白。icons.pixmap 按目标尺寸渲染 SVG，旧写法固定按16px绘制，其他尺寸的图标会被裁切（小说页的图标同样受益）。
 
 本次界面调整：54项关联回归和全量420项回归通过，变更生产文件 Ruff 检查与格式通过。离屏 Qt 检查660×900布局可完整显示设置，660×520时可滚动且参数框不压缩；未调用真实媒体生成服务。
 

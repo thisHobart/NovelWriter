@@ -321,17 +321,28 @@ def test_batch_table_is_opt_in_and_generated_view_can_be_used_at_selected_node(c
     panel.table.setCurrentCell(0, 1)
     assert panel.preview.image["current"]
     page.tabs.setCurrentIndex(3)
-    page.shot_assets.show_asset(0)
-    assert page.shot_assets.preview.image["image_id"] == work.command["items"][0]["image_id"]
-    assert not page.shot_assets.use_image_button.isEnabled()
+    generated = work.command["items"][0]["image_id"]
+    views = [view for asset in page.media.shot_assets for view in asset["views"]]
+    assert [view["image"]["image_id"] for view in views if view.get("image")] == [generated]
     assert not any(page.media.image_selection().values())
     original_prompt = page.media.prompt.toPlainText()
-    page.shot_assets.image_nodes.setCurrentIndex(page.shot_assets.image_nodes.findData("139"))
-    page.shot_assets.use_image_button.click()
-    assert page.media.image_selection()["139"] == work.command["items"][0]["image_id"]
+    use_asset_image(page, "139")
+    assert page.media.image_selection()["139"] == generated
     assert page.media.image_selection()["137"] is None and page.media.image_selection()["147"] is None
-    assert page.media.image_labels["139"].text() == "图片节点 2\n<Picture 1>"
+    assert page.media.image_fields["139"].summary() == "图片 2 · <Picture 1>"
     assert page.media.prompt.toPlainText() == original_prompt
+
+
+def use_asset_image(page, node_id):
+    """Pick the one generated asset view from the 本镜资产 part of the slot's picker."""
+    menu = page.media.picker_menu(node_id)
+    usable = [
+        action
+        for action in menu.actions()
+        if action.text() and action.isEnabled() and action.text() != "从文件选择…"
+    ]
+    assert len(usable) == 1
+    usable[0].trigger()
 
 
 def test_response_cache_failure_is_unknown_and_never_automatically_regenerated(configured, png, monkeypatch):
@@ -386,16 +397,15 @@ def test_missing_views_are_unselectable_and_switching_workflows_updates_target_n
     images.ImageGenerationWork(configured, command, transport=httpx.MockTransport(lambda _: reply(png)))(lambda *_: None)
     page, _ = prompt_page
     page.tabs.setCurrentIndex(3)
-    page.shot_assets.show_asset(0)
     page.media.add_reference_image()
-    assert page.shot_assets.image_nodes.findData("reference_input_4") >= 0
+    assert "reference_input_4" in page.media.image_fields
     page.media.workflows.setCurrentIndex(page.media.workflows.findData("minimax-first-last"))
-    assert page.shot_assets.image_nodes.findData("reference_input_4") < 0
-    assert page.shot_assets.image_nodes.count() == 6
+    assert "reference_input_4" not in page.media.image_fields
+    assert len(page.media.image_fields) == 5
     first_frame = next(i for i in page.media.template.image_inputs if i.role == "first_frame")
-    page.shot_assets.image_nodes.setCurrentIndex(page.shot_assets.image_nodes.findData(first_frame.node_id))
-    page.shot_assets.use_image_button.click()
+    use_asset_image(page, first_frame.node_id)
     assert page.media.image_selection()[first_frame.node_id] == command["items"][0]["image_id"]
+    assert page.media.image_fields[first_frame.node_id].tag_text() == "首帧图片"
     with configured.transaction() as state:
         state["current"].pop("prop_spec:asset_prop:base")
     page.tabs.setCurrentIndex(4)

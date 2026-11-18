@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QSize, Qt
+from PySide6.QtCore import QByteArray, QRectF, QSize, Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
@@ -41,6 +41,14 @@ _TEMPLATES = {
                '<path d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" stroke="{c}" stroke-width="1.8" '
                'stroke-linecap="round" fill="none"/>',
     "dot": '<circle cx="8" cy="8" r="3" fill="{c}"/>',
+    "plus": '<path d="M8 3v10M3 8h10" stroke="{c}" stroke-width="1.5" '
+            'stroke-linecap="round" fill="none"/>',
+    "close": '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="{c}" stroke-width="1.5" '
+             'stroke-linecap="round" fill="none"/>',
+    "warn": '<path d="M8 2.2L14.2 13.3H1.8Z" stroke="{c}" stroke-width="1.3" '
+            'stroke-linejoin="round" fill="none"/>'
+            '<path d="M8 6.4v3.4M8 11.4v.3" stroke="{c}" stroke-width="1.4" '
+            'stroke-linecap="round" fill="none"/>',
 }
 
 # 阶段状态 -> 图标名与颜色，供步骤栏与状态栏共用
@@ -66,7 +74,8 @@ def pixmap(name: str, color: str = theme.INK_600, size: int = 16, dpr: float = 2
     px.setDevicePixelRatio(dpr)
     px.fill(Qt.transparent)
     painter = QPainter(px)
-    renderer.render(painter)
+    # Scale the 16px grid to the requested size; without bounds smaller icons get cropped.
+    renderer.render(painter, QRectF(0, 0, size, size))
     painter.end()
     _cache[key] = px
     return px
