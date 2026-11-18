@@ -264,6 +264,9 @@ class PromptPage(QWidget):
             self.record["content"] if self.record else None, self.displayed_view
         )
 
+    def on_shot_tab(self) -> bool:
+        return self.tabs.currentIndex() == 3
+
     def refresh(self, selected_key: str | None = None) -> None:
         if self.dirty:
             return
@@ -391,7 +394,8 @@ class PromptPage(QWidget):
                 if shot_id
                 else [],
             )
-        self.media.refresh()
+            # The video area shows only on 镜头; other tabs leave it until it is shown again.
+            self.media.refresh()
         self.save_button.setEnabled(self.record is not None)
         self.generate_button.setText(
             "生成镜头提示词" if kind == "shot" and not self.record else "重新生成"

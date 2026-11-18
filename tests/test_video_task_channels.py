@@ -313,6 +313,8 @@ def test_workspace_guards_project_configuration_exit_and_preserves_drafts(
     window._mode = "video"
     workspace = window.video_workspace
     window.stack.setCurrentWidget(workspace)
+    # The video area is kept current only while it is on screen (提示词 → 镜头).
+    workspace.navigate("video_prompts")
     workspace.specs.tabs.setCurrentIndex(3)
     workspace.specs.media.use_image(image["image_id"], "137")
     workspace.specs.media.prompt.setPlainText("视频输入框里的草稿")

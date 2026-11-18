@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from core.gui import icons, theme
 from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.conversation import ChatWork, ConversationService
-from core.short_video.v2.models import WorkspaceError, encode, require
+from core.short_video.v2.models import WorkspaceError, encode, fingerprint, require
 from core.short_video.v2.storyboard_chat import read_storyboard_chat_context
 from core.short_video.v2.storyboard_edits import display_text
 
@@ -181,6 +181,8 @@ class ChatPanel(QWidget):
         layout.addWidget(self.messages, 1)
         self.current_messages: list[JsonObject] = []
         self.rendered_with_page = False
+        # What the message stream was last drawn from; the same input is not drawn again.
+        self.drawn_from: str | None = None
         self.edit_panel = ShotEditPanel(self, workbench)
 
         composer = QWidget()
@@ -419,6 +421,13 @@ class ChatPanel(QWidget):
         page = self.edit_panel.page()
         self.rendered_with_page = page is not None
         shots = page.editor.draft_snapshot()["shots"] if page else None
+        typing = self.chatting() and (not messages or messages[-1]["role"] == "user")
+        # Bubbles, cards under replies and 「正在回复…」 depend only on these; when none
+        # changed, the stream already shows them and keeps its scroll position.
+        drawn_from = fingerprint([self.conversation_id, list(messages), shots, typing])
+        if drawn_from == self.drawn_from:
+            return
+        self.drawn_from = drawn_from
         self.messages.clear(keep=self.edit_panel)
         for index, message in enumerate(messages):
             if message["role"] == "user":
@@ -439,7 +448,7 @@ class ChatPanel(QWidget):
                     if card is not None:
                         reply.add_card(card)
             self.messages.add(reply)
-        if self.chatting() and (not messages or messages[-1]["role"] == "user"):
+        if typing:
             self.messages.add(TypingLine())
         self.messages.sync_content_height()
         self.messages.scroll_to(None if follow else position)

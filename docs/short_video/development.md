@@ -88,7 +88,9 @@
 
 media_preview.py 不导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，“打开视频”交给系统打开文件，“打开视频位置”打开其父目录；生成、查询和下载保存流程继续复用原接口。整页是 VScrollArea：图片卡片（SlotCard／SlotGrid）每张至少148px宽、缩略图16:9，ColumnGrid 在宽度≥820时分两栏，视频卡片的 SplitBody 在≥560时让状态区与参数并排；提示词至少200px、参数控件至少32px，尺寸与间距使用主题 token。图片选择仍是 image_selection()／image_fields（节点→SlotCard），提示词编号错位由 binding_shifts() 同时驱动即时提示和生成前校验。相关回归在 test_comfyui_video.py，覆盖卡片代称、添加位置后滚动与恢复、打开文件和目录、状态标签、时长提示、选图菜单及小窗口下控件高度。
 
-Qt 布局注意：控件加入已显示的父控件后要等排队的显示事件才可见，隐藏期间不计入 heightForWidth，消息流和视频页因此在加入后立即 show 并 reveal 子控件；两栏或并排改排后，各级布局和 QWidgetItem 的尺寸缓存仍是旧值，MediaPreview.relayout 先逐个 updateGeometry／invalidate 再按宽度测高，否则页面底部会留白。移除控件时先 hide 再 deleteLater，不用 setParent(None)：切换分镜／提示词时聊天连续重绘两次，刚加入的消息还有排队的显示事件，脱离父控件后会作为独立窗口闪一下（回归见 test_storyboard_chat_edits.py、test_comfyui_video.py 的 watch_windows）；没有父控件的控件也不能先 setVisible。icons.pixmap 按目标尺寸渲染 SVG，旧写法固定按16px绘制，其他尺寸的图标会被裁切（小说页的图标同样受益）。
+Qt 布局注意：控件加入已显示的父控件后要等排队的显示事件才可见，隐藏期间不计入 heightForWidth，消息流和视频页因此在加入后立即 show 并 reveal 子控件；两栏或并排改排后，各级布局和 QWidgetItem 的尺寸缓存仍是旧值，MediaPreview.relayout 先逐个 updateGeometry／invalidate 再按宽度测高，否则页面底部会留白。移除控件时先 hide 再 deleteLater，不用 setParent(None)：聊天连续重绘两次时（例如分镜页出现后紧接着刷新），刚加入的消息还有排队的显示事件，脱离父控件后会作为独立窗口闪一下（回归见 test_storyboard_chat_edits.py、test_comfyui_video.py 的 watch_windows）；没有父控件的控件也不能先 setVisible。icons.pixmap 按目标尺寸渲染 SVG，旧写法固定按16px绘制，其他尺寸的图标会被裁切（小说页的图标同样受益）。
+
+刷新规则：切换顶部页面（Workbench.navigate）只刷新显示的那一页（refresh_shown；“改写”只刷新当前子标签，切子标签时补刷新），不刷新聊天；保存、任务结束、打开项目走 Workbench.refresh，刷新当前页、顶部、聊天和按钮状态，隐藏页面留到显示时再刷新。离开有未保存修改的页面前一定会 resolve_edits，所以显示出来的页面总是先刷新再用；新代码不要读取隐藏页面的 record 或编辑器内容，需要最新内容时直接读仓库。提示词页的视频区只在“镜头”标签载入（showing_shot_tab 控制 refresh_task_controls 里的视频状态与镜头标记）。两种刷新都在 Workbench.project_reads 里进行：持有项目锁并开启 repository.shared_project_reads，同一线程内所有 ProjectRepository.load 共用一份解析结果，每次取用前比对文件修改时间和大小；transaction 始终自己读取并在写入前丢弃共用副本，其他线程不受影响。共用期间读到的项目状态不能就地修改，需要改动时先 deepcopy。聊天 render_messages 按会话、消息、镜头草稿和“正在回复…”算指纹，与上次相同就不重建。回归在 test_video_page_refresh.py（真实 Workbench，设置写入临时 ini，不碰注册表）。
 
 本次界面调整：54项关联回归和全量420项回归通过，变更生产文件 Ruff 检查与格式通过。离屏 Qt 检查660×900布局可完整显示设置，660×520时可滚动且参数框不压缩；未调用真实媒体生成服务。
 

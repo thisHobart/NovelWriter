@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -37,7 +38,7 @@ from core.short_video.v2.creation import CreationWork, prepare_prompt_task, prep
 from core.short_video.v2.exporter import ExportService
 from core.short_video.v2.feedback import ACTION_NAMES, error_reason, record_message
 from core.short_video.v2.models import WorkspaceError, fingerprint, require
-from core.short_video.v2.repository import ProjectRepository
+from core.short_video.v2.repository import ProjectRepository, shared_project_reads
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
 from .artifact_page import ArtifactPage
@@ -126,6 +127,8 @@ class Workbench(QWidget):
         self.video = ArtifactPage(self, "video_copy", "视频推广文案")
         self.adaptation.addTab(self.novel, "① 小说推文")
         self.adaptation.addTab(self.video, "② 视频推广文案")
+        # Only the visible tab is kept current, so the other one catches up when shown.
+        self.adaptation.currentChanged.connect(self.refresh_adaptation_tab)
         self.add_page("video_adaptation", self.adaptation)
         self.storyboard = ArtifactPage(self, "storyboard", "分镜")
         self.add_page("video_storyboard", self.storyboard)
@@ -272,6 +275,13 @@ class Workbench(QWidget):
         self.chat.refresh()
 
     def refresh_task_controls(self) -> None:
+        self.refresh_buttons()
+        if self.showing_shot_tab():
+            self.specs.media.refresh_result()
+            self.specs.refresh_shot_marks()
+
+    def refresh_buttons(self) -> None:
+        """Which buttons can be pressed while tasks run; cheap, so every page is updated."""
         self.project_button.setEnabled(not self.tasks.any_busy)
         self.model_config_button.setEnabled(not self.tasks.any_busy)
         for control in [
@@ -288,9 +298,11 @@ class Workbench(QWidget):
         ]:
             control.setEnabled(not self.tasks.busy("text"))
         self.chat.refresh_send_button()
-        self.specs.media.refresh_result()
         self.specs.images_page.update_controls()
-        self.specs.refresh_shot_marks()
+
+    def showing_shot_tab(self) -> bool:
+        """The video area is on screen only on 提示词 → 镜头."""
+        return self.right.currentWidget() is self.specs and self.specs.on_shot_tab()
 
     def artifact_pages(self) -> list[ArtifactPage | PromptPage]:
         return [self.novel, self.video, self.storyboard, self.specs]
@@ -304,6 +316,15 @@ class Workbench(QWidget):
             if isinstance(page, (ArtifactPage, PromptPage))
             else None
         )
+
+    def shown_pages(self) -> list[SourcePage | ArtifactPage | PromptPage]:
+        """The page on screen; on 改写 only its visible tab."""
+        page = self.right.currentWidget()
+        if page is self.pages["video_source"]:
+            return [self.source]
+        if page is self.adaptation:
+            return [self.adaptation.currentWidget()]
+        return [page] if isinstance(page, (ArtifactPage, PromptPage)) else []
 
     def resolve_page(self, page: SourcePage | ArtifactPage | PromptPage) -> bool:
         if not page.dirty:
@@ -338,27 +359,50 @@ class Workbench(QWidget):
             button.style().unpolish(button)
             button.style().polish(button)
         self.settings.setValue(self.setting_key("page"), key)
-        self.refresh()
+        # Only the page being shown; the chat's attached-shot line follows the page change.
+        self.refresh_shown()
         return True
 
-    def refresh(self) -> None:
-        if self.repository.root.exists():
-            with project_lock(str(self.repository.root / ".v2-project.lock"), timeout=5):
-                self._refresh()
-        else:
-            self._refresh()
-
-    def _refresh(self) -> None:
-        self.refresh_model_status()
-        self.source.refresh()
-        for page in self.artifact_pages():
-            page.refresh()
-        config = self.repository.current("config")
-        self.project_button.setText(
-            (config["content"]["title"] if config else "新项目") or "新项目"
+    @contextmanager
+    def project_reads(self) -> Iterator[None]:
+        """Hold the project lock and let the whole refresh share one read of the project."""
+        root = self.repository.root
+        lock = (
+            project_lock(str(root / ".v2-project.lock"), timeout=5)
+            if root.exists()
+            else nullcontext()
         )
-        self.chat.refresh()
-        self.refresh_task_controls()
+        with lock, shared_project_reads():
+            yield
+
+    def refresh(self) -> None:
+        """After saves, finished tasks or a project change: the page on screen and the chat.
+
+        Hidden pages are left as they are and refresh when shown.
+        """
+        with self.project_reads():
+            self.refresh_model_status()
+            for page in self.shown_pages():
+                page.refresh()
+            config = self.repository.current("config")
+            self.project_button.setText(
+                (config["content"]["title"] if config else "新项目") or "新项目"
+            )
+            self.chat.refresh()
+            # Also the video status: a finished video must show even while prompts are unsaved.
+            self.refresh_task_controls()
+
+    def refresh_shown(self) -> None:
+        with self.project_reads():
+            for page in self.shown_pages():
+                page.refresh()
+            # Pages are never left with unsaved edits, so a shown 镜头 tab has just reloaded
+            # its video area (which also re-marks the shot chips).
+            self.refresh_buttons()
+
+    def refresh_adaptation_tab(self) -> None:
+        if self.right.currentWidget() is self.adaptation:
+            self.refresh_shown()
 
     def resume_generation(self, stage: str, button: QPushButton | None = None) -> None:
         from core.short_video.v2.runtime import ResumeWork, get_recovery
