@@ -23,7 +23,7 @@ Backends:
 """
 from typing import Optional
 
-from core.generation.api_providers import (
+from core.common.api_providers import (
     DEFAULT_API_MODEL, PROVIDER_LABELS, ConfiguredAPIInterface,
 )
 from llm_backends.llm_interface import LLMClient  # re-export, public surface

@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from copy import deepcopy
 
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import (
     JsonObject,

@@ -15,10 +15,9 @@ from filelock import Timeout
 from openai import APIConnectionError, AsyncOpenAI
 from PySide6.QtGui import QImage
 
-from core.generation import api_providers
-from core.generation.api_settings import get_image_config
-from core.generation.cancellation import CancelToken, GenerationCancelled
-from core.generation.locks import project_lock
+from core.common import api_providers
+from core.common.cancellation import CancelToken, GenerationCancelled
+from core.common.locks import project_lock
 
 from .contracts import JsonObject, ProgressReporter
 from .feedback import TaskTracker, error_reason
@@ -26,6 +25,7 @@ from .llm import retry_delay
 from .media_repository import MediaRepository
 from .models import WorkspaceError, fingerprint, require, timestamp
 from .repository import ProjectRepository
+from .service_settings import get_image_config
 from .validation import PLACEHOLDER, SPEC_FIELDS, UNRESOLVED, view_input_hash
 
 logger = logging.getLogger(__name__)

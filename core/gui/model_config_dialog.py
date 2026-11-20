@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
@@ -19,24 +21,47 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.generation.api_models import fetch_models
-from core.generation.api_probe import ProbeResult, probe_connection
-from core.generation.api_providers import DEFAULT_API_MODEL, PROVIDER_LABELS
-from core.generation.api_settings import form_values, save_provider, validate_provider
+from core.common.api_models import fetch_models
+from core.common.api_probe import ProbeResult, probe_connection
+from core.common.api_providers import DEFAULT_API_MODEL, PROVIDER_LABELS
+from core.common.api_settings import form_values, save_provider, validate_provider
 from core.gui.task_runner import TaskRunner
 from core.gui.widgets.card import Card
 from core.gui.widgets.controls import LabeledRow, hint_label, primary_button, secondary_button
 from core.gui.widgets.page_header import PageHeader
 
 
+@dataclass(frozen=True)
+class ServiceProfile:
+    """What one model-service dialog edits: its title, where the values live, how to check them.
+
+    ``load(provider)`` returns the three fields; ``save(provider, base_url, api_key, model)``
+    stores them. ``only_provider`` is ``(key, label)`` when a single kind of service fits;
+    ``list_models_to_check`` makes the check button only list models, never send a request.
+    """
+
+    title: str
+    subtitle: str
+    load: Callable[[str], dict[str, str]]
+    save: Callable[..., None]
+    only_provider: tuple[str, str] | None = None
+    list_models_to_check: bool = False
+
+
+# Looked up when called, so the shared settings functions can be swapped in tests.
+GENERATION = ServiceProfile(
+    "模型服务配置", "填写当前服务的连接信息，保存后立即生效",
+    load=lambda provider: form_values(provider),
+    save=lambda provider, **values: save_provider(provider, **values),
+)
+
+
 class ModelConfigDialog(QDialog):
     def __init__(self, provider: str = DEFAULT_API_MODEL, parent: QWidget | None = None,
-                 *, purpose: str = "generation") -> None:
+                 *, profile: ServiceProfile = GENERATION) -> None:
         super().__init__(parent)
-        if purpose not in {"generation", "review", "image"}:
-            raise ValueError("不支持的模型用途")
-        self.purpose = purpose
-        title = {"review": "校验模型配置", "image": "生图 API 配置"}.get(purpose, "模型服务配置")
+        self.profile = profile
+        title = profile.title
         self.setObjectName("ModelConfigDialog")
         self.setWindowTitle(title)
         self.setMinimumWidth(620)
@@ -49,8 +74,7 @@ class ModelConfigDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(PageHeader(title, "独立保存，仅用于检查生成结果" if purpose == "review"
-                                    else "填写当前服务的连接信息，保存后立即生效"))
+        layout.addWidget(PageHeader(title, profile.subtitle))
         body = QVBoxLayout()
         body.setContentsMargins(24, 20, 24, 20)
         body.setSpacing(12)
@@ -58,12 +82,11 @@ class ModelConfigDialog(QDialog):
         grid = QGridLayout()
         rows = LabeledRow(grid)
         self.provider_combo = QComboBox()
-        for key, label in PROVIDER_LABELS.items():
-            if purpose == "image" and key != "hosted-llm":
-                continue
-            self.provider_combo.addItem(label, key)
-        if purpose == "image":
-            self.provider_combo.setItemText(0, "OpenAI 兼容生图接口")
+        if profile.only_provider:
+            self.provider_combo.addItem(profile.only_provider[1], profile.only_provider[0])
+        else:
+            for key, label in PROVIDER_LABELS.items():
+                self.provider_combo.addItem(label, key)
         self.url_edit = QLineEdit()
         self.url_edit.setClearButtonEnabled(True)
         self.key_edit = QLineEdit()
@@ -131,7 +154,7 @@ class ModelConfigDialog(QDialog):
         self.test_button.setAutoDefault(False)
         self.test_button.setToolTip("测试当前填写的配置，无需先保存；仅发送一次极短请求，输出上限 2 tokens")
         self.test_button.clicked.connect(self._test_connection)
-        if purpose == "image":
+        if profile.list_models_to_check:
             self.test_button.setText("检查连接")
             self.test_button.setToolTip("仅查询模型列表，不发送聊天或生图请求；不支持列表也可手动填模型并保存")
         actions.addWidget(self.test_button)
@@ -173,7 +196,7 @@ class ModelConfigDialog(QDialog):
         try:
             values = self._drafts.get(self._current)
             if values is None:
-                values = form_values(self._current, purpose=self.purpose)
+                values = self.profile.load(self._current)
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).error("读取模型配置失败", exc_info=True)
             values = {"base_url": "", "api_key": "", "model": ""}
@@ -251,7 +274,7 @@ class ModelConfigDialog(QDialog):
         if self._test_runner.current is not None:
             return
         try:
-            save_provider(self.selected_provider(), **self._values(), purpose=self.purpose)
+            self.profile.save(self.selected_provider(), **self._values())
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).error("保存模型配置失败", exc_info=True)
             self._show_error(f"{type(exc).__name__}: {exc}")
@@ -266,7 +289,7 @@ class ModelConfigDialog(QDialog):
         self.test_status.show()
 
     def _test_connection(self) -> None:
-        if self.purpose == "image":
+        if self.profile.list_models_to_check:
             self._fetch_models()
             return
         if self._test_runner.current is not None:

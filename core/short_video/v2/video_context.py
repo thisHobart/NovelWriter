@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from copy import deepcopy
 
 from .contracts import JsonObject
@@ -75,6 +76,30 @@ def prepare_evidence(context: JsonObject, board: JsonObject, limit: int) -> None
     context["article"]["omitted_items"] = len(omitted)
 
 
+def picture_name(file_name: str) -> str:
+    """A picture's name as the user sees it, without the image file extension."""
+    stem, suffix = os.path.splitext(file_name)
+    return stem if suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else file_name
+
+
+def model_pictures(video_inputs: JsonObject) -> JsonObject:
+    """What the model needs per picture: its number or frame role, and its name.
+
+    Hashes, node ids and source ids stay in the program-side binding.
+    """
+    images = []
+    for image in video_inputs["images"]:
+        item = {"reference": image["reference"], "role": image["role"]}
+        if image.get("image_name"):
+            item["image_name"] = image["image_name"]
+        images.append(item)
+    return {
+        "kind": video_inputs["kind"],
+        "duration_seconds": video_inputs["duration_seconds"],
+        "images": images,
+    }
+
+
 def model_context(context: JsonObject) -> JsonObject:
     """Render a single factual context, excluding drafts and persistence controls."""
     names = {a["spec_id"]: a for a in context["shot_assets"]}
@@ -98,7 +123,7 @@ def model_context(context: JsonObject) -> JsonObject:
                 if k != "source_refs"
             },
             "assets": assets,
-            "video_inputs": context["video_inputs"],
+            "video_inputs": model_pictures(context["video_inputs"]),
             # Older commands may still hold original fragments; they are not sent any more.
             "adjacent_shots": context["article"]["adjacent_shots"],
             "requirements": {

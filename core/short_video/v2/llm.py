@@ -12,8 +12,8 @@ from uuid import uuid4
 import httpx
 from openai import APIConnectionError, APIStatusError
 
-from core.generation import api_providers
-from core.generation.cancellation import CancelToken
+from core.common import api_providers
+from core.common.cancellation import CancelToken
 
 from .contracts import JsonObject, RequestRecorder, TextTransport
 from .llm_trace import enabled, endpoint_label, trace_event
@@ -151,7 +151,7 @@ class ScriptLLM:
             )
         else:
             if self.purpose == "review":
-                from core.generation.api_settings import get_review_config
+                from .service_settings import get_review_config
 
                 config = get_review_config(self.model)
             else:

@@ -26,6 +26,11 @@ PLACEHOLDER = re.compile(
     r"\{[A-Za-z_][A-Za-z_0-9]*\}|\{\{[^{}]+\}\}|【(?:道具名称|时代背景|年龄|性别|[^】]*待填[^】]*)】"
 )
 UNRESOLVED = re.compile(r"^(?:原文)?(?:未明确|未描述|待填写|待确定|待确认|待定)[。；，\s]*$|不设定")
+# The finished video must be shorter than this.
+TOTAL_LIMIT_MS = 60000
+# A usual shot under the storyboard skill, and what one MiniMax H3 run can output (model card).
+USUAL_SHOT_MS = (5000, 8000)
+MODEL_SHOT_MS = (4000, 15000)
 SPEC_FIELDS = {
     "character_spec": (
         "age",
@@ -504,12 +509,12 @@ def local_issues(
     result = []
     if kind == "storyboard":
         total = sum(shot["duration_ms"] for shot in content["shots"])
-        if total >= 60000:
+        if total >= TOTAL_LIMIT_MS:
             result.append(
                 issue(
                     "SHOT-TOTAL-001",
                     "shots",
-                    f"镜头合计{total / 1000:g}秒，未满足少于60秒的成片目标",
+                    f"镜头合计{total / 1000:g}秒，未满足少于{TOTAL_LIMIT_MS // 1000}秒的成片目标",
                     "核对实际动作和声音容量；消除重复表达或反馈上游压缩，不仅修改汇总标签",
                 )
             )

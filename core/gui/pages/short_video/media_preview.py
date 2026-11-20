@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 from core.gui import icons, theme
 from core.gui.theme import CONTROL_HEIGHT, SP
 from core.gui.widgets.controls import VScrollArea, primary_button
@@ -265,8 +265,10 @@ class MediaPreview(QWidget):
         prompt_bar = QHBoxLayout()
         prompt_bar.setSpacing(SP[2])
         prompt_bar.addWidget(section_title("视频提示词"))
-        prompt_bar.addWidget(muted("用 <Picture N> 指代上面的参考图片"))
-        prompt_bar.addStretch()
+        # Wraps rather than widening the left column, so the video card fits beside it.
+        prompt_note = muted("用 <Picture N> 指代上面的参考图片")
+        prompt_note.setWordWrap(True)
+        prompt_bar.addWidget(prompt_note, 1)
         self.generate_prompt_button = small_button("AI 编写")
         self.resume_prompt_button = small_button("继续编写")
         self.copy_prompt_button = small_button("复制")
@@ -412,6 +414,8 @@ class MediaPreview(QWidget):
         hint = QLabel()
         hint.setStyleSheet(f"font-size:{theme.FS_SM}px")
         hint.setTextFormat(Qt.RichText)
+        # Wraps rather than widening the video card, so the card fits beside the prompt.
+        hint.setWordWrap(True)
         hint.linkActivated.connect(lambda _: self.match_storyboard_duration())
         hint.hide()
         return hint
@@ -458,7 +462,7 @@ class MediaPreview(QWidget):
             self.target = dict(target)
 
     def generate_prompt(self) -> None:
-        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        require(not self.workbench.tasks.busy("text"), "PROJECT_BUSY", "已有任务在运行")
         if not self.workbench.resolve_edits():
             return
         service = WorkflowService(self.workbench.repository, self.workbench.model())
@@ -710,6 +714,8 @@ class MediaPreview(QWidget):
         for key, control in self.parameter_fields.items():
             if isinstance(control, QCheckBox):
                 values[key] = control.isChecked()
+            elif isinstance(control, QComboBox):
+                values[key] = control.currentData()
             elif isinstance(control, QLineEdit):
                 values[key] = control.text() if raw else int(control.text())
             else:
@@ -847,7 +853,15 @@ class MediaPreview(QWidget):
         for parameter in self.template.parameters:
             value = draft.get("parameters", {}).get(parameter.key, parameter.default)
             field = None
-            if type(parameter.default) is bool:
+            if parameter.choices:
+                control = QComboBox()
+                for choice, label in parameter.choices:
+                    control.addItem(label, choice)
+                index = control.findData(value)
+                control.setCurrentIndex(
+                    index if index >= 0 else control.findData(parameter.default)
+                )
+            elif type(parameter.default) is bool:
                 control = Switch()
                 control.setChecked(value)
             elif parameter.input_name == "noise_seed":
@@ -877,8 +891,7 @@ class MediaPreview(QWidget):
                 field = QHBoxLayout()
                 field.setSpacing(SP[2])
                 field.addWidget(control)
-                field.addWidget(self.duration_hint)
-                field.addStretch()
+                field.addWidget(self.duration_hint, 1)
             advanced = parameter.input_name == "noise_seed" or (
                 type(parameter.default) is int and parameter.role != "duration"
             )
@@ -1070,7 +1083,7 @@ class MediaPreview(QWidget):
                 self.video_prompt_binding = inputs
         if self.video_prompt_binding and (not valid or inputs != self.video_prompt_binding):
             reason, tone = "镜头、选图或视频时长已变化，请重新编写并核对当前提示词。", "warn"
-        busy = self.workbench.host.runner.busy
+        busy = self.workbench.tasks.busy("text")
         self.generate_prompt_button.setEnabled(bool(inputs) and not busy)
         task = get_recovery(repository, "video_prompt")
         can_resume = bool(

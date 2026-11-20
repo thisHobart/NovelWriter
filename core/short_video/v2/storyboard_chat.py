@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from .contracts import ArtifactRecord, JsonObject
 from .models import WorkspaceError, encode, reference_text, require
 from .source import sentence_range, validate_source_ref
-from .validation import SPEC_FIELDS
+from .validation import MODEL_SHOT_MS, SPEC_FIELDS, TOTAL_LIMIT_MS, USUAL_SHOT_MS
 
 if TYPE_CHECKING:
     from .repository import ProjectRepository
@@ -117,8 +117,7 @@ def shot_dialogue_text(shot: JsonObject, entities: list[JsonObject]) -> str:
         + line.get("text", "")
         for line in shot.get("dialogue", [])
     ]
-    if shot.get("narration"):
-        lines.append("旁白：" + shot["narration"])
+    lines += ["旁白：" + line for line in shot.get("narration", "").splitlines() if line.strip()]
     return "\n".join(lines)
 
 
@@ -290,6 +289,13 @@ def build_storyboard_chat_context(
             if 0 <= i < len(shots)
         ],
         "shot_count": len(shots),
+        # Added up here so the model compares lengths instead of summing them itself.
+        "timing": {
+            "total_ms": sum(s.get("duration_ms", 0) for s in shots),
+            "total_below_ms": TOTAL_LIMIT_MS,
+            "usual_shot_ms": list(USUAL_SHOT_MS),
+            "model_shot_ms": list(MODEL_SHOT_MS),
+        },
         "storyboard_outline": [],
         "asset_catalog": catalog_summary(entities),
         "assets": [],
@@ -315,6 +321,12 @@ def build_storyboard_chat_context(
                 "order": i + 1,
                 "fields": item.get("fields", ""),
                 "change": item.get("change", ""),
+                # The length suggested with the affected-shot list; the revision follows it.
+                **(
+                    {"duration_ms": item["duration_ms"]}
+                    if type(item.get("duration_ms")) is int and item["duration_ms"] > 0
+                    else {}
+                ),
             }
             for i, item in edits
         ]

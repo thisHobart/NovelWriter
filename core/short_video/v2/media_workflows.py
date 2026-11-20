@@ -15,6 +15,16 @@ from .storage import atomic_write_text
 
 WORKFLOW_DIRECTORY = Path(__file__).with_name("workflows")
 MAX_REFERENCE_IMAGES = 9
+ASPECT_RATIO_CHOICES = (
+    ("9:16 (Portrait Widescreen)", "9:16 竖屏"),
+    ("16:9 (Widescreen)", "16:9 横屏"),
+    ("21:9 (Ultrawide)", "21:9 超宽屏"),
+    ("1:1 (Square)", "1:1 方形"),
+    ("2:3 (Portrait Photo)", "2:3 竖屏"),
+    ("3:4 (Portrait Standard)", "3:4 竖屏"),
+    ("3:2 (Photo)", "3:2 横屏"),
+    ("4:3 (Standard)", "4:3 横屏"),
+)
 
 
 def default_workflows() -> list[JsonObject]:
@@ -112,10 +122,11 @@ class WorkflowParameter:
     node_id: str
     input_name: str
     label: str
-    default: int | float | bool
-    minimum: float
-    maximum: float
+    default: int | float | bool | str
+    minimum: float | None = None
+    maximum: float | None = None
     role: str = ""
+    choices: tuple[tuple[str, str], ...] = ()
 
     @property
     def key(self) -> str:
@@ -224,13 +235,20 @@ class VideoWorkflow:
             graph[image.node_id]["inputs"]["image"] = image_names[image.node_id]
         for parameter in self.parameters:
             value = parameters.get(parameter.key, parameter.default)
-            expected = type(parameter.default)
-            valid = type(value) is expected or expected is float and type(value) is int
-            require(
-                valid and parameter.minimum <= value <= parameter.maximum,
-                "INVALID_INPUT",
-                f"{parameter.label}的类型或范围不正确",
-            )
+            if parameter.choices:
+                require(
+                    any(value == choice for choice, _ in parameter.choices),
+                    "INVALID_INPUT",
+                    f"{parameter.label}不在可选范围内",
+                )
+            else:
+                expected = type(parameter.default)
+                valid = type(value) is expected or expected is float and type(value) is int
+                require(
+                    valid and parameter.minimum <= value <= parameter.maximum,
+                    "INVALID_INPUT",
+                    f"{parameter.label}的类型或范围不正确",
+                )
             graph[parameter.node_id]["inputs"][parameter.input_name] = value
         graph[self.prompt_node]["inputs"][self.prompt_input] = prompt
         graph[self.output_node]["inputs"]["filename_prefix"] = f"video/NovelWriter/{job_id}"
@@ -383,6 +401,17 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
                 WorkflowParameter(node_id, "value", label, node["inputs"]["value"], 1, 10000)
             )
         elif node_type == "ResolutionSelector":
+            aspect = node["inputs"].get("aspect_ratio")
+            if (
+                inputs.get("width") == [node_id, 0]
+                and inputs.get("height") == [node_id, 1]
+                and any(aspect == choice for choice, _ in ASPECT_RATIO_CHOICES)
+            ):
+                parameters.append(
+                    WorkflowParameter(
+                        node_id, "aspect_ratio", "画幅", aspect, choices=ASPECT_RATIO_CHOICES
+                    )
+                )
             parameters.append(
                 WorkflowParameter(
                     node_id,

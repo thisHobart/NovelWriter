@@ -15,7 +15,7 @@
 | `story/planning/detailed_scene_plans/` | 逐章场景规划 |
 | `story/content/chapters/` | 章节正文 Markdown |
 
-结构和规划文件随所选篇幅与故事结构命名，不依赖旧 Tk 模块或旧随机生成器。读取与展示入口可查 `core/gui/services/artifacts.py`；生成入口见[工作流程](workflow.md)。小说章节的账本、质量状态及恢复记录继续由现有生成模块维护。
+结构和规划文件随所选篇幅与故事结构命名，不依赖旧 Tk 模块或旧随机生成器。读取与展示入口可查 `core/gui/pages/novel/services/artifacts.py`；生成入口见[工作流程](workflow.md)。小说章节的账本、质量状态及恢复记录继续由现有生成模块维护。
 
 ## 短视频项目
 

@@ -32,7 +32,7 @@
 
 | 区域 | 尺寸 | 说明 |
 |---|---|---|
-| 左侧步骤栏 | 固定 248px | 不可折叠（后续可加） |
+| 左侧步骤栏 | 固定 248px | 不可折叠（后续可加）；只属于小说创作，短视频不显示 |
 | 内容区 | 自适应 | 顶部 64px 页头 + 主体 + 底部 44px 状态栏 |
 | 最小窗口 | 1200 × 760 | 低于此值内容区横向滚动，不重排 |
 
@@ -96,7 +96,7 @@ worker 线程**禁止**触碰任何 QWidget。进度上报走 `progress(str, flo
 
 ## 4. 阶段 1 · 作品参数
 
-字段来源：`core/config/story_options.py` 与 `core/gui/pages/parameters_page.py`。
+字段来源：`core/config/story_options.py` 与 `core/gui/pages/novel/parameters_page.py`。
 
 | 控件 | 触发 | 结果 |
 |---|---|---|

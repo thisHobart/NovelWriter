@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from glob import glob
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 from core.generation.story_ledger import (
     RevisionConflictError,

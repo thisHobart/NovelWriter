@@ -70,9 +70,9 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
 - `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带轻量 `storyboard_reference={shot_id, storyboard_id, order, unsaved}`，修改镜头的请求另带 `storyboard_edit={shot_ids, base}`（base 为各镜请求时的内容指纹，不含序号与时间轴），不将完整资料写入消息正文，也不保存检查反馈或候选。
 - 修改镜头：`storyboard_edit={shots: 编辑稿中所选镜头, entities: 本版资产目录}`，须与 `storyboard_context.edit_request` 的镜头一致；命令另带 `edit_check` 供回复检查。`execute` 收到回复后用 `reply_problems` 检查 revised_shots，有问题时把上次回复和问题附在原 prompt 后再请求 1 次，修正后通过的镜头更多（或一样多而问题更少）才采用，否则保存第一次回复。
-- [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)：`reply_blocks`／`display_text` 读取并隐藏回复末尾的 ```affected_shots``` 与 ```revised_shots``` JSON 代码块；`affected_shots(content, shots)` 按 shot_id（未知时按镜号）对应编辑稿，丢弃不存在与重复的镜头；`revised_shots(content, base, entities)` 要求 EDIT_FIELDS 全部字段，`merge_shot` 保留 shot_id、原文与视频块引用，丢弃编辑中的自由文字，再用 `validation.validate_shot` 与正整数时长检查；`shot_changes` 给出（列名，原来，改成）；`shot_fingerprint` 忽略 order／start_ms／end_ms。`StoryboardEditor.apply_shots(shots)` 按 shot_id 替换并标记底色，`restore(content, marked)` 用于撤销，`set_content` 清除标记。
+- [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)：`reply_blocks`／`display_text` 读取并隐藏回复末尾的 ```affected_shots``` 与 ```revised_shots``` JSON 代码块；`affected_shots(content, shots)` 按 shot_id（未知时按镜号）对应编辑稿，丢弃不存在与重复的镜头，每项 `{shot_id, order, fields, change}`，回复给出建议时长时另带 `duration_ms`（取整后至少 100 的毫秒数，其他值忽略）；`revised_shots(content, base, entities)` 要求 EDIT_FIELDS 全部字段，`merge_shot` 保留 shot_id、原文与视频块引用，丢弃编辑中的自由文字，画面提示词改变时删除 visual_description，再用 `validation.validate_shot` 与正整数时长检查；`shot_changes` 给出（列名，原来，改成）；`shot_fingerprint` 忽略 order／start_ms／end_ms。`StoryboardEditor.apply_shots(shots)` 按 shot_id 替换并标记底色，同时去掉这些镜头“画面提示词可能需要同步”的标记；`restore(content, marked)` 用于撤销；`set_content` 清除两种标记，并用 `remove_appended_tails` 去掉旧版程序接在画面提示词末尾的文字（有改动时发出 changed，等用户保存）。
 - `build_conversation_context(..., storyboard_context=None)` 是纯函数，48,000 字符默认上限包含系统规则、序列化消息和本轮附带资料；按最早完整轮次裁剪副本，保留本轮完整消息与上下文。仍超限返回 CONTEXT_TOO_LARGE，不截断镜头／问题，不删除磁盘历史。
-- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000, max_outline_chars=12000, edit_items=None)` 组装本镜、紧邻前后镜、`shot_count` 与其余镜头的 `storyboard_outline`（每条带 shot_id）、`asset_catalog`（全部对象的编号、类型、名称、别名、仅声音标记与状态，不含设定）、资产基础设定及本镜引用的有效原文；传入 `edit_items=[{shot_id, fields, change}]` 时另加按镜号排序的 `edit_request` 与完整的 `edit_shots`，这些镜头不再列入概要，原文片段也包含它们的引用；不带整组视图提示词或原文全文。概要每镜含镜号、时长、场景／人物／道具（名称／状态，人物列编辑过时为原样文字）、动作和对白旁白，不含景别、运镜和画面提示词；超出预算依次截取动作与对白前60字、只留资产、从离本镜最远处整镜省略，并写入 `missing`。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由本镜、邻镜和原文覆盖。
+- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000, max_outline_chars=12000, edit_items=None)` 组装本镜、紧邻前后镜、`shot_count` 与其余镜头的 `storyboard_outline`（每条带 shot_id）、`timing`（`total_ms` 编辑稿合计、`total_below_ms`=60000、`usual_shot_ms`=[5000, 8000]、`model_shot_ms`=[4000, 15000]，常量在 `validation.py`）、`asset_catalog`（全部对象的编号、类型、名称、别名、仅声音标记与状态，不含设定）、资产基础设定及本镜引用的有效原文；传入 `edit_items=[{shot_id, fields, change, duration_ms?}]` 时另加按镜号排序的 `edit_request`（各项保留正整数 duration_ms）与完整的 `edit_shots`，这些镜头不再列入概要，原文片段也包含它们的引用；不带整组视图提示词或原文全文。概要每镜含镜号、时长、场景／人物／道具（名称／状态，人物列编辑过时为原样文字）、动作和对白旁白，不含景别、运镜和画面提示词；超出预算依次截取动作与对白前60字、只留资产、从离本镜最远处整镜省略，并写入 `missing`。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由本镜、邻镜和原文覆盖。
 - 原文区间限制在绑定选区。镜头的原文坐标由模型写出，常差几个字，`sentence_range(value, start, end, lo, hi)` 将首尾各移到最近的句子边界（句号、问号、叹号、省略号或换行之后，句末右引号／括号归上一句）：向内最多10字，向外最多150字，不越出选区；片段落在一句之内时取整句，150字内无标点时保留原坐标。之后合并重叠或只隔空白的片段，`source_segments` 只含文字，不带原文编号和起止坐标；按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送，并按当前选择重新取得上下文。聊天只调用生成模型，不进入质量检查或自动写回。
 
@@ -201,21 +201,21 @@ schema最多反馈10项、预览最多200字符；syntax沿用行列、偏移及
 
 Storyboard 内容为 `shots[]`；视频文案和资产目录绑定在记录外壳 `dependency_refs.video_copy`／`asset_catalog`。每镜字段如下。
 
-| 字段 | 类型与规则 | 表格显示 |
+| 字段 | 类型与规则 | 界面显示 |
 |---|---|---|
 | shot_id / order | 稳定 ID；order 连续正整数 | 镜号：按当前顺序显示，改顺序不改 ID |
-| duration_ms | 正整数 | 时间轴及可选时长列 |
-| start_ms / end_ms | 由代码按 order 累计，不让模型随意填写 | 时间轴 `[起点,终点)` |
-| shot_size | 远景／全景／中景／近景／特写／自定义 | 景别 |
-| camera_movement | string | 镜头运动 |
-| scene_ref | asset_id,variant_id；有效场景 | 放入扩展场景列／元数据 |
-| characters | 人物引用数组，允许空 | 人物：显示姓名与状态 |
-| props | 道具引用数组，允许空 | 放入扩展道具列／元数据 |
-| action | 非空 string | 动作 |
-| dialogue / narration | 对白数组及 string；允许空 | 对白列以“人物：”“旁白：”区分 |
-| sound | string，允许空 | 音效 |
-| visual_description | 可选 string | 补充画面描述，缺失时文本编排使用动作与画面草稿 |
-| visual_prompt_draft | 非空 string | 画面生成提示词草稿 |
+| duration_ms | 正整数 | 时长列（如“8 秒”），短于 4 秒或超过 15 秒标红、不在 5–8 秒内标黄；表单 0.5 秒一档，可设 1–15 秒 |
+| start_ms / end_ms | 由代码按 order 累计，不让模型随意填写 | 时长格提示与表单标题里的时间段 `[起点,终点)` |
+| shot_size | 远景／全景／中景／近景／特写／主观视角／自定义 | 景别列与表单 |
+| camera_movement | string | 表单“镜头运动” |
+| scene_ref | asset_id,variant_id；有效场景 | 表单只读显示场景名 |
+| characters | 人物引用数组，允许空 | 人物列与表单：显示名字 |
+| props | 道具引用数组，允许空 | 表单只读显示道具名 |
+| action | 非空 string | 动作列（只显示一行）与表单 |
+| dialogue / narration | 对白数组及 string；允许空 | 表单“对白（含旁白）”每行一条，以“人物：”“旁白：”区分 |
+| sound | string，允许空 | 表单“音效” |
+| visual_description | 可选 string；表单改画面提示词、合并镜头、应用 AI 改过的画面提示词时删除；打开分镜时画面提示词恰好等于它加旧版程序接上的“。景别，镜头运动。动作：……”，就把画面提示词还原为它并删除（未保存修改） | 不显示；复制分镜文本时与动作、画面提示词去重后一起使用 |
+| visual_prompt_draft | 非空 string | 表单“画面提示词” |
 | video_block_refs / source_refs | 视频块引用与原文引用 | 元数据，可展开来源 |
 | duration_exception_reason | string 或 null | 超出建议区间时可空，不作为继续操作的门槛，作为 warning 处置 |
 
@@ -240,7 +240,7 @@ PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 Pro
 
 `storyboard_text.render_storyboard_text(content, catalog) -> str` 是无 I/O 的文本编排函数；输入为结构化分镜 content 和对应资产目录 content。重算连续时间轴，以整数毫秒转为精确秒数，按“视觉风格／场景概述／分镜／镜头要求／音频／限制”输出整段中文，不显示内部编号和来源坐标。
 
-时间段、镜号、景别、运镜、人物与状态、场景、道具、画面、动作及各镜音频均保留。无出镜人物与画外对白分开表达，未指定音频不补写音乐。可选 visual_description 缺失时使用已有动作及 visual_prompt_draft。不会调用模型重写或改变保存数据。
+时间段、镜号、景别、运镜、人物与状态、场景、道具、画面、动作及各镜音频均保留。无出镜人物与画外对白分开表达，未指定音频不补写音乐。画面一项由可选 visual_description、动作和 visual_prompt_draft 去重后依次组成，缺 visual_description 时只用后两项。不会调用模型重写或改变保存数据。
 
 分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
@@ -433,7 +433,7 @@ WorkflowService.shot_assets 的 views 可返回 image（含 image_id、relative_
 
 ## 12. 短视频 UI 三通道调度
 
-TaskChannels 维护 text／image／video 三个 TaskRunner，text 复用主窗口原实例。
+TaskChannels 维护 text／image／video 三个 TaskRunner，都由短视频工作区自己持有，不借用小说的任务通道。
 channel(work) 按 ImageGenerationWork／MediaWork 分类，其余为文字任务。
 admit 在启动前检查同类互斥；同镜头 video_prompt 任务阻止新视频，查询原任务例外。
 prompt_busy 按冻结的分镜版本和 shot_id 匹配，恢复任务也在启动前读取原命令的目标。

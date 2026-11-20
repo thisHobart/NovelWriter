@@ -15,7 +15,7 @@ from agents.review.domain_review_agent import (
     DomainReviewError,
     SceneDialogue,
 )
-from core.generation.cancellation import CancelToken, raise_if_cancelled
+from core.common.cancellation import CancelToken, raise_if_cancelled
 from core.generation.chapter_acceptance import (
     ChapterAcceptanceError,
     ChapterAcceptanceResult,

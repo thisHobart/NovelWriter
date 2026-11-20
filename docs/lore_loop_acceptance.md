@@ -41,7 +41,7 @@ stateDiagram-v2
 ## 可复现的离线验收
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_headless_stage_pipeline.py tests/test_lore_repository.py -q
+.\venv\Scripts\python.exe -m pytest tests/novel/test_headless_stage_pipeline.py tests/novel/test_lore_repository.py -q
 .\venv\Scripts\python.exe -m pytest tests -q
 ```
 

@@ -18,11 +18,11 @@
 | 「镜头」标签的视频区与选图菜单 | `media_preview.py`（选图菜单读 `workflow.py` 的 shot_assets）；图片卡片、两栏布局、折叠区、开关在 `video_widgets.py` |
 | 「与 AI 讨论」面板 | `chat_panel.py`（标题栏、附带标签、输入框、发送／停止）；`chat_stream.py`（消息流、气泡、Markdown）；`shot_edit_panel.py`（回复下的镜头卡片） |
 | 后台线程与 UI 状态 | `core/gui/task_runner.py`；`core/short_video/v2/feedback.py` |
-| 短视频三通道调度与状态栏 | `core/gui/pages/short_video/task_channels.py`；`core/gui/widgets/status_bar.py` |
+| 短视频三通道调度与状态栏 | `core/gui/pages/short_video/task_channels.py`（三个通道和交给状态栏显示的任务说明）；任务的启动、结束和停止在 `workbench.py`；共用状态栏 `core/gui/widgets/status_bar.py` |
 | 准备阶段输入、多阶段编排 | `core/short_video/v2/workflow.py`、`creation.py` |
 | Agent Loop、检查点与继续执行 | `core/short_video/v2/runtime.py` |
 | 项目与内容存储 | `repository.py`、`storage.py`、`project_service.py`、`models.py`、`contracts.py` |
-| 生成／校验配置与模型调用 | `core/generation/api_settings.py`、`core/gui/model_config_dialog.py`；`llm.py` |
+| 生成／校验配置与模型调用 | 地址、密钥等共用配置在 `core/common/api_settings.py`；校验模型和生图 API 配置在 `service_settings.py`；对话框 `core/gui/model_config_dialog.py`；`llm.py` |
 | 提示词、校验与审阅 | `prompts.py`、`validation.py`、`review.py`、`storyboard_skill.py` |
 | 可选资产生图与来源 | `image_generation.py`、`media_repository.py`；UI 为 `asset_images_page.py`、`asset_image_preview.py` |
 | 会话与上下文 | `conversation.py`、`conversation_store.py`、`conversation_context.py` |
@@ -42,7 +42,7 @@
 
 视频提示词的单镜头上下文、局部模型返回、引用读取及统一预算见[上下文设计与验收](video_prompt_context.md)。`video_context.py`负责资料投影与证据预算；`video_request`重新组装每次请求，审阅不携带完整任务或镜头集合。只保留当前任务数据校验，无专用旧协议版本标记、旧生成回退或独立任务文件迁移；左侧画面提示词本地编排继续保留。
 
-视频面板的 VIDEO_PROMPT_RULES 在 stage_prompt 的 video_prompt 分支统一加入，保留自定义任务目标。WorkflowService.prepare_video_prompt 冻结本镜分镜、实际使用的资产及视频输入；video_prompt.py依据真实工作流接线生成 Picture 顺序并验证图片哈希，WorkflowParameter.role="duration"标识时长。完整 H3 中文正文位于 video_motion_prompt，video_prompt_binding由代码维护，resolved_prompt／negative_prompt保持原状。沿用 AgentExecution、独立审阅和检查点，模型每次请求及提交前核对媒体来源。UI按镜头与工作流缓存临时编辑，只有选图及时间匹配时回填保存结果，保持手动编辑；文字生成和ComfyUI提交各自独立。回归见 tests/test_video_prompt.py。
+视频面板的 VIDEO_PROMPT_RULES 在 stage_prompt 的 video_prompt 分支统一加入，保留自定义任务目标。WorkflowService.prepare_video_prompt 冻结本镜分镜、实际使用的资产及视频输入；video_prompt.py依据真实工作流接线生成 Picture 顺序并验证图片哈希，WorkflowParameter.role="duration"标识时长。完整 H3 中文正文位于 video_motion_prompt，video_prompt_binding由代码维护，resolved_prompt／negative_prompt保持原状。沿用 AgentExecution、独立审阅和检查点，模型每次请求及提交前核对媒体来源。UI按镜头与工作流缓存临时编辑，只有选图及时间匹配时回填保存结果，保持手动编辑；文字生成和ComfyUI提交各自独立。回归见 tests/short_video/test_video_prompt.py。
 
 分镜 Skill 资源为 [short-video-content-storyboard/SKILL.md](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)。仅显式选择时注入分镜，其他阶段及聊天不注入。当前 Skill 除短片总时长、常规5–8秒镜头、动作复杂度与衔接外，还规定镜头顺序与景别、对话正反打与轴线视线、旁白与画面分工、开头结尾，并附一镜写法正反例；具体规则以文件为准。Skill 正文只保留模型可执行的规则；H3 时长依据见 [MiniMax H3 官方模型卡](https://huggingface.co/MiniMaxAI/MiniMax-H3) 和 [官方镜头与首尾帧提示词指南](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)，官方输出范围为4–15秒，5–8秒是本项目制作策略。
 
@@ -58,7 +58,9 @@
 
 业务内容保持当前一份。内容 ID、哈希和 revision 用于依赖、完整性与并发控制；不要重新加入历史版本菜单或旧稿沿用路径。
 
-镜头资产查询只从当前分镜与准确设定读取，UI 不从正文猜测资产身份。独立 `ShotAssetsPanel` 展示只读列表和可收起详情，与 PromptEditor 编辑状态分离；空提示词不得用其他资产或状态填补。视图选择仅控制查看，不写视频图片选择、业务内容或任务状态，不触发生成。对应回归见 `tests/test_shot_assets.py`，覆盖同名／不同状态、去重／画外音、缺失／部分视图、准确来源、复制及未保存编辑隔离、视频选择不变、新增／重排和无分镜。
+镜头资产查询只从当前分镜与准确设定读取，UI 不从正文猜测资产身份。独立 `ShotAssetsPanel` 展示只读列表和可收起详情，与 PromptEditor 编辑状态分离；空提示词不得用其他资产或状态填补。视图选择仅控制查看，不写视频图片选择、业务内容或任务状态，不触发生成。对应回归见 `tests/short_video/test_shot_assets.py`，覆盖同名／不同状态、去重／画外音、缺失／部分视图、准确来源、复制及未保存编辑隔离、视频选择不变、新增／重排和无分镜。
+
+分镜编辑器在 [v2_editor.py](../../core/gui/pages/short_video/v2_editor.py)：`ShotTable` 只读（镜号、时长、景别、人物、动作），只管选择、拖动排序和右键菜单；选中镜头的字段由下方表单编辑，表格与表单放在竖向 QSplitter 里。长文字框 `GrowingText` 按 documentLayout 逐块累加当前宽度下的高度，加上边框与文档边距，限制在最少／最多行之间，内容或宽度变化时重算。表单改动直接写回编辑稿并只重填这一行；改时长时重算时间轴，刷新全部行、摘要和标题。时长常量在 `validation.py`：`TOTAL_LIMIT_MS`（成片上限）、`USUAL_SHOT_MS`（分镜 Skill 的常规单镜）、`MODEL_SHOT_MS`（H3 一次能生成的长度），表格着色、摘要和聊天上下文的 `timing` 共用；配置里的 `shot_duration_range_ms` 仍只给审阅 SHOT-003 用。改动作只把镜头记进 `stale_prompts` 并在画面提示词下方提示，不改提示词；`remove_appended_tails` 只在提示词恰好等于 visual_description 加旧版程序接上的尾巴时还原，作为未保存修改等用户保存。拆分清空后一镜的对白、旁白和音效；新增镜头沿用场景、原文引用与视频块引用（保存校验要求每镜有视频块引用并覆盖全部视频块），其余留空；`value()` 遇到空的必填文字时选中该镜、给表单控件设 `missing` 属性再报错。回归见 `tests/short_video/test_storyboard_editor.py`：只读表格与表单编辑、改动作不改提示词、只清理原样尾巴、带尾巴的项目打开后等用户保存、拆分、新增与标红、合并（保留输入的对白和人物、旁白多行往返）、时长提示与合计。
 
 ## 4. 会话与媒体边界
 
@@ -73,20 +75,21 @@
 合并，只发送文字、不带原文编号和坐标，完整片段最多6,000字符；缺失资料或无法解析的名字明确标记，不回退到其他版本。聊天消息仅保留
 轻量镜头标注，完整上下文只组装到本轮请求，避免历史重复携带旧稿；历史建议不视为已应用。
 
-跨镜头修改走两轮聊天：规则要求改动牵涉多个镜头时在回复末尾附 affected_shots 代码块，聊天面板的
+修改镜头走两轮聊天：规则要求建议修改镜头时（只改一镜也是）在回复末尾附 affected_shots 代码块，每镜带建议时长 duration_ms，聊天面板的
 [ShotEditPanel](../../core/gui/pages/short_video/shot_edit_panel.py)只读最后一条完整回复，按当前编辑稿列出镜头供勾选，作为卡片挂在消息流中这条回复下方（较早回复的卡片由 earlier_card 收成一行）；
-“修改所选镜头”带 `edit_items` 重新组装上下文并追加修改规则，回复的 revised_shots 由
+建议时长与编辑稿不同时，卡片把“时长”换成“时长 X → Y 秒”；“修改所选镜头”带 `edit_items`（含 duration_ms）重新组装上下文并追加修改规则，规则要求按给出的时长写 revised_shots，回复的 revised_shots 由
 [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)逐镜合并、检查，与正式保存共用`validation.validate_shot`。
 格式修正只在聊天服务内做一次，不进入阶段任务的审阅循环。应用只改编辑稿并标记底色，保存仍走原有“保存”；
 撤销保存应用前的整份编辑稿，只有编辑稿仍等于应用后的样子时可用。用户消息的 `storyboard_edit.base`
 记录请求时各镜的内容指纹，用于提示覆盖之后的编辑。
 
-`tests/test_storyboard_chat.py`覆盖只读取值、未保存与未完成编辑、状态与同名人物、原文补整句与预算、
+`tests/short_video/test_storyboard_chat.py`覆盖只读取值、未保存与未完成编辑、状态与同名人物、原文补整句与预算、
 前后镜、请求冻结和容量、UI标注与预览、普通聊天、失败重试和停止，验证不改写或失效下游。
+`tests/short_video/test_storyboard_chat_edits.py`覆盖受影响镜头清单（含建议时长与卡片里的“时长 X → Y 秒”）、修改轮与格式修正、应用、覆盖确认和撤销，以及规则要求的时长写法、界面名称和单镜也附清单。
 
 视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数。普通 H3 参考图支持最多九个位置；所有模板空位跳过，prepare_image_inputs统一裁剪未选参考输入、首尾帧参数与引导依赖。首尾帧可单独选择；Picture编号只对应实际参考图，首尾帧不占编号。MediaService与AI提示词快照共用裁剪逻辑，恢复按实际已选图片匹配。资产视图另可通过独立 Images API 生图，结果进入同一媒体库；不自动提交视频任务。
 
-media_preview.py 不导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，“打开视频”交给系统打开文件，“打开视频位置”打开其父目录；生成、查询和下载保存流程继续复用原接口。整页是 VScrollArea：图片卡片（SlotCard／SlotGrid）每张至少148px宽、缩略图16:9，ColumnGrid 在宽度≥820时分两栏，视频卡片的 SplitBody 在≥560时让状态区与参数并排；提示词至少200px、参数控件至少32px，尺寸与间距使用主题 token。图片选择仍是 image_selection()／image_fields（节点→SlotCard），提示词编号错位由 binding_shifts() 同时驱动即时提示和生成前校验。相关回归在 test_comfyui_video.py，覆盖卡片代称、添加位置后滚动与恢复、打开文件和目录、状态标签、时长提示、选图菜单及小窗口下控件高度。
+media_preview.py 不导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，“打开视频”交给系统打开文件，“打开视频位置”打开其父目录；生成、查询和下载保存流程继续复用原接口。整页是 VScrollArea：图片卡片（SlotCard／SlotGrid）每张至少148px宽、缩略图16:9，ColumnGrid 在宽度≥680时分两栏（图片横跨上方，提示词与视频卡片同一行；“用 <Picture N>…”和时长提示会换行，两栏最小宽度约620），视频卡片的 SplitBody 在≥560时让状态区与参数并排；提示词至少200px、参数控件至少32px，尺寸与间距使用主题 token。图片选择仍是 image_selection()／image_fields（节点→SlotCard），提示词编号错位由 binding_shifts() 同时驱动即时提示和生成前校验。相关回归在 test_comfyui_video.py，覆盖卡片代称、添加位置后滚动与恢复、打开文件和目录、状态标签、时长提示、选图菜单、小窗口下控件高度，以及提示词与视频卡片同一行且改参数不换位置。
 
 Qt 布局注意：控件加入已显示的父控件后要等排队的显示事件才可见，隐藏期间不计入 heightForWidth，消息流和视频页因此在加入后立即 show 并 reveal 子控件；两栏或并排改排后，各级布局和 QWidgetItem 的尺寸缓存仍是旧值，MediaPreview.relayout 先逐个 updateGeometry／invalidate 再按宽度测高，否则页面底部会留白。移除控件时先 hide 再 deleteLater，不用 setParent(None)：聊天连续重绘两次时（例如分镜页出现后紧接着刷新），刚加入的消息还有排队的显示事件，脱离父控件后会作为独立窗口闪一下（回归见 test_storyboard_chat_edits.py、test_comfyui_video.py 的 watch_windows）；没有父控件的控件也不能先 setVisible。icons.pixmap 按目标尺寸渲染 SVG，旧写法固定按16px绘制，其他尺寸的图标会被裁切（小说页的图标同样受益）。
 
@@ -114,8 +117,11 @@ ImageGenerationService 从已有结果列视图，ImageGenerationWork 单次 asy
 # 全量回归
 .\venv\Scripts\python.exe -m pytest tests -q --tb=short
 
+# 只跑短视频的测试
+.\venv\Scripts\python.exe -m pytest tests/short_video -q
+
 # 文字存储、恢复、会话与反馈
-.\venv\Scripts\python.exe -m pytest tests/test_video_v2_repository.py tests/test_video_runtime.py tests/test_conversation_management.py tests/test_video_feedback.py tests/test_video_network_retry.py tests/test_video_review_model.py tests/test_shot_assets.py tests/test_asset_image_generation.py -q
+.\venv\Scripts\python.exe -m pytest tests/test_video_v2_repository.py tests/short_video/test_video_runtime.py tests/short_video/test_conversation_management.py tests/short_video/test_video_feedback.py tests/short_video/test_video_network_retry.py tests/short_video/test_video_review_model.py tests/short_video/test_shot_assets.py tests/short_video/test_asset_image_generation.py -q
 
 # 按仓库 Ruff 配置检查生产代码
 .\venv\Scripts\python.exe -m ruff check core/short_video/v2 core/gui/pages/short_video
@@ -215,7 +221,7 @@ Windows 单文件构建入口：
 图片改用独立跨进程生图锁，保留项目／媒体短事务锁；来源投影读取须和旧文件清理互斥。
 底部回调绑定工作身份，完成事件处理前不能复用该通道。
 
-新增 tests/test_video_task_channels.py：阻塞任务验证同时运行、独立停止和结束边界；
+新增 tests/short_video/test_video_task_channels.py：阻塞任务验证同时运行、独立停止和结束边界；
 真实 OpenAI SDK 配合模拟 HTTP 同时执行文字、生图及 ComfyUI，验证冻结输入和运行中恢复。
 另覆盖同镜头输入锁、不同镜头并行、查询例外、继续任务目标、项目／配置／退出保护、
 未保存稿保留及无视频时打开目录和失败路径。所有测试使用临时项目，不调用真实服务。

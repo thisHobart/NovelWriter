@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 
 from core.gui import icons, theme
 
-TWO_COLUMNS_AT = 820
+# A prompt about 300 wide beside the narrowest video card.
+TWO_COLUMNS_AT = 680
 SLOT_MIN_WIDTH = 148
 SLOT_GAP = 10
 SLOT_FOOT = 33
@@ -312,8 +313,9 @@ class SlotGrid(QWidget):
 
 
 class ColumnGrid(QWidget):
-    """Images, prompt and image prompts on the left, the video card on the right once the page is
-    820 wide; one column below that, with the video card after the prompt."""
+    """Once the page is 680 wide: images across the top, the prompt and the video card side by
+    side below them, image prompts at the bottom. One column below that, with the video card
+    after the prompt. The width alone decides, so changing a parameter never moves the card."""
 
     rearranged = Signal()
 
@@ -337,10 +339,11 @@ class ColumnGrid(QWidget):
         for row in range(5):
             self.grid.setRowStretch(row, 0)
         if wide:
-            self.grid.addWidget(slots, 0, 0)
+            self.grid.addWidget(slots, 0, 0, 1, 2)
+            # The prompt grows to the card's height; the card keeps its own when it is shorter.
             self.grid.addWidget(prompt, 1, 0)
-            self.grid.addWidget(extra, 2, 0)
-            self.grid.addWidget(video, 0, 1, 4, 1, Qt.AlignTop)
+            self.grid.addWidget(video, 1, 1, Qt.AlignTop)
+            self.grid.addWidget(extra, 2, 0, 1, 2)
             self.grid.setRowStretch(3, 1)
             self.grid.setColumnStretch(0, 16)
             self.grid.setColumnStretch(1, 10)

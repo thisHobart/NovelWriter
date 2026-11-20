@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from html import escape
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QTextLayout, QTransform
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -25,9 +24,11 @@ from .video_widgets import muted
 
 MARK_COLORS = {"ok": theme.SUCCESS, "bad": theme.DANGER, "run": theme.ACCENT, "warn": theme.WARN}
 MARK_NOTES = {"ok": "已有视频", "bad": "生成失败", "run": "正在生成", "warn": "待确认"}
+CHIP_GAP = 4
+CHIP_HEIGHT = 30
 
 HEADER_STYLE = f"""
-QPushButton#shotChip {{ min-width:40px; height:30px; padding:0 8px; border:1px solid {theme.LINE_STRONG};
+QPushButton#shotChip {{ min-width:40px; height:{CHIP_HEIGHT}px; padding:0 8px; border:1px solid {theme.LINE_STRONG};
     border-radius:4px; background:{theme.CANVAS}; color:{theme.INK_900}; font-size:{theme.FS_SM}px; }}
 QPushButton#shotChip:hover {{ background:{theme.SURFACE}; }}
 QPushButton#shotChip:checked {{ background:{theme.ACCENT}; border-color:{theme.ACCENT}; color:white;
@@ -67,65 +68,88 @@ class ShotChip(QPushButton):
         painter.drawEllipse(QRectF(self.width() - 10, 3, 7, 7))
 
 
-class ShotChips(QScrollArea):
-    """One chip per shot in a row that scrolls sideways when the shots do not fit."""
+class ShotChips(QWidget):
+    """One chip per shot, left to right, going on to the next row when the shots do not fit."""
 
     chosen = Signal(int)
+    reflowed = Signal()  # the number of rows changed
 
     def __init__(self) -> None:
         super().__init__()
-        self.setFrameShape(QFrame.NoFrame)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        inner = QWidget()
-        inner.setObjectName("chipRow")
-        self.row = QHBoxLayout(inner)
-        self.row.setContentsMargins(1, 1, 1, 1)
-        self.row.setSpacing(4)
-        self.row.addStretch()
-        self.setWidget(inner)
-        # Scoped: a bare rule here would also reach the chips and override their colours.
-        self.setStyleSheet("QScrollArea, #chipRow { background:transparent; }")
-        self.viewport().setAutoFillBackground(False)
+        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.group.idClicked.connect(self.chosen)
         self.chips: list[ShotChip] = []
-        self.setFixedHeight(34)
+        self.rows = 0
 
     def set_count(self, count: int) -> None:
+        if count == len(self.chips):
+            return
         while len(self.chips) > count:
             chip = self.chips.pop()
             self.group.removeButton(chip)
+            # Hidden rather than detached, so it never shows as a window of its own.
+            chip.hide()
             chip.deleteLater()
         while len(self.chips) < count:
             chip = ShotChip(f"{len(self.chips) + 1:02}")
+            chip.setParent(self)
+            chip.show()
             self.group.addButton(chip, len(self.chips))
-            self.row.insertWidget(len(self.chips), chip)
             self.chips.append(chip)
-        self.update_height()
+        self.updateGeometry()
+        self.place()
 
     def set_current(self, index: int) -> None:
         if 0 <= index < len(self.chips):
             self.chips[index].setChecked(True)
-            self.ensureWidgetVisible(self.chips[index], 8, 0)
+
+    def positions(self, width: int) -> list[QRect]:
+        boxes, x, y = [], 0, 0
+        for chip in self.chips:
+            size = chip.sizeHint()
+            if x and x + size.width() > width:
+                x, y = 0, y + size.height() + CHIP_GAP
+            boxes.append(QRect(x, y, size.width(), size.height()))
+            x += size.width() + CHIP_GAP
+        return boxes
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt 命名
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt 命名
+        boxes = self.positions(width)
+        return boxes[-1].bottom() + 1 if boxes else 0
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        boxes = self.positions(2**20)
+        return QSize(boxes[-1].right() + 1, boxes[-1].height()) if boxes else QSize(0, 0)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        widest = max((chip.sizeHint().width() for chip in self.chips), default=0)
+        return QSize(widest, self.heightForWidth(widest))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self.place()
+
+    def place(self) -> None:
+        boxes = self.positions(self.width())
+        for chip, box in zip(self.chips, boxes, strict=True):
+            chip.setGeometry(box)
+        rows = len({box.top() for box in boxes})
+        if rows != self.rows:
+            self.rows = rows
+            self.reflowed.emit()
 
     def set_marks(self, marks: list[str]) -> None:
         for number, (chip, mark) in enumerate(zip(self.chips, marks, strict=False), 1):
             chip.set_mark(mark)
             note = MARK_NOTES.get(mark)
             chip.setToolTip(f"镜头 {number:02}" + (f" · {note}" if note else ""))
-
-    def update_height(self) -> None:
-        bar = self.horizontalScrollBar()
-        overflow = self.widget().sizeHint().width() > self.viewport().width()
-        self.setFixedHeight(34 + (bar.sizeHint().height() if overflow else 0))
-
-    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        super().resizeEvent(event)
-        self.update_height()
 
 
 class IssueButton(QWidget):
@@ -208,9 +232,13 @@ class ShotHeader(QWidget):
         layout.setSpacing(12)
         bar = QHBoxLayout()
         bar.setSpacing(10)
-        bar.addWidget(muted("镜头"))
         self.chips = ShotChips()
         self.chips.chosen.connect(self.chosen)
+        self.chips.reflowed.connect(self.resized)
+        # Level with the first row of chips when they take more than one.
+        label = muted("镜头")
+        label.setFixedHeight(CHIP_HEIGHT + 2)  # the chip's 1px border above and below
+        bar.addWidget(label, 0, Qt.AlignTop)
         bar.addWidget(self.chips, 1)
         layout.addLayout(bar)
 

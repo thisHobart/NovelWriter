@@ -36,7 +36,7 @@ from core.generation.prompt_context import (
     find_scene_world_conflicts,
     sanitize_lore_content,
 )
-from core.generation.cancellation import CancelToken, GenerationCancelled, raise_if_cancelled
+from core.common.cancellation import CancelToken, GenerationCancelled, raise_if_cancelled
 from core.generation import pending_review
 from core.generation.chapter_generation_loop import (
     ChapterGenerationLoop,

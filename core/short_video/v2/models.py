@@ -139,7 +139,7 @@ def timestamp() -> str:
 
 def capture_model_snapshot(provider: str) -> ModelSnapshot:
     """Keep the concrete model name, never credentials or a possibly secret URL."""
-    from core.generation.api_providers import get_config
+    from core.common.api_providers import get_config
 
     try:
         config = get_config(provider)
@@ -149,7 +149,7 @@ def capture_model_snapshot(provider: str) -> ModelSnapshot:
 
 
 def capture_review_model_snapshot() -> ReviewModelSnapshot:
-    from core.generation.api_settings import get_review_config
+    from .service_settings import get_review_config
 
     try:
         config = get_review_config()

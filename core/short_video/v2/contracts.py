@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, TypeAlias, TypedDict
 if TYPE_CHECKING:
     from .feedback import TaskContext
 
-from core.generation.cancellation import CancelToken
+from core.common.cancellation import CancelToken
 
 # Content differs by stage; its concrete fields are checked at the input boundary.
 JsonObject: TypeAlias = dict[str, Any]

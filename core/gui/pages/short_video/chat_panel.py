@@ -243,7 +243,7 @@ class ChatPanel(QWidget):
         active = self.workbench.tasks.works.get("text")
         return (
             isinstance(active, ChatWork)
-            and self.workbench.host.runner.busy
+            and self.workbench.tasks.busy("text")
             and active.command["conversation_id"] == self.conversation_id
         )
 
@@ -472,10 +472,10 @@ class ChatPanel(QWidget):
             isinstance(active, ChatWork)
             and active.command["conversation_id"] == self.conversation_id
         ):
-            self.workbench.host.runner.cancel_current()
+            self.workbench.tasks.runners["text"].cancel_current()
 
     def send(self) -> None:
-        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务运行，请等待或停止")
+        require(not self.workbench.tasks.busy("text"), "PROJECT_BUSY", "已有任务运行，请等待或停止")
         context = self.selected_context()
         if not self.conversation_id:
             self.create()
@@ -490,7 +490,7 @@ class ChatPanel(QWidget):
 
     def send_edit(self, items: list[JsonObject]) -> None:
         """Ask for revised shots; the selected shot stays the discussion's current shot."""
-        require(not self.workbench.host.runner.busy, "PROJECT_BUSY", "已有任务运行，请等待或停止")
+        require(not self.workbench.tasks.busy("text"), "PROJECT_BUSY", "已有任务运行，请等待或停止")
         page = self.workbench.storyboard
         require(page.record is not None, "INVALID_INPUT", "请先生成分镜")
         draft = page.editor.draft_snapshot()

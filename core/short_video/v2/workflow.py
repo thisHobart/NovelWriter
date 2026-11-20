@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from copy import deepcopy
 
-from core.generation.cancellation import CancelToken
+from core.common.cancellation import CancelToken
 
 from . import models as model_contracts
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
@@ -356,36 +356,14 @@ class WorkflowService:
                 context["video_inputs"] = deepcopy(video_inputs)
                 context["current_video_prompt"] = current_video_prompt
                 context["shot_assets"] = self.shot_assets(shot_ids[0], state=state)
-                # Only the selected image's actual view needs a description, not every asset sheet.
-                catalog_id = board["dependency_refs"]["asset_catalog"]
+                # A picture is described by its name only: the asset a picture was generated
+                # from is fixed at generation, while this shot's assets keep changing.
+                from .media_repository import MediaRepository
+                from .video_context import picture_name
+
+                media = MediaRepository(self.repository.output_dir)
                 for image in context["video_inputs"]["images"]:
-                    source = image["asset_source"]
-                    asset = next(
-                        (
-                            a
-                            for a in context["shot_assets"]
-                            if a["asset_id"] == source.get("asset_id")
-                            and a["variant_id"] == source.get("variant_id")
-                            and source.get("catalog_id") == catalog_id
-                        ),
-                        None,
-                    )
-                    image["asset_description"] = (
-                        {
-                            "name": asset["name"],
-                            "state": asset["variant_label"],
-                            "view": next(
-                                (
-                                    v["label"]
-                                    for v in asset["views"]
-                                    if v["view_id"] == source.get("view_id")
-                                ),
-                                "未确认视图",
-                            ),
-                        }
-                        if asset
-                        else None
-                    )
+                    image["image_name"] = picture_name(media.image(image["image_id"])["name"])
                 context["shot_assets"] = [
                     {k: v for k, v in a.items() if k != "views"} for a in context["shot_assets"]
                 ]

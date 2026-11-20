@@ -8,7 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 from .contracts import JsonObject, ModelSnapshot
 from .models import (

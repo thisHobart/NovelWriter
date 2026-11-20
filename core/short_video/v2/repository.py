@@ -16,7 +16,7 @@ from pathlib import Path
 
 from filelock import Timeout
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 from .contracts import ArtifactRecord, JsonObject, OperationResult
 from .models import (

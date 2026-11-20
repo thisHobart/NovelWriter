@@ -50,7 +50,7 @@ FIELD_LABELS = {
     "narration": "旁白",
     "sound": "音效",
     "duration_ms": "时长",
-    "visual_prompt_draft": "画面生成提示词",
+    "visual_prompt_draft": "画面提示词",
 }
 # Free text typed into the editor that replaces parsed fields until the draft is saved.
 _TYPED_FIELDS = ("dialogue_text", "character_text")
@@ -85,11 +85,20 @@ def _words(value: object) -> str:
     return str(value).strip() if isinstance(value, (str, int, float)) else ""
 
 
+def _milliseconds(value: object) -> int | None:
+    """A suggested length: whole milliseconds, at least 0.1 second; anything else is ignored."""
+    # NaN and Infinity never get here: the block's JSON is read without them.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = round(value)
+    return value if value >= 100 else None
+
+
 def affected_shots(content: str, shots: list[JsonObject]) -> JsonObject | None:
     """The reply's affected-shot list matched to the current draft, or None without a list.
 
     A shot is found by shot_id, or by its number when the id is unknown; shots no longer in the
-    draft are dropped.
+    draft are dropped. An item keeps the suggested length as duration_ms when the reply gives one.
     """
     body = reply_blocks(content).get(AFFECTED_TAG)
     if body is None:
@@ -115,6 +124,9 @@ def affected_shots(content: str, shots: list[JsonObject]) -> JsonObject | None:
             "fields": _words(entry.get("fields")),
             "change": _words(entry.get("change")),
         }
+        duration = _milliseconds(entry.get("duration_ms"))
+        if duration is not None:
+            found[index]["duration_ms"] = duration
     missing = value.get("missing_assets")
     return {
         "items": [found[i] for i in sorted(found)],
@@ -135,11 +147,9 @@ def merge_shot(current: JsonObject, fields: JsonObject) -> JsonObject:
             shot["character_labels"] = kept
         else:
             shot.pop("character_labels", None)
-    if "visual_description" in current and shot["visual_prompt_draft"] != current.get(
-        "visual_prompt_draft"
-    ):
-        # Same as editing the prompt cell: the written prompt becomes the visual description.
-        shot["visual_description"] = shot["visual_prompt_draft"]
+    if shot["visual_prompt_draft"] != current.get("visual_prompt_draft"):
+        # Same as editing the prompt in the form: an older copy kept beside it would go stale.
+        shot.pop("visual_description", None)
     return shot
 
 

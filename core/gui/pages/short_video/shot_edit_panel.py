@@ -374,7 +374,9 @@ class ShotEditPanel(QFrame):
     # -- affected shots --------------------------------------------------------------------
 
     def show_affected(self, content: str, page: ArtifactPage) -> None:
-        listed = affected_shots(content, page.editor.draft_snapshot()["shots"])
+        shots = page.editor.draft_snapshot()["shots"]
+        lengths = {shot["shot_id"]: shot["duration_ms"] for shot in shots}
+        listed = affected_shots(content, shots)
         self.items = listed["items"]
         self.title.setText("受影响的镜头")
         self.count.setText(str(len(self.items)))
@@ -391,8 +393,14 @@ class ShotEditPanel(QFrame):
         self.show_warning(notes)
         for item in self.items:
             row = self.add_row(item["shot_id"], f"第 {item['order']} 镜", enabled=True)
+            current, suggested = lengths[item["shot_id"]], item.get("duration_ms")
+            new_length = suggested is not None and suggested != current
             for field in filter(None, item["fields"].split("、")):
-                row.add_chip(field)
+                if not (new_length and field == "时长"):
+                    row.add_chip(field)
+            if new_length:
+                # 「修改所选镜头」 passes this length on, and the revised shot uses it.
+                row.add_chip(f"时长 {current / 1000:g} → {suggested / 1000:g} 秒")
             row.finish_head()
             if item["change"]:
                 text = _label(item["change"], "rowText")

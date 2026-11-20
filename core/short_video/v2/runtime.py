@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import httpx
 from openai import APIError
 
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 
 from . import models as model_contracts
 from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport

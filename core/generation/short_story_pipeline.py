@@ -34,7 +34,7 @@ from core.generation.chapter_acceptance import ChapterAcceptanceError, Validatio
 from core.generation.story_ledger import StoryLedgerManager
 from core.generation.domain_profiles import resolve_domain_profile
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict

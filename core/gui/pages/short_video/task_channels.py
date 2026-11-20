@@ -1,10 +1,14 @@
-"""Independent task admission and frozen prompt targets for the video workspace."""
+"""Independent task admission and frozen prompt targets for the video workspace.
+
+Text, image and video tasks each run on a runner of their own, so one of each can run at once.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from core.gui.task_runner import TaskRunner
+from core.gui.widgets.status_bar import TaskText
 from core.short_video.v2.image_generation import ImageGenerationWork
 from core.short_video.v2.media_service import MediaWork
 from core.short_video.v2.models import require
@@ -13,9 +17,14 @@ if TYPE_CHECKING:
     from core.short_video.v2.contracts import JsonObject, VideoTask
 
 
+def status_text(work: VideoTask) -> TaskText:
+    context = work.task_context
+    return TaskText(context.action, context.target, context.location(), work.token.cancelled)
+
+
 class TaskChannels:
-    def __init__(self, text_runner: TaskRunner) -> None:
-        self.runners = {"text": text_runner, "image": TaskRunner(), "video": TaskRunner()}
+    def __init__(self) -> None:
+        self.runners = {"text": TaskRunner(), "image": TaskRunner(), "video": TaskRunner()}
         self.works: dict[str, VideoTask] = {}
         self.prompt_target: tuple[str | None, str | None] | None = None
 

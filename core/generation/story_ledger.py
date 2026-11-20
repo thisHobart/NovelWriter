@@ -12,7 +12,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 from core.generation.domain_profiles import DomainProfile, get_domain_profile, resolve_domain_profile
 from core.generation.helper_fns import read_json
