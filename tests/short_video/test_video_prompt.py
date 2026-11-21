@@ -522,6 +522,18 @@ def test_format_repair_rebuilds_local_request_without_recursive_history(ready):
     assert all(p.count("【本镜上下文】") == 1 for p in calls)
 
 
+def test_writing_and_checking_ask_each_time_segment_to_name_its_pictures(ready):
+    from core.short_video.v2.review import video_review_prompt
+
+    repository, _, _ = ready
+    command = prepare(ready)
+    writing = command["prompt"]
+    assert "时段里的图片" in writing and "室内严格参考 <Picture 3>" in writing
+    assert "每张选中的参考图片至少在一个时段里写明用在哪里" in writing
+    checking = video_review_prompt(command, repository.record(command["candidate_id"]))
+    assert "每张选中的图片是否至少在一个时段里写明用处" in checking
+
+
 @pytest.mark.parametrize("phase", ["审阅", "修订", "格式修复", "审阅格式修复"])
 def test_each_request_checks_frozen_budget_and_preserves_original_on_overflow(ready, phase, caplog):
     import logging
