@@ -11,8 +11,10 @@ from core.common.cancellation import CancelToken
 # Content differs by stage; its concrete fields are checked at the input boundary.
 JsonObject: TypeAlias = dict[str, Any]
 ProgressReporter: TypeAlias = Callable[[str, float], None]
-TextTransport: TypeAlias = Callable[[str], str]
-RequestRecorder: TypeAlias = Callable[[str, str, str | None], None]
+# One prompt sent as a single user message, or a whole conversation of role/content messages.
+ModelRequest: TypeAlias = str | list[JsonObject]
+TextTransport: TypeAlias = Callable[[ModelRequest], str]
+RequestRecorder: TypeAlias = Callable[[ModelRequest, str, str | None], None]
 OperationResult = TypeVar("OperationResult")
 OperationParameters = ParamSpec("OperationParameters")
 

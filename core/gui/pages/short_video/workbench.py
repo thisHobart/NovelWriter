@@ -172,6 +172,15 @@ class Workbench(QWidget):
         self.right.currentChanged.connect(self.chat.refresh_reference)
         self.specs = PromptPage(self)
         self.add_page("video_prompts", self.specs)
+        # The chat's attachment chip follows what the page on screen shows; a page that has
+        # just been loaded is caught by refresh_shown.
+        for changed in (
+            self.source.changed,
+            self.novel.editor.changed,
+            self.video.editor.changed,
+            self.specs.changed,
+        ):
+            changed.connect(self.chat.refresh_reference)
         self.splitter.splitterMoved.connect(
             lambda *_: self.settings.setValue(self.setting_key("sizes"), self.splitter.sizes())
         )
@@ -515,6 +524,8 @@ class Workbench(QWidget):
             # Pages are never left with unsaved edits, so a shown 镜头 tab has just reloaded
             # its video area (which also re-marks the shot chips).
             self.refresh_buttons()
+            # The attachment chip names what the page now shows, such as a draft just loaded.
+            self.chat.refresh_reference()
 
     def refresh_adaptation_tab(self) -> None:
         if self.right.currentWidget() is self.adaptation:

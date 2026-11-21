@@ -150,6 +150,7 @@ class CopyEditor(QWidget):
         super().__init__(parent)
         self.content = None
         self.fields = []
+        self.rows: list[tuple[str, QPlainTextEdit | None]] = []
         layout = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -161,6 +162,8 @@ class CopyEditor(QWidget):
     def set_content(self, content: JsonObject | None) -> None:
         self.content = deepcopy(content)
         self.fields = []
+        # What the form shows, in order: (label, box) per field, (heading, None) per block.
+        self.rows = []
         while self.form.count():
             item = self.form.takeAt(0)
             if item.widget():
@@ -186,6 +189,7 @@ class CopyEditor(QWidget):
             for index, block in enumerate(self.content["blocks"]):
                 label = {"opening": "开头", "body": "正文", "cliffhanger": "结尾"}[block["role"]]
                 self.form.addWidget(QLabel(f"{index + 1} · {label}"))
+                self.rows.append((f"{index + 1} · {label}", None))
                 self.add_field("口播", block, "narration")
                 self.add_field("动作", block, "visible_action")
                 dialogue = QPlainTextEdit(format_dialogue(block["dialogue"]))
@@ -195,6 +199,7 @@ class CopyEditor(QWidget):
                 self.form.addWidget(QLabel("对白"))
                 self.form.addWidget(dialogue)
                 self.fields.append((block, "dialogue", dialogue))
+                self.rows.append(("对白", dialogue))
         self.form.addStretch()
 
     def add_field(self, label: str, node: JsonObject, field: str) -> None:
@@ -205,6 +210,12 @@ class CopyEditor(QWidget):
         edit.textChanged.connect(self.changed)
         self.form.addWidget(edit)
         self.fields.append((node, field, edit))
+        self.rows.append((label, edit))
+
+    def form_rows(self) -> list[tuple[str, str | None]]:
+        """The draft as the form shows it, unsaved edits included: (label, text) per field and
+        (heading, None) per block of the 视频推广文案."""
+        return [(label, None if edit is None else edit.toPlainText()) for label, edit in self.rows]
 
     def value(self) -> JsonObject:
         require(self.content is not None, "INVALID_INPUT", "请先生成稿件")

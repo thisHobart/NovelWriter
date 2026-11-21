@@ -1,12 +1,12 @@
-"""Project discussions with optional live, read-only storyboard attachments."""
+"""Project discussions; the page on screen can be attached, read-only and with unsaved edits."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -24,20 +24,26 @@ from PySide6.QtWidgets import (
 from core.gui import icons, theme
 from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.conversation import ChatWork, ConversationService
-from core.short_video.v2.models import WorkspaceError, encode, fingerprint, require
-from core.short_video.v2.storyboard_chat import read_storyboard_chat_context
+from core.short_video.v2.conversation_context import ConversationContext
+from core.short_video.v2.models import WorkspaceError, fingerprint, require
+from core.short_video.v2.storyboard_chat import read_storyboard_material
 from core.short_video.v2.storyboard_edits import display_text
 
+from .chat_attachments import ChatOffer, chat_attachment, chat_offer
 from .chat_stream import AiMessage, MessageStream, TypingLine, UserMessage
+from .request_preview import RequestPreviewDialog, context_hint
 from .shot_edit_panel import ShotEditPanel, earlier_card
-from .ui_helpers import create_action_button, show_text_dialog
+from .ui_helpers import create_action_button
 
 if TYPE_CHECKING:
     from .workbench import Workbench
 
-ATTACHED_PARTS = "附带：本镜、前后镜、全稿概要、资产目录、相关资产、原文片段"
 MENU_CONVERSATIONS = 12
+# The chip's padding and × beside its text.
+CHIP_FRAME = 40
 INPUT_HEIGHT = (52, 120)
+# The hint under the input is worked out once typing or editing pauses this long.
+HINT_DELAY_MS = 400
 
 PANEL_STYLE = f"""
 #chatPanel {{ background:{theme.CANVAS}; }}
@@ -59,17 +65,24 @@ QPushButton#linkButton {{ height:22px; padding:0; border:0; background:transpare
 QPushButton#linkButton:disabled {{ color:{theme.INK_400}; }}
 QPushButton#conversationButton {{ height:28px; padding:0 8px; text-align:left; }}
 QPushButton#newConversationButton {{ height:28px; padding:0; }}
+QLabel#contextHint {{ color:{theme.INK_600}; font-size:{theme.FS_SM}px; }}
+QLabel#contextHint[warning="true"] {{ color:{theme.WARN}; }}
 """
 
 
 class AttachChip(QWidget):
-    """「附带分镜 · 第 N 镜」 inside the input box: × detaches, the dashed button re-attaches."""
+    """「附带分镜 · 第 N 镜」 inside the input box: × detaches, the dashed button re-attaches.
+
+    The page on screen says what it offers (see chat_offer); a long label is shortened with
+    「…」 to the box's width.
+    """
 
     toggled = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
         self._checked = True
+        self.text, self.parts, self.empty = "", "", ""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SP[1])
@@ -79,24 +92,47 @@ class AttachChip(QWidget):
         chip_layout.setContentsMargins(10, 1, 3, 1)
         chip_layout.setSpacing(theme.SP[1])
         self.label = QLabel()
+        # Shortened to fit rather than widening the chat.
+        self.label.setMinimumWidth(1)
         chip_layout.addWidget(self.label)
         self.detach_button = QToolButton()
         self.detach_button.setObjectName("detachButton")
         self.detach_button.setIcon(icons.icon("close", theme.ACCENT, 12))
         self.detach_button.setFixedSize(18, 18)
         self.detach_button.setCursor(Qt.PointingHandCursor)
-        self.detach_button.setToolTip("不附带分镜，按普通聊天发送")
         self.detach_button.clicked.connect(lambda: self.setChecked(False))
         chip_layout.addWidget(self.detach_button)
-        self.chip.setToolTip(ATTACHED_PARTS)
         layout.addWidget(self.chip)
-        self.attach_button = QPushButton("+ 附带当前分镜")
+        self.attach_button = QPushButton()
         self.attach_button.setObjectName("attachButton")
         self.attach_button.setCursor(Qt.PointingHandCursor)
         self.attach_button.clicked.connect(lambda: self.setChecked(True))
         layout.addWidget(self.attach_button)
         layout.addStretch()
         self.sync()
+
+    def show_offer(self, offer: ChatOffer) -> None:
+        """Name the page on screen; disabled while it has nothing to attach."""
+        self.text = "附带" + offer.label if offer.label else ""
+        self.parts, self.empty = offer.parts, offer.empty
+        self.detach_button.setToolTip(f"不附带{offer.subject}，按普通聊天发送")
+        self.attach_button.setText("+ 附带" + offer.subject)
+        self.setEnabled(bool(offer.label))
+        self.sync()
+        self.fit_text()
+
+    def fit_text(self) -> None:
+        shown = self.text
+        if self.isVisible():
+            room = max(40, self.width() - CHIP_FRAME)
+            shown = self.label.fontMetrics().elidedText(self.text, Qt.ElideRight, room)
+        self.label.setText(shown)
+        # A shortened label is spelled out above what the attachment holds.
+        self.chip.setToolTip(self.parts if shown == self.text else f"{self.text}\n{self.parts}")
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self.fit_text()
 
     def isChecked(self) -> bool:  # noqa: N802 - mirrors QCheckBox
         return self._checked
@@ -117,9 +153,7 @@ class AttachChip(QWidget):
         attached = self._checked and self.isEnabled()
         self.chip.setVisible(attached)
         self.attach_button.setVisible(not attached)
-        self.attach_button.setToolTip(
-            ATTACHED_PARTS if self.isEnabled() else "先在分镜表格里选中要讨论的镜头"
-        )
+        self.attach_button.setToolTip(self.parts if self.isEnabled() else self.empty)
 
 
 class FocusFrame(QObject):
@@ -203,7 +237,9 @@ class ChatPanel(QWidget):
         context_layout.addWidget(self.attach_shot)
         box_layout.addWidget(self.context_panel)
         self.context_panel.hide()
-        self.attach_shot.toggled.connect(self.refresh_reference)
+        # Pages you chose not to attach; the others stay attached.
+        self.detached: set[str] = set()
+        self.attach_shot.toggled.connect(self.attach_toggled)
         self.input = QPlainTextEdit()
         self.input.setObjectName("chatInput")
         self.input.setFrameShape(QFrame.NoFrame)
@@ -226,7 +262,18 @@ class ChatPanel(QWidget):
         self.send_button.setFixedHeight(28)
         box_layout.addLayout(box_foot)
         composer_layout.addWidget(self.box)
+        self.context_hint = QLabel()
+        self.context_hint.setObjectName("contextHint")
+        self.context_hint.setWordWrap(True)
+        self.context_hint.hide()
+        composer_layout.addWidget(self.context_hint)
         layout.addWidget(composer)
+        self.hint_timer = QTimer(self)
+        self.hint_timer.setSingleShot(True)
+        self.hint_timer.setInterval(HINT_DELAY_MS)
+        # Only a panel on screen works the hint out; showEvent catches up.
+        self.hint_timer.timeout.connect(lambda: self.isVisible() and self.update_context_hint())
+        self.input.textChanged.connect(self.hint_timer.start)
         self.fit_input()
         self.conversations.currentIndexChanged.connect(lambda: workbench.perform(self.select))
         self.setMinimumWidth(280)
@@ -263,51 +310,78 @@ class ChatPanel(QWidget):
         else:
             self.send()
 
-    # -- attached storyboard ---------------------------------------------------------------
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt 命名
+        super().showEvent(event)
+        self.hint_timer.start()
+
+    def request_preview(self) -> tuple[ConversationContext, bool]:
+        """The request a send would make now with what is typed so far, and if it attaches."""
+        question = self.input.toPlainText()
+        attachment = self.selected_attachment(question)
+        context = self.service().preview(self.conversation_id, question, attachment=attachment)
+        return context, attachment is not None
+
+    def update_context_hint(self) -> None:
+        """「较早 3 轮的 AI 回复没有带上…」 under the input; a warning when nothing fits."""
+        warning = False
+        try:
+            hint = context_hint(self.request_preview()[0])
+        except WorkspaceError as exc:
+            hint, warning = str(exc), True
+        self.context_hint.setText(hint)
+        self.context_hint.setProperty("warning", warning)
+        self.context_hint.style().unpolish(self.context_hint)
+        self.context_hint.style().polish(self.context_hint)
+        self.context_hint.setVisible(bool(hint))
+
+    # -- attached page ---------------------------------------------------------------------
+
+    def shown_page(self) -> object | None:
+        pages = self.workbench.shown_pages()
+        return pages[0] if pages else None
 
     def refresh_reference(self) -> None:
-        page = getattr(self.workbench, "storyboard", None)
-        active = page is not None and self.workbench.current_artifact_page() is page
+        """The chip follows the page on screen: what it offers, and whether you detached it."""
+        self.hint_timer.start()
         if (self.edit_panel.page() is not None) != self.rendered_with_page:
             self.render_messages(self.current_messages)
         self.edit_panel.update_from(self.current_messages)
-        self.context_panel.setVisible(active)
-        selected = page.editor.selected_shots() if active and page.record else []
-        self.attach_shot.setEnabled(bool(selected))
-        attached = bool(selected) and self.attach_shot.isChecked()
-        self.preview_context_button.setVisible(attached)
-        if not attached:
-            self.context_label.setText("未附带分镜")
+        offer = chat_offer(self.shown_page())
+        self.context_panel.setVisible(offer is not None)
+        if offer is None:
+            self.preview_context_button.hide()
             return
-        index = page.editor.table.currentRow()
-        self.context_label.setText(
-            f"附带分镜 · 第 {index + 1} 镜 · " + ("含未保存修改" if page.dirty else "已保存")
+        self.attach_shot.blockSignals(True)
+        self.attach_shot.setChecked(offer.key not in self.detached)
+        self.attach_shot.blockSignals(False)
+        self.attach_shot.show_offer(offer)
+        self.preview_context_button.setVisible(
+            bool(offer.label) and offer.key not in self.detached
         )
 
-    def selected_context(self) -> JsonObject | None:
-        page = getattr(self.workbench, "storyboard", None)
-        if (
-            page is None
-            or self.workbench.current_artifact_page() is not page
-            or not self.attach_shot.isChecked()
-            or page.record is None
-        ):
+    def attach_toggled(self, checked: bool) -> None:
+        offer = chat_offer(self.shown_page())
+        if offer is not None:
+            if checked:
+                self.detached.discard(offer.key)
+            else:
+                self.detached.add(offer.key)
+        self.refresh_reference()
+
+    def selected_attachment(self, question: str = "") -> JsonObject | None:
+        """What the page on screen attaches to a message; shots the question names come in full."""
+        page = self.shown_page()
+        offer = chat_offer(page)
+        if offer is None or offer.key in self.detached:
             return None
-        selected = page.editor.selected_shots()
-        if not selected:
-            return None
-        return read_storyboard_chat_context(
-            self.workbench.repository,
-            page.editor.draft_snapshot(),
-            selected[0],
-            page.record,
-            unsaved=page.dirty,
-        )
+        return chat_attachment(self.workbench, page, question)
 
     def preview_context(self) -> None:
-        context = self.selected_context()
-        require(context is not None, "INVALID_INPUT", "请先在分镜页选中要讨论的镜头")
-        show_text_dialog(self, "本次附带的分镜上下文", encode(context), readonly=True)
+        """Everything the next send gives the AI: rules (folded), past turns, this message."""
+        context, attached = self.request_preview()
+        RequestPreviewDialog(
+            self, context, self.service().max_context_chars, attached=attached
+        ).exec()
 
     # -- conversations ---------------------------------------------------------------------
 
@@ -411,7 +485,11 @@ class ChatPanel(QWidget):
             "role": "user",
             "content": command["user_text"],
             "status": "pending",
-            **{k: snapshot[k] for k in ("storyboard_reference", "storyboard_edit") if k in snapshot},
+            **{
+                k: snapshot[k]
+                for k in ("storyboard_reference", "storyboard_edit", "attached")
+                if k in snapshot
+            },
         }
 
     def render_messages(self, messages: Sequence[JsonObject]) -> None:
@@ -432,7 +510,7 @@ class ChatPanel(QWidget):
         for index, message in enumerate(messages):
             if message["role"] == "user":
                 reference = message.get("storyboard_reference")
-                tag = ""
+                tag = message.get("attached", {}).get("label", "")
                 if reference:
                     tag = f"第 {reference['order']} 镜"
                     if reference["unsaved"]:
@@ -476,12 +554,11 @@ class ChatPanel(QWidget):
 
     def send(self) -> None:
         require(not self.workbench.tasks.busy("text"), "PROJECT_BUSY", "已有任务运行，请等待或停止")
-        context = self.selected_context()
+        question = self.input.toPlainText()
+        attachment = self.selected_attachment(question)
         if not self.conversation_id:
             self.create()
-        command = self.service().prepare(
-            self.conversation_id, self.input.toPlainText(), storyboard_context=context
-        )
+        command = self.service().prepare(self.conversation_id, question, attachment=attachment)
         self.workbench.submit(
             ChatWork(self.workbench.repository, command, transport=self.workbench.transport),
             self.send_button,
@@ -496,7 +573,8 @@ class ChatPanel(QWidget):
         draft = page.editor.draft_snapshot()
         selected = page.editor.selected_shots()
         wanted = {item["shot_id"] for item in items}
-        context = read_storyboard_chat_context(
+        text = "按清单修改第 " + "、".join(str(item["order"]) for item in items) + " 镜"
+        attachment = read_storyboard_material(
             self.workbench.repository,
             draft,
             selected[0] if selected else items[0]["shot_id"],
@@ -506,12 +584,11 @@ class ChatPanel(QWidget):
         )
         if not self.conversation_id:
             self.create()
-        text = "按清单修改第 " + "、".join(str(item["order"]) for item in items) + " 镜"
         try:
             command = self.service().prepare(
                 self.conversation_id,
                 text,
-                storyboard_context=context,
+                attachment=attachment,
                 storyboard_edit={
                     "shots": [s for s in draft["shots"] if s["shot_id"] in wanted],
                     "entities": page.editor.catalog,

@@ -76,6 +76,20 @@ def test_real_sdk_trace_shows_usage_truncation_and_masks_actual_api_key(monkeypa
     assert key not in captured and "[REDACTED]" in captured
     assert '"finish_reason": "length"' in captured and '"total_tokens": 15' in captured
     assert calls[0]["messages"] == [{"role": "user", "content": "exact prompt " + key}]
+    # A conversation goes out as its own messages, rules and earlier turns included.
+    conversation = [
+        {"role": "system", "content": "## 通用要求\n- 只回答问题。"},
+        {"role": "user", "content": "上一问"},
+        {"role": "assistant", "content": "上一答"},
+        {"role": "user", "content": "这一问"},
+    ]
+    llm.ScriptLLM("offline")(conversation)
+    assert calls[1]["messages"] == conversation
+    assert '"message_roles": [' in capsys.readouterr().err
+    for bad in ([], [{"role": "tool", "content": "x"}], [{"role": "user", "content": None}]):
+        with pytest.raises(llm.WorkspaceError, match="消息格式无效"):
+            llm.ScriptLLM("offline")(bad)
+    assert len(calls) == 2
 
 
 def test_transport_error_is_traced_without_retry_for_local_failure(monkeypatch, capsys):

@@ -23,6 +23,7 @@ from .models import (
     timestamp,
     validate_model_snapshot_format,
 )
+from .page_material import validate_attached
 from .repository import ProjectRepository
 from .storage import atomic_write_text
 from .storyboard_chat import validate_storyboard_reference
@@ -124,6 +125,8 @@ class ConversationStore:
                 validate_storyboard_reference(message["storyboard_reference"])
             if "storyboard_edit" in message:
                 validate_storyboard_edit(message["storyboard_edit"])
+            if "attached" in message:
+                validate_attached(message["attached"])
             message_ids.add(message["id"])
         return conversation
 
@@ -169,7 +172,9 @@ class ConversationStore:
         expected_revision: int | None = None,
         storyboard_reference: JsonObject | None = None,
         storyboard_edit: JsonObject | None = None,
+        attached: JsonObject | None = None,
     ) -> JsonObject:
+        """attached is what a page other than the storyboard attached: {"page", "label"}."""
         text(user_text, "消息")
         require(
             isinstance(turn_id, str) and ID_PATTERN.fullmatch(turn_id),
@@ -183,6 +188,7 @@ class ConversationStore:
             else None
         )
         edit = validate_storyboard_edit(storyboard_edit) if storyboard_edit is not None else None
+        note = validate_attached(attached) if attached is not None else None
 
         def append_user(conversation: JsonObject) -> JsonObject:
             require(
@@ -208,6 +214,8 @@ class ConversationStore:
                 message["storyboard_reference"] = deepcopy(reference)
             if edit is not None:
                 message["storyboard_edit"] = deepcopy(edit)
+            if note is not None:
+                message["attached"] = deepcopy(note)
             conversation["messages"].append(message)
             return message
 

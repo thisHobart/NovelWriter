@@ -47,6 +47,7 @@ from core.short_video.v2.media_workflows import (
 )
 from core.short_video.v2.models import WorkspaceError, fingerprint, require
 from core.short_video.v2.repository import ProjectRepository
+from core.short_video.v2.video_context import picture_name
 from core.short_video.v2.video_prompt import snapshot_video_inputs
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
@@ -502,6 +503,33 @@ class MediaPreview(QWidget):
         from PySide6.QtWidgets import QApplication
 
         QApplication.clipboard().setText(self.prompt.toPlainText())
+
+    def chat_inputs(self) -> dict:
+        """What the area shows, for a chat message: the prompt as typed, the chosen pictures by
+        <Picture N>, the first/last frames, and the length and picture settings."""
+        pictures, frames = [], []
+        for slot in self.image_fields.values():
+            name = picture_name(slot.image_name) if slot.image_id else ""
+            if slot.frame:
+                frames.append({"label": slot.caption, "name": name})
+            elif slot.image_id:
+                pictures.append({"reference": slot.reference, "name": name})
+        settings = []
+        template = getattr(self, "template", None)
+        for parameter in template.parameters if template else ():
+            control = self.parameter_fields.get(parameter.key)
+            if control is None or not (
+                parameter.role == "duration" or parameter.input_name in ("aspect_ratio", "megapixels")
+            ):
+                continue
+            value = control.currentText() if isinstance(control, QComboBox) else f"{control.value():g}"
+            settings.append({"label": parameter.label, "value": value, "role": parameter.role})
+        return {
+            "prompt": self.prompt.toPlainText(),
+            "pictures": pictures,
+            "frames": frames,
+            "settings": settings,
+        }
 
     # -- images ----------------------------------------------------------------------------
 

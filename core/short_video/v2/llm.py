@@ -15,7 +15,7 @@ from openai import APIConnectionError, APIStatusError
 from core.common import api_providers
 from core.common.cancellation import CancelToken
 
-from .contracts import JsonObject, RequestRecorder, TextTransport
+from .contracts import JsonObject, ModelRequest, RequestRecorder, TextTransport
 from .llm_trace import enabled, endpoint_label, trace_event
 from .models import WorkspaceError, require
 
@@ -94,7 +94,21 @@ class ScriptLLM:
         self.before_request = before_request or (lambda: None)
         self.on_retry = on_retry
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: ModelRequest) -> str:
+        """prompt is one user message, or role/content messages sent as they are."""
+        if not isinstance(prompt, str):
+            require(
+                isinstance(prompt, list)
+                and bool(prompt)
+                and all(
+                    isinstance(m, dict)
+                    and m.get("role") in {"system", "user", "assistant"}
+                    and isinstance(m.get("content"), str)
+                    for m in prompt
+                ),
+                "INVALID_INPUT",
+                "模型请求的消息格式无效",
+            )
         for attempt in range(self.network_retries + 1):
             self.token.raise_if_cancelled()
             self.before_request()
@@ -136,13 +150,14 @@ class ScriptLLM:
         self.token.event.wait(delay)
         self.token.raise_if_cancelled()
 
-    def _record(self, prompt: str, response: str, error: str | None) -> None:
+    def _record(self, prompt: ModelRequest, response: str, error: str | None) -> None:
         try:
             self.record(prompt, response, error)
         except OSError as exc:
             raise RecordingError("运行记录保存失败，停止后续模型请求；已有项目文件保留") from exc
 
-    def _request(self, prompt: str) -> str:
+    def _request(self, prompt: ModelRequest) -> str:
+        messages = [{"role": "user", "content": prompt}] if isinstance(prompt, str) else prompt
         if self.transport is not None:
             self.trace("REQUEST", prompt, transport="injected", model=self.model)
             response = self.transport(prompt)
@@ -163,7 +178,7 @@ class ScriptLLM:
                 prompt,
                 endpoint=endpoint_label(config.base_url),
                 model=config.model,
-                message_role="user",
+                message_roles=[message["role"] for message in messages],
                 max_tokens=8192,
                 temperature=0.7,
                 extra_body=options,
@@ -177,7 +192,7 @@ class ScriptLLM:
                 ) as client:
                     result = await client.chat.completions.create(
                         model=config.model,
-                        messages=[{"role": "user", "content": prompt}],
+                        messages=messages,
                         max_tokens=8192,
                         temperature=0.7,
                         extra_body=options,

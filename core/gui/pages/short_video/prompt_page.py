@@ -26,6 +26,7 @@ from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.feedback import record_check, record_message
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.models import ASSET_KINDS, require
+from core.short_video.v2.storyboard_chat import asset_names
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
 from .asset_images_page import AssetImagesPage
@@ -86,9 +87,13 @@ class PromptEditor(QWidget):
 
 
 class PromptPage(QWidget):
+    # The tab, object, shot or saved state changed: the chat's attachment label follows.
+    changed = Signal()
+
     def __init__(self, workbench: Workbench) -> None:
         super().__init__()
         self.workbench, self.dirty, self.record = workbench, False, None
+        self.chat_name = ""
         self.displayed_view = None
         self.displayed_selection = (0, None, None)
         layout = QVBoxLayout(self)
@@ -227,6 +232,7 @@ class PromptPage(QWidget):
 
     def mark_dirty(self) -> None:
         self.dirty = True
+        self.changed.emit()
         self.status.setText("有未保存修改")
         if self.controls_in_fold:
             self.shot_header.set_notice("镜头画面提示词有未保存修改")
@@ -282,6 +288,7 @@ class PromptPage(QWidget):
         if image_tab:
             self.images_page.refresh()
             self.displayed_selection = (4, None, None)
+            self.changed.emit()
             return
         state = self.workbench.repository.load()
         entity_id = self.objects.currentData()
@@ -298,11 +305,12 @@ class PromptPage(QWidget):
             for key, ref in state["current"].items()
             if kind != "shot" and key.startswith(ASSET_KINDS[kind] + ":")
         ]
-        entities = {}
+        entities, catalogs = {}, {}
         for record in records:
             catalog = self.workbench.repository.record(
                 record["dependency_refs"]["asset_catalog"], state=state
             )
+            catalogs[record["key"]] = catalog["content"]["entities"]
             for entity in catalog["content"]["entities"]:
                 entities[entity["asset_id"]] = entity
         if kind == "shot":
@@ -353,6 +361,12 @@ class PromptPage(QWidget):
                 self.workbench.repository.current(self.key(), state=state)
                 if self.variants.count()
                 else None
+            )
+            # As chat names the object: 「寻井人·2」 when several objects share a name.
+            self.chat_name = (
+                asset_names(catalogs[self.record["key"]])[self.record["content"]["asset_id"]]
+                if self.record
+                else ""
             )
             for index, view in enumerate((self.record or {}).get("content", {}).get("views", [])):
                 self.views.addItem(view["label"], index)
@@ -442,6 +456,7 @@ class PromptPage(QWidget):
             self.status.setText("上次任务不能继续：" + task.get("reason", "输入已变化，请重新生成"))
         if kind == "shot":
             self.refresh_shot_header(board, state, plain_status)
+        self.changed.emit()
 
     @staticmethod
     def board_shot(board: JsonObject | None, shot_id: str | None) -> JsonObject | None:

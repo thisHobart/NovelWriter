@@ -137,7 +137,8 @@ def earlier_card(messages: list[JsonObject], index: int, shots: list[JsonObject]
         return CollapsedCard("AI 修改结果", f"{count} 镜", "已有新的回复")
     if AFFECTED_TAG not in blocks:
         return None
-    listed = affected_shots(reply["content"], shots) or {"items": []}
+    order = parent.get("storyboard_reference", {}).get("shot_ids")
+    listed = affected_shots(reply["content"], shots, order) or {"items": []}
     following = messages[index + 1] if index + 1 < len(messages) else {}
     edit = following.get("storyboard_edit") if following.get("role") == "user" else None
     sub = "已有新的回复"
@@ -284,14 +285,16 @@ class ShotEditPanel(QFrame):
             return
         parent = next((m for m in messages if m["id"] == reply.get("parent_message_id")), {})
         blocks = reply_blocks(reply["content"])
+        # Replies number shots as they stood when the question was sent.
+        order = parent.get("storyboard_reference", {}).get("shot_ids")
         self.reply_id = reply["id"]
         self.note.hide()
         if REVISED_TAG in blocks and "storyboard_edit" in parent:
             self.mode = "result"
-            self.show_results(reply["content"], parent["storyboard_edit"], page)
+            self.show_results(reply["content"], parent["storyboard_edit"], page, order)
         elif AFFECTED_TAG in blocks:
             self.mode = "affected"
-            self.show_affected(reply["content"], page)
+            self.show_affected(reply["content"], page, order)
         else:
             self.mode = None
         self.edit_button.setVisible(self.mode == "affected")
@@ -373,10 +376,10 @@ class ShotEditPanel(QFrame):
 
     # -- affected shots --------------------------------------------------------------------
 
-    def show_affected(self, content: str, page: ArtifactPage) -> None:
+    def show_affected(self, content: str, page: ArtifactPage, order: list[str] | None) -> None:
         shots = page.editor.draft_snapshot()["shots"]
         lengths = {shot["shot_id"]: shot["duration_ms"] for shot in shots}
-        listed = affected_shots(content, shots)
+        listed = affected_shots(content, shots, order)
         self.items = listed["items"]
         self.title.setText("受影响的镜头")
         self.count.setText(str(len(self.items)))
@@ -422,7 +425,9 @@ class ShotEditPanel(QFrame):
         positions = {s["shot_id"]: i + 1 for i, s in enumerate(page.editor.draft_snapshot()["shots"])}
         return [str(positions[sid]) for sid in self.undo["applied"] if sid in positions]
 
-    def show_results(self, content: str, edit: JsonObject, page: ArtifactPage) -> None:
+    def show_results(
+        self, content: str, edit: JsonObject, page: ArtifactPage, order: list[str] | None
+    ) -> None:
         self.title.setText("AI 修改结果")
         self.count.setText(f"{len(edit['shot_ids'])} 镜")
         shots = page.editor.draft_snapshot()["shots"]
@@ -431,7 +436,7 @@ class ShotEditPanel(QFrame):
         base = {sid: current[sid] for sid in edit["shot_ids"] if sid in current}
         self.results = {}
         try:
-            accepted, rejected = revised_shots(content, base, entities)
+            accepted, rejected = revised_shots(content, base, entities, order)
         except WorkspaceError as exc:
             self.show_warning(["AI 回复中的修改结果无法读取：" + str(exc)])
             return

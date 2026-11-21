@@ -17,6 +17,8 @@ from core.gui import theme
 from core.gui.widgets.controls import VScrollArea
 
 BUBBLE_PAD = (12, 8)
+# What a message carried, such as 「人物提示词 · 阿澈（常态）」, shortened beyond this width.
+TAG_WIDTH = 220
 
 
 def wrap_height(widget: QWidget) -> QWidget:
@@ -109,7 +111,8 @@ class UserMessage(QWidget):
         meta.setSpacing(6)
         meta.addStretch()
         if tag:
-            self.tag = QLabel(tag)
+            self.tag = QLabel(self.fontMetrics().elidedText(tag, Qt.ElideRight, TAG_WIDTH))
+            self.tag.setToolTip(tag)
             self.tag.setStyleSheet(
                 f"font-size:{theme.FS_XS}px; color:{theme.ACCENT}; background:{theme.ACCENT_TINT};"
                 f" border-radius:3px; padding:0 5px"

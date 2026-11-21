@@ -1,4 +1,4 @@
-"""Project-local discussions with optional read-only storyboard evidence."""
+"""Project-local discussions with optional read-only content from the page on screen."""
 
 from __future__ import annotations
 
@@ -10,10 +10,16 @@ from core.common.cancellation import CancelToken, GenerationCancelled
 
 from .contracts import (
     JsonObject,
+    ModelRequest,
     ProgressReporter,
     TextTransport,
 )
-from .conversation_context import build_conversation_context
+from .conversation_context import (
+    ConversationContext,
+    build_conversation_context,
+    repair_request,
+    validate_attachment,
+)
 from .conversation_store import ConversationStore, select_completed_turns
 from .feedback import TaskContext, TaskTracker, failure_feedback
 from .llm import ScriptLLM
@@ -27,11 +33,32 @@ from .models import (
     timestamp,
     validate_model_snapshot,
 )
+from .page_material import validate_attached
 from .repository import ProjectRepository
 from .storyboard_chat import validate_storyboard_reference
 from .storyboard_edits import edit_base, reply_problems, validate_storyboard_edit
 
 logger = logging.getLogger(__name__)
+
+# Stands in for the question while the input box is still empty.
+PREVIEW_QUESTION = "（输入框里的消息）"
+
+
+def current_message(user_text: str, attachment: JsonObject | None) -> JsonObject:
+    """The user message a send adds, carrying what it is about when a page is attached: the
+    shot for the storyboard, the attachment's label for other pages."""
+    message = {
+        "id": identity("message"),
+        "turn_id": identity("turn"),
+        "role": "user",
+        "content": user_text,
+        "status": "pending",
+    }
+    if attachment is not None and "reference" in attachment:
+        message["storyboard_reference"] = validate_storyboard_reference(attachment["reference"])
+    elif attachment is not None and attachment["page"] != "storyboard":
+        message["attached"] = validate_attached(attachment)
+    return message
 
 
 class ConversationService:
@@ -53,11 +80,13 @@ class ConversationService:
         user_text: str,
         *,
         request_id: str | None = None,
-        storyboard_context: JsonObject | None = None,
+        attachment: JsonObject | None = None,
         storyboard_edit: JsonObject | None = None,
     ) -> JsonObject:
-        """storyboard_edit asks for revised shots: {"shots": draft shots being revised,
-        "entities": the bound asset catalog}; storyboard_context must carry the same edit_request.
+        """attachment is what the current page attaches (see validate_attachment).
+
+        storyboard_edit asks for revised shots: {"shots": draft shots being revised,
+        "entities": the bound asset catalog}; the attachment must ask for the same shots.
         """
         text(user_text, "消息")
         conversation = self.store.get(conversation_id)
@@ -67,53 +96,45 @@ class ConversationService:
             "会话有未完成消息",
         )
         state = self.repository.load()
-        current_message = {
-            "id": identity("message"),
-            "turn_id": identity("turn"),
-            "role": "user",
-            "content": user_text,
-            "status": "pending",
-        }
-        if storyboard_context is not None:
-            storyboard_context = deepcopy(storyboard_context)
-            current_message["storyboard_reference"] = validate_storyboard_reference(
-                storyboard_context.get("reference")
-            )
+        if attachment is not None:
+            attachment = deepcopy(validate_attachment(attachment))
+        message = current_message(user_text, attachment)
         edit_check = None
         if storyboard_edit is not None:
             shots = deepcopy(storyboard_edit.get("shots"))
             require(
-                storyboard_context is not None
+                attachment is not None
+                and attachment.get("edit")
                 and isinstance(shots, list)
-                and [s.get("shot_id") for s in shots]
-                == [i["shot_id"] for i in storyboard_context.get("edit_request", [])],
+                and [s.get("shot_id") for s in shots] == attachment.get("edit_shot_ids"),
                 "INVALID_INPUT",
                 "镜头修改请求与附带分镜不一致",
             )
             shot_ids = [s["shot_id"] for s in shots]
-            current_message["storyboard_edit"] = validate_storyboard_edit(
+            message["storyboard_edit"] = validate_storyboard_edit(
                 {"shot_ids": shot_ids, "base": edit_base(shots, shot_ids)}
             )
-            # The shots as sent let one format repair check the reply before it is saved.
+            # The shots as sent let one format repair check the reply before it is saved; the
+            # order maps the reply's shot numbers back to them.
             edit_check = {
                 "shots": {s["shot_id"]: s for s in shots},
                 "entities": deepcopy(storyboard_edit.get("entities", [])),
+                "order": message.get("storyboard_reference", {}).get("shot_ids"),
             }
         history = select_completed_turns(conversation["messages"])
         context = build_conversation_context(
-            history + [current_message],
-            current_message["id"],
+            history + [message],
+            message["id"],
             max_context_chars=self.max_context_chars,
-            storyboard_context=storyboard_context,
+            attachment=attachment,
         )
         snapshot = {
-            "history_message_ids": [message["id"] for message in context.messages[:-1]],
-            "context_hash": fingerprint(context.prompt),
+            "history_message_ids": [m["id"] for m in context.messages[:-1]],
+            "context_hash": fingerprint(context.request),
         }
-        if "storyboard_reference" in current_message:
-            snapshot["storyboard_reference"] = current_message["storyboard_reference"]
-        if "storyboard_edit" in current_message:
-            snapshot["storyboard_edit"] = current_message["storyboard_edit"]
+        for key in ("storyboard_reference", "storyboard_edit", "attached"):
+            if key in message:
+                snapshot[key] = message[key]
         return {
             **({"edit_check": edit_check} if edit_check else {}),
             "stage": "chat",
@@ -125,8 +146,31 @@ class ConversationService:
             "conversation_revision": conversation["revision"],
             "user_text": user_text,
             "context_snapshot": snapshot,
-            "prompt": context.prompt,
+            "messages": context.request,
         }
+
+    def preview(
+        self,
+        conversation_id: str | None,
+        user_text: str,
+        *,
+        attachment: JsonObject | None = None,
+    ) -> ConversationContext:
+        """The request sending user_text would make now; nothing is saved or sent.
+
+        A pending reply is left out, as a send would wait for it; an empty input is shown
+        as PREVIEW_QUESTION.
+        """
+        messages = self.store.get(conversation_id)["messages"] if conversation_id else []
+        if attachment is not None:
+            attachment = validate_attachment(attachment)
+        message = current_message(user_text if user_text.strip() else PREVIEW_QUESTION, attachment)
+        return build_conversation_context(
+            select_completed_turns(messages) + [message],
+            message["id"],
+            max_context_chars=self.max_context_chars,
+            attachment=attachment,
+        )
 
     def execute(
         self,
@@ -174,14 +218,15 @@ class ConversationService:
                     expected_revision=command["conversation_revision"],
                     storyboard_reference=command["context_snapshot"].get("storyboard_reference"),
                     storyboard_edit=command["context_snapshot"].get("storyboard_edit"),
+                    attached=command["context_snapshot"].get("attached"),
                 )
 
-                def record_call(prompt: str, response: str, error: str | None) -> None:
+                def record_call(request: ModelRequest, response: str, error: str | None) -> None:
                     self.repository.update_run(
                         run["id"],
                         lambda r, _: r["calls"].append(
                             {
-                                "prompt": prompt,
+                                "messages": request,
                                 "response": response,
                                 "error": error,
                                 "created_at": timestamp(),
@@ -205,32 +250,35 @@ class ConversationService:
                         "storyboard_reference": command["context_snapshot"].get(
                             "storyboard_reference"
                         ),
+                        "attached": command["context_snapshot"].get("attached"),
                     },
                 )
                 token.raise_if_cancelled()
                 report("等待 LLM 回复", -1)
                 phase("等待回复")
-                response = send(command["prompt"])
+                response = send(command["messages"])
                 require(bool(response.strip()), "INVALID_OUTPUT", "模型未返回有效回复")
                 check = command.get("edit_check")
                 passed, problems = (
-                    reply_problems(response, check["shots"], check["entities"])
+                    reply_problems(response, check["shots"], check["entities"], check["order"])
                     if check and not token.cancelled
                     else (0, [])
                 )
                 if problems:
                     report("修正修改结果", -1)
                     phase("修正修改结果")
+                    # One more turn of the same conversation: the reply, then what to fix.
                     repaired = send(
-                        command["prompt"]
-                        + "\n\n上次回复：\n"
-                        + response
-                        + "\n\n上次回复的revised_shots有以下问题。保留修改内容，只修正这些问题，"
-                        "重新给出完整回复（说明和revised_shots代码块）：\n"
-                        + "\n".join(problems)
+                        [
+                            *command["messages"],
+                            {"role": "assistant", "content": response},
+                            {"role": "user", "content": repair_request(problems)},
+                        ]
                     )
                     # The repair is kept only when more shots pass, or as many with fewer problems.
-                    fixed, remaining = reply_problems(repaired, check["shots"], check["entities"])
+                    fixed, remaining = reply_problems(
+                        repaired, check["shots"], check["entities"], check["order"]
+                    )
                     if repaired.strip() and (fixed, -len(remaining)) > (passed, -len(problems)):
                         response = repaired
                 status = "cancelled" if token.cancelled else "complete"
