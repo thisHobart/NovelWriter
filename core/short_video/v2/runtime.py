@@ -14,7 +14,14 @@ from openai import APIError
 from core.common.cancellation import CancelToken, GenerationCancelled
 
 from . import models as model_contracts
-from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
+from .contracts import (
+    ArtifactRecord,
+    JsonObject,
+    ModelRequest,
+    ProgressReporter,
+    RequestRecorder,
+    TextTransport,
+)
 from .feedback import (
     ACTION_NAMES,
     TaskContext,
@@ -460,6 +467,13 @@ class AgentExecution:
         snapshot = self.command[
             "review_model_snapshot" if purpose == "review" else "model_snapshot"
         ]
+        request: ModelRequest = prompt
+        if compact and purpose == "generation":
+            from .video_prompt import video_prompt_messages
+
+            request = video_prompt_messages(
+                self.repository.output_dir, prompt, self.command["context"]["video_input_binding"]
+            )
 
         def begin() -> None:
             nonlocal call, network_attempt
@@ -514,7 +528,7 @@ class AgentExecution:
                 state["tasks"][self.task_id]["calls_used"] += 1
             self.trace_call_id = call["id"]
 
-        def record(_prompt: str, response: str, error: str | None) -> None:
+        def record(_request: ModelRequest, response: str, error: str | None) -> None:
             with self.repository.transaction() as state:
                 run = next(r for r in state["runs"] if r["id"] == self.run_id)
                 entry = next(c for c in run["calls"] if c["id"] == call["id"])
@@ -561,7 +575,7 @@ class AgentExecution:
             on_retry=lambda error, attempt, maximum, delay: self.tracker.report_network_retry(
                 error, attempt, maximum, delay, self.report, self.on_context
             ),
-        )(prompt)
+        )(request)
 
     def video_generation_prompt(self, *, repair: JsonObject | None = None) -> str:
         from .prompts import video_request

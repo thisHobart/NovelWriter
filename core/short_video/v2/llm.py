@@ -1,4 +1,4 @@
-"""共享模型配置，发送文字请求并保存运行记录。"""
+"""共享模型配置，发送文字或图文请求并保存运行记录。"""
 
 from __future__ import annotations
 
@@ -62,6 +62,32 @@ class RecordingError(RuntimeError):
     """A failed durable write must never trigger another paid request."""
 
 
+def _valid_message(message: object) -> bool:
+    if not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant"):
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return True
+    return (
+        message["role"] == "user"
+        and isinstance(content, list)
+        and bool(content)
+        and all(
+            isinstance(part, dict)
+            and (
+                (part.get("type") == "text" and isinstance(part.get("text"), str))
+                or (
+                    part.get("type") == "image_url"
+                    and isinstance(part.get("image_url"), dict)
+                    and isinstance(part["image_url"].get("url"), str)
+                    and bool(part["image_url"]["url"])
+                )
+            )
+            for part in content
+        )
+    )
+
+
 class ScriptLLM:
     def __init__(
         self,
@@ -95,19 +121,21 @@ class ScriptLLM:
         self.on_retry = on_retry
 
     def __call__(self, prompt: ModelRequest) -> str:
-        """prompt is one user message, or role/content messages sent as they are."""
+        """A plain prompt or role/content messages, including optional user image parts."""
+        has_images = False
         if not isinstance(prompt, str):
             require(
                 isinstance(prompt, list)
                 and bool(prompt)
-                and all(
-                    isinstance(m, dict)
-                    and m.get("role") in {"system", "user", "assistant"}
-                    and isinstance(m.get("content"), str)
-                    for m in prompt
-                ),
+                and all(_valid_message(m) for m in prompt),
                 "INVALID_INPUT",
                 "模型请求的消息格式无效",
+            )
+            has_images = any(
+                part["type"] == "image_url"
+                for message in prompt
+                if isinstance(message["content"], list)
+                for part in message["content"]
             )
         for attempt in range(self.network_retries + 1):
             self.token.raise_if_cancelled()
@@ -123,10 +151,25 @@ class ScriptLLM:
                 # Recording is outside the retried operation: a disk/hook failure
                 # must stop immediately, even if it resembles a network exception.
                 self._record(prompt, "", type(exc).__name__)
-                if attempt >= self.network_retries:
-                    raise
-                delay = retry_delay(exc, attempt)
+                delay = retry_delay(exc, attempt) if attempt < self.network_retries else None
                 if delay is None:
+                    if has_images and isinstance(exc, APIStatusError):
+                        if exc.status_code == 413:
+                            raise WorkspaceError(
+                                "IMAGE_INPUT_TOO_LARGE",
+                                "生成模型拒绝了过大的图片请求，请缩小图片后重试",
+                            ) from None
+                        if exc.status_code in {400, 415, 422}:
+                            raise WorkspaceError(
+                                "MODEL_IMAGE_INPUT_REJECTED",
+                                f"生成模型拒绝图文请求（{exc.status_code}），"
+                                "请确认接口和模型支持多图输入，并检查图片格式和大小",
+                            ) from None
+                        if "data:image/" in str(exc).lower():
+                            raise WorkspaceError(
+                                "MODEL_IMAGE_INPUT_REJECTED",
+                                f"生成模型请求失败（{exc.status_code}），请检查接口状态",
+                            ) from None
                     raise
                 self.token.raise_if_cancelled()
                 if self.on_retry:

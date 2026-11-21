@@ -281,6 +281,7 @@ class MediaPreview(QWidget):
         prompt_note.setWordWrap(True)
         prompt_bar.addWidget(prompt_note, 1)
         self.generate_prompt_button = small_button("AI 编写")
+        self.generate_prompt_button.setToolTip("将本镜选中的参考图和首尾帧发给生成模型，编写视频提示词")
         self.resume_prompt_button = small_button("继续编写")
         self.copy_prompt_button = small_button("复制")
         for button in (self.generate_prompt_button, self.resume_prompt_button, self.copy_prompt_button):

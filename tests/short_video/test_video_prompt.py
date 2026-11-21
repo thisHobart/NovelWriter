@@ -34,15 +34,18 @@ def ready(prompt_project, monkeypatch):
     )
     monkeypatch.setattr(runtime, "validate_model_snapshot", lambda _: None)
     monkeypatch.setattr(models, "validate_review_model_snapshot", lambda _: None)
-    image = QImage(8, 8, QImage.Format_RGB32)
-    image.fill(0xFFAA44)
-    buffer = QBuffer()
-    buffer.open(QIODevice.WriteOnly)
-    assert image.save(buffer, "PNG")
+    def png(color):
+        image = QImage(8, 8, QImage.Format_RGB32)
+        image.fill(color)
+        buffer = QBuffer()
+        buffer.open(QIODevice.WriteOnly)
+        assert image.save(buffer, "PNG")
+        return bytes(buffer.data())
+
     media = MediaRepository(prompt_project.output_dir)
     spec = prompt_project.current("scene_spec:asset_scene:base")
     first = media.save_image(
-        bytes(buffer.data()),
+        png(0xFFAA44),
         name="scene",
         source={
             "kind": "image_generation",
@@ -53,7 +56,7 @@ def ready(prompt_project, monkeypatch):
             "spec_id": spec["id"],
         },
     )
-    second = media.save_image(bytes(buffer.data()), name="unlabeled")
+    second = media.save_image(png(0x3344FF), name="unlabeled")
     return prompt_project, first, second
 
 
@@ -70,6 +73,10 @@ def prepare(ready, **kwargs):
 
 def response(repository, body=BODY):
     return {"shot_id": "shot_1", "video_motion_prompt": body}
+
+
+def request_text(request):
+    return request if isinstance(request, str) else request[0]["content"][0]["text"]
 
 
 def test_prepare_freezes_only_current_shot_assets_and_actual_picture_order(ready):
@@ -126,8 +133,8 @@ def test_request_tells_the_model_what_every_picture_shows(ready):
     }
     assert "蓝白瓷碗香辣牛肉面" in command["prompt"]
     # The body format: one usage line per picture, then the timed sections.
-    assert "<Picture 1>：用作" in command["prompt"] and "首帧图片：严格约束" in command["prompt"]
-    assert "视频提示词（〔N〕秒）" in command["prompt"] and "〔起〕–〔止〕秒｜" in command["prompt"]
+    assert "<Picture 1>：" in command["prompt"] and "首帧图片：" in command["prompt"]
+    assert "〔N〕秒" in command["prompt"] and "〔起〕–〔止〕秒｜" in command["prompt"]
     assert noodles["sha256"] not in command["prompt"]
 
 
@@ -181,7 +188,8 @@ def test_generation_review_revision_preserves_shot_text_and_saves_binding(ready)
     original = deepcopy(repository.current("prompt_bundle")["content"])
     calls = []
 
-    def send(prompt):
+    def send(request):
+        prompt = request_text(request)
         calls.append(prompt)
         if prompt.startswith("自动审阅"):
             assert "video_motion_prompt" in prompt and "video_inputs" in prompt
@@ -212,6 +220,106 @@ def test_generation_review_revision_preserves_shot_text_and_saves_binding(ready)
     assert saved["video_prompt_binding"] == command["context"]["video_input_binding"]
     assert repository.current("storyboard")["content"]["shots"][0]["action"] == "举起铜钥匙"
     assert MediaRepository(repository.output_dir).jobs() == []
+
+
+def test_video_generation_repair_and_revision_send_selected_image_bytes_only_to_generator(
+    ready, monkeypatch, capsys
+):
+    import base64
+    import json
+
+    import httpx
+    from openai import AsyncOpenAI
+
+    from core.common import api_providers
+    from core.short_video.v2 import llm_trace, service_settings
+
+    repository, first, second = ready
+    command = WorkflowService(repository).prepare_video_prompt(
+        "shot_1",
+        {"137": first["image_id"], "139": None, "147": second["image_id"], "148": first["image_id"]},
+        workflow_id="minimax-first-last",
+        parameters={},
+    )
+    generator = api_providers.APIConfig("offline", "https://generate.test/v1", "vision", "vision-key")
+    reviewer = api_providers.APIConfig("hosted-llm", "https://review.test/v1", "text", "text-key")
+    monkeypatch.setattr(api_providers, "get_config", lambda _: generator)
+    monkeypatch.setattr(service_settings, "get_review_config", lambda _: reviewer)
+    monkeypatch.setenv("NOVELWRITER_LLM_TRACE", "1")
+    monkeypatch.setattr(llm_trace, "_secrets", set())
+    warning = {
+        "rule_id": "VIDEO-CAPACITY", "severity": "warning", "target_path": "video_motion_prompt",
+        "explanation": "动作需要精简", "suggestion": "仅保留主要动作", "quote": None, "source_refs": [],
+    }
+    outputs = iter([
+        "不是 JSON",
+        encode(response(repository)),
+        encode({"issues": [warning]}),
+        encode(response(repository)),
+        '{"issues":[]}',
+    ])
+    calls = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append((request.url.host, payload["messages"][0]["content"]))
+        assert "data:image/" not in repository.path.read_text(encoding="utf-8")
+        return httpx.Response(200, json={
+            "id": "reply", "object": "chat.completion", "created": 1, "model": payload["model"],
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": next(outputs)},
+                         "finish_reason": "stop"}],
+        })
+
+    monkeypatch.setattr(api_providers, "AsyncOpenAI", lambda **kwargs: AsyncOpenAI(
+        **kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    ))
+    result = WorkflowService(repository).execute(command)
+    assert result["review_status"] == "passed"
+    assert [host for host, _ in calls] == [
+        "generate.test", "generate.test", "review.test", "generate.test", "review.test",
+    ]
+    parts = calls[0][1]
+    assert "具体描述中间可见的位置、姿态或道具变化" in parts[0]["text"]
+    media = MediaRepository(repository.output_dir)
+    labels = ["<Picture 1>", "首帧图片", "尾帧图片"]
+    assert len(parts) == 1 + 2 * len(labels)
+    for label, image, caption, attachment in zip(labels, (first, second, first), parts[1::2], parts[2::2]):
+        assert caption["type"] == "text" and label in caption["text"]
+        assert attachment["type"] == "image_url"
+        mime, data = attachment["image_url"]["url"].split(",", 1)
+        assert mime == "data:image/png;base64"
+        assert base64.b64decode(data) == media.resolve(image["relative_path"]).read_bytes()
+    assert calls[1][1][1:] == calls[3][1][1:] == parts[1:]
+    assert all(isinstance(calls[i][1], str) for i in (2, 4))
+    trace = capsys.readouterr().err
+    assert "data:image/" not in trace and "[IMAGE DATA REDACTED]" in trace
+
+
+def test_model_rejecting_video_prompt_images_does_not_fall_back_or_replace_draft(ready):
+    import httpx
+    from openai import BadRequestError
+
+    repository, _, _ = ready
+    command = prepare(ready)
+    before = repository.current("prompt_bundle")["id"]
+    http_response = httpx.Response(400, request=httpx.Request("POST", "https://example.test/v1"))
+    send = Mock(side_effect=BadRequestError("unsupported image_url", response=http_response, body=None))
+    with pytest.raises(WorkspaceError, match="请确认接口和模型支持多图输入"):
+        WorkflowService(repository, transport=send).execute(command)
+    send.assert_called_once()
+    assert repository.current("prompt_bundle")["id"] == before
+
+
+def test_oversized_video_prompt_images_stop_before_model_request(ready, monkeypatch):
+    from core.short_video.v2 import video_prompt
+
+    repository, _, _ = ready
+    command = prepare(ready)
+    monkeypatch.setattr(video_prompt, "MAX_PROMPT_IMAGE_BYTES", 1)
+    send = Mock()
+    with pytest.raises(WorkspaceError, match="选图总大小超过"):
+        WorkflowService(repository, transport=send).execute(command)
+    send.assert_not_called()
 
 
 @pytest.mark.parametrize("change", ["picture", "shot_text", "other_shot"])
@@ -282,8 +390,8 @@ def test_ui_fills_saved_video_prompt_without_changing_images_or_shot_editor(read
     media.parameter_fields["132.value"].setValue(7.0)
     page.workbench.resolve_edits = lambda: page.save() if page.dirty else True
     page.workbench.model = lambda: "hosted-llm"
-    page.workbench.transport = lambda prompt: (
-        '{"issues":[]}' if prompt.startswith("自动审阅") else encode(response(repository))
+    page.workbench.transport = lambda request: (
+        '{"issues":[]}' if request_text(request).startswith("自动审阅") else encode(response(repository))
     )
     submitted = []
     page.workbench.submit = lambda work, button: submitted.append(work)
@@ -471,7 +579,8 @@ def test_all_request_sizes_ignore_unrelated_shot_collection_and_merge_only_targe
     original = deepcopy(repository.current("prompt_bundle")["content"])
     sent = []
 
-    def send(prompt):
+    def send(request):
+        prompt = request_text(request)
         sent.append(prompt)
         return '{"issues":[]}' if prompt.startswith("自动审阅") else encode(response(repository))
 
@@ -528,8 +637,9 @@ def test_revision_replaces_old_draft_and_preserves_custom_goal(ready):
     calls = []
     reviews = 0
 
-    def send(prompt):
+    def send(request):
         nonlocal reviews
+        prompt = request_text(request)
         calls.append(prompt)
         if prompt.startswith("自动审阅"):
             reviews += 1
@@ -543,7 +653,7 @@ def test_revision_replaces_old_draft_and_preserves_custom_goal(ready):
     assert result["review_status"] == "passed" and len(calls) == 4
     assert "人工措辞唯一标记" not in "".join(calls[1:])
     assert calls[2].count("首稿唯一标记") == 1
-    assert "图片用途集中在开头" in calls[2] and "时段只写动作" in calls[2]
+    assert "参考图片在开头集中说明" in calls[2] and "实际图片附在文字之后" in calls[2]
     assert all("专属目标标记" in p for p in calls)
     run = repository.load()["runs"][-1]
     assert len(run["calls"]) == 4 and result["retries_used"] == 1
@@ -554,7 +664,8 @@ def test_format_repair_rebuilds_local_request_without_recursive_history(ready):
     command = prepare(ready)
     calls = []
 
-    def send(prompt):
+    def send(request):
+        prompt = request_text(request)
         calls.append(prompt)
         if prompt.startswith("自动审阅"):
             return '{"issues":[]}'
@@ -575,9 +686,9 @@ def test_writing_and_checking_define_picture_uses_upfront_and_keep_action_sectio
     repository, _, _ = ready
     command = prepare(ready)
     writing = command["prompt"]
-    assert writing.index("<Picture 1>：用作") < writing.index("声音：〔") < writing.index("〔起〕–〔止〕秒｜")
-    assert "时段只写动作" in writing and "不重复图片编号、首尾帧名称" in writing
-    assert "在这行说明适用阶段" in writing
+    assert writing.index("<Picture 1>：") < writing.index("声音：〔") < writing.index("〔起〕–〔止〕秒｜")
+    assert "后续分镜不重复引用编号" in writing
+    assert "具体描述中间可见的位置、姿态或道具变化" in writing
     checking = video_review_prompt(command, repository.record(command["candidate_id"]))
     assert "每张选中的图片是否在开头有一行明确用途" in checking
     assert "后文是否重复图片引用" in checking
@@ -596,7 +707,8 @@ def test_each_request_checks_frozen_budget_and_preserves_original_on_overflow(re
     original = repository.current("prompt_bundle")["id"]
     calls = []
 
-    def send(prompt):
+    def send(request):
+        prompt = request_text(request)
         calls.append(prompt)
         if phase == "格式修复":
             return "无效回复" * 10000

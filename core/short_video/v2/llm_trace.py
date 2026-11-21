@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from threading import Lock
@@ -15,6 +16,7 @@ from .contracts import JsonObject
 _lock = Lock()
 _secrets: set[str] = set()
 _secret_fields = {"api_key", "authorization", "access_token", "secret", "password"}
+_image_data = re.compile(r"data:image/[\w.+-]+;base64,[a-z0-9+/=]+", re.IGNORECASE)
 
 
 def enabled() -> bool:
@@ -27,6 +29,8 @@ def endpoint_label(address: str) -> str:
 
 
 def _redact_fields(value: Any) -> Any:
+    if isinstance(value, str):
+        return _image_data.sub("[IMAGE DATA REDACTED]", value)
     if isinstance(value, dict):
         return {
             key: "[REDACTED]"
@@ -54,10 +58,11 @@ def trace_event(
             ensure_ascii=False,
             default=str,
         )
+        payload = _redact_fields(payload)
         body = (
             payload
             if isinstance(payload, str)
-            else json.dumps(_redact_fields(payload), ensure_ascii=False, indent=2, default=str)
+            else json.dumps(payload, ensure_ascii=False, indent=2, default=str)
         )
         message = f"\n[LLM_TRACE {event}] {header}\n{body}\n[END LLM_TRACE {event}]\n"
         for secret in sorted(_secrets, key=len, reverse=True):
