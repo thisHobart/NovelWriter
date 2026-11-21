@@ -326,7 +326,9 @@ def test_workspace_guards_project_configuration_exit_and_preserves_drafts(
             workspace.submit(work)
         wait_for(app, lambda: all(work.entered.is_set() for work in mapping))
         assert not workspace.project_button.isEnabled()
-        assert not workspace.model_config_button.isEnabled()
+        actions = workspace.service_actions
+        assert workspace.model_config_button.isEnabled()
+        assert not any(a.isEnabled() for channel in actions for a in actions[channel])
         assert not workspace.specs.images_page.concurrency.isEnabled()
         assert not workspace.specs.media.generate_prompt_button.isEnabled()
         assert workspace.specs.media.open_button.isEnabled()
@@ -343,6 +345,12 @@ def test_workspace_guards_project_configuration_exit_and_preserves_drafts(
         assert workspace.specs.media.generate_prompt_button.isEnabled()
         assert workspace.specs.media.prompt.toPlainText() == "视频输入框里的草稿"
         assert workspace.specs.editor.positive.toPlainText() == "画面提示词未保存编辑"
+        image_work.release.set()
+        wait_for(app, lambda: not workspace.tasks.busy("image"))
+        # A running video job carries its ComfyUI address and workflow and reads no model
+        # settings: only 「ComfyUI 工作流」 stays locked.
+        assert all(a.isEnabled() for a in actions["text"] + actions["image"])
+        assert not actions["video"][0].isEnabled()
         workspace.resolve_edits = lambda: True
         monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.No)
         rejected = QCloseEvent()
@@ -351,7 +359,7 @@ def test_workspace_guards_project_configuration_exit_and_preserves_drafts(
         monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.Yes)
         accepted = QCloseEvent()
         window.closeEvent(accepted)
-        assert accepted.isAccepted() and video.token.cancelled and image_work.token.cancelled
+        assert accepted.isAccepted() and video.token.cancelled
     finally:
         for work in mapping:
             work.release.set()

@@ -3,6 +3,7 @@ its parameters, and 「生成视频」 pinned at the bottom."""
 
 from __future__ import annotations
 
+import logging
 import random
 import re
 from contextlib import nullcontext
@@ -43,7 +44,9 @@ from core.short_video.v2.media_workflows import (
     MAX_REFERENCE_IMAGES,
     ImageInput,
     MediaConfig,
+    load_shot_drafts,
     parse_video_workflow,
+    save_shot_drafts,
 )
 from core.short_video.v2.models import WorkspaceError, fingerprint, require
 from core.short_video.v2.repository import ProjectRepository
@@ -70,6 +73,8 @@ from .video_widgets import (
 
 if TYPE_CHECKING:
     from .workbench import Workbench
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_VIDEO_PROMPT = (
     "以 <Picture 1> 为画面参考，保持主体外观、环境与构图一致，"
@@ -214,6 +219,11 @@ class MediaPreview(QWidget):
         self.parameter_fields = {}
         self.drafts = {}
         self.loaded_workflow_id = None
+        # Edits are written to the project a moment after typing stops, and on every switch.
+        self.save_timer = QTimer(self)
+        self.save_timer.setSingleShot(True)
+        self.save_timer.setInterval(800)
+        self.save_timer.timeout.connect(self.remember_draft)
         self.setStyleSheet(WIDGET_STYLE + MEDIA_STYLE)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -279,6 +289,7 @@ class MediaPreview(QWidget):
         self.prompt = QPlainTextEdit()
         self.prompt.setMinimumHeight(200)
         self.prompt.textChanged.connect(self.capture_prompt_image_bindings)
+        self.prompt.textChanged.connect(self.save_timer.start)
         prompt_layout.addWidget(self.prompt)
         self.prompt_status = QLabel()
         self.prompt_status.setObjectName("promptHint")
@@ -455,10 +466,9 @@ class MediaPreview(QWidget):
     def set_target(self, target: dict) -> None:
         if target != self.target:
             self.remember_draft()
-            previous = (self.target.get("storyboard_version_id"), self.target.get("shot_id"))
-            self.shot_drafts[previous] = self.drafts
-            key = (target.get("storyboard_version_id"), target.get("shot_id"))
-            self.drafts = self.shot_drafts.setdefault(key, {})
+            # Kept per shot, not per storyboard version: editing and saving the storyboard leaves
+            # the chosen images, the video prompt and the parameters as they are.
+            self.drafts = self.shot_drafts.setdefault(target.get("shot_id"), {})
             self.loaded_workflow_id = None
             self.target = dict(target)
 
@@ -783,6 +793,8 @@ class MediaPreview(QWidget):
         field.setText(str(random.randrange(1, 2**48)))
 
     def remember_draft(self) -> None:
+        """Keep what the video area shows for this shot and workflow, in memory and in the project."""
+        self.save_timer.stop()
         if self.loaded_workflow_id is not None:
             self.drafts[self.loaded_workflow_id] = {
                 "images": self.image_selection(),
@@ -794,15 +806,22 @@ class MediaPreview(QWidget):
                 "video_prompt_fingerprint": self.video_prompt_fingerprint,
                 "video_prompt_binding": self.video_prompt_binding,
             }
+            if self.project_dir:
+                try:
+                    save_shot_drafts(self.project_dir, self.shot_drafts)
+                except OSError:
+                    logger.warning("视频区内容没有写入项目", exc_info=True)
 
     # -- loading ---------------------------------------------------------------------------
 
     def refresh(self) -> None:
         if self.project_dir != self.workbench.output_dir:
+            self.remember_draft()
             self.project_dir = self.workbench.output_dir
             self.loaded_workflow_id = None
-            self.drafts.clear()
-            self.shot_drafts.clear()
+            # What each shot's video area held when the project was last open.
+            self.shot_drafts = load_shot_drafts(self.project_dir) if self.project_dir else {}
+            self.drafts = self.shot_drafts.setdefault(self.target.get("shot_id"), {})
             self.video_path = None
             self.thumbnails.clear()
         self.remember_draft()
@@ -925,6 +944,10 @@ class MediaPreview(QWidget):
             )
             form = self.advanced_form if advanced else self.parameter_form
             form.addRow(field_label(parameter.label), field if field is not None else control)
+            for name in ("valueChanged", "currentIndexChanged", "toggled", "textChanged"):
+                signal = getattr(control, name, None)
+                if signal is not None:
+                    signal.connect(self.save_timer.start)
             self.parameter_fields[parameter.key] = control
         self.advanced.setVisible(self.advanced_form.rowCount() > 0)
         self.refresh_duration_hint()
@@ -992,7 +1015,7 @@ class MediaPreview(QWidget):
         )
         for control in (self.workflows, self.slots_section, self.parameter_area, self.prompt):
             control.setEnabled(not prompt_busy)
-        self.config_button.setEnabled(not self.workbench.tasks.any_busy)
+        self.config_button.setEnabled(not self.workbench.tasks.busy("video"))
         waiting = bool(job and job["status"] not in {"succeeded", "cancelled", "failed"})
         self.query_button.setVisible(waiting)
         self.query_button.setEnabled(waiting and not busy)
@@ -1000,6 +1023,7 @@ class MediaPreview(QWidget):
         self.open_video_button.setEnabled(bool(path and path.is_file()))
         self.refresh_prompt_state()
         self.relayout()
+        self.save_timer.start()
         self.inputs_changed.emit()
 
     def show_job(self, job: dict | None, selected: bool) -> None:

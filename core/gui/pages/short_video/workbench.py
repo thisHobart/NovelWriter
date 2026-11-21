@@ -135,10 +135,26 @@ class Workbench(QWidget):
         top.addStretch()
         self.model_config_button = QPushButton("服务配置")
         service_menu = QMenu(self.model_config_button)
-        service_menu.addAction("生成模型配置", lambda: self.perform(self.configure_text_model))
-        service_menu.addAction("校验模型配置", lambda: self.perform(self.configure_review_model))
-        service_menu.addAction("生图 API 配置", lambda: self.perform(self.configure_image_model))
-        service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
+        # Each entry is locked only while a task that reads it runs: text tasks use the
+        # generation and review models, image tasks the image API, video tasks ComfyUI.
+        self.service_actions = {
+            "text": [
+                service_menu.addAction(
+                    "生成模型配置", lambda: self.perform(self.configure_text_model)
+                ),
+                service_menu.addAction(
+                    "校验模型配置", lambda: self.perform(self.configure_review_model)
+                ),
+            ],
+            "image": [
+                service_menu.addAction(
+                    "生图 API 配置", lambda: self.perform(self.configure_image_model)
+                )
+            ],
+            "video": [
+                service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
+            ],
+        }
         self.model_config_button.setMenu(service_menu)
         top.addWidget(self.model_config_button)
         self.chat_toggle = create_action_button("收起对话", self.toggle_chat, top, self)
@@ -198,9 +214,12 @@ class Workbench(QWidget):
         self.refresh_all()
 
     def can_leave(self) -> bool:
+        # The video area's latest typing is written to the project, not lost with the window.
+        self.specs.media.remember_draft()
         return self.resolve_edits()
 
     def can_close(self) -> bool:
+        self.specs.media.remember_draft()
         return self.resolve_edits()
 
     def cancel_selected(self, channel: str | None) -> None:
@@ -232,7 +251,7 @@ class Workbench(QWidget):
 
     def configure_text_model(self) -> None:
         """Addresses and keys are shared with the novel; which service to use is ours."""
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改生成模型配置")
+        require(not self.tasks.busy("text"), "PROJECT_BUSY", "请在文字任务结束后修改生成模型配置")
         dialog = ModelConfigDialog(self.text_model, self)
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -257,7 +276,7 @@ class Workbench(QWidget):
         self.model_config_button.setToolTip(f"生成模型：{detail}\n{review_detail}")
 
     def configure_review_model(self) -> None:
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改校验模型配置")
+        require(not self.tasks.busy("text"), "PROJECT_BUSY", "请在文字任务结束后修改校验模型配置")
         dialog = ModelConfigDialog(review_provider(), self, profile=REVIEW_SERVICE)
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -267,7 +286,7 @@ class Workbench(QWidget):
             dialog.deleteLater()
 
     def configure_image_model(self) -> None:
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改生图配置")
+        require(not self.tasks.busy("image"), "PROJECT_BUSY", "请在生图任务结束后修改生图配置")
         dialog = ModelConfigDialog("hosted-llm", self, profile=IMAGE_SERVICE)
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -281,7 +300,7 @@ class Workbench(QWidget):
     def configure_comfy(self) -> None:
         from .comfy_settings import ComfySettingsDialog
 
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改工作流配置")
+        require(not self.tasks.busy("video"), "PROJECT_BUSY", "请在视频任务结束后修改工作流配置")
         ComfySettingsDialog(self.output_dir, self).exec()
         self.specs.media.refresh()
 
@@ -408,7 +427,9 @@ class Workbench(QWidget):
     def refresh_buttons(self) -> None:
         """Which buttons can be pressed while tasks run; cheap, so every page is updated."""
         self.project_button.setEnabled(not self.tasks.any_busy)
-        self.model_config_button.setEnabled(not self.tasks.any_busy)
+        for channel, actions in self.service_actions.items():
+            for action in actions:
+                action.setEnabled(not self.tasks.busy(channel))
         for control in [
             self.source.generate_button,
             *[

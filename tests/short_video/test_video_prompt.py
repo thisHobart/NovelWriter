@@ -322,6 +322,69 @@ def test_switching_shots_isolates_video_prompt_and_selected_images(ready, prompt
     assert page.media.image_selection()["137"] == first["image_id"]
 
 
+def test_saving_the_storyboard_keeps_the_video_area(ready, prompt_page):
+    repository, first, _ = ready
+    page, _ = prompt_page
+    page.tabs.setCurrentIndex(3)
+    media = page.media
+    media.use_image(first["image_id"], "137")
+    media.parameter_fields["132.value"].setValue(7.0)
+    media.prompt.setPlainText("<Picture 1> 手动写的视频提示词")
+    old_version = media.target["storyboard_version_id"]
+    board = repository.current("storyboard")
+    content = deepcopy(board["content"])
+    content["shots"][0]["action"] = "分镜里改过的动作"
+    repository.save("storyboard", content, board["dependency_refs"],
+                    expected_revision=repository.load()["revision"])
+    page.refresh()
+    assert media.target["storyboard_version_id"] != old_version
+    assert page.shot_header.action.full == "分镜里改过的动作"
+    assert media.prompt.toPlainText() == "<Picture 1> 手动写的视频提示词"
+    assert media.image_selection()["137"] == first["image_id"]
+    assert media.parameter_values()["132.value"] == 7.0
+
+
+def test_video_area_comes_back_after_reopening(ready, prompt_page):
+    from core.gui.pages.short_video.prompt_page import PromptPage
+    from core.short_video.v2.media_workflows import shot_drafts_path
+
+    repository, first, _ = ready
+    page, _ = prompt_page
+    page.tabs.setCurrentIndex(3)
+    media = page.media
+    media.use_image(first["image_id"], "137")
+    media.parameter_fields["132.value"].setValue(7.0)
+    media.prompt.setPlainText("<Picture 1> 隔天接着写的视频提示词")
+    # Typing is written a moment later; closing the window writes it at once.
+    assert media.save_timer.isActive()
+    media.remember_draft()
+    assert shot_drafts_path(repository.output_dir).is_file()
+
+    reopened = PromptPage(page.workbench)
+    try:
+        reopened.tabs.setCurrentIndex(3)
+        again = reopened.media
+        assert again.prompt.toPlainText() == "<Picture 1> 隔天接着写的视频提示词"
+        assert again.image_selection()["137"] == first["image_id"]
+        assert again.parameter_values()["132.value"] == 7.0
+    finally:
+        reopened.close()
+        reopened.deleteLater()
+
+
+def test_unreadable_saved_video_area_starts_empty(ready, prompt_page):
+    from core.short_video.v2.media_workflows import load_shot_drafts, shot_drafts_path
+
+    repository, _, _ = ready
+    path = shot_drafts_path(repository.output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{broken", encoding="utf-8")
+    assert load_shot_drafts(repository.output_dir) == {}
+    page, _ = prompt_page
+    page.tabs.setCurrentIndex(3)
+    assert page.media.prompt.toPlainText()
+
+
 def add_shots(repository, count, action="相邻镜头动作"):
     board = repository.current("storyboard")
     content = deepcopy(board["content"])

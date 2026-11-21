@@ -110,6 +110,56 @@ class MediaConfig:
         )
 
 
+# What the 镜头 video area holds for each shot and workflow, kept across restarts.
+SHOT_DRAFT_FIELDS = (
+    "images",
+    "prompt",
+    "parameters",
+    "additional_reference_slots",
+    "prompt_image_bindings",
+    "video_prompt_fingerprint",
+    "video_prompt_binding",
+)
+
+
+def shot_drafts_path(output_dir: str | Path) -> Path:
+    return Path(output_dir) / "short_video" / "media" / "shot_drafts.json"
+
+
+def load_shot_drafts(output_dir: str | Path) -> dict[str, dict[str, JsonObject]]:
+    """{shot_id: {workflow_id: draft}}; empty when nothing was saved or the file is unreadable."""
+    path = shot_drafts_path(output_dir)
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(values, dict):
+        return {}
+    return {
+        shot_id: {
+            workflow_id: {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+            for workflow_id, draft in workflows.items()
+            if isinstance(workflow_id, str) and isinstance(draft, dict)
+        }
+        for shot_id, workflows in values.items()
+        if isinstance(shot_id, str) and isinstance(workflows, dict)
+    }
+
+
+def save_shot_drafts(output_dir: str | Path, drafts: dict[str, dict[str, JsonObject]]) -> None:
+    stored = {
+        shot_id: {
+            workflow_id: {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+            for workflow_id, draft in workflows.items()
+        }
+        for shot_id, workflows in drafts.items()
+        if shot_id and workflows
+    }
+    path = shot_drafts_path(output_dir)
+    if stored or path.exists():
+        atomic_write_text(path, encode(stored))
+
+
 @dataclass(frozen=True)
 class ImageInput:
     node_id: str
