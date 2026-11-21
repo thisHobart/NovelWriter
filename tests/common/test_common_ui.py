@@ -25,9 +25,12 @@ def app():
     yield instance
 
 
-def test_model_configuration_read_failure_keeps_controls_disabled_and_shows_type(app, monkeypatch, caplog):
+def test_model_configuration_read_failure_keeps_controls_disabled_and_shows_type(app, monkeypatch, caplog, tmp_path):
     from unittest.mock import Mock
+    from core.common import api_settings
     from core.gui import model_config_dialog
+
+    monkeypatch.setattr(api_settings, "settings_file", lambda: tmp_path / "llm_settings.json")
 
     failure = PermissionError("configuration access denied")
     monkeypatch.setattr(model_config_dialog, "form_values", Mock(side_effect=failure))
@@ -41,9 +44,12 @@ def test_model_configuration_read_failure_keeps_controls_disabled_and_shows_type
     dialog.close()
 
 
-def test_model_configuration_save_failure_preserves_error_type_in_feedback(app, monkeypatch, caplog):
+def test_model_configuration_save_failure_preserves_error_type_in_feedback(app, monkeypatch, caplog, tmp_path):
     from unittest.mock import Mock
+    from core.common import api_settings
     from core.gui import model_config_dialog
+
+    monkeypatch.setattr(api_settings, "settings_file", lambda: tmp_path / "llm_settings.json")
 
     monkeypatch.setattr(model_config_dialog, "form_values", lambda provider, **kwargs: {
         "base_url": "https://example.test/v1", "api_key": "", "model": "test-model",

@@ -118,6 +118,64 @@ def save_provider(provider: str, base_url: str, api_key: str, model: str) -> Non
     _write(document)
 
 
+NAMED_SERVICES = "named_services"
+NAME_LIMIT = 40
+
+
+def named_services() -> dict | None:
+    """Third-party services the person named themselves, or None before the first save.
+
+    ``{"active": name or None, "items": [{"name", "base_url", "api_key", "model"}]}``. The
+    active one is also what ``providers["hosted-llm"]`` holds, so every caller keeps using it.
+    """
+    section = read_section(NAMED_SERVICES)
+    if section is None:
+        return None
+    items = section.get("items") if isinstance(section, dict) else None
+    active = section.get("active") if isinstance(section, dict) else None
+    if (not isinstance(items, list) or not (active is None or isinstance(active, str))
+            or any(not isinstance(item, dict) or any(
+                not isinstance(item.get(name), str)
+                for name in ("name", "base_url", "api_key", "model")) for item in items)):
+        raise ValueError("模型配置文件 llm_settings.json 里的服务商列表格式不正确")
+    return {"active": active, "items": [
+        {name: item[name] for name in ("name", "base_url", "api_key", "model")} for item in items
+    ]}
+
+
+def check_service_name(name: str, taken: list[str] | tuple[str, ...] = ()) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("请填写服务商名称")
+    if any(character in name for character in "\r\n\x00"):
+        raise ValueError("服务商名称不能包含换行或空字符")
+    if len(name) > NAME_LIMIT:
+        raise ValueError(f"服务商名称最多 {NAME_LIMIT} 个字")
+    if name in taken:
+        raise ValueError(f"已有名为「{name}」的服务商")
+    return name
+
+
+def checked_named_services(items: list[dict[str, str]], active: str | None) -> dict:
+    """The list as it is stored, after checking every name and address; writes nothing."""
+    stored: list[dict[str, str]] = []
+    for item in items:
+        name = check_service_name(item["name"], [entry["name"] for entry in stored])
+        try:
+            config = validate_provider("hosted-llm", item["base_url"], item["api_key"],
+                                       item["model"], require_model=False)
+        except ValueError as exc:
+            raise ValueError(f"「{name}」：{exc}") from None
+        stored.append({"name": name, "base_url": config.base_url,
+                       "api_key": item["api_key"].strip(), "model": config.model})
+    names = [entry["name"] for entry in stored]
+    return {"active": active if active in names else None, "items": stored}
+
+
+def save_named_services(items: list[dict[str, str]], active: str | None) -> None:
+    write_section(NAMED_SERVICES, checked_named_services(items, active))
+
+
 def _write(document: dict) -> None:
     path = settings_file()
     temporary = None
