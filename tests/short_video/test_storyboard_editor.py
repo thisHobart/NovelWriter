@@ -7,8 +7,7 @@ from copy import deepcopy
 import pytest
 
 from core.short_video.v2.models import WorkspaceError
-from test_shot_assets import scenario, snapshot  # noqa: F401
-from test_storyboard_chat import chat_ui, offline  # noqa: F401
+from test_shot_assets import scenario  # noqa: F401
 from test_video_v2_repository import project, prompt_project  # noqa: F401
 
 
@@ -36,19 +35,12 @@ def shots(editor):
     return editor.draft_snapshot()["shots"]
 
 
-def with_tail(shot, description, action=None):
-    """A prompt as an earlier editor left it after an action edit."""
-    action = shot["action"] if action is None else action
-    shot["visual_description"] = description
-    shot["visual_prompt_draft"] = f"{description}。{shot['shot_size']}，{shot['camera_movement']}。动作：{action}"
-
-
 def test_shot_list_is_read_only_and_the_form_edits_the_selected_shot(editor):
     from PySide6.QtWidgets import QAbstractItemView, QPushButton
 
     table = editor.table
     assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
-        "镜号", "时长", "景别", "人物", "动作"
+        "镜号", "时长", "取景范围", "人物", "动作"
     ]
     assert table.editTriggers() == QAbstractItemView.NoEditTriggers and table.verticalHeader().isHidden()
     assert table.item(1, 1).text() == "7 秒" and table.item(1, 1).toolTip().startswith("00:07.0–00:14.0")
@@ -56,7 +48,7 @@ def test_shot_list_is_read_only_and_the_form_edits_the_selected_shot(editor):
     assert editor.heading.text() == "第 2 镜 · 00:07.0–00:14.0"
     assert editor.scene_label.text() == "老宅/常态" and editor.props_label.text() == "无"
     assert editor.detail_fields["characters"].toPlainText() == "寻井人"
-    common = next(b for b in editor.form.findChildren(QPushButton) if b.text() == "常用景别")
+    common = next(b for b in editor.form.findChildren(QPushButton) if b.text() == "常用取景范围")
     next(a for a in common.menu().actions() if a.text() == "近景").trigger()
     editor.detail_fields["camera_movement"].setPlainText("缓慢推近")
     editor.detail_fields["sound"].setPlainText("井水回声")
@@ -65,59 +57,15 @@ def test_shot_list_is_read_only_and_the_form_edits_the_selected_shot(editor):
     assert table.item(1, 2).text() == "近景" and len(editor.changes) == 3
 
 
-def test_editing_the_action_leaves_the_picture_prompt_alone(editor):
-    editor.table.selectRow(0)
-    prompt = shots(editor)[0]["visual_prompt_draft"]
-    editor.detail_fields["action"].setPlainText("放下铜钥匙")
-    editor.size_input.setText("特写")
-    editor.detail_fields["camera_movement"].setPlainText("缓慢推近")
-    shot = shots(editor)[0]
-    assert shot["action"] == "放下铜钥匙" and shot["visual_prompt_draft"] == prompt
-    assert "visual_description" not in shot and editor.table.item(0, 4).text() == "放下铜钥匙"
-    assert not editor.prompt_note.isHidden() and editor.prompt_note.text() == "动作已改，画面提示词可能需要同步"
-    editor.table.selectRow(1)
-    assert editor.prompt_note.isHidden()
-    editor.table.selectRow(0)
-    assert not editor.prompt_note.isHidden()
-    editor.detail_fields["visual_prompt_draft"].setPlainText("老宅井边放下铜钥匙")
-    assert editor.prompt_note.isHidden() and shots(editor)[0]["visual_prompt_draft"] == "老宅井边放下铜钥匙"
-
-
-def test_opening_removes_only_the_exact_tail_an_earlier_editor_appended(editor, scenario):
+def test_editor_opens_legacy_storyboard_without_the_retired_fields(editor, scenario):
     content = deepcopy(scenario.current("storyboard")["content"])
-    first, second, third = content["shots"]
-    with_tail(first, "老宅井边举起铜钥匙。")
-    with_tail(second, "井边", action="之后又改过的动作")  # The tail no longer matches the action.
-    third["visual_description"] = third["visual_prompt_draft"]
+    original = deepcopy(content)
+    content["shots"][0].update(visual_description="旧版描述", visual_prompt_draft="旧版提示词")
     editor.changes.clear()
     editor.set_content(content)
-    cleaned, kept, untouched = shots(editor)
-    assert cleaned["visual_prompt_draft"] == "老宅井边举起铜钥匙。" and "visual_description" not in cleaned
-    assert kept["visual_prompt_draft"] == second["visual_prompt_draft"] and kept["visual_description"] == "井边"
-    assert untouched == {**third, "start_ms": 14000, "end_ms": 21000, "order": 3}
-    assert editor.notice.text().startswith("第 1 镜的画面提示词末尾") and len(editor.changes) == 1
-    # A storyboard without the tail opens unchanged and without the notice.
-    editor.set_content(scenario.current("storyboard")["content"])
-    assert editor.notice.isHidden() and len(editor.changes) == 1
-
-
-def test_opening_the_page_with_an_old_tail_waits_for_save(chat_ui, scenario):
-    ui = chat_ui
-    board = scenario.current("storyboard")
-    content = deepcopy(board["content"])
-    with_tail(content["shots"][0], "老宅井边举起铜钥匙")
-    scenario.save("storyboard", content, board["dependency_refs"], expected_revision=scenario.load()["revision"])
-    before = snapshot(scenario)
-    ui.page.refresh()
-    assert ui.page.dirty and ui.page.status.text() == "有未保存修改"
-    assert ui.page.editor.draft_snapshot()["shots"][0]["visual_prompt_draft"] == "老宅井边举起铜钥匙"
-    assert snapshot(scenario) == before
-    ui.workbench.update_shot_prompts = lambda: None
-    ui.workbench.refresh = ui.page.refresh
-    ui.page.save()
-    saved = scenario.current("storyboard")["content"]["shots"][0]
-    assert saved["visual_prompt_draft"] == "老宅井边举起铜钥匙" and "visual_description" not in saved
-    assert not ui.page.dirty and ui.page.editor.notice.isHidden()
+    assert "visual_prompt_draft" not in editor.detail_fields
+    assert editor.draft_snapshot() == original and not editor.changes
+    assert content["shots"][0]["visual_prompt_draft"] == "旧版提示词"
 
 
 def test_split_keeps_each_line_once_and_selects_the_second_half(editor):
@@ -128,8 +76,8 @@ def test_split_keeps_each_line_once_and_selects_the_second_half(editor):
     assert (first["duration_ms"], second["duration_ms"]) == (2800, 2700) and len(shots(editor)) == 4
     assert first["narration"] == "井里是谁" and first["sound"] == "风声" and first["dialogue"]
     assert (second["dialogue"], second["narration"], second["sound"]) == ([], "", "")
-    assert second["action"] == first["action"] and second["visual_prompt_draft"] == first["visual_prompt_draft"]
-    assert editor.table.currentRow() == 1 and editor.notice.text().startswith("第 1、2 镜内容相同")
+    assert second["action"] == first["action"]
+    assert editor.table.currentRow() == 1 and editor.notice.text().startswith("第 1、2 镜的动作相同")
     editor.split()  # 2.7 seconds still splits; 1.3 seconds is too short.
     editor.table.selectRow(1)
     editor.split()
@@ -142,11 +90,11 @@ def test_add_keeps_the_scene_and_saving_points_at_the_empty_fields(editor):
     base, added = shots(editor)[1:3]
     assert editor.table.currentRow() == 2 and added["scene_ref"] == base["scene_ref"]
     assert added["video_block_refs"] == base["video_block_refs"]
-    assert all(added[k] == "" for k in ("shot_size", "camera_movement", "action", "visual_prompt_draft", "sound", "narration"))
+    assert all(added[k] == "" for k in ("shot_size", "camera_movement", "action", "sound", "narration"))
     assert added["characters"] == added["props"] == added["dialogue"] == []
     assert editor.table.item(2, 4).text() == "（未填写动作）"
     editor.table.selectRow(0)
-    with pytest.raises(WorkspaceError, match="第 3 镜的景别、镜头运动、动作、画面提示词还没填写"):
+    with pytest.raises(WorkspaceError, match="第 3 镜的取景范围、镜头运动、动作还没填写"):
         editor.value()
     assert editor.table.currentRow() == 2
     assert editor.size_input.property("missing") and editor.detail_fields["action"].property("missing")
@@ -154,7 +102,6 @@ def test_add_keeps_the_scene_and_saving_points_at_the_empty_fields(editor):
     assert not editor.detail_fields["action"].property("missing")
     editor.size_input.setText("近景")
     editor.detail_fields["camera_movement"].setPlainText("固定")
-    editor.detail_fields["visual_prompt_draft"].setPlainText("井边放下铜钥匙")
     assert editor.value()["shots"][2]["action"] == "放下铜钥匙"
 
 
@@ -169,7 +116,6 @@ def test_merge_keeps_unsaved_lines_and_joins_the_text(editor):
     assert len(shots(editor)) == 2 and merged["duration_ms"] == 14000
     assert merged["dialogue_text"] == "画外/画外音：门外有人。\n旁白：井里是谁\n画外/画外音：有人吗\n旁白：风更大了"
     assert merged["action"] == "举起铜钥匙。举起铜钥匙" and merged["sound"] == "风声；风声"
-    assert merged["visual_prompt_draft"] == "老宅井边举起铜钥匙；老宅井边举起铜钥匙"
     assert editor.notice.text().startswith("第 1、2 镜已合并为第 1 镜")
     saved = editor.value()["shots"][0]
     assert [(line["character_id"], line["text"]) for line in saved["dialogue"]] == [

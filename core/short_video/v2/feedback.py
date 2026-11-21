@@ -82,9 +82,8 @@ def error_reason(error: BaseException) -> str:
 
 def readable_fields(text: str) -> str:
     for field, label in {
-        "visual_prompt_draft": "画面提示词",
         "camera_movement": "镜头运动",
-        "shot_size": "景别",
+        "shot_size": "取景范围",
         "duration_ms": "时长",
         "action": "动作",
         "narration": "旁白",

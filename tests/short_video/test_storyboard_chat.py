@@ -84,12 +84,13 @@ def test_material_writes_every_shot_with_form_fields_and_assets_by_name(scenario
         "当前选中第 2 镜；你的消息提到第 3 镜。",
     ]
     assert shot_block(text, 2).splitlines() == [
-        "### 第 2 镜", "时间段：7–14 秒", "时长：7 秒", "景别：中景", "镜头运动：固定镜头",
+        "### 第 2 镜", "时间段：7–14 秒", "时长：7 秒", "取景范围：中景", "镜头运动：固定镜头",
         "场景：老宅（常态）", "人物：寻井人（夏装）", "道具：无", "动作：界面最新动作", "对白：无",
-        "旁白：井里是谁", "音效：风声", "画面提示词：老宅井边举起铜钥匙",
+        "旁白：井里是谁", "音效：风声",
     ]
+    assert "画面提示词" not in text
     # The other shots are complete too; objects sharing a name are told apart by 「·2」.
-    assert "对白：画外/画外音：门外有人。" in shot_block(text, 1) and "画面提示词：" in shot_block(text, 1)
+    assert "对白：画外/画外音：门外有人。" in shot_block(text, 1)
     assert "人物：寻井人·2（常态）" in shot_block(text, 3)
     # One object per line, states split by 「｜」 since a state may contain 「、」.
     assert section(text, "资产目录").splitlines() == [
@@ -106,7 +107,7 @@ def test_material_writes_every_shot_with_form_fields_and_assets_by_name(scenario
     assert "## 原文（改编范围全文，22 字）" in text
     assert section(text, "原文") == "乡村😀老宅\n井口响了三声。\n父亲留下铜钥匙。"
     assert section(text, "项目要求") == "受众：中文短视频观众\n风格：自然、紧凑"
-    for hidden in ("asset_", "shot_", "variant", "artifact_", "b1", "禁止改变", "## 资料说明"):
+    for hidden in ("asset_", "shot_", "variant", "artifact_", "b1", "禁止改变"):
         assert hidden not in text
     assert (snapshot(scenario), draft) == before
 
@@ -197,29 +198,29 @@ def long_draft(draft):
 
 
 def test_fit_shots_keeps_focus_and_neighbours_and_shortens_the_farthest_first():
-    # Eight shots whose four forms are 40, 30, 20 and 10 characters; each sent shot adds 2.
-    blocks = [["x" * (40 - 10 * level) for level in range(4)] + [""] for _ in range(8)]
+    # Eight shots whose three forms are 40, 30 and 20 characters; each sent shot adds 2.
+    blocks = [["x" * (40 - 10 * level) for level in range(3)] + [""] for _ in range(8)]
     assert fit_shots(blocks, {1}, 336) == ([0] * 8, 336)
     assert fit_shots(blocks, {1}, 335) == ([0, 0, 0, 0, 0, 0, 0, 1], 326)
     assert fit_shots(blocks, {1}, 300) == ([0, 0, 0, 0, 1, 1, 1, 1], 296)
     # Every other shot is shortened one step before any is shortened again.
-    assert fit_shots(blocks, {1}, 200) == ([0, 0, 0, 2, 3, 3, 3, 3], 196)
+    assert fit_shots(blocks, {1}, 200) == ([0, 0, 0, 2, 2, 2, 3, 3], 192)
     # Shots in focus and their neighbours stay whole even when nothing else is left.
-    assert fit_shots(blocks, {1}, 10) == ([0, 0, 0, 4, 4, 4, 4, 4], 126)
+    assert fit_shots(blocks, {1}, 10) == ([0, 0, 0, 3, 3, 3, 3, 3], 126)
     # With two shots in focus, the shot midway between them is the farthest.
     assert fit_shots(blocks, {0, 7}, 335) == ([0, 0, 0, 0, 1, 0, 0, 0], 326)
 
 
-def test_shortened_shots_drop_the_prompt_then_clip_action_and_sound_then_keep_the_basics(scenario):
+def test_shortened_shots_clip_action_and_sound_then_keep_the_basics(scenario):
     entities = scenario.current("asset_catalog")["content"]["entities"]
     shot = deepcopy(scenario.current("storyboard")["content"]["shots"][1])
     shot.update(action="很长" * 40, sound="声" * 70)
-    full, no_prompt, clipped, basics = (
-        shot_text(shot, 2, 7000, entities, asset_names(entities), level) for level in range(4)
+    full, clipped, basics = (
+        shot_text(shot, 2, 7000, entities, asset_names(entities), level) for level in range(3)
     )
-    assert full == no_prompt + "\n画面提示词：老宅井边举起铜钥匙"
+    assert "动作：" + "很长" * 40 in full and "音效：" + "声" * 70 in full
     assert "动作：" + "很长" * 30 + "…" in clipped and "音效：" + "声" * 60 + "…" in clipped
-    assert clipped.replace("很长" * 30 + "…", "很长" * 40).replace("声" * 60 + "…", "声" * 70) == no_prompt
+    assert clipped.replace("很长" * 30 + "…", "很长" * 40).replace("声" * 60 + "…", "声" * 70) == full
     assert basics == "### 第 2 镜\n时长：7 秒；场景：老宅（常态）；人物：寻井人（夏装）"
 
 
@@ -233,13 +234,14 @@ def test_long_storyboards_shorten_far_shots_first_and_say_so(scenario, draft):
     size = len(section(whole["material"], "分镜").split("\n\n", 1)[1]) + 2
     assert storyboard_material(draft, "shot_2", board, records, budget=size)["notes"] == []
     tight = storyboard_material(draft, "shot_2", board, records, budget=size - 1)
-    assert tight["notes"] == ["第 7 镜省去了画面提示词。"]
-    assert "画面提示词：" not in shot_block(tight["material"], 7) and "画面提示词：" in shot_block(tight["material"], 6)
-    assert section(tight["material"], "资料说明") == "- 第 7 镜省去了画面提示词。"
+    clipped = "第 7 镜动作和音效只保留了前 60 字。"
+    assert tight["notes"] == [clipped]
+    assert "…" in shot_block(tight["material"], 7) and "…" not in shot_block(tight["material"], 6)
+    assert section(tight["material"], "资料说明") == f"- {clipped}"
     least = storyboard_material(draft, "shot_2", board, records, budget=1)
     assert least["notes"] == ["第 4–7 镜没有附带。"]
     assert "共 7 镜" in least["material"] and "### 第 4 镜" not in least["material"]
-    assert all("画面提示词：" in shot_block(least["material"], n) for n in (1, 2, 3))
+    assert all("时间段：" in shot_block(least["material"], n) for n in (1, 2, 3))
     # A shot the message names keeps itself and its neighbours whole.
     named = storyboard_material(draft, "shot_2", board, records, question="第6镜呢", budget=1)
     assert named["notes"] == ["第 4 镜没有附带。"]

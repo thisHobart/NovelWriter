@@ -187,6 +187,9 @@ def recalculate_timeline(content: JsonObject) -> JsonObject:
     content = deepcopy(content)
     cursor = 0
     for index, shot in enumerate(rows(content.get("shots"), "镜头", key="shot_id"), 1):
+        # Ignore retired fields from previously saved projects and older model replies.
+        shot.pop("visual_prompt_draft", None)
+        shot.pop("visual_description", None)
         duration = positive_int(shot.get("duration_ms"), "镜头时长")
         shot.update(order=index, start_ms=cursor, end_ms=cursor + duration)
         cursor += duration
@@ -215,10 +218,9 @@ def _asset_ref(value: Any, kind: str, entities: dict[str, JsonObject]) -> JsonOb
 
 KIND_LABELS = {"character": "人物", "scene": "场景", "prop": "道具"}
 SHOT_TEXT_FIELDS = {
-    "shot_size": "景别",
+    "shot_size": "取景范围",
     "camera_movement": "镜头运动",
     "action": "动作",
-    "visual_prompt_draft": "画面提示词",
 }
 
 

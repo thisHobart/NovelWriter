@@ -69,9 +69,7 @@ class PromptEditor(QWidget):
         item["negative_prompt"] = self.negative.toPlainText()
         return value
 
-    def set_content(
-        self, content: JsonObject | None, index: int = 0, *, readonly: bool = False
-    ) -> None:
+    def set_content(self, content: JsonObject | None, index: int = 0) -> None:
         self.content, self.index = deepcopy(content), index
         self.bundle = bool(content and "shots" in content)
         items = (content or {}).get("shots" if self.bundle else "views", [])
@@ -82,7 +80,6 @@ class PromptEditor(QWidget):
             edit.blockSignals(True)
             edit.setPlainText(items[index][field] if items else "")
             edit.setEnabled(bool(items))
-            edit.setReadOnly(readonly)
             edit.blockSignals(False)
 
 
@@ -322,19 +319,8 @@ class PromptPage(QWidget):
                 else None
             )
             editor_content = self.record["content"] if self.record else None
-            if board and not self.record:
-                # A failed asset task must not hide the storyboard's usable image drafts.
-                editor_content = {
-                    "shots": [
-                        {
-                            "shot_id": shot["shot_id"],
-                            "resolved_prompt": shot["visual_prompt_draft"],
-                            "negative_prompt": "",
-                        }
-                        for shot in board["content"]["shots"]
-                    ]
-                }
-            for index, shot in enumerate((editor_content or {}).get("shots", [])):
+            shot_list = editor_content or (board or {}).get("content", {})
+            for index, shot in enumerate(shot_list.get("shots", [])):
                 self.objects.addItem(f"镜头 {index + 1:02}", shot["shot_id"])
             self.objects.setCurrentIndex(max(0, self.objects.findData(entity_id)))
             self.displayed_view = max(0, self.objects.currentIndex())
@@ -383,16 +369,15 @@ class PromptPage(QWidget):
             self.objects.currentData(),
             self.variants.currentData(),
         )
-        self.editor.set_content(
-            editor_content, self.displayed_view, readonly=kind == "shot" and not self.record
-        )
+        self.editor.set_content(editor_content, self.displayed_view)
         show_text_editor = kind != "shot" or bool(editor_content)
         self.editor.setVisible(show_text_editor)
-        self.objects.setVisible(show_text_editor)
-        self.object_label.setVisible(show_text_editor)
+        show_shot_controls = kind != "shot" or board is not None
+        self.objects.setVisible(show_shot_controls)
+        self.object_label.setVisible(show_shot_controls)
         self.save_button.setVisible(show_text_editor)
-        self.generate_button.setVisible(show_text_editor)
-        self.image_fold.setVisible(bool(editor_content))
+        self.generate_button.setVisible(show_shot_controls)
+        self.image_fold.setVisible(kind == "shot" and board is not None)
         if kind == "shot":
             shot_id = self.objects.currentData()
             self.media.set_target(
@@ -427,11 +412,7 @@ class PromptPage(QWidget):
             }
             missing = len(required - state["current"].keys())
             detail = f"缺少 {missing} 项资产设定；" if missing else ""
-            self.status.setText(
-                "当前显示分镜画面草稿，可查看和复制，修改请到分镜页。"
-                + detail
-                + "点击“生成镜头提示词”补齐资产并编排完整提示词。"
-            )
+            self.status.setText(detail + "点击“生成镜头提示词”补齐资产并编排完整提示词。")
         else:
             self.status.setText(
                 record_message(self.workbench.repository, self.record, state)

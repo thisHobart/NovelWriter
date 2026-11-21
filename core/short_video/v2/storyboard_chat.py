@@ -78,14 +78,14 @@ STORYBOARD_REQUIREMENTS = (
 )
 TRACK_LABELS = (("themes", "主题"), ("settings", "设定"), ("backgrounds", "背景"))
 PERSON_LABELS = {"source": "沿用原文人称", "first": "主角第一人称", "third": "第三人称"}
-# Per shot: complete, without 画面提示词, also 动作 and 音效 clipped, only 时长/场景/人物, left out.
+# Per shot: complete, 动作 and 音效 clipped, only 时长/场景/人物, left out.
 LEVEL_NOTES = (
     "",
-    "省去了画面提示词",
-    f"省去了画面提示词，动作和音效只保留前 {CLIP_CHARS} 字",
+    f"动作和音效只保留了前 {CLIP_CHARS} 字",
     "只保留了时长、场景和人物",
     "没有附带",
 )
+LEFT_OUT = len(LEVEL_NOTES) - 1
 
 
 def validate_storyboard_reference(value: JsonObject) -> JsonObject:
@@ -386,7 +386,7 @@ def shot_text(
     duration = shot.get("duration_ms") or 0
     scene = named(shot.get("scene_ref"), entities, names)
     cast = _cast_text(shot, entities, names)
-    if level >= 3:
+    if level >= 2:
         return f"### 第 {number} 镜\n时长：{seconds(duration)} 秒；场景：{scene}；人物：{cast}"
     dialogue, narration = _dialogue(shot, names)
     if "dialogue_text" in shot and dialogue:
@@ -397,18 +397,16 @@ def shot_text(
         f"### 第 {number} 镜",
         f"时间段：{seconds(start_ms)}–{seconds(start_ms + duration)} 秒",
         f"时长：{seconds(duration)} 秒",
-        field_line("景别", shot.get("shot_size")),
+        field_line("取景范围", shot.get("shot_size")),
         field_line("镜头运动", shot.get("camera_movement")),
         f"场景：{scene}",
         f"人物：{cast}",
         "道具：" + ("、".join(named(r, entities, names) for r in shot.get("props", [])) or "无"),
-        field_line("动作", _clip(action) if level >= 2 else action),
+        field_line("动作", _clip(action) if level >= 1 else action),
         field_line("对白", "\n".join(dialogue)),
         field_line("旁白", "\n".join(narration)),
-        field_line("音效", _clip(sound) if level >= 2 else sound),
+        field_line("音效", _clip(sound) if level >= 1 else sound),
     ]
-    if level == 0:
-        lines.append(field_line("画面提示词", shot.get("visual_prompt_draft")))
     return "\n".join(lines)
 
 
@@ -440,11 +438,11 @@ def fit_shots(
     levels = [0] * count
 
     def size() -> int:
-        return sum(len(blocks[i][levels[i]]) + 2 for i in range(count) if levels[i] < 4)
+        return sum(len(blocks[i][levels[i]]) + 2 for i in range(count) if levels[i] < LEFT_OUT)
 
     distance = {i: min((abs(i - f) for f in focus), default=0) for i in range(count)}
     others = sorted((i for i in range(count) if i not in kept), key=lambda i: (-distance[i], -i))
-    for level in (1, 2, 3, 4):
+    for level in range(1, LEFT_OUT + 1):
         for index in others:
             if size() <= budget:
                 return levels, size()
@@ -455,7 +453,7 @@ def fit_shots(
 def _level_notes(levels: list[int]) -> list[str]:
     return [
         f"{shot_span(i + 1 for i, value in enumerate(levels) if value == level)}{LEVEL_NOTES[level]}。"
-        for level in (1, 2, 3, 4)
+        for level in range(1, LEFT_OUT + 1)
         if level in levels
     ]
 
@@ -577,13 +575,15 @@ def storyboard_material(
     catalog = records.get(deps.get("asset_catalog"))
     entities = catalog["content"]["entities"] if catalog else []
     names = asset_names(entities)
-    notes = [] if catalog else ["本版分镜绑定的资产目录缺失，不能确认人物与资产身份。"]
+    notes = []
+    if not catalog:
+        notes.append("本版分镜绑定的资产目录缺失，不能确认人物与资产身份。")
     starts, total = [], 0
     for shot in shots:
         starts.append(total)
         total += shot.get("duration_ms") or 0
     blocks = [
-        [shot_text(shot, i + 1, starts[i], entities, names, level) for level in range(4)] + [""]
+        [shot_text(shot, i + 1, starts[i], entities, names, level) for level in range(LEFT_OUT)] + [""]
         for i, shot in enumerate(shots)
     ]
     focus = {selected, *mentioned, *edits}
@@ -602,7 +602,7 @@ def storyboard_material(
     ]
     sections = [
         "## 分镜\n" + "\n".join(lines) + "\n\n"
-        + "\n\n".join(blocks[i][levels[i]] for i in range(len(shots)) if levels[i] < 4)
+        + "\n\n".join(blocks[i][levels[i]] for i in range(len(shots)) if levels[i] < LEFT_OUT)
     ]
     notes.extend(_level_notes(levels))
     if edits:

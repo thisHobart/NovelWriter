@@ -391,7 +391,7 @@ class ShotEditPanel(QFrame):
         if listed["missing_assets"]:
             notes.append(
                 "资产目录里没有：" + "、".join(listed["missing_assets"])
-                + "。这些只会写进动作和画面提示词，镜头的资产绑定不变。"
+                + "。这些只会写进动作，镜头的资产绑定不变。"
             )
         self.show_warning(notes)
         for item in self.items:

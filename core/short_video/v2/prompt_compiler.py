@@ -75,7 +75,6 @@ def compile_shots(
         visible = dict.fromkeys(
             part.strip().rstrip("。")
             for part in (
-                shot["visual_prompt_draft"],
                 f"{shot['shot_size']}，{shot['camera_movement']}",
                 shot["action"],
             )

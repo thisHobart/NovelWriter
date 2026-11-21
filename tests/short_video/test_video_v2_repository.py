@@ -261,7 +261,7 @@ def prompt_project(project):
         project.save(kind, finalize_asset_prompts(kind, content), dependencies,
                      expected_revision=project.load()["revision"])
     shot = {"shot_id": "shot_1", "order": 1, "duration_ms": 7000, "shot_size": "中景",
-            "camera_movement": "固定镜头", "action": "举起铜钥匙", "visual_prompt_draft": "老宅井边举起铜钥匙",
+            "camera_movement": "固定镜头", "action": "举起铜钥匙",
             "sound": "风声", "narration": "井里是谁", "dialogue": [], "source_refs": [],
             "scene_ref": {"asset_id": "asset_scene", "variant_id": "base"},
             "characters": [{"asset_id": "asset_character", "variant_id": "base"}],
@@ -782,14 +782,11 @@ def prompt_page(prompt_project):
     app.processEvents()
 
 
-def test_missing_shot_bundle_shows_copyable_drafts_and_can_start_generation(prompt_project, prompt_page):
-    from PySide6.QtWidgets import QApplication, QPushButton
-
+def test_missing_shot_bundle_keeps_shot_selection_and_can_start_generation(prompt_project, prompt_page):
     repository = prompt_project
     page, started = prompt_page
     content = deepcopy(repository.current("storyboard")["content"])
-    content["shots"].append({**deepcopy(content["shots"][0]), "shot_id": "shot_2",
-                             "visual_prompt_draft": "井口的铜钥匙特写"})
+    content["shots"].append({**deepcopy(content["shots"][0]), "shot_id": "shot_2"})
     repository.save("storyboard", content, repository.current("storyboard")["dependency_refs"],
                     expected_revision=repository.load()["revision"])
     with repository.transaction() as state:
@@ -798,20 +795,16 @@ def test_missing_shot_bundle_shows_copyable_drafts_and_can_start_generation(prom
     before = repository.path.read_bytes()
     page.tabs.setCurrentIndex(3)
     assert page.objects.count() == 2
-    assert page.editor.positive.toPlainText() == content["shots"][0]["visual_prompt_draft"]
-    assert page.editor.positive.isReadOnly() and page.editor.positive.isEnabled()
+    assert page.editor.isHidden() and not page.image_fold.isHidden()
     assert not page.save_button.isEnabled() and "缺少 1 项" in page.status.text()
     page.objects.setCurrentIndex(1)
-    assert page.editor.positive.toPlainText() == "井口的铜钥匙特写"
-    copy = next(button for button in page.findChildren(QPushButton) if button.text() == "复制正向")
-    copy.click()
-    assert QApplication.clipboard().text() == "井口的铜钥匙特写"
+    assert page.media.target["shot_id"] == "shot_2"
     page.generate_button.click()
     assert started == [("prompts", {"asset_key": None})]
     assert not page.dirty and repository.path.read_bytes() == before
 
 
-def test_shot_page_switches_from_draft_to_compiled_prompt_after_assets_complete(prompt_project, prompt_page):
+def test_shot_page_shows_compiled_prompt_after_assets_complete(prompt_project, prompt_page):
     from core.short_video.v2.workflow import WorkflowService
 
     repository = prompt_project
@@ -819,13 +812,13 @@ def test_shot_page_switches_from_draft_to_compiled_prompt_after_assets_complete(
     with repository.transaction() as state:
         state["current"].pop("prompt_bundle")
     page.tabs.setCurrentIndex(3)
-    assert page.editor.positive.isReadOnly() and page.record is None
+    assert page.editor.isHidden() and page.record is None
     bundle = WorkflowService(repository).compile_storyboard_prompts(
         expected_revision=repository.load()["revision"])
     page.refresh()
     assert page.record["id"] == bundle["id"]
     assert page.editor.positive.toPlainText() == bundle["content"]["shots"][0]["resolved_prompt"]
-    assert not page.editor.positive.isReadOnly() and page.save_button.isEnabled()
+    assert not page.editor.isHidden() and page.save_button.isEnabled()
     assert page.generate_button.text() == "重新生成"
     page.editor.positive.setPlainText("完整镜头画面的新编辑")
     assert page.save()
@@ -838,12 +831,12 @@ def test_shot_page_does_not_show_bundle_from_another_storyboard(prompt_project, 
     old_bundle = repository.current("prompt_bundle")
     board = repository.current("storyboard")
     content = deepcopy(board["content"])
-    content["shots"][0]["visual_prompt_draft"] = "当前分镜的井口全景"
+    content["shots"][0]["action"] = "向井口走去"
     repository.save("storyboard", content, board["dependency_refs"],
                     expected_revision=repository.load()["revision"])
     page.tabs.setCurrentIndex(3)
-    assert page.editor.positive.toPlainText() == "当前分镜的井口全景"
-    assert page.record is None and page.editor.positive.isReadOnly()
+    assert page.editor.positive.toPlainText() == "" and page.editor.isHidden()
+    assert page.record is None and page.objects.currentData() == content["shots"][0]["shot_id"]
     assert repository.current("prompt_bundle") is None
     assert old_bundle["id"] not in repository.load()["records"]
 
@@ -902,7 +895,7 @@ def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, m
         return encode({"shots": [
             {"shot_id": f"s{i}", "duration_ms": duration, "shot_size": "中景", "camera_movement": "固定",
              "scene_ref": ref("书桌旁"), "characters": [ref("小林")], "props": [ref(prop)],
-             "action": block["visible_action"], "visual_prompt_draft": block["visible_action"],
+             "action": block["visible_action"],
              "narration": "", "sound": "", "dialogue": [
                  {"character_id": entities[line["speaker_label"]]["asset_id"], "text": line["text"], "voice_over": True}
                  for line in block["dialogue"]], "video_block_refs": [block["id"]], "source_refs": refs}
@@ -1046,15 +1039,16 @@ def test_storyboard_format_example_does_not_pack_the_whole_catalog(prompt_projec
     assert shot["video_block_refs"] == [context["video_copy"]["content"]["blocks"][0]["id"]]
 
 
-def test_compiled_shot_deduplicates_visible_text_without_changing_refs(prompt_project):
+def test_compiled_shot_uses_storyboard_action_and_ignores_retired_fields(prompt_project):
     from core.short_video.v2.prompt_compiler import compile_shots
 
     board = deepcopy(prompt_project.current("storyboard"))
-    board["content"]["shots"][0]["visual_prompt_draft"] = "举起铜钥匙。"
+    board["content"]["shots"][0]["visual_prompt_draft"] = "旧版画面提示词"
     specs = [r for r in current_records(prompt_project) if r["kind"] in {"character_spec", "scene_spec", "prop_spec"}]
     original = compile_shots(prompt_project.current("storyboard"), specs)
     compiled = compile_shots(board, specs)
     shot = compiled["shots"][0]
+    assert "旧版画面提示词" not in shot["resolved_prompt"]
     assert shot["resolved_prompt"].count("举起铜钥匙") == 1
     assert "不要求全部细节同时可见" in shot["resolved_prompt"]
     assert shot["asset_refs"] == original["shots"][0]["asset_refs"]

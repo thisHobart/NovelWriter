@@ -41,10 +41,9 @@ EDIT_FIELDS = (
     "narration",
     "sound",
     "duration_ms",
-    "visual_prompt_draft",
 )
 FIELD_LABELS = {
-    "shot_size": "景别",
+    "shot_size": "取景范围",
     "camera_movement": "镜头运动",
     "scene_ref": "场景",
     "characters": "人物",
@@ -54,7 +53,6 @@ FIELD_LABELS = {
     "narration": "旁白",
     "sound": "音效",
     "duration_ms": "时长",
-    "visual_prompt_draft": "画面提示词",
 }
 # Free text typed into the editor that replaces parsed fields until the draft is saved.
 _TYPED_FIELDS = ("dialogue_text", "character_text")
@@ -227,9 +225,6 @@ def merge_shot(current: JsonObject, fields: JsonObject) -> JsonObject:
             shot["character_labels"] = kept
         else:
             shot.pop("character_labels", None)
-    if shot["visual_prompt_draft"] != current.get("visual_prompt_draft"):
-        # Same as editing the prompt in the form: an older copy kept beside it would go stale.
-        shot.pop("visual_description", None)
     return shot
 
 
@@ -242,7 +237,7 @@ def check_merged(shot: JsonObject, entities: list[JsonObject]) -> None:
     validate_shot(shot, {e["asset_id"]: e for e in entities})
 
 
-_TEXT_FIELDS = ("shot_size", "camera_movement", "action", "narration", "sound", "visual_prompt_draft")
+_TEXT_FIELDS = ("shot_size", "camera_movement", "action", "narration", "sound")
 
 
 def _ref(entity: JsonObject, variant: JsonObject) -> JsonObject:
@@ -331,6 +326,8 @@ def _named_fields(
     entry: JsonObject, entities: list[JsonObject], names: Mapping[str, str]
 ) -> tuple[JsonObject, list[str]]:
     """Draft fields from a revised shot written with the form's names, and what doesn't fit."""
+    if FIELD_LABELS["shot_size"] not in entry and "景别" in entry:
+        entry = {**entry, FIELD_LABELS["shot_size"]: entry["景别"]}
     absent = [label for label in FIELD_LABELS.values() if label not in entry]
     if absent:
         return {}, ["缺少" + "、".join(absent)]

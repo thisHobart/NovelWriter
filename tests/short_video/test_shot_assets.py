@@ -272,7 +272,7 @@ def test_manual_added_and_reordered_shots_refresh_by_id(scenario, prompt_page):
     editor.add_shot()
     # The new shot keeps only the scene; its required text is typed in the form.
     editor.size_input.setText("近景")
-    for field, value in [("camera_movement", "固定"), ("action", "放下杯子"), ("visual_prompt_draft", "桌面")]:
+    for field, value in [("camera_movement", "固定"), ("action", "放下杯子")]:
         editor.detail_fields[field].setPlainText(value)
     content = editor.value()
     added = content["shots"][2]["shot_id"]

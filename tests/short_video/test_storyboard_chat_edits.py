@@ -86,7 +86,7 @@ def test_revised_shots_keep_ids_sources_and_report_each_rejected_shot(scenario, 
     assert merged["video_block_refs"] == shots["shot_1"]["video_block_refs"]
     assert merged["source_refs"] == shots["shot_1"]["source_refs"] and merged["props"] == []
     assert "资产目录中没有的道具：asset_house" in rejected["shot_2"]
-    assert rejected["shot_3"].startswith("缺少景别、镜头运动")
+    assert rejected["shot_3"].startswith("缺少取景范围、镜头运动")
     changes = shot_changes(shots["shot_1"], merged, entities(scenario))
     assert [label for label, _, _ in changes] == ["道具", "动作", "时长"]
     assert changes[2][1:] == ("7 秒", "5 秒")
@@ -243,7 +243,7 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
 
     # The shot was edited after the request: applying asks first, and No changes nothing.
     ui.page.editor.table.selectRow(0)
-    ui.page.editor.detail_fields["visual_prompt_draft"].setPlainText("用户之后写的画面")
+    ui.page.editor.detail_fields["sound"].setPlainText("用户之后写的音效")
     assert any("又被编辑过" in label.text() for label in panel.rows.findChildren(shot_edit_panel.QLabel))
     edited = ui.page.editor.draft_snapshot()
     answers = [shot_edit_panel.QMessageBox.No, shot_edit_panel.QMessageBox.Yes]
@@ -253,7 +253,7 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     panel.apply_button.click()
     applied = ui.page.editor.draft_snapshot()["shots"][0]
     assert applied["action"] == "寻井人放下铜钥匙" and applied["props"] == [] and applied["duration_ms"] == 5000
-    assert applied["visual_prompt_draft"] == shot["visual_prompt_draft"]
+    assert applied["sound"] == shot["sound"]
     assert ui.page.editor.draft_snapshot()["shots"][1]["start_ms"] == 5000
     assert ui.page.dirty and ui.page.editor.marked == {"shot_1"}
     assert ui.page.editor.table.item(0, 4).background().color().name().upper() == "#EDF1F8"
@@ -264,7 +264,7 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     panel.undo_button.click()
     assert ui.page.editor.draft_snapshot() == edited and ui.page.editor.marked == set()
     assert ui.page.dirty and not panel.undo_button.isEnabled()
-    # Undo brings back the later visual-prompt edit too, so the revision differs in one more field.
+    # Undo brings back the later 音效 edit too, so the revision differs in one more field.
     assert panel.row_text("shot_1") == "第 1 镜 · 改了 4 处" and panel.apply_button.isEnabled()
 
 
@@ -379,12 +379,14 @@ def test_rules_ask_for_lengths_and_table_names_and_a_card_even_for_one_shot(scen
     plain = storyboard_material(draft, "shot_2", board, all_records(scenario))
     rules = build_conversation_context([message], message["id"], attachment=plain).request[0]["content"]
     for phrase in ("“时长：当前X秒 → 建议Y秒”", "“时长：保持X秒”", "少于60秒", "只改一镜也是", "“第N镜”",
-                   "景别只写景别词", "镜头运动用一句话", "画面提示词", '"建议时长":6'):
+                   "取景范围只写简短名称", "镜头运动用一句话", '"建议时长":6'):
         assert phrase in rules
     assert "只牵涉一个镜头" not in rules
+    assert "音效、时长。" in rules and "画面提示词" not in rules
     edit = storyboard_material(draft, "shot_2", board, all_records(scenario), edit_items=[{"shot_id": "shot_1"}])
     edit_rules = build_conversation_context([message], message["id"], attachment=edit).request[0]["content"]
-    assert "清单给了建议时长的镜头用这个时长" in edit_rules and "景别只写景别词" in edit_rules
+    assert "清单给了建议时长的镜头用这个时长" in edit_rules and "取景范围只写简短名称" in edit_rules
+    assert "画面提示词" not in edit_rules
 
 
 def test_one_shot_card_shows_the_suggested_length_and_the_revision_is_asked_to_follow_it(chat_ui):
@@ -407,9 +409,9 @@ def test_one_shot_card_shows_the_suggested_length_and_the_revision_is_asked_to_f
 
 def named(number, **changes):
     """A revised shot as current replies write it: form names, 「名称（状态）」 and seconds."""
-    value = {"镜号": number, "景别": "中景", "镜头运动": "固定镜头", "场景": "老宅（常态）",
+    value = {"镜号": number, "取景范围": "中景", "镜头运动": "固定镜头", "场景": "老宅（常态）",
              "人物": ["寻井人（常态）"], "道具": [], "动作": "举起铜钥匙", "对白": [],
-             "旁白": "井里是谁", "音效": "风声", "时长": 7, "画面提示词": "老宅井边举起铜钥匙"}
+             "旁白": "井里是谁", "音效": "风声", "时长": 7}
     value.update(changes)
     return value
 
@@ -421,13 +423,16 @@ def named_affected(*entries, missing=()):
 def test_revised_shots_written_with_names_map_back_to_catalog_entries(scenario, draft):
     shots = {s["shot_id"]: s for s in draft["shots"]}
     order = [s["shot_id"] for s in draft["shots"]]
+    legacy = named(3, 场景="老宅", 人物="寻井人·2(常态)")
+    legacy.pop("取景范围")
+    legacy["景别"] = "近景"
     reply = revised_reply(
         named(1, 人物=["寻井人（夏装）", "寻井人·2（常态）"], 时长=5.5, 对白=[
             {"说话人": "画外音", "台词": "门外有人。", "画外": True},
             {"说话人": "寻井人·2（常态）", "台词": "谁？", "画外": False},
         ]),
         # An object with one state needs only its name; ASCII brackets are read too.
-        named(3, 场景="老宅", 人物="寻井人·2(常态)"),
+        legacy,
     )
     base = {"shot_1": shots["shot_1"], "shot_3": shots["shot_3"]}
     accepted, rejected = revised_shots(reply, base, entities(scenario), order)
@@ -442,7 +447,25 @@ def test_revised_shots_written_with_names_map_back_to_catalog_entries(scenario, 
     ]
     assert first["shot_id"] == "shot_1" and first["source_refs"] == shots["shot_1"]["source_refs"]
     assert accepted["shot_3"]["scene_ref"] == {"asset_id": "asset_scene", "variant_id": "base"}
+    assert accepted["shot_3"]["shot_size"] == "近景"
     assert accepted["shot_3"]["characters"] == [{"asset_id": "asset_twin", "variant_id": "base"}]
+
+
+def test_revised_shots_ignore_retired_fields_in_older_replies(scenario, draft):
+    shots = {s["shot_id"]: s for s in draft["shots"]}
+    order = [s["shot_id"] for s in draft["shots"]]
+    base = {sid: shots[sid] for sid in ("shot_1", "shot_2", "shot_3")}
+    plain = named(1, 动作="放下铜钥匙")
+    carrying = named(2, 动作="走向井口", 画面提示词="旧版回复里的画面")
+    legacy = revised(shots["shot_3"], action="看向井口", visual_prompt_draft="旧版回复里的画面")
+    reply = revised_reply(plain, carrying, legacy)
+    accepted, rejected = revised_shots(reply, base, entities(scenario), order)
+    assert rejected == {} and reply_problems(reply, base, entities(scenario), order) == (3, [])
+    for sid in base:
+        assert "visual_prompt_draft" not in accepted[sid] and "画面提示词" not in accepted[sid]
+        labels = [label for label, _, _ in shot_changes(shots[sid], accepted[sid], entities(scenario))]
+        assert "画面提示词" not in labels and "动作" in labels
+    assert [accepted[sid]["action"] for sid in base] == ["放下铜钥匙", "走向井口", "看向井口"]
 
 
 def test_names_that_dont_fit_the_catalog_are_explained_by_shot_number_and_name(scenario, draft):
@@ -469,7 +492,7 @@ def test_names_that_dont_fit_the_catalog_are_explained_by_shot_number_and_name(s
     _, rejected = revised_shots(revised_reply(named(1, 人物=["井边人（常态）"])), {"shot_1": shot}, catalog, order)
     assert rejected["shot_1"] == "人物“井边人”对应多个对象，要写成“寻井人”或“寻井人·2”"
     _, rejected = revised_shots(revised_reply({"镜号": 1, "动作": "只给了动作"}), {"shot_1": shot}, catalog, order)
-    assert rejected["shot_1"].startswith("缺少景别、镜头运动、场景")
+    assert rejected["shot_1"].startswith("缺少取景范围、镜头运动、场景")
 
 
 def test_affected_list_written_with_form_names_and_seconds(draft):

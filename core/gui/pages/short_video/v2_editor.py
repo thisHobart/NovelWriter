@@ -36,7 +36,7 @@ from core.short_video.v2.validation import (
     recalculate_timeline,
 )
 
-STORYBOARD_COLUMNS = ["镜号", "时长", "景别", "人物", "动作"]
+STORYBOARD_COLUMNS = ["镜号", "时长", "取景范围", "人物", "动作"]
 # Widths of every column but the last, which takes the rest.
 COLUMN_WIDTHS = [48, 84, 96, 120]
 SHOT_SIZES = ["远景", "全景", "中景", "近景", "特写", "主观视角"]
@@ -47,10 +47,8 @@ TRIMMED_FIELDS = (
     "action",
     "narration",
     "sound",
-    "visual_prompt_draft",
 )
 MARKED_NOTE = "由 AI 讨论修改，尚未保存"
-STALE_PROMPT_NOTE = "动作已改，画面提示词可能需要同步"
 SENTENCE_ENDS = "。！？；…!?;"
 
 EDITOR_STYLE = f"""
@@ -68,9 +66,8 @@ QLabel#notice {{ background:{theme.tint(theme.WARN)}; color:{theme.WARN}; font-s
     border-radius:{theme.RADIUS}px; padding:6px {theme.SP[2]}px; }}
 QLabel#formHeading {{ font-size:{theme.FS_MD}px; font-weight:600; }}
 QLabel#durationHint, QLabel#readOnly {{ font-size:{theme.FS_SM}px; color:{theme.INK_600}; }}
-QLabel#durationHint[level="warn"], QLabel#promptNote {{ color:{theme.WARN}; }}
+QLabel#durationHint[level="warn"] {{ color:{theme.WARN}; }}
 QLabel#durationHint[level="danger"] {{ color:{theme.DANGER}; }}
-QLabel#promptNote {{ font-size:{theme.FS_SM}px; }}
 """
 
 
@@ -116,26 +113,6 @@ def duration_level(milliseconds: int) -> tuple[str, str]:
     if milliseconds > USUAL_SHOT_MS[1]:
         return "warn", f"超过常规 {low}–{high} 秒；动作多时考虑拆镜"
     return "", f"常规 {low}–{high} 秒"
-
-
-def remove_appended_tails(content: JsonObject) -> list[int]:
-    """Undo what an earlier editor wrote into picture prompts on every action edit.
-
-    It kept the prompt as visual_description and set the prompt to that plus
-    「。景别，镜头运动。动作：动作」. Only prompts still exactly in that form are restored; returns
-    their shot numbers.
-    """
-    cleaned = []
-    for order, shot in enumerate(content.get("shots", []), 1):
-        description = shot.get("visual_description")
-        tail = f"。{shot['shot_size']}，{shot['camera_movement']}。动作：{shot['action']}"
-        if isinstance(description, str) and description and (
-            shot["visual_prompt_draft"] == description + tail
-        ):
-            shot["visual_prompt_draft"] = description
-            del shot["visual_description"]
-            cleaned.append(order)
-    return cleaned
 
 
 def repolish(widget: QWidget) -> None:
@@ -361,8 +338,6 @@ class StoryboardEditor(QWidget):
         self.target_ms: int | None = None
         # Shots written in from chat, tinted until the storyboard is saved or reloaded.
         self.marked: set[str] = set()
-        # Shots whose action changed after their picture prompt was last written.
-        self.stale_prompts: set[str] = set()
         self.setStyleSheet(EDITOR_STYLE)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -429,9 +404,9 @@ class StoryboardEditor(QWidget):
         duration.addWidget(self.duration_hint, 1)
         form.addRow(self.field_label("时长"), duration)
         self.size_input = QLineEdit()
-        self.size_input.setPlaceholderText("必填，例如中景；可以从右边的常用景别里选")
+        self.size_input.setPlaceholderText("必填，例如中景，也可从右边的菜单选择")
         self.size_input.textChanged.connect(self.edit_size)
-        common = QPushButton("常用景别")
+        common = QPushButton("常用取景范围")
         menu = QMenu(common)
         for size in SHOT_SIZES:
             menu.addAction(size, lambda size=size: self.size_input.setText(size))
@@ -440,7 +415,7 @@ class StoryboardEditor(QWidget):
         size.setSpacing(theme.SP[2])
         size.addWidget(self.size_input, 1)
         size.addWidget(common)
-        form.addRow(self.field_label("景别"), size)
+        form.addRow(self.field_label("取景范围"), size)
         self.detail_fields: dict[str, GrowingText] = {}
         self.add_text_row(form, "camera_movement", "镜头运动", 1, 4, "必填：用一句话写机位怎么动")
         bound = "场景和道具绑定资产目录，这里不能改；要换时在与 AI 的讨论里提出"
@@ -459,18 +434,6 @@ class StoryboardEditor(QWidget):
             "人物：对白，每行一条；旁白：旁白内容；人物不在画面里时写 画外/人物：对白",
         )
         self.add_text_row(form, "sound", "音效", 1, 4, "没有可以留空")
-        prompt = QWidget()
-        prompt_layout = QVBoxLayout(prompt)
-        prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.setSpacing(theme.SP[1])
-        self.prompt_note = QLabel(STALE_PROMPT_NOTE)
-        self.prompt_note.setObjectName("promptNote")
-        self.prompt_note.hide()
-        self.add_text_row(
-            form, "visual_prompt_draft", "画面提示词", 3, 12, "必填：构图、光线和画面里的细节", prompt
-        )
-        prompt_layout.addWidget(self.detail_fields["visual_prompt_draft"])
-        prompt_layout.addWidget(self.prompt_note)
 
     @staticmethod
     def field_label(text: str) -> QLabel:
@@ -497,12 +460,11 @@ class StoryboardEditor(QWidget):
         min_lines: int,
         max_lines: int,
         placeholder: str,
-        holder: QWidget | None = None,
     ) -> None:
         edit = GrowingText(min_lines, max_lines, placeholder)
         edit.textChanged.connect(lambda field=field: self.edit_field(field))
         self.detail_fields[field] = edit
-        form.addRow(self.field_label(label), holder or edit)
+        form.addRow(self.field_label(label), edit)
 
     # -- content ---------------------------------------------------------------------------
 
@@ -577,17 +539,8 @@ class StoryboardEditor(QWidget):
         selected = self.selected_shots()
         self.content = deepcopy(content)
         self.marked.clear()
-        self.stale_prompts.clear()
-        cleaned = remove_appended_tails(self.content) if self.content else []
         self.refresh_table(selected[0] if selected else None)
-        self.show_notice(
-            f"第 {'、'.join(map(str, cleaned))} 镜的画面提示词末尾，有程序以前改动作时自动接上的"
-            "景别、镜头运动和动作，已经去掉；核对后点「保存」生效。"
-            if cleaned
-            else ""
-        )
-        if cleaned:
-            self.changed.emit()
+        self.show_notice("")
 
     def apply_shots(self, shots: list[JsonObject]) -> None:
         """Replace draft shots by shot_id, as an unsaved edit."""
@@ -597,8 +550,6 @@ class StoryboardEditor(QWidget):
             replacements.get(shot["shot_id"], shot) for shot in self.content["shots"]
         ]
         self.marked |= replacements.keys()
-        # The AI wrote these prompts together with the actions.
-        self.stale_prompts -= replacements.keys()
         selected = self.selected_shots()
         self.refresh_table(selected[0] if selected else None)
         self.changed.emit()
@@ -729,7 +680,6 @@ class StoryboardEditor(QWidget):
             self.props_label.setText(props or "无")
             for field, edit in self.detail_fields.items():
                 edit.setPlainText(self.field_text(shot, field))
-            self.prompt_note.setVisible(shot["shot_id"] in self.stale_prompts)
         else:
             shots = (self.content or {}).get("shots", [])
             self.heading.setText("在上面的列表里选一镜" if shots else "")
@@ -739,7 +689,6 @@ class StoryboardEditor(QWidget):
             self.props_label.clear()
             for edit in self.detail_fields.values():
                 edit.clear()
-            self.prompt_note.hide()
         self.loading = False
         self.selection_changed.emit()
 
@@ -816,13 +765,6 @@ class StoryboardEditor(QWidget):
         edit = self.detail_fields[field]
         key = {"dialogue": "dialogue_text", "characters": "character_text"}.get(field, field)
         shot[key] = edit.toPlainText()
-        if field == "action":
-            self.stale_prompts.add(shot["shot_id"])
-        elif field == "visual_prompt_draft":
-            # Written by hand from now on; a copy kept beside it would go stale.
-            shot.pop("visual_description", None)
-            self.stale_prompts.discard(shot["shot_id"])
-        self.prompt_note.setVisible(shot["shot_id"] in self.stale_prompts)
         self.set_missing(edit, False)
         self.fill_row(row)
         self.changed.emit()
@@ -874,7 +816,6 @@ class StoryboardEditor(QWidget):
             "sound": "",
             "shot_size": "",
             "camera_movement": "",
-            "visual_prompt_draft": "",
             # Saving needs every shot tied to the script; the new one belongs where it was added.
             "source_refs": deepcopy(base["source_refs"]),
             "video_block_refs": list(base["video_block_refs"]),
@@ -900,12 +841,10 @@ class StoryboardEditor(QWidget):
         # Each line is said once: dialogue, narration and sound stay with the first half.
         second.update(dialogue=[], narration="", sound="")
         second.pop("dialogue_text", None)
-        if first["shot_id"] in self.stale_prompts:
-            self.stale_prompts.add(second["shot_id"])
         shots.insert(row + 1, second)
         self.refresh_table(second["shot_id"])
         self.show_notice(
-            f"第 {row + 1}、{row + 2} 镜内容相同，请分别改写动作和画面提示词；"
+            f"第 {row + 1}、{row + 2} 镜的动作相同，请分别改写；"
             f"对白、旁白和音效留在第 {row + 1} 镜。"
         )
         self.changed.emit()
@@ -927,9 +866,8 @@ class StoryboardEditor(QWidget):
             names = split_names(self.cast_text(first)) + split_names(self.cast_text(second))
             first["character_text"] = "、".join(dict.fromkeys(names))
         first["duration_ms"] += second["duration_ms"]
-        for field in ("action", "narration", "sound", "visual_prompt_draft"):
+        for field in ("action", "narration", "sound"):
             first[field] = join_text(first[field], second[field])
-        first.pop("visual_description", None)
         for field in ("characters", "props", "source_refs"):
             first[field] += [value for value in second[field] if value not in first[field]]
         first["dialogue"] += second["dialogue"]
@@ -939,13 +877,11 @@ class StoryboardEditor(QWidget):
         first["video_block_refs"] = list(
             dict.fromkeys(first["video_block_refs"] + second["video_block_refs"])
         )
-        if second["shot_id"] in self.stale_prompts:
-            self.stale_prompts.add(first["shot_id"])
         del shots[row + 1]
         self.refresh_table(first["shot_id"])
         self.show_notice(
             f"第 {row + 1}、{row + 2} 镜已合并为第 {row + 1} 镜，"
-            "动作和画面提示词是两段接在一起的，请改写成一镜。"
+            "两镜的动作已接在一起，请改写成适合一镜的动作。"
         )
         self.changed.emit()
 

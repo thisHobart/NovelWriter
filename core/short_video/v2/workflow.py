@@ -32,7 +32,7 @@ from .prompts import INSTRUCTIONS, default_prompt_ref, stage_prompt
 from .repository import ProjectRepository
 from .review import QualityCheckResult
 from .storyboard_skill import STORYBOARD_SKILLS, load_storyboard_skill
-from .validation import rows, strings, validate_content
+from .validation import recalculate_timeline, rows, strings, validate_content
 
 PREREQUISITES = {
     "novel_copy": (),
@@ -294,6 +294,8 @@ class WorkflowService:
         context = {"article": article, "config": config["content"]}
         video_task = stage == "video_prompt"
         candidate = self.repository.record(target_id, state=state) if target_id else None
+        if candidate and candidate["kind"] == "storyboard":
+            candidate = {**candidate, "content": recalculate_timeline(candidate["content"])}
         if stage in {"shot_prompts", "video_prompt"}:
             require(candidate is not None, "INVALID_INPUT", "请选择需补充提示词的版本")
             kind = candidate["kind"]
@@ -309,6 +311,7 @@ class WorkflowService:
             )
             deps = deepcopy(candidate["dependency_refs"])
             board = self.repository.record(deps["storyboard"], state=state)
+            board = {**board, "content": recalculate_timeline(board["content"])}
             article = ProjectService(self.repository).context(
                 state=state, selection_id=board["dependency_refs"]["selection"]
             )
@@ -578,6 +581,8 @@ class WorkflowService:
                         "镜头提示词修订不能改变人物、场景和原文依据",
                     )
             if kind in {"storyboard", "prompt_bundle"} and command["shot_ids"]:
+                if kind == "storyboard":
+                    original = recalculate_timeline(original)
                 selected = set(command["shot_ids"])
                 old = {s["shot_id"]: s for s in original["shots"]}
                 new = {s["shot_id"]: s for s in content["shots"]}

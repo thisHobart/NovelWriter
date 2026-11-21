@@ -15,7 +15,6 @@ from .models import STAGE_LABELS, require
 from .prompts import request_config
 from .storyboard_chat import (
     KIND_LABELS,
-    LEVEL_NOTES,
     SPEC_LABELS,
     asset_names,
     field_line,
@@ -243,10 +242,8 @@ def shot_video_material(
     neighbours = [i for i in (index - 1, index + 1) if 0 <= i < len(shots)]
     if neighbours:
         sections.append(
-            f"## 前后镜（核对衔接用，{LEVEL_NOTES[1]}）\n"
-            + "\n\n".join(
-                shot_text(shots[i], i + 1, starts[i], entities, names, level=1) for i in neighbours
-            )
+            "## 前后镜（核对衔接用）\n"
+            + "\n\n".join(shot_text(shots[i], i + 1, starts[i], entities, names) for i in neighbours)
         )
     prompt = video.get("prompt", "")
     sections.append("## 视频提示词（输入框里的当前内容）\n" + (prompt.strip() or "（空）"))

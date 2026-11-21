@@ -262,7 +262,6 @@ def output_example(
                     "dialogue": [],
                     "narration": "",
                     "sound": "原文相关声音",
-                    "visual_prompt_draft": "具体的镜头画面",
                     "video_block_refs": [context["video_copy"]["content"]["blocks"][0]["id"]],
                     "source_refs": refs,
                     "duration_exception_reason": "",

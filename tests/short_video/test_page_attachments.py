@@ -218,11 +218,11 @@ def test_shot_tab_attaches_the_shot_its_neighbours_and_the_video_area(scenario):
     assert material.startswith("【附带资料】提示词页「镜头」标签第 2 镜的视频生成设置。")
     own = section(material, "本镜的分镜（共 3 镜，合计 21 秒）")
     assert own.startswith("### 第 2 镜\n时间段：7–14 秒") and "人物：寻井人（夏装）" in own
-    assert "画面提示词：老宅井边举起铜钥匙" in own
-    # The neighbours check the cut, without their image prompts.
-    near = section(material, "前后镜（核对衔接用，省去了画面提示词）")
+    # 画面提示词 is never attached, neither for the shot nor for its neighbours.
+    assert "画面提示词" not in material
+    near = section(material, "前后镜（核对衔接用）")
     assert "### 第 1 镜" in near and "### 第 3 镜" in near and "寻井人·2（常态）" in near
-    assert "画面提示词" not in near
+    assert "时间段：" in near and "动作：" in near
     assert section(material, "视频提示词（输入框里的当前内容）") == video["prompt"]
     assert section(material, "参考图片（提示词里用 <Picture N> 指代，编号按已选顺序）") == (
         "<Picture 1>：寻井人-正面\n<Picture 2>：老宅"
