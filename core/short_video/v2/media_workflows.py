@@ -25,6 +25,10 @@ ASPECT_RATIO_CHOICES = (
     ("3:2 (Photo)", "3:2 横屏"),
     ("4:3 (Standard)", "4:3 横屏"),
 )
+# Every shot starts as a vertical video of about one megapixel, whatever the workflow JSON
+# holds; a shot keeps what was set for it.
+SHOT_ASPECT_RATIO = "9:16 (Portrait Widescreen)"
+SHOT_MEGAPIXELS = 1.0
 
 
 def default_workflows() -> list[JsonObject]:
@@ -126,6 +130,25 @@ def shot_drafts_path(output_dir: str | Path) -> Path:
     return Path(output_dir) / "short_video" / "media" / "shot_drafts.json"
 
 
+def _prompt_image_bindings(value: object) -> dict[int, str]:
+    """<Picture N> number → image node; JSON keeps the numbers as text, the video area compares
+    them as numbers."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        int(number): node_id
+        for number, node_id in value.items()
+        if str(number).isdigit() and int(number) > 0 and isinstance(node_id, str)
+    }
+
+
+def _stored_draft(draft: JsonObject) -> JsonObject:
+    stored = {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+    if "prompt_image_bindings" in stored:
+        stored["prompt_image_bindings"] = _prompt_image_bindings(stored["prompt_image_bindings"])
+    return stored
+
+
 def load_shot_drafts(output_dir: str | Path) -> dict[str, dict[str, JsonObject]]:
     """{shot_id: {workflow_id: draft}}; empty when nothing was saved or the file is unreadable."""
     path = shot_drafts_path(output_dir)
@@ -137,7 +160,7 @@ def load_shot_drafts(output_dir: str | Path) -> dict[str, dict[str, JsonObject]]
         return {}
     return {
         shot_id: {
-            workflow_id: {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+            workflow_id: _stored_draft(draft)
             for workflow_id, draft in workflows.items()
             if isinstance(workflow_id, str) and isinstance(draft, dict)
         }
@@ -459,17 +482,16 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
             ):
                 parameters.append(
                     WorkflowParameter(
-                        node_id, "aspect_ratio", "画幅", aspect, choices=ASPECT_RATIO_CHOICES
+                        node_id,
+                        "aspect_ratio",
+                        "画幅",
+                        SHOT_ASPECT_RATIO,
+                        choices=ASPECT_RATIO_CHOICES,
                     )
                 )
             parameters.append(
                 WorkflowParameter(
-                    node_id,
-                    "megapixels",
-                    "分辨率（百万像素）",
-                    node["inputs"]["megapixels"],
-                    0.1,
-                    16,
+                    node_id, "megapixels", "分辨率（百万像素）", SHOT_MEGAPIXELS, 0.1, 16
                 )
             )
         elif node_type == "ComfyMathExpression" and "values.a" in node["inputs"]:

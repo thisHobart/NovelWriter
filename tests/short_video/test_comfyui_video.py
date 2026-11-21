@@ -12,8 +12,12 @@ from core.common.cancellation import GenerationCancelled
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork, validate_nodes
 from core.short_video.v2.media_workflows import (
+    SHOT_ASPECT_RATIO,
+    SHOT_MEGAPIXELS,
     MediaConfig,
+    default_workflows,
     parse_video_workflow,
+    save_shot_drafts,
 )
 from core.short_video.v2.models import WorkspaceError
 
@@ -563,10 +567,10 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     for entry in panel.template.image_inputs[1:]:
         panel.import_image(str(path), entry.node_id)
     aspect = panel.parameter_fields["115.aspect_ratio"]
-    assert aspect.currentText() == "16:9 横屏"
-    aspect.setCurrentIndex(aspect.findData("9:16 (Portrait Widescreen)"))
+    assert aspect.currentText() == "9:16 竖屏"
+    aspect.setCurrentIndex(aspect.findData("16:9 (Widescreen)"))
     panel.refresh()
-    assert panel.parameter_fields["115.aspect_ratio"].currentText() == "9:16 竖屏"
+    assert panel.parameter_fields["115.aspect_ratio"].currentText() == "16:9 横屏"
     panel.parameter_fields["132.value"].setValue(5.5)
     panel.parameter_fields["129.noise_seed"].setText("18446744073709551615")
     panel.prompt.setPlainText("首尾衔接")
@@ -575,7 +579,7 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
     assert len(submitted) == 1
     command = submitted[0].command
     assert command["workflow_id"] == "minimax-first-last"
-    assert command["parameters"]["115.aspect_ratio"] == "9:16 (Portrait Widescreen)"
+    assert command["parameters"]["115.aspect_ratio"] == "16:9 (Widescreen)"
     assert command["parameters"]["132.value"] == 5.5
     assert command["parameters"]["129.noise_seed"] == 2**64 - 1
     assert len(command["images"]) == 5
@@ -1201,6 +1205,45 @@ def test_saved_video_card_opens_the_file_and_states_follow_the_job(tmp_path, mon
     assert panel.pill.text() == "未生成" and not panel.open_video_button.isEnabled()
     panel.close()
     app.processEvents()
+
+
+def test_shots_start_vertical_at_one_megapixel_and_keep_what_was_set(tmp_path):
+    """A project saved earlier still holds 21:9 and 0.4 in its workflows; its shots start at
+    9:16 and 1.0 anyway, and a shot whose values were set keeps them."""
+    for workflow in default_workflows():
+        resolution = workflow["graph"]["115"]["inputs"]
+        assert resolution["aspect_ratio"] == SHOT_ASPECT_RATIO == "9:16 (Portrait Widescreen)"
+        assert resolution["megapixels"] == SHOT_MEGAPIXELS == 1.0
+    config = MediaConfig()
+    for workflow in config.workflows:
+        workflow["graph"]["115"]["inputs"].update(aspect_ratio="21:9 (Ultrawide)", megapixels=0.4)
+    config.save(tmp_path)
+    for workflow in MediaConfig.load(tmp_path).workflows:
+        template = parse_video_workflow(workflow["graph"])
+        names = {image.node_id: "picture.png" for image in template.image_inputs}
+        graph = template.bind(names, "保持连贯。", "job", {})
+        assert graph["115"]["inputs"]["aspect_ratio"] == SHOT_ASPECT_RATIO
+        assert graph["115"]["inputs"]["megapixels"] == SHOT_MEGAPIXELS
+    save_shot_drafts(
+        tmp_path,
+        {
+            "s2": {
+                "minimax-reference": {
+                    "parameters": {"115.aspect_ratio": "16:9 (Widescreen)", "115.megapixels": 0.4}
+                }
+            }
+        },
+    )
+    app, panel, _ = reference_panel(tmp_path)
+    panel.set_target({"shot_id": "s1"})
+    panel.refresh()
+    assert panel.parameter_fields["115.aspect_ratio"].currentText() == "9:16 竖屏"
+    assert panel.parameter_fields["115.megapixels"].value() == 1.0
+    panel.set_target({"shot_id": "s2"})
+    panel.refresh()
+    assert panel.parameter_fields["115.aspect_ratio"].currentText() == "16:9 横屏"
+    assert panel.parameter_fields["115.megapixels"].value() == 0.4
+    panel.close()
 
 
 def test_duration_hint_offers_the_storyboard_length(tmp_path):

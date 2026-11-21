@@ -84,7 +84,7 @@
 `tests/short_video/test_page_attachments.py`覆盖原文、改写、提示词、镜头各页附带的内容与标签，项目要求按步骤取字段、长原文截断、各页规则、消息保存的附带标注和之后的“〔当时附带……〕”，以及真实 Workbench 里标签跟着页面和子标签变化、按页取消附带。
 `tests/short_video/test_storyboard_chat_edits.py`覆盖受影响镜头清单（含建议时长与卡片里的“时长 X → Y 秒”）、修改轮与格式修正、应用、覆盖确认和撤销，以及规则要求的时长写法、界面名称和单镜也附清单。
 
-视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数。普通 H3 参考图支持最多九个位置；所有模板空位跳过，prepare_image_inputs统一裁剪未选参考输入、首尾帧参数与引导依赖。首尾帧可单独选择；Picture编号只对应实际参考图，首尾帧不占编号。MediaService与AI提示词快照共用裁剪逻辑，恢复按实际已选图片匹配。资产视图另可通过独立 Images API 生图，结果进入同一媒体库；不自动提交视频任务。
+视频任务使用独立媒体快照和远程任务编号。修改模板适配时只改本轮 JSON 副本，保留用户保存的工作流、模型和默认参数；画幅和分辨率除外，默认值固定为 media_workflows.py 的 SHOT_ASPECT_RATIO（9:16 竖屏）和 SHOT_MEGAPIXELS（1.0），不取 JSON 里的值，内置模板也写成这两个值。普通 H3 参考图支持最多九个位置；所有模板空位跳过，prepare_image_inputs统一裁剪未选参考输入、首尾帧参数与引导依赖。首尾帧可单独选择；Picture编号只对应实际参考图，首尾帧不占编号。MediaService与AI提示词快照共用裁剪逻辑，恢复按实际已选图片匹配。资产视图另可通过独立 Images API 生图，结果进入同一媒体库；不自动提交视频任务。
 
 media_preview.py 不导入 QtMultimedia／QtMultimediaWidgets，也不创建播放器、视频部件或音频输出，不加载视频源或处理播放状态。结果只保留 video_path，“打开视频”交给系统打开文件，“打开视频位置”打开其父目录；生成、查询和下载保存流程继续复用原接口。整页是 VScrollArea：图片卡片（SlotCard／SlotGrid）每张至少148px宽、缩略图16:9，ColumnGrid 在宽度≥680时分两栏（图片横跨上方，提示词与视频卡片同一行；“用 <Picture N>…”和时长提示会换行，两栏最小宽度约620），视频卡片的 SplitBody 在≥560时让状态区与参数并排；提示词至少200px、参数控件至少32px，尺寸与间距使用主题 token。图片选择仍是 image_selection()／image_fields（节点→SlotCard），提示词编号错位由 binding_shifts() 同时驱动即时提示和生成前校验。相关回归在 test_comfyui_video.py，覆盖卡片代称、添加位置后滚动与恢复、打开文件和目录、状态标签、时长提示、选图菜单、小窗口下控件高度，以及提示词与视频卡片同一行且改参数不换位置。
 

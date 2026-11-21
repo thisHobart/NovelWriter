@@ -13,7 +13,15 @@ from core.short_video.v2.models import WorkspaceError, encode
 from core.short_video.v2.video_prompt import snapshot_video_inputs
 from core.short_video.v2.workflow import WorkflowService
 
-BODY = "以 <Picture 1> 为视觉参考，保持老宅的空间布局；中景，寻井人站在井边，先握紧铜钥匙，再举起停稳。摄影机固定。沿用参考图的光线和写实质感。风声，旁白：井里是谁。避免身份漂移、画面变形、文字和水印。"
+BODY = (
+    "<Picture 1>：用作老宅布局与光线的参考。\n\n"
+    "视频提示词（7秒）\n"
+    "7秒，中景，写实质感，固定镜头。\n"
+    "声音：风声，旁白“井里是谁”。\n"
+    "限制：避免身份漂移、画面变形、文字和水印。\n\n"
+    "0–3秒｜握紧铜钥匙\n寻井人站在井边，将铜钥匙握紧。\n"
+    "3–7秒｜举起铜钥匙\n寻井人举起铜钥匙，手停在胸前。"
+)
 
 
 @pytest.fixture
@@ -118,7 +126,7 @@ def test_request_tells_the_model_what_every_picture_shows(ready):
     }
     assert "蓝白瓷碗香辣牛肉面" in command["prompt"]
     # The body format: one usage line per picture, then the timed sections.
-    assert "<Picture 1>：参考" in command["prompt"] and "首帧图片：严格约束" in command["prompt"]
+    assert "<Picture 1>：用作" in command["prompt"] and "首帧图片：严格约束" in command["prompt"]
     assert "视频提示词（〔N〕秒）" in command["prompt"] and "〔起〕–〔止〕秒｜" in command["prompt"]
     assert noodles["sha256"] not in command["prompt"]
 
@@ -156,7 +164,11 @@ def test_video_prompt_uses_only_selected_frame_roles_and_can_resume_binding(read
     validate_video_inputs(repository.output_dir, binding)
     with pytest.raises(WorkspaceError, match="未选择的参考图片"):
         WorkflowService(repository)._validate_output(command, response(repository))
-    body = BODY.replace("以 <Picture 1> 为视觉参考", "以所选首尾帧约束画面")
+    uses = "\n".join(
+        f"{i['reference']}：约束{'起始' if i['role'] == 'first_frame' else '结束'}画面。"
+        for i in binding["images"]
+    )
+    body = uses + "\n" + BODY.split("\n", 1)[1]
     send = Mock(side_effect=[encode(response(repository, body)), '{"issues":[]}'])
     result = WorkflowService(repository, transport=send).execute(command)
     assert result["review_status"] == "passed"
@@ -348,11 +360,12 @@ def test_video_area_comes_back_after_reopening(ready, prompt_page):
     from core.gui.pages.short_video.prompt_page import PromptPage
     from core.short_video.v2.media_workflows import shot_drafts_path
 
-    repository, first, _ = ready
+    repository, first, second = ready
     page, _ = prompt_page
     page.tabs.setCurrentIndex(3)
     media = page.media
     media.use_image(first["image_id"], "137")
+    media.use_image(second["image_id"], "139")
     media.parameter_fields["132.value"].setValue(7.0)
     media.prompt.setPlainText("<Picture 1> 隔天接着写的视频提示词")
     # Typing is written a moment later; closing the window writes it at once.
@@ -367,9 +380,42 @@ def test_video_area_comes_back_after_reopening(ready, prompt_page):
         assert again.prompt.toPlainText() == "<Picture 1> 隔天接着写的视频提示词"
         assert again.image_selection()["137"] == first["image_id"]
         assert again.parameter_values()["132.value"] == 7.0
+        # <Picture 1> still points at the first picture; once the second picture moves up into
+        # its place, the shift is caught instead of failing.
+        assert again.prompt_image_bindings == {1: "137"}
+        assert again.binding_shifts() == []
+        again.image_fields["137"].set_image(None)
+        assert again.binding_shifts() == [1]
+        assert not again.prompt_shift.isHidden()
     finally:
         reopened.close()
         reopened.deleteLater()
+
+
+def test_saved_picture_numbers_come_back_as_numbers(tmp_path):
+    from core.short_video.v2.media_workflows import (
+        load_shot_drafts,
+        save_shot_drafts,
+        shot_drafts_path,
+    )
+
+    save_shot_drafts(tmp_path, {"s2": {"first_last": {"prompt_image_bindings": {1: "137"}}}})
+    assert '"1": "137"' in shot_drafts_path(tmp_path).read_text(encoding="utf-8")
+    assert load_shot_drafts(tmp_path)["s2"]["first_last"]["prompt_image_bindings"] == {1: "137"}
+    # A hand-edited file keeps only usable numbers.
+    shot_drafts_path(tmp_path).write_text(
+        encode(
+            {
+                "s2": {
+                    "first_last": {
+                        "prompt_image_bindings": {"2": "139", "0": "1", "x": "2", "3": 4}
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_shot_drafts(tmp_path)["s2"]["first_last"]["prompt_image_bindings"] == {2: "139"}
 
 
 def test_unreadable_saved_video_area_starts_empty(ready, prompt_page):
@@ -497,6 +543,7 @@ def test_revision_replaces_old_draft_and_preserves_custom_goal(ready):
     assert result["review_status"] == "passed" and len(calls) == 4
     assert "人工措辞唯一标记" not in "".join(calls[1:])
     assert calls[2].count("首稿唯一标记") == 1
+    assert "图片用途集中在开头" in calls[2] and "时段只写动作" in calls[2]
     assert all("专属目标标记" in p for p in calls)
     run = repository.load()["runs"][-1]
     assert len(run["calls"]) == 4 and result["retries_used"] == 1
@@ -522,16 +569,18 @@ def test_format_repair_rebuilds_local_request_without_recursive_history(ready):
     assert all(p.count("【本镜上下文】") == 1 for p in calls)
 
 
-def test_writing_and_checking_ask_each_time_segment_to_name_its_pictures(ready):
+def test_writing_and_checking_define_picture_uses_upfront_and_keep_action_sections_clear(ready):
     from core.short_video.v2.review import video_review_prompt
 
     repository, _, _ = ready
     command = prepare(ready)
     writing = command["prompt"]
-    assert "时段里的图片" in writing and "室内严格参考 <Picture 3>" in writing
-    assert "每张选中的参考图片至少在一个时段里写明用在哪里" in writing
+    assert writing.index("<Picture 1>：用作") < writing.index("声音：〔") < writing.index("〔起〕–〔止〕秒｜")
+    assert "时段只写动作" in writing and "不重复图片编号、首尾帧名称" in writing
+    assert "在这行说明适用阶段" in writing
     checking = video_review_prompt(command, repository.record(command["candidate_id"]))
-    assert "每张选中的图片是否至少在一个时段里写明用处" in checking
+    assert "每张选中的图片是否在开头有一行明确用途" in checking
+    assert "后文是否重复图片引用" in checking
 
 
 @pytest.mark.parametrize("phase", ["审阅", "修订", "格式修复", "审阅格式修复"])
