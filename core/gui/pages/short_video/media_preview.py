@@ -595,6 +595,16 @@ class MediaPreview(QWidget):
                         menu.addAction(text + "（未生成图片）").setEnabled(False)
         header("项目图片")
         images = MediaRepository(self.workbench.output_dir).images()
+        remaining = len(images)
+
+        def remove_listed_image(action: QWidgetAction, image_id: str) -> None:
+            nonlocal remaining
+            self.remove_image(image_id)
+            menu.removeAction(action)
+            action.deleteLater()
+            remaining -= 1
+            empty_images.setVisible(remaining == 0)
+
         for image in images:
             row = PickRow(image["name"], self.thumbnail(image))
             action = QWidgetAction(menu)
@@ -606,14 +616,14 @@ class MediaPreview(QWidget):
                     lambda: self.choose_listed_image(node_id, image_id)
                 )
             )
-            row.removed.connect(menu.close)
             row.removed.connect(
-                lambda image_id=image["image_id"]: self.workbench.perform(
-                    lambda: self.remove_image(image_id)
+                lambda action=action, image_id=image["image_id"]: self.workbench.perform(
+                    lambda: remove_listed_image(action, image_id)
                 )
             )
-        if not images:
-            menu.addAction("还没有项目图片").setEnabled(False)
+        empty_images = menu.addAction("还没有项目图片")
+        empty_images.setEnabled(False)
+        empty_images.setVisible(not images)
         menu.addSeparator()
         menu.addAction(
             "从文件选择…",

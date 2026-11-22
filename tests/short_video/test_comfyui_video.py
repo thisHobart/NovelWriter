@@ -1376,17 +1376,21 @@ def test_prompt_and_video_share_a_row_however_the_parameters_change(tmp_path):
 
 
 def test_image_picker_lists_shot_assets_project_images_and_a_file(tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QWidgetAction
 
     from core.gui.pages.short_video.media_preview import PickRow
     from core.short_video.v2.media_repository import MediaRepository
 
     app, panel, _ = reference_panel(tmp_path)
-    for name in ("snow.png", "cabin.png"):
+    for name in ("snow.png", "cabin.png", "unused.png"):
         save_ui_image(tmp_path / name)
     panel.import_image(str(tmp_path / "snow.png"), "137")
     panel.import_image(str(tmp_path / "cabin.png"), "139")
-    images = {image["name"]: image for image in MediaRepository(str(tmp_path)).images()}
+    repository = MediaRepository(tmp_path)
+    unused = repository.import_image(tmp_path / "unused.png")
+    images = {image["name"]: image for image in repository.images()}
     panel.set_shot(None, [
         {"kind": "scene", "name": "雪地", "views": [
             {"label": "全景", "image": images["snow.png"]},
@@ -1394,7 +1398,7 @@ def test_image_picker_lists_shot_assets_project_images_and_a_file(tmp_path):
         ]},
     ])
     menu = panel.picker_menu("147")
-    texts = [action.text() for action in menu.actions() if action.text()]
+    texts = [action.text() for action in menu.actions() if action.isVisible() and action.text()]
     assert texts == ["场景 · 雪地 · 全景", "场景 · 雪地 · 近景（未生成图片）", "从文件选择…"]
     assert not menu.actions()[2].isEnabled()
     headers = [
@@ -1408,24 +1412,38 @@ def test_image_picker_lists_shot_assets_project_images_and_a_file(tmp_path):
         for action in menu.actions()
         if isinstance(action, QWidgetAction) and isinstance(action.defaultWidget(), PickRow)
     }
-    assert set(rows) == {"snow.png", "cabin.png"}
+    assert set(rows) == {"snow.png", "cabin.png", "unused.png"}
     menu.actions()[1].trigger()
     assert panel.image_fields["147"].image_id == images["snow.png"]["image_id"]
-    rows["cabin.png"].pick.click()
+    menu.popup(QPoint(80, 80))
+    app.processEvents()
+    QTest.mouseClick(rows["cabin.png"].pick, Qt.LeftButton)
+    assert not menu.isVisible()
     assert panel.image_fields["147"].image_id == images["cabin.png"]["image_id"]
     menu = panel.picker_menu("137")
-    row = next(
-        action.defaultWidget()
+    rows = {
+        action.defaultWidget().pick.text(): action
         for action in menu.actions()
-        if isinstance(action, QWidgetAction)
-        and isinstance(action.defaultWidget(), PickRow)
-        and action.defaultWidget().pick.text() == "cabin.png"
-    )
-    row.remove.click()
+        if isinstance(action, QWidgetAction) and isinstance(action.defaultWidget(), PickRow)
+    }
+    menu.popup(QPoint(80, 80))
+    app.processEvents()
+    selected = panel.image_selection()
+    QTest.mouseClick(rows["unused.png"].defaultWidget().remove, Qt.LeftButton)
+    assert menu.isVisible() and rows["unused.png"] not in menu.actions()
+    assert panel.image_selection() == selected
+    assert repository.resolve(unused["relative_path"]).is_file()
+    QTest.mouseClick(rows["cabin.png"].defaultWidget().remove, Qt.LeftButton)
     # Removed from lists: every position that showed it is empty, the file stays.
+    assert menu.isVisible() and rows["cabin.png"] not in menu.actions()
     assert panel.image_fields["139"].image_id is None and panel.image_fields["147"].image_id is None
-    assert images["cabin.png"]["image_id"] in MediaRepository(str(tmp_path)).hidden_images()
-    assert "cabin.png" not in {image["name"] for image in MediaRepository(str(tmp_path)).images()}
+    assert images["cabin.png"]["image_id"] in repository.hidden_images()
+    assert "cabin.png" not in {image["name"] for image in repository.images()}
+    QTest.mouseClick(rows["snow.png"].defaultWidget().remove, Qt.LeftButton)
+    assert menu.isVisible() and rows["snow.png"] not in menu.actions()
+    assert any(a.isVisible() and a.text() == "还没有项目图片" for a in menu.actions())
+    assert not repository.images()
+    menu.close()
     panel.close()
     app.processEvents()
 
