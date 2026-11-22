@@ -1,5 +1,6 @@
 """Run the frozen storyboard retrieval benchmark from this worktree."""
 
+from argparse import ArgumentParser
 from collections import Counter
 import hashlib
 import json
@@ -95,8 +96,13 @@ def git_commit() -> str:
 
 
 def main() -> None:
-    history_text = (HERE / "history.json").read_text(encoding="utf-8")
-    queries_text = (HERE / "queries.jsonl").read_text(encoding="utf-8")
+    parser = ArgumentParser(description=__doc__)
+    parser.add_argument("--history", type=Path, help="Override the built-in history.")
+    parser.add_argument("--queries", type=Path, help="Override the frozen query list.")
+    parser.add_argument("--output", type=Path, help="Override the result path.")
+    options = parser.parse_args()
+    history_text = (options.history or HERE / "history.json").read_text(encoding="utf-8")
+    queries_text = (options.queries or HERE / "queries.jsonl").read_text(encoding="utf-8")
     history = json.loads(history_text)
     queries = [json.loads(line) for line in queries_text.splitlines() if line]
     turns: dict[str, list[Message]] = {}
@@ -133,11 +139,12 @@ def main() -> None:
             "scope": "one conversation; completed turns at or before each query cutoff",
             "score": SETTINGS,
         },
-        "references": verify_references(history),
+        "references": verify_references(history) if options.history is None else {},
         "summary": summary,
         "queries": rows,
     }
-    output_path = HERE / "experiment_result.json"
+    default_file = "experiment_holdout_result.json" if options.history else "experiment_result.json"
+    output_path = options.output or HERE / default_file
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(METHOD)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
