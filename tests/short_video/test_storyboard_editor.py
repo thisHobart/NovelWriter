@@ -57,15 +57,11 @@ def test_shot_list_is_read_only_and_the_form_edits_the_selected_shot(editor):
     assert table.item(1, 2).text() == "近景" and len(editor.changes) == 3
 
 
-def test_editor_opens_legacy_storyboard_without_the_retired_fields(editor, scenario):
+def test_editor_opens_current_storyboard_without_marking_it_as_changed(editor, scenario):
     content = deepcopy(scenario.current("storyboard")["content"])
-    original = deepcopy(content)
-    content["shots"][0].update(visual_description="旧版描述", visual_prompt_draft="旧版提示词")
     editor.changes.clear()
     editor.set_content(content)
-    assert "visual_prompt_draft" not in editor.detail_fields
-    assert editor.draft_snapshot() == original and not editor.changes
-    assert content["shots"][0]["visual_prompt_draft"] == "旧版提示词"
+    assert editor.draft_snapshot() == content and not editor.changes
 
 
 def test_split_keeps_each_line_once_and_selects_the_second_half(editor):

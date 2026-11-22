@@ -34,16 +34,15 @@ def test_http_failure_summary_preserves_evidence(code: int, phrase: str) -> None
     assert str(error) == "raw upstream text"
 
 
-def test_connection_timeout_unknown_and_legacy_are_not_conflated() -> None:
+def test_connection_timeout_unknown_and_review_results_are_distinct() -> None:
     assert "请求超时" in error_reason(httpx.ReadTimeout("read failed"))
     assert "无法连接" in error_reason(httpx.ConnectError("connection refused"))
     assert error_reason(RuntimeError("specific failure")) == "RuntimeError：specific failure"
     unusual = RuntimeError("provider returned an unexpected error shape")
     unusual.body = {"code": ["provider-specific"]}
     assert "unexpected error shape" in error_reason(unusual)
-    assert "未记录具体原因" in review_message("unavailable", None)
     assert "未记录具体问题" in review_message("issues", None)
-    assert "网络" not in review_message("unavailable", None)
+    assert review_message(None, None) == "尚未自动检查"
     context = TaskContext("分镜生成", phase="选用结果", saved=True)
     severity, title, detail = task_message(context, error=PermissionError("write denied"))
     assert severity == "error" and title == "分镜保存失败"

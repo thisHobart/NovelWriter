@@ -216,10 +216,9 @@ def test_shot_span_writes_runs_and_single_shots():
 
 def test_past_replies_send_notes_naming_their_shots_instead_of_data_blocks(store):
     conversation = store.create()
-    listed = {"shots": [{"shot_id": "s6", "order": 6}, {"shot_id": "s8", "order": 8},
-                        {"shot_id": "s7", "order": 7}], "missing_assets": []}
+    listed = {"镜头": [{"镜号": 6}, {"镜号": 8}, {"镜号": 7}], "缺少的资产": []}
     affected = "## 影响\n要改三镜。\n```affected_shots\n" + json.dumps(listed) + "\n```"
-    revised = "改好了。\n```revised_shots\n" + json.dumps({"shots": [{"shot_id": "s6"}]}) + "\n```"
+    revised = "改好了。\n```revised_shots\n" + json.dumps({"镜头": [{"镜号": 6}]}) + "\n```"
     save_turn(store, conversation["id"], "坠落物改成房子", affected)
     save_turn(store, conversation["id"], "按清单修改第 6 镜", revised)
     current = save_user(store, conversation["id"], "还有别的要改吗")
@@ -227,17 +226,14 @@ def test_past_replies_send_notes_naming_their_shots_instead_of_data_blocks(store
     result = build_conversation_context(history, current["id"])
     replies = contents(result, "assistant")
     assert replies[0] == "## 影响\n要改三镜。\n〔列出了受影响的镜头：第 6–8 镜〕"
-    assert replies[1] == "改好了。\n〔给出了这几镜修改后的内容；是否写入以当前分镜为准〕"
-    assert "affected_shots" not in encode(result.request) and "s6" not in encode(result.request)
-    # A block that gives only ids is numbered from the storyboard order of its request.
-    order = [f"s{number}" for number in range(1, 9)]
-    assert history_text(revised, order).endswith("〔给出了第 6 镜修改后的内容；是否写入以当前分镜为准〕")
+    assert replies[1] == "改好了。\n〔给出了第 6 镜修改后的内容；是否写入以当前分镜为准〕"
+    assert "affected_shots" not in encode(result.request) and "revised_shots" not in encode(result.request)
     assert history_text("```affected_shots\n{坏的\n```") == "〔列出了受影响的镜头〕"
 
 
 def long_reply(number):
     return (f"## 分析\n第{number}轮的结论：动作太多。\n\n" + "细节" * 200
-            + "\n\n```affected_shots\n" + json.dumps({"shots": [{"order": number}]}) + "\n```")
+            + "\n\n```affected_shots\n" + json.dumps({"镜头": [{"镜号": number}]}) + "\n```")
 
 
 def test_reply_opening_skips_headings_including_lines_that_are_only_bold():

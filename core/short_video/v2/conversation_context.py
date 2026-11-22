@@ -262,11 +262,10 @@ def reply_opening(prose: str, notes: list[str]) -> str | None:
     return "\n".join([opening, f"〔后面约 {left} 字因篇幅省略〕", *notes])
 
 
-def _reply_forms(reply: JsonObject, user: JsonObject) -> tuple[str, str | None, str | None]:
+def _reply_forms(reply: JsonObject) -> tuple[str, str | None, str | None]:
     """A past reply as sent in full, as its opening, and when left out; None when no shorter."""
-    shot_ids = user.get("storyboard_reference", {}).get("shot_ids")
-    full = history_text(reply["content"], shot_ids)
-    notes = history_notes(reply["content"], shot_ids)
+    full = history_text(reply["content"])
+    notes = history_notes(reply["content"])
     short = reply_opening(reply_prose(reply["content"]), notes)
     omitted = "\n".join([OMITTED_REPLY, *notes])
     shorter = short if short is not None and len(short) < len(full) else None
@@ -358,7 +357,7 @@ def build_conversation_context(
             "历史只能包含完整用户消息和对应最终回复",
         )
     turns = [(previous[i], previous[i + 1]) for i in range(0, len(previous), 2)]
-    forms = [_reply_forms(reply, user) for user, reply in turns]
+    forms = [_reply_forms(reply) for _, reply in turns]
     # Per turn: 0 sends the reply in full, 1 its opening, 2 a note that it was left out.
     levels = [0] * len(turns)
     first = 0

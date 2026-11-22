@@ -261,12 +261,11 @@ def default_config() -> JsonObject:
 def validate_config(content: JsonObject) -> JsonObject:
     require(isinstance(content, dict), "INVALID_INPUT", "项目配置必须为对象")
     require(
-        default_config().keys() - {"storyboard_skill_id"} <= content.keys(),
+        default_config().keys() <= content.keys(),
         "INVALID_INPUT",
         "项目配置缺少当前必需字段",
     )
     config = deepcopy(content)
-    config.setdefault("storyboard_skill_id", None)
     skill_id = config["storyboard_skill_id"]
     require(
         skill_id is None or isinstance(skill_id, str) and skill_id in STORYBOARD_SKILLS,

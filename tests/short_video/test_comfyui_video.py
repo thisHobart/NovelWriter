@@ -271,24 +271,27 @@ def test_rejected_submission_is_failed_instead_of_remote_status_unknown(tmp_path
     assert MediaRepository(tmp_path).jobs()[0]["status"] == "failed"
 
 
-def test_old_config_discards_unused_image_setting_and_preserves_video(tmp_path, image):
-    previous = tmp_path / "previous-api.json"
-    previous.write_text(json.dumps(MediaConfig().selected()["graph"]), encoding="utf-8")
+def test_old_workflow_config_is_rejected_without_rewriting_it(tmp_path):
     repository = MediaRepository(tmp_path)
-    repository.write(
-        "settings.json",
-        {
-            "base_url": "http://127.0.0.1:8188",
-            "video_workflow": str(previous),
-            "image_workflow": str(tmp_path / "not-implemented.json"),
-        },
-    )
-    command = MediaService(tmp_path).prepare_video(
-        {node_id: image["image_id"] for node_id in ["137", "139", "147"]}, "Use <Picture 1>."
-    )
-    assert command["images"]["137"]["image_id"] == image["image_id"]
-    MediaConfig.load(tmp_path).save(tmp_path)
-    assert "image_workflow" not in repository.read("settings.json")
+    settings = {"base_url": "http://127.0.0.1:8188", "video_workflow": "previous-api.json"}
+    repository.write("settings.json", settings)
+    with pytest.raises(WorkspaceError, match="视频工作流配置不是当前格式"):
+        MediaConfig.load(tmp_path)
+    assert repository.read("settings.json") == settings
+
+
+def test_old_single_image_job_cannot_be_restarted(tmp_path):
+    repository = MediaRepository(tmp_path)
+    job = {
+        "job_id": "single-image",
+        "status": "prepared",
+        "input_snapshot": {"image_node": "137", "image": {"image_id": "image-1"}},
+    }
+    repository.save_job(job)
+    transport = httpx.MockTransport(lambda _: pytest.fail("不应请求 ComfyUI"))
+    with pytest.raises(WorkspaceError, match="视频任务缺少当前工作流或图片输入快照"):
+        MediaWork(str(tmp_path), job_id=job["job_id"], transport=transport)(lambda *_: None)
+    assert repository.job(job["job_id"]) == job
 
 
 def test_local_cancel_never_sends_global_comfy_interrupt(tmp_path, image):
@@ -1254,7 +1257,7 @@ def test_shots_start_vertical_at_one_megapixel_and_keep_what_was_set(tmp_path):
         ("minimax-first-last", "16:9 (Widescreen)"),
     ],
 )
-def test_reopening_old_shot_drafts_replaces_only_inherited_resolution_defaults(
+def test_reopening_shot_drafts_keeps_explicit_resolution_settings(
     tmp_path, workflow_id, old_aspect
 ):
     config = MediaConfig(selected_workflow_id=workflow_id)
@@ -1275,8 +1278,8 @@ def test_reopening_old_shot_drafts_replaces_only_inherited_resolution_defaults(
     try:
         panel.set_target({"shot_id": "old_default"})
         panel.refresh()
-        assert panel.parameter_fields["115.aspect_ratio"].currentText() == "9:16 竖屏"
-        assert panel.parameter_fields["115.megapixels"].value() == 1.0
+        assert panel.parameter_values()["115.aspect_ratio"] == old_aspect
+        assert panel.parameter_values()["115.megapixels"] == 0.4
         assert panel.prompt.toPlainText() == "Keep the action."
 
         panel.set_target({"shot_id": "custom"})
@@ -1286,10 +1289,9 @@ def test_reopening_old_shot_drafts_replaces_only_inherited_resolution_defaults(
 
         panel.set_target({"shot_id": "old_default"})
         panel.refresh()
-        aspect = panel.parameter_fields["115.aspect_ratio"]
-        aspect.setCurrentIndex(aspect.findData(old_aspect))
-        panel.parameter_fields["115.megapixels"].setValue(0.4)
         panel.remember_draft()
+        saved = json.loads(shot_drafts_path(tmp_path).read_text(encoding="utf-8"))
+        assert "resolution_defaults_version" not in saved["old_default"][workflow_id]
 
         _, reopened, _ = reference_panel(tmp_path)
         try:

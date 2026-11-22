@@ -2,9 +2,8 @@
 
 The model writes both as fenced JSON blocks at the end of an ordinary reply, naming shots by
 number and assets as 「名称（状态）」, the way the attached storyboard shows them; they are mapped
-back to the shots and catalog entries here. Replies saved earlier used ids and English keys and
-are still read. Nothing here touches the project: revised shots are merged into the editor
-draft only when the user applies them.
+back to the shots and catalog entries here. Revised shots are merged into the editor draft
+only when the user applies them.
 """
 
 from __future__ import annotations
@@ -69,65 +68,57 @@ def display_text(content: str) -> str:
 
 
 def _number(entry: JsonObject) -> int | None:
-    """The shot number an entry gives: 「镜号」, or "order" in replies saved earlier."""
-    number = entry.get("镜号", entry.get("order"))
+    number = entry.get("镜号")
     return number if type(number) is int and number > 0 else None
 
 
 def _position(
     entry: JsonObject, positions: Mapping[str, int], order: Sequence[str] | None, count: int
 ) -> int | None:
-    """Where an entry's shot is in the current draft: by id, else by its number.
+    """Where the numbered shot is in the current draft.
 
     order is the shot order when the request was sent, so numbers still find their shots after
     shots were added or removed; without it the number counts in the current draft.
     """
-    index = positions.get(entry.get("shot_id"))
     number = _number(entry)
-    if index is None and number is not None:
-        if order:
-            index = positions.get(order[number - 1]) if number <= len(order) else None
-        elif number <= count:
-            index = number - 1
-    return index
+    if number is None:
+        return None
+    if order:
+        return positions.get(order[number - 1]) if number <= len(order) else None
+    return number - 1 if number <= count else None
 
 
-def _block_numbers(body: str, shot_ids: Sequence[str] | None) -> list[int]:
-    """Shot numbers a block names; entries that give only an id are looked up in shot_ids."""
+def _block_numbers(body: str) -> list[int]:
+    """Shot numbers a block names."""
     try:
         value = _load(body)
     except WorkspaceError:
         return []
     numbers = []
-    for entry in value["shots"]:
+    for entry in value["镜头"]:
         if not isinstance(entry, dict):
             continue
         number = _number(entry)
         if number is not None:
             numbers.append(number)
-        elif shot_ids and entry.get("shot_id") in shot_ids:
-            numbers.append(list(shot_ids).index(entry["shot_id"]) + 1)
     return numbers
 
 
-def _history_note(tag: str, body: str, shot_ids: Sequence[str] | None) -> str:
-    span = shot_span(_block_numbers(body, shot_ids))
+def _history_note(tag: str, body: str) -> str:
+    span = shot_span(_block_numbers(body))
     if tag == AFFECTED_TAG:
         return f"〔列出了受影响的镜头：{span}〕" if span else "〔列出了受影响的镜头〕"
     return f"〔给出了{span or '这几镜'}修改后的内容；是否写入以当前分镜为准〕"
 
 
-def history_notes(content: str, shot_ids: Sequence[str] | None = None) -> list[str]:
+def history_notes(content: str) -> list[str]:
     """One note per block of a past reply, in order."""
-    return [_history_note(tag, body, shot_ids) for tag, body in _BLOCK.findall(content)]
+    return [_history_note(tag, body) for tag, body in _BLOCK.findall(content)]
 
 
-def history_text(content: str, shot_ids: Sequence[str] | None = None) -> str:
-    """A past reply as later rounds send it: each block becomes a note naming its shots.
-
-    shot_ids is the storyboard order when the reply was written, for blocks that give only ids.
-    """
-    return _BLOCK.sub(lambda m: _history_note(m.group(1), m.group(2), shot_ids), content).rstrip()
+def history_text(content: str) -> str:
+    """A past reply as later rounds send it: each block becomes a note naming its shots."""
+    return _BLOCK.sub(lambda m: _history_note(m.group(1), m.group(2)), content).rstrip()
 
 
 def reply_prose(content: str) -> str:
@@ -136,15 +127,13 @@ def reply_prose(content: str) -> str:
 
 
 def _load(body: str) -> JsonObject:
-    """The block's JSON with its shot list under "shots"; current replies call it 「镜头」."""
+    """Read the block and require the 「镜头」 list."""
     try:
         value = json.loads(body, parse_constant=reject_json_constant)
     except (ValueError, WorkspaceError) as exc:
         raise WorkspaceError("INVALID_OUTPUT", "代码块不是有效的 JSON") from exc
-    if isinstance(value, dict) and "shots" not in value and "镜头" in value:
-        value = {**value, "shots": value["镜头"]}
     require(
-        isinstance(value, dict) and isinstance(value.get("shots"), list),
+        isinstance(value, dict) and isinstance(value.get("镜头"), list),
         "INVALID_OUTPUT",
         "代码块缺少“镜头”列表",
     )
@@ -157,15 +146,12 @@ def _words(value: object) -> str:
     return str(value).strip() if isinstance(value, (str, int, float)) else ""
 
 
-def _milliseconds(value: object, scale: int = 1) -> int | None:
-    """A length in whole milliseconds, at least 0.1 second; anything else is None.
-
-    Current replies give seconds (scale 1000); replies saved earlier gave milliseconds.
-    """
+def _milliseconds(value: object) -> int | None:
+    """Convert seconds to whole milliseconds for durations of at least 0.1 second."""
     # NaN and Infinity never get here: the block's JSON is read without them.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    value = round(value * scale)
+    value = round(value * 1000)
     return value if value >= 100 else None
 
 
@@ -174,9 +160,8 @@ def affected_shots(
 ) -> JsonObject | None:
     """The reply's affected-shot list matched to the current draft, or None without a list.
 
-    A shot is found by its number (see _position for order) or, in replies saved earlier, by
-    shot_id; shots no longer in the draft are dropped. An item keeps the suggested length as
-    duration_ms when the reply gives one.
+    Shots are found by number and dropped if they are no longer in the draft.
+    The suggested length is stored as duration_ms when supplied.
     """
     body = reply_blocks(content).get(AFFECTED_TAG)
     if body is None:
@@ -187,7 +172,7 @@ def affected_shots(
         return {"items": [], "missing_assets": [], "error": str(exc)}
     positions = {s["shot_id"]: i for i, s in enumerate(shots)}
     found: dict[int, JsonObject] = {}
-    for entry in value["shots"]:
+    for entry in value["镜头"]:
         if not isinstance(entry, dict):
             continue
         index = _position(entry, positions, order, len(shots))
@@ -196,16 +181,13 @@ def affected_shots(
         found[index] = {
             "shot_id": shots[index]["shot_id"],
             "order": index + 1,
-            "fields": _words(entry.get("要改", entry.get("fields"))),
-            "change": _words(entry.get("改法", entry.get("change"))),
+            "fields": _words(entry.get("要改")),
+            "change": _words(entry.get("改法")),
         }
-        if "建议时长" in entry:
-            duration = _milliseconds(entry["建议时长"], 1000)
-        else:
-            duration = _milliseconds(entry.get("duration_ms"))
+        duration = _milliseconds(entry.get("建议时长"))
         if duration is not None:
             found[index]["duration_ms"] = duration
-    missing = value.get("缺少的资产", value.get("missing_assets"))
+    missing = value.get("缺少的资产")
     return {
         "items": [found[i] for i in sorted(found)],
         "missing_assets": [w for w in (_words(m) for m in missing or []) if w]
@@ -326,8 +308,6 @@ def _named_fields(
     entry: JsonObject, entities: list[JsonObject], names: Mapping[str, str]
 ) -> tuple[JsonObject, list[str]]:
     """Draft fields from a revised shot written with the form's names, and what doesn't fit."""
-    if FIELD_LABELS["shot_size"] not in entry and "景别" in entry:
-        entry = {**entry, FIELD_LABELS["shot_size"]: entry["景别"]}
     absent = [label for label in FIELD_LABELS.values() if label not in entry]
     if absent:
         return {}, ["缺少" + "、".join(absent)]
@@ -366,7 +346,7 @@ def _named_fields(
             fields["dialogue"].append(
                 {"character_id": speaker["asset_id"], "text": line.get("台词"), "voice_over": voice_over}
             )
-    fields["duration_ms"] = _milliseconds(entry["时长"], 1000)
+    fields["duration_ms"] = _milliseconds(entry["时长"])
     if fields["duration_ms"] is None:
         problems.append("时长要写成秒数，如 6.5")
     return fields, problems
@@ -388,16 +368,17 @@ def revised_shots(
     value = _load(body)
     names = asset_names(entities)
     returned = {}
-    for entry in value["shots"]:
+    for entry in value["镜头"]:
         if not isinstance(entry, dict):
             continue
-        shot_id, number = entry.get("shot_id"), _number(entry)
-        if not isinstance(shot_id, str) and number is not None:
-            if order:
-                shot_id = order[number - 1] if number <= len(order) else None
-            else:
-                shot_id = next((s for s, shot in base.items() if shot.get("order") == number), None)
-        if isinstance(shot_id, str):
+        number = _number(entry)
+        if number is None:
+            continue
+        if order:
+            shot_id = order[number - 1] if number <= len(order) else None
+        else:
+            shot_id = next((s for s, shot in base.items() if shot.get("order") == number), None)
+        if shot_id is not None:
             returned[shot_id] = entry
     accepted, rejected = {}, {}
     for shot_id, current in base.items():
@@ -405,13 +386,7 @@ def revised_shots(
         if entry is None:
             rejected[shot_id] = "AI 没有给出这一镜"
             continue
-        if "shot_id" in entry:
-            # Saved earlier: English keys and catalog ids.
-            absent = [FIELD_LABELS[k] for k in EDIT_FIELDS if k not in entry]
-            fields = {k: entry[k] for k in EDIT_FIELDS if k in entry}
-            problems = ["缺少" + "、".join(absent)] if absent else []
-        else:
-            fields, problems = _named_fields(entry, entities, names)
+        fields, problems = _named_fields(entry, entities, names)
         if problems:
             rejected[shot_id] = "；".join(problems)
             continue

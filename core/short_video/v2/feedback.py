@@ -195,8 +195,6 @@ def failure_feedback(context: TaskContext, error: BaseException) -> dict:
 
 def review_message(status: str | None, feedback: dict | None) -> str:
     feedback = feedback or {}
-    if status in {"unavailable", "incomplete"}:
-        return feedback.get("summary") or "此前自动检查未完成，未记录具体原因"
     if status == "issues":
         summary = feedback.get("summary") or "此前检查发现问题，未记录具体问题"
         count = feedback.get("issue_count", 0)
@@ -257,7 +255,7 @@ def record_check(
 ) -> dict:
     """The check result as one short line plus the issues behind it, for one shot when given.
 
-    status is passed / issues / other_shots / incomplete / unchecked; issues are readable
+    status is passed / issues / other_shots / unchecked; issues are readable
     sentences; stale names inputs that changed since the record was made.
     """
     run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
@@ -268,15 +266,11 @@ def record_check(
     status = run.get("review_status")
     if status == "passed":
         return {**result, "status": "passed", "summary": "检查通过"}
-    if status in {"unavailable", "incomplete"}:
-        return {**result, "status": "incomplete", "summary": review_message(status, run.get("feedback"))}
     if status != "issues":
         return result
     found = (run.get("review_result") or {}).get("issues") or []
     if not found:
-        # Runs saved before issues were stored keep only the summary.
-        summary = (run.get("feedback") or {}).get("summary") or "检查发现问题，未记录具体问题"
-        return {**result, "status": "issues", "summary": "检查发现问题", "issues": [summary]}
+        return result
 
     def shot_of(issue: dict) -> int | None:
         match = _SHOT_PATH.match(issue.get("target_path", ""))
@@ -378,7 +372,7 @@ def task_message(
         message = result["review_summary"]
     subject = context.action.removesuffix("生成").removesuffix("优化")
     return (
-        "warning" if status in {"issues", "unavailable", "incomplete"} else "success",
+        "warning" if status == "issues" else "success",
         subject + "已保存",
         message,
     )

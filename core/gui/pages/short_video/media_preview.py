@@ -985,15 +985,11 @@ class MediaPreview(QWidget):
         self.current_job = None
         for job in reversed(repository.jobs()):
             snapshot = job["input_snapshot"]
-            if "images" in snapshot:
-                job_images = {
-                    node_id: image["image_id"] for node_id, image in snapshot["images"].items()
-                }
-                workflow_id = snapshot["workflow_id"]
-            else:
-                job_images = {snapshot["image_node"]: snapshot["image"]["image_id"]}
-                workflow_id = "minimax-reference"
-            if workflow_id == self.loaded_workflow_id and job_images == selection:
+            images = snapshot.get("images")
+            if not isinstance(images, dict) or not images:
+                continue
+            job_images = {node_id: image["image_id"] for node_id, image in images.items()}
+            if snapshot.get("workflow_id") == self.loaded_workflow_id and job_images == selection:
                 self.current_job = job
                 break
         job = self.current_job

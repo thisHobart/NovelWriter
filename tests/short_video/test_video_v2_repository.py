@@ -642,17 +642,17 @@ def test_storyboard_skill_requires_an_explicit_choice(prompt_project, monkeypatc
         assert other["requirements"]["skill_id"] is None
 
 
-def test_legacy_config_defaults_to_no_skill_without_mutation():
+def test_config_requires_an_explicit_storyboard_skill_setting():
     from core.short_video.v2.models import validate_config
 
-    legacy = default_config()
-    legacy.pop("storyboard_skill_id")
-    before = deepcopy(legacy)
-    assert validate_config(legacy)["storyboard_skill_id"] is None
-    assert legacy == before
+    config = default_config()
+    assert validate_config(config)["storyboard_skill_id"] is None
+    del config["storyboard_skill_id"]
+    with pytest.raises(WorkspaceError, match="项目配置缺少当前必需字段"):
+        validate_config(config)
     for invalid in ("unknown-skill", "../storyboard", ["short-video-content-storyboard"]):
         with pytest.raises(WorkspaceError) as error:
-            validate_config({**legacy, "storyboard_skill_id": invalid})
+            validate_config({**config, "storyboard_skill_id": invalid})
         assert error.value.code == "INVALID_INPUT"
 
 

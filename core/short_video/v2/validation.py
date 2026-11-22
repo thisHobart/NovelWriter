@@ -187,9 +187,6 @@ def recalculate_timeline(content: JsonObject) -> JsonObject:
     content = deepcopy(content)
     cursor = 0
     for index, shot in enumerate(rows(content.get("shots"), "镜头", key="shot_id"), 1):
-        # Ignore retired fields from previously saved projects and older model replies.
-        shot.pop("visual_prompt_draft", None)
-        shot.pop("visual_description", None)
         duration = positive_int(shot.get("duration_ms"), "镜头时长")
         shot.update(order=index, start_ms=cursor, end_ms=cursor + duration)
         cursor += duration

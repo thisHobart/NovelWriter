@@ -151,9 +151,15 @@ class MediaWork(TaskTracker):
                     "created_at": timestamp(),
                 }
                 repository.save_job(job)
+        command = job["input_snapshot"]
+        images = command.get("images")
+        require(
+            isinstance(images, dict) and bool(images) and bool(command.get("workflow_id")),
+            "INVALID_INPUT",
+            "视频任务缺少当前工作流或图片输入快照，请重新生成",
+        )
         if job["status"] == "succeeded":
             return job
-        command = job["input_snapshot"]
         self.update_context(target="ComfyUI", phase="连接服务")
         client = ComfyMCPClient(command["base_url"], repository, transport=self.transport)
         try:
@@ -163,11 +169,6 @@ class MediaWork(TaskTracker):
                     self.token.raise_if_cancelled()
                     self.update_context(phase="工作流校验")
                     report("正在校验 ComfyUI 工作流…", -1)
-                    if "images" in command:
-                        images = command["images"]
-                    else:
-                        # 已提交的旧单图任务仍可按原始快照继续执行。
-                        images = {command["image_node"]: command["image"]}
                     template = parse_video_workflow(command["workflow"])
                     workflow = template.bind(
                         {node_id: image["image_id"] for node_id, image in images.items()},

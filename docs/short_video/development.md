@@ -74,7 +74,7 @@
 [ShotEditPanel](../../core/gui/pages/short_video/shot_edit_panel.py)只读最后一条完整回复，按当前编辑稿列出镜头供勾选，作为卡片挂在消息流中这条回复下方（较早回复的卡片由 earlier_card 收成一行）；
 建议时长与编辑稿不同时，卡片把“时长”换成“时长 X → Y 秒”；“修改所选镜头”带 `edit_items`（含 duration_ms）重新组装上下文并追加修改规则，规则要求按给出的时长写 revised_shots，回复的 revised_shots 由
 [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)逐镜合并、检查，与正式保存共用`validation.validate_shot`。
-回复用“镜号”和“名称（状态）”：镜号按发送时的镜头顺序对应回镜头，名称按 `asset_names`（同名对象写“寻井人·2”，也认别名）对应回资产目录，对不上时给出原因；旧格式（shot_id、英文字段和目录编号）仍能读取。
+回复用“镜号”和“名称（状态）”：镜号按发送时的镜头顺序对应回镜头，名称按 `asset_names`（同名对象写“寻井人·2”，也认别名）对应回资产目录。字段或资产对不上时给出原因。
 格式修正只在聊天服务内做一次，作为同一对话的下一轮（上次回复 + `repair_request` 列出的问题），不进入阶段任务的审阅循环。应用只改编辑稿并标记底色，保存仍走原有“保存”；
 撤销保存应用前的整份编辑稿，只有编辑稿仍等于应用后的样子时可用。用户消息的 `storyboard_edit.base`
 记录请求时各镜的内容指纹，用于提示覆盖之后的编辑。
