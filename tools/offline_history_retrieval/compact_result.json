@@ -1,0 +1,824 @@
+{
+  "method": "recent-3",
+  "code_commit": "0bce8a2265c279be8d1baa38dd4ebcebeb6e2de7",
+  "python": "3.14.5",
+  "dataset": {
+    "turns": 27,
+    "roles": {
+      "user": 27,
+      "assistant": 27
+    },
+    "history_sha256_utf8_lf": "2355f0c9fa0ca021b5e072099bf166b09c3054110bd6466c944af5d90d10c3c3",
+    "queries_sha256_utf8_lf": "45ed544495591695217aedcc8905f6aa8587165a766eebb943e7f20de80a667e"
+  },
+  "parameters": {
+    "top_k": 3,
+    "history_evidence_chars": 6000,
+    "evidence_unit": "complete_turn_or_compact_revision",
+    "scope": "one conversation; completed turns at or before each query cutoff",
+    "score": {
+      "order": "newest_first"
+    }
+  },
+  "references": {},
+  "summary": {
+    "near": {
+      "queries": 8,
+      "covered": 8,
+      "false_positives": 0
+    },
+    "late": {
+      "queries": 8,
+      "covered": 1,
+      "false_positives": 0
+    },
+    "no_evidence": {
+      "queries": 3,
+      "covered": 0,
+      "false_positives": 3
+    }
+  },
+  "queries": [
+    {
+      "id": "real-near-01",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 10,
+      "question": "最早把屋内段落改成桌边轮流进食的版本，哪份改稿说后面几镜的菜品先占位，先别定菜？",
+      "required_message_ids": [
+        "r10a"
+      ],
+      "gold_ranks": {
+        "r10a": 1
+      },
+      "ranked_count": 10,
+      "top": [
+        {
+          "turn_id": "T10",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T9",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T8",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T10"
+      ],
+      "packed_formats": {
+        "T10": "compact"
+      },
+      "evidence_chars": 5406,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 6.4
+    },
+    {
+      "id": "real-late-01",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "最早把屋内段落改成桌边轮流进食的版本，哪份改稿说后面几镜的菜品先占位，先别定菜？",
+      "required_message_ids": [
+        "r10a"
+      ],
+      "gold_ranks": {
+        "r10a": 18
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.6
+    },
+    {
+      "id": "real-near-02",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 12,
+      "question": "找一下坐着吃东西那版的第一人称改稿，四镜都只看戴手套的手，并且饮料只在第一段逐渐出现。",
+      "required_message_ids": [
+        "r12a"
+      ],
+      "gold_ranks": {
+        "r12a": 1
+      },
+      "ranked_count": 12,
+      "top": [
+        {
+          "turn_id": "T12",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T11",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T10",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T12"
+      ],
+      "packed_formats": {
+        "T12": "full"
+      },
+      "evidence_chars": 4752,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.8
+    },
+    {
+      "id": "real-late-02",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "找一下坐着吃东西那版的第一人称改稿，四镜都只看戴手套的手，并且饮料只在第一段逐渐出现。",
+      "required_message_ids": [
+        "r12a"
+      ],
+      "gold_ranks": {
+        "r12a": 16
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.0
+    },
+    {
+      "id": "real-near-03",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 16,
+      "question": "哪份改稿把第六到第九镜都做成跨过门槛再走到桌前，并解释这是有意回切？",
+      "required_message_ids": [
+        "r16a"
+      ],
+      "gold_ranks": {
+        "r16a": 1
+      },
+      "ranked_count": 16,
+      "top": [
+        {
+          "turn_id": "T16",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T15",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T14",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T16"
+      ],
+      "packed_formats": {
+        "T16": "compact"
+      },
+      "evidence_chars": 4980,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.6
+    },
+    {
+      "id": "real-late-03",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "哪份改稿把第六到第九镜都做成跨过门槛再走到桌前，并解释这是有意回切？",
+      "required_message_ids": [
+        "r16a"
+      ],
+      "gold_ranks": {
+        "r16a": 12
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.0
+    },
+    {
+      "id": "real-near-04",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 18,
+      "question": "后来纠正了第五镜已经进屋的问题，哪份改稿让第六镜直接从屋内朝餐桌走，后面也沿用这条路线？",
+      "required_message_ids": [
+        "r18a"
+      ],
+      "gold_ranks": {
+        "r18a": 1
+      },
+      "ranked_count": 18,
+      "top": [
+        {
+          "turn_id": "T18",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T17",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T16",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T18"
+      ],
+      "packed_formats": {
+        "T18": "full"
+      },
+      "evidence_chars": 5969,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.6
+    },
+    {
+      "id": "real-late-04",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "后来纠正了第五镜已经进屋的问题，哪份改稿让第六镜直接从屋内朝餐桌走，后面也沿用这条路线？",
+      "required_message_ids": [
+        "r18a"
+      ],
+      "gold_ranks": {
+        "r18a": 10
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 0.8
+    },
+    {
+      "id": "real-near-05",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 20,
+      "question": "找第一镜停在未开木门、第二镜进屋大约一秒才看到热面和流动饮品的那次改稿。",
+      "required_message_ids": [
+        "r20a"
+      ],
+      "gold_ranks": {
+        "r20a": 1
+      },
+      "ranked_count": 20,
+      "top": [
+        {
+          "turn_id": "T20",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T19",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T18",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T20",
+        "T19"
+      ],
+      "packed_formats": {
+        "T20": "full",
+        "T19": "full"
+      },
+      "evidence_chars": 5074,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.5
+    },
+    {
+      "id": "real-late-05",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "找第一镜停在未开木门、第二镜进屋大约一秒才看到热面和流动饮品的那次改稿。",
+      "required_message_ids": [
+        "r20a"
+      ],
+      "gold_ranks": {
+        "r20a": 8
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 0.9
+    },
+    {
+      "id": "real-near-06",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 22,
+      "question": "哪版第 2 镜补了走到桌边端碗吸第一口面，并且镜尾的可乐还没有变成瓶子？",
+      "required_message_ids": [
+        "r22a"
+      ],
+      "gold_ranks": {
+        "r22a": 1
+      },
+      "ranked_count": 22,
+      "top": [
+        {
+          "turn_id": "T22",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T21",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T20",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T22",
+        "T21",
+        "T20"
+      ],
+      "packed_formats": {
+        "T22": "full",
+        "T21": "full",
+        "T20": "full"
+      },
+      "evidence_chars": 5867,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.7
+    },
+    {
+      "id": "real-late-06",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "哪版第 2 镜补了走到桌边端碗吸第一口面，并且镜尾的可乐还没有变成瓶子？",
+      "required_message_ids": [
+        "r22a"
+      ],
+      "gold_ranks": {
+        "r22a": 6
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 0.7
+    },
+    {
+      "id": "real-near-07",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 24,
+      "question": "回查第一镜开了门但人还在外面、第二镜已经不用再推门的那份两镜改稿。",
+      "required_message_ids": [
+        "r24a"
+      ],
+      "gold_ranks": {
+        "r24a": 1
+      },
+      "ranked_count": 24,
+      "top": [
+        {
+          "turn_id": "T24",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T23",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T22",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T24",
+        "T23",
+        "T22"
+      ],
+      "packed_formats": {
+        "T24": "full",
+        "T23": "full",
+        "T22": "full"
+      },
+      "evidence_chars": 4260,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.7
+    },
+    {
+      "id": "real-late-07",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "回查第一镜开了门但人还在外面、第二镜已经不用再推门的那份两镜改稿。",
+      "required_message_ids": [
+        "r24a"
+      ],
+      "gold_ranks": {
+        "r24a": 4
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 0.9
+    },
+    {
+      "id": "real-near-08",
+      "group": "near",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "找一下第 2 到第 9 镜统一去掉地毯、把桌子直接放在木地板上的修改稿。",
+      "required_message_ids": [
+        "r27a"
+      ],
+      "gold_ranks": {
+        "r27a": 1
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.8
+    },
+    {
+      "id": "real-late-08",
+      "group": "late",
+      "wording": "verified_revision",
+      "through_turn": 27,
+      "question": "找一下第 2 到第 9 镜统一去掉地毯、把桌子直接放在木地板上的修改稿。",
+      "required_message_ids": [
+        "r27a"
+      ],
+      "gold_ranks": {
+        "r27a": 1
+      },
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.8
+    },
+    {
+      "id": "real-missing-01",
+      "group": "no_evidence",
+      "wording": "unrelated",
+      "through_turn": 27,
+      "question": "哪一版给第 2 镜加了吃面之后接起电话的对白？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 0.8
+    },
+    {
+      "id": "real-missing-02",
+      "group": "no_evidence",
+      "wording": "future",
+      "through_turn": 22,
+      "question": "哪一版第 1 镜已经推开门却停在室外，第 2 镜不用再开门？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 22,
+      "top": [
+        {
+          "turn_id": "T22",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T21",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T20",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T22",
+        "T21",
+        "T20"
+      ],
+      "packed_formats": {
+        "T22": "full",
+        "T21": "full",
+        "T20": "full"
+      },
+      "evidence_chars": 5867,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 0.6
+    },
+    {
+      "id": "real-missing-03",
+      "group": "no_evidence",
+      "wording": "wrong_version",
+      "through_turn": 27,
+      "question": "哪一次改稿把第 2 至第 9 镜的木地板全部改成了白色瓷砖？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 27,
+      "top": [
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T26",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T25",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T27"
+      ],
+      "packed_formats": {
+        "T27": "full"
+      },
+      "evidence_chars": 5076,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 0.8
+    }
+  ]
+}
