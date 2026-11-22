@@ -9,6 +9,7 @@ import platform
 import subprocess
 from time import perf_counter_ns
 
+from evidence_pack import build_evidence, pack_evidence
 from experiment_ranker import METHOD, SETTINGS, rank_turns
 from history_retrieval import Message, find_turn_by_message_id
 
@@ -34,16 +35,10 @@ def searchable_text(messages: list[Message]) -> str:
     return "\n".join(paragraphs)
 
 
-def evidence_block(messages: list[Message]) -> str:
-    return "\n".join(
-        f"[{m['turn_id']} / {m['id']} / {m['role']}] {m['content']}" for m in messages
-    )
-
-
 def run_query(
     query: dict,
     texts: dict[str, str],
-    evidence: dict[str, str],
+    evidence: dict[str, dict[str, str]],
     message_turns: dict[str, str],
 ) -> dict:
     visible = {key: value for key, value in texts.items() if turn_number(key) <= query["through_turn"]}
@@ -52,13 +47,9 @@ def run_query(
     elapsed_us = (perf_counter_ns() - start) / 1000
     top = ranked[:TOP_K]
 
-    packed = []
-    used = 0
-    for turn_id, _, _ in top:
-        size = len(evidence[turn_id]) + (2 if packed else 0)
-        if used + size <= CONTEXT_CHARS:
-            packed.append(turn_id)
-            used += size
+    selected = pack_evidence([key for key, _, _ in top], evidence, CONTEXT_CHARS)
+    packed = [item.turn_id for item in selected]
+    used = len("\n\n".join(item.text for item in selected))
 
     required = query["required_message_ids"]
     # Gold labels are used only for scoring once ranking and packing are complete.
@@ -74,6 +65,7 @@ def run_query(
             for key, score, features in top
         ],
         "packed_turn_ids": packed,
+        "packed_formats": {item.turn_id: item.form for item in selected},
         "evidence_chars": used,
         "covered": all(key in packed for key in gold_turns) if required else None,
         "false_positive": bool(packed) if not required else None,
@@ -109,7 +101,7 @@ def main() -> None:
     for message in history:
         turns.setdefault(message["turn_id"], []).append(message)
     texts = {key: searchable_text(messages) for key, messages in turns.items()}
-    evidence = {key: evidence_block(messages) for key, messages in turns.items()}
+    evidence = {key: build_evidence(messages) for key, messages in turns.items()}
     message_turns = {m["id"]: m["turn_id"] for m in history}
     rows = [run_query(q, texts, evidence, message_turns) for q in queries]
     summary = {
@@ -135,7 +127,7 @@ def main() -> None:
         "parameters": {
             "top_k": TOP_K,
             "history_evidence_chars": CONTEXT_CHARS,
-            "evidence_unit": "complete_turn",
+            "evidence_unit": "complete_turn_or_compact_revision",
             "scope": "one conversation; completed turns at or before each query cutoff",
             "score": SETTINGS,
         },
