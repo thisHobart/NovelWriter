@@ -10,8 +10,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError
 
-from . import api_providers
-from .api_providers import DEFAULT_API_MODEL
+from core.common import api_providers
+from core.common.api_providers import DEFAULT_API_MODEL
 from llm_backends import multi_provider_llm as _mp
 from llm_backends.multi_provider_llm import (  # noqa: F401  back-compat re-exports
     resolve_model,

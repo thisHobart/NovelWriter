@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 from core.config.story_options import GENDER_BIAS_MAP
 from core.generation.ai_helper import DEFAULT_API_MODEL, set_backend
-from core.generation.api_providers import PROVIDER_LABELS
+from core.common.api_providers import PROVIDER_LABELS
 from core.generation.lore_pipeline import LorePipeline
 from core.generation.scene_pipeline import ScenePipeline
 from core.generation.short_story_pipeline import ShortStoryPipeline, WritingRequest

@@ -39,7 +39,7 @@ import random
 from datetime import datetime
 from core.config.directory_config import get_directory_manager
 
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 from core.generation.stage_context import StageContext
 from core.generation.parameters import requirements_block
 from core.generation.parameter_compliance import ComplianceReview, guard_manual_sources

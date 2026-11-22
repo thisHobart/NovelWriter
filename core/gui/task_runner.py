@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable, Optional
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import QWidget
 
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 
 
 class TaskSignals(QObject):

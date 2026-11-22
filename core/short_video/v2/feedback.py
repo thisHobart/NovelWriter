@@ -82,9 +82,8 @@ def error_reason(error: BaseException) -> str:
 
 def readable_fields(text: str) -> str:
     for field, label in {
-        "visual_prompt_draft": "画面提示词",
         "camera_movement": "镜头运动",
-        "shot_size": "景别",
+        "shot_size": "取景范围",
         "duration_ms": "时长",
         "action": "动作",
         "narration": "旁白",
@@ -194,27 +193,26 @@ def failure_feedback(context: TaskContext, error: BaseException) -> dict:
     }
 
 
+# The reviewer never answered in a usable format, so the new content was kept unchecked.
+UNREVIEWED_SUMMARY = "自动审阅没有取得有效结果，内容未经检查"
+
+
 def review_message(status: str | None, feedback: dict | None) -> str:
     feedback = feedback or {}
-    if status in {"unavailable", "incomplete"}:
-        return feedback.get("summary") or "此前自动检查未完成，未记录具体原因"
     if status == "issues":
         summary = feedback.get("summary") or "此前检查发现问题，未记录具体问题"
         count = feedback.get("issue_count", 0)
         return summary + (f"（共{count}项问题）" if count > 1 else "")
     if status == "passed":
         return "自动检查通过"
+    if status == "unreviewed":
+        return UNREVIEWED_SUMMARY
     return "尚未自动检查"
 
 
-def record_message(repository: ProjectRepository, record: dict, state: dict) -> str:
-    run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
-    parts = ["已保存"]
-    if record.get("origin") == "model" and run:
-        parts.append(review_message(run.get("review_status"), run.get("feedback")))
-    else:
-        parts.append("当前内容尚未自动检查")
-    changed = []
+def stale_sources(repository: ProjectRepository, record: dict, state: dict) -> list[str]:
+    """Inputs that changed after the record was made, as names people know."""
+    changed: list[str] = []
     seen = set()
 
     def visit(item: dict) -> None:
@@ -239,9 +237,75 @@ def record_message(repository: ProjectRepository, record: dict, state: dict) -> 
                 visit(repository.record(ref, state=state))
 
     visit(record)
+    return changed
+
+
+def record_message(repository: ProjectRepository, record: dict, state: dict) -> str:
+    run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
+    parts = ["已保存"]
+    if record.get("origin") == "model" and run:
+        parts.append(review_message(run.get("review_status"), run.get("feedback")))
+    else:
+        parts.append("当前内容尚未自动检查")
+    changed = stale_sources(repository, record, state)
     if changed:
         parts.append("、".join(changed) + "已更新，当前内容仍使用旧版来源")
     return "；".join(parts)
+
+
+_SHOT_PATH = re.compile(r"^shots(?:\[(\d+)\]|\.(\d+))")
+
+
+def record_check(
+    repository: ProjectRepository, record: dict, state: dict, *, shot_index: int | None = None
+) -> dict:
+    """The check result as one short line plus the issues behind it, for one shot when given.
+
+    status is passed / issues / other_shots / unchecked; issues are readable
+    sentences; stale names inputs that changed since the record was made.
+    """
+    run = next((r for r in state["runs"] if r["id"] == record["metadata"].get("run_id")), None)
+    stale = stale_sources(repository, record, state)
+    result = {"status": "unchecked", "summary": "尚未自动检查", "issues": [], "stale": stale}
+    if record.get("origin") != "model" or not run:
+        return result
+    status = run.get("review_status")
+    if status == "passed":
+        return {**result, "status": "passed", "summary": "检查通过"}
+    if status == "unreviewed":
+        return {**result, "summary": UNREVIEWED_SUMMARY}
+    if status != "issues":
+        return result
+    found = (run.get("review_result") or {}).get("issues") or []
+    if not found:
+        return result
+
+    def shot_of(issue: dict) -> int | None:
+        match = _SHOT_PATH.match(issue.get("target_path", ""))
+        return int(match[1] or match[2]) if match else None
+
+    mine = [
+        issue
+        for issue in found
+        if shot_index is None or shot_of(issue) in (None, shot_index)
+    ]
+    sentences = []
+    for issue in mine:
+        sentence = readable_fields(concise(issue.get("explanation", ""))) or "未说明原因"
+        suggestion = readable_fields(concise(issue.get("suggestion", "")))
+        sentences.append(sentence + (f"建议：{suggestion}" if suggestion else ""))
+    if not mine:
+        return {
+            **result,
+            "status": "other_shots",
+            "summary": f"其他镜头有 {len(found)} 项问题",
+        }
+    return {
+        **result,
+        "status": "issues",
+        "summary": f"检查发现 {len(mine)} 项问题",
+        "issues": sentences,
+    }
 
 
 def task_message(
@@ -316,7 +380,7 @@ def task_message(
         message = result["review_summary"]
     subject = context.action.removesuffix("生成").removesuffix("优化")
     return (
-        "warning" if status in {"issues", "unavailable", "incomplete"} else "success",
+        "warning" if status in {"issues", "unreviewed"} else "success",
         subject + "已保存",
         message,
     )

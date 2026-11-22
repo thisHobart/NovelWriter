@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSignalBlocker
+from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 
 
 class SourcePage(QWidget):
+    # The text, its 改编范围 or whether it is saved changed: the chat's attachment label follows.
+    changed = Signal()
+
     def __init__(self, workbench: Workbench) -> None:
         super().__init__()
         self.workbench, self.dirty, self.revision, self.ranges, self.loaded_source = (
@@ -99,12 +102,14 @@ class SourcePage(QWidget):
 
     def mark_dirty(self, *_: object) -> None:
         self.dirty = True
+        self.changed.emit()
 
     def source_changed(self) -> None:
         self.dirty, self.ranges, self.loaded_source = True, [], None
         self.full_radio.setChecked(True)
         self.validation_label.clear()
         self.range_label.setText(f"共 {len(self.article.toPlainText())} 字")
+        self.changed.emit()
 
     def add_range(self) -> None:
         cursor = self.article.textCursor()
@@ -134,11 +139,13 @@ class SourcePage(QWidget):
             f"已选 {sum(r['end'] - r['start'] for r in self.ranges)} 字 / 全文 {len(value)} 字"
         )
         self.dirty = True
+        self.changed.emit()
 
     def full_range(self) -> None:
         self.ranges, self.dirty = [], True
         self.full_radio.setChecked(True)
         self.range_label.setText(f"共 {len(self.article.toPlainText())} 字")
+        self.changed.emit()
 
     def import_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "导入原始文章", "", "文章 (*.txt *.md)")
@@ -224,3 +231,4 @@ class SourcePage(QWidget):
             f"共 {sum(r['end'] - r['start'] for r in self.ranges) if selected else length} 字"
         )
         self.dirty = False
+        self.changed.emit()

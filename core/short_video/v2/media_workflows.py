@@ -15,6 +15,20 @@ from .storage import atomic_write_text
 
 WORKFLOW_DIRECTORY = Path(__file__).with_name("workflows")
 MAX_REFERENCE_IMAGES = 9
+ASPECT_RATIO_CHOICES = (
+    ("9:16 (Portrait Widescreen)", "9:16 竖屏"),
+    ("16:9 (Widescreen)", "16:9 横屏"),
+    ("21:9 (Ultrawide)", "21:9 超宽屏"),
+    ("1:1 (Square)", "1:1 方形"),
+    ("2:3 (Portrait Photo)", "2:3 竖屏"),
+    ("3:4 (Portrait Standard)", "3:4 竖屏"),
+    ("3:2 (Photo)", "3:2 横屏"),
+    ("4:3 (Standard)", "4:3 横屏"),
+)
+# Every shot starts as a vertical video of about one megapixel, whatever the workflow JSON
+# holds; a shot keeps what was set for it.
+SHOT_ASPECT_RATIO = "9:16 (Portrait Widescreen)"
+SHOT_MEGAPIXELS = 1.0
 
 
 def default_workflows() -> list[JsonObject]:
@@ -45,14 +59,15 @@ class MediaConfig:
         if not path.exists():
             return cls()
         values = json.loads(path.read_text(encoding="utf-8"))
-        values.pop("image_workflow", None)
-        if "video_workflow" in values:
-            # 原单工作流配置转为项目内 JSON 快照，不再依赖外部文件路径。
-            previous = values.pop("video_workflow")
-            workflows = default_workflows()
-            if previous:
-                workflows[0]["graph"] = read_api_workflow(previous)
-            values["workflows"] = workflows
+        require(
+            isinstance(values, dict)
+            and values.keys() == {"base_url", "workflows", "selected_workflow_id"}
+            and isinstance(values["base_url"], str)
+            and isinstance(values["workflows"], list)
+            and isinstance(values["selected_workflow_id"], str),
+            "INVALID_INPUT",
+            "视频工作流配置不是当前格式",
+        )
         return cls(**values)
 
     def selected(self, workflow_id: str | None = None) -> JsonObject:
@@ -100,6 +115,75 @@ class MediaConfig:
         )
 
 
+# What the 镜头 video area holds for each shot and workflow, kept across restarts.
+SHOT_DRAFT_FIELDS = (
+    "images",
+    "prompt",
+    "parameters",
+    "additional_reference_slots",
+    "prompt_image_bindings",
+    "video_prompt_fingerprint",
+    "video_prompt_binding",
+)
+
+
+def shot_drafts_path(output_dir: str | Path) -> Path:
+    return Path(output_dir) / "short_video" / "media" / "shot_drafts.json"
+
+
+def _prompt_image_bindings(value: object) -> dict[int, str]:
+    """<Picture N> number → image node; JSON keeps the numbers as text, the video area compares
+    them as numbers."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        int(number): node_id
+        for number, node_id in value.items()
+        if str(number).isdigit() and int(number) > 0 and isinstance(node_id, str)
+    }
+
+
+def _stored_draft(draft: JsonObject) -> JsonObject:
+    stored = {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+    if "prompt_image_bindings" in stored:
+        stored["prompt_image_bindings"] = _prompt_image_bindings(stored["prompt_image_bindings"])
+    return stored
+
+
+def load_shot_drafts(output_dir: str | Path) -> dict[str, dict[str, JsonObject]]:
+    """{shot_id: {workflow_id: draft}}; empty when nothing was saved or the file is unreadable."""
+    path = shot_drafts_path(output_dir)
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(values, dict):
+        return {}
+    return {
+        shot_id: {
+            workflow_id: _stored_draft(draft)
+            for workflow_id, draft in workflows.items()
+            if isinstance(workflow_id, str) and isinstance(draft, dict)
+        }
+        for shot_id, workflows in values.items()
+        if isinstance(shot_id, str) and isinstance(workflows, dict)
+    }
+
+
+def save_shot_drafts(output_dir: str | Path, drafts: dict[str, dict[str, JsonObject]]) -> None:
+    stored = {
+        shot_id: {
+            workflow_id: {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+            for workflow_id, draft in workflows.items()
+        }
+        for shot_id, workflows in drafts.items()
+        if shot_id and workflows
+    }
+    path = shot_drafts_path(output_dir)
+    if stored or path.exists():
+        atomic_write_text(path, encode(stored))
+
+
 @dataclass(frozen=True)
 class ImageInput:
     node_id: str
@@ -112,10 +196,11 @@ class WorkflowParameter:
     node_id: str
     input_name: str
     label: str
-    default: int | float | bool
-    minimum: float
-    maximum: float
+    default: int | float | bool | str
+    minimum: float | None = None
+    maximum: float | None = None
     role: str = ""
+    choices: tuple[tuple[str, str], ...] = ()
 
     @property
     def key(self) -> str:
@@ -224,13 +309,20 @@ class VideoWorkflow:
             graph[image.node_id]["inputs"]["image"] = image_names[image.node_id]
         for parameter in self.parameters:
             value = parameters.get(parameter.key, parameter.default)
-            expected = type(parameter.default)
-            valid = type(value) is expected or expected is float and type(value) is int
-            require(
-                valid and parameter.minimum <= value <= parameter.maximum,
-                "INVALID_INPUT",
-                f"{parameter.label}的类型或范围不正确",
-            )
+            if parameter.choices:
+                require(
+                    any(value == choice for choice, _ in parameter.choices),
+                    "INVALID_INPUT",
+                    f"{parameter.label}不在可选范围内",
+                )
+            else:
+                expected = type(parameter.default)
+                valid = type(value) is expected or expected is float and type(value) is int
+                require(
+                    valid and parameter.minimum <= value <= parameter.maximum,
+                    "INVALID_INPUT",
+                    f"{parameter.label}的类型或范围不正确",
+                )
             graph[parameter.node_id]["inputs"][parameter.input_name] = value
         graph[self.prompt_node]["inputs"][self.prompt_input] = prompt
         graph[self.output_node]["inputs"]["filename_prefix"] = f"video/NovelWriter/{job_id}"
@@ -383,14 +475,24 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
                 WorkflowParameter(node_id, "value", label, node["inputs"]["value"], 1, 10000)
             )
         elif node_type == "ResolutionSelector":
+            aspect = node["inputs"].get("aspect_ratio")
+            if (
+                inputs.get("width") == [node_id, 0]
+                and inputs.get("height") == [node_id, 1]
+                and any(aspect == choice for choice, _ in ASPECT_RATIO_CHOICES)
+            ):
+                parameters.append(
+                    WorkflowParameter(
+                        node_id,
+                        "aspect_ratio",
+                        "画幅",
+                        SHOT_ASPECT_RATIO,
+                        choices=ASPECT_RATIO_CHOICES,
+                    )
+                )
             parameters.append(
                 WorkflowParameter(
-                    node_id,
-                    "megapixels",
-                    "分辨率（百万像素）",
-                    node["inputs"]["megapixels"],
-                    0.1,
-                    16,
+                    node_id, "megapixels", "分辨率（百万像素）", SHOT_MEGAPIXELS, 0.1, 16
                 )
             )
         elif node_type == "ComfyMathExpression" and "values.a" in node["inputs"]:

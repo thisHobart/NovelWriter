@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -27,46 +28,83 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.generation.api_providers import PROVIDER_LABELS, configuration_status
-from core.generation.api_settings import get_review_config, review_provider
-from core.generation.locks import project_lock
-from core.gui.model_config_dialog import ModelConfigDialog
+from core.common.api_providers import DEFAULT_API_MODEL, PROVIDER_LABELS, configuration_status
+from core.common.locks import project_lock
+from core.gui.model_config_dialog import ModelConfigDialog, ServiceProfile
 from core.short_video.v2.contracts import OperationResult, VideoTask
 from core.short_video.v2.conversation import ConversationService
 from core.short_video.v2.creation import CreationWork, prepare_prompt_task, prepare_storyboard_task
 from core.short_video.v2.exporter import ExportService
-from core.short_video.v2.feedback import ACTION_NAMES, error_reason, record_message
+from core.short_video.v2.feedback import (
+    ACTION_NAMES,
+    error_reason,
+    record_message,
+    task_message,
+)
 from core.short_video.v2.models import WorkspaceError, fingerprint, require
-from core.short_video.v2.repository import ProjectRepository
+from core.short_video.v2.repository import ProjectRepository, shared_project_reads
+from core.short_video.v2.service_settings import (
+    get_review_config,
+    image_form_values,
+    review_form_values,
+    review_provider,
+    save_image,
+    save_review,
+)
 from core.short_video.v2.workflow import WorkflowService, WorkspaceWork
 
 from .artifact_page import ArtifactPage
 from .chat_panel import ChatPanel
 from .prompt_page import PromptPage
 from .source_page import SourcePage
-from .task_channels import TaskChannels
+from .task_channels import TaskChannels, status_text
 from .ui_helpers import create_action_button
 
 if TYPE_CHECKING:
-    from core.gui.main_window import MainWindow
+    from core.gui.feature import FeatureHost
 
+# Default width of the 「与 AI 讨论」 panel; dragging the splitter is remembered per project.
+CHAT_WIDTH = 384
 STEPS = [
     ("video_source", "原文"),
     ("video_adaptation", "改写"),
     ("video_storyboard", "分镜"),
     ("video_prompts", "提示词"),
 ]
+REVIEW_SERVICE = ServiceProfile(
+    "校验模型配置", "独立保存，仅用于检查生成结果", review_form_values, save_review
+)
+IMAGE_SERVICE = ServiceProfile(
+    "生图 API 配置", "填写当前服务的连接信息，保存后立即生效", image_form_values, save_image,
+    only_provider=("hosted-llm", "OpenAI 兼容生图接口"), list_models_to_check=True,
+)
 
 
 class Workbench(QWidget):
-    changed = Signal()
-    STEPS = STEPS
+    """The short video feature; the app window reaches it only through core.gui.feature."""
 
-    def __init__(self, host: MainWindow) -> None:
+    side_panel = None
+
+    @classmethod
+    def open(cls, host: FeatureHost, **options: str) -> Workbench | None:
+        """Open on the last project, or report in the status bar why it cannot be read."""
+        try:
+            return cls(host, **options)
+        except (WorkspaceError, OSError) as exc:
+            host.status.set_error("无法打开短视频项目", str(exc))
+            return None
+
+    def __init__(self, host: FeatureHost, *, inherit_model: str = DEFAULT_API_MODEL) -> None:
         super().__init__()
         self.host, self.transport = host, None
-        self.tasks = TaskChannels(host.runner)
+        self.tasks = TaskChannels()
         self.settings = QSettings("NovelWriter", "VideoWorkbench")
+        # The model service used for text, remembered for the short video alone (not per
+        # project); before one was ever chosen here, it starts as the novel's.
+        self.text_model = self.settings.value("text_model", "")
+        if self.text_model not in PROVIDER_LABELS:
+            self.text_model = inherit_model if inherit_model in PROVIDER_LABELS else DEFAULT_API_MODEL
+            self.settings.setValue("text_model", self.text_model)
         self.output_dir = str(
             Path(self.settings.value("last_project", "current_video_work")).resolve()
         )
@@ -91,16 +129,32 @@ class Workbench(QWidget):
         top.addWidget(self.project_button)
         self.navigation = {}
         for key, title in STEPS:
-            button = create_action_button(title, lambda k=key: host._navigate(k), top, self)
+            button = create_action_button(title, lambda k=key: self.navigate(k), top, self)
             button.setCheckable(True)
             self.navigation[key] = button
         top.addStretch()
         self.model_config_button = QPushButton("服务配置")
         service_menu = QMenu(self.model_config_button)
-        service_menu.addAction("生成模型配置", self.host._configure_model)
-        service_menu.addAction("校验模型配置", lambda: self.perform(self.configure_review_model))
-        service_menu.addAction("生图 API 配置", lambda: self.perform(self.configure_image_model))
-        service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
+        # Each entry is locked only while a task that reads it runs: text tasks use the
+        # generation and review models, image tasks the image API, video tasks ComfyUI.
+        self.service_actions = {
+            "text": [
+                service_menu.addAction(
+                    "生成模型配置", lambda: self.perform(self.configure_text_model)
+                ),
+                service_menu.addAction(
+                    "校验模型配置", lambda: self.perform(self.configure_review_model)
+                ),
+            ],
+            "image": [
+                service_menu.addAction(
+                    "生图 API 配置", lambda: self.perform(self.configure_image_model)
+                )
+            ],
+            "video": [
+                service_menu.addAction("ComfyUI 工作流", lambda: self.perform(self.configure_comfy))
+            ],
+        }
         self.model_config_button.setMenu(service_menu)
         top.addWidget(self.model_config_button)
         self.chat_toggle = create_action_button("收起对话", self.toggle_chat, top, self)
@@ -112,7 +166,7 @@ class Workbench(QWidget):
         self.splitter.addWidget(self.chat)
         self.splitter.addWidget(self.right)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([320, 850])
+        self.splitter.setSizes([CHAT_WIDTH, 850])
         layout.addWidget(self.splitter, 1)
         self.source = SourcePage(self)
         source_scroll = QScrollArea()
@@ -124,6 +178,8 @@ class Workbench(QWidget):
         self.video = ArtifactPage(self, "video_copy", "视频推广文案")
         self.adaptation.addTab(self.novel, "① 小说推文")
         self.adaptation.addTab(self.video, "② 视频推广文案")
+        # Only the visible tab is kept current, so the other one catches up when shown.
+        self.adaptation.currentChanged.connect(self.refresh_adaptation_tab)
         self.add_page("video_adaptation", self.adaptation)
         self.storyboard = ArtifactPage(self, "storyboard", "分镜")
         self.add_page("video_storyboard", self.storyboard)
@@ -132,14 +188,81 @@ class Workbench(QWidget):
         self.right.currentChanged.connect(self.chat.refresh_reference)
         self.specs = PromptPage(self)
         self.add_page("video_prompts", self.specs)
+        # The chat's attachment chip follows what the page on screen shows; a page that has
+        # just been loaded is caught by refresh_shown.
+        for changed in (
+            self.source.changed,
+            self.novel.editor.changed,
+            self.video.editor.changed,
+            self.specs.changed,
+        ):
+            changed.connect(self.chat.refresh_reference)
         self.splitter.splitterMoved.connect(
             lambda *_: self.settings.setValue(self.setting_key("sizes"), self.splitter.sizes())
         )
         self.restore_layout()
         self.refresh()
 
+    # ---- what the app window asks of a feature (core.gui.feature)
+    @property
+    def busy(self) -> bool:
+        return self.tasks.any_busy
+
+    def enter(self) -> None:
+        self.host.status.set_idle(f"输出目录 {self.output_dir}")
+        self.navigate(self.last_page())
+        self.refresh_all()
+
+    def can_leave(self) -> bool:
+        # The video area's latest typing is written to the project, not lost with the window.
+        self.specs.media.remember_draft()
+        return self.resolve_edits()
+
+    def can_close(self) -> bool:
+        self.specs.media.remember_draft()
+        return self.resolve_edits()
+
+    def cancel_selected(self, channel: str | None) -> None:
+        """Stop the task picked in the status bar; the other channels keep running."""
+        if channel in self.tasks.runners:
+            self.tasks.runners[channel].cancel_current()
+            self.host.status.render_task()
+
+    def cancel_all(self) -> None:
+        self.tasks.cancel_all()
+
+    def model_settings_changed(self) -> None:
+        self.refresh_model_status()
+
+    def refresh_all(self) -> None:
+        """Refresh, telling the status bar when the project cannot be read."""
+        try:
+            self.refresh()
+        except (OSError, WorkspaceError) as exc:
+            self.host.status.set_error("无法读取短视频项目", str(exc))
+
+    def last_page(self) -> str:
+        page = self.settings.value(self.setting_key("page"), "video_source")
+        return page if page in self.pages else "video_source"
+
+    # ---- model services
     def model(self) -> str:
-        return self.host.selected_model()
+        return self.text_model
+
+    def configure_text_model(self) -> None:
+        """Addresses and keys are shared with the novel; which service to use is ours."""
+        require(not self.tasks.busy("text"), "PROJECT_BUSY", "请在文字任务结束后修改生成模型配置")
+        dialog = ModelConfigDialog(self.text_model, self)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.text_model = dialog.selected_provider()
+                self.settings.setValue("text_model", self.text_model)
+                self.host.model_settings_saved()
+                self.host.status.show_notice(
+                    "success", "模型配置已保存", "已生效，将用于下一次生成任务"
+                )
+        finally:
+            dialog.deleteLater()
 
     def refresh_model_status(self) -> None:
         provider = self.model()
@@ -153,8 +276,8 @@ class Workbench(QWidget):
         self.model_config_button.setToolTip(f"生成模型：{detail}\n{review_detail}")
 
     def configure_review_model(self) -> None:
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改校验模型配置")
-        dialog = ModelConfigDialog(review_provider(), self, purpose="review")
+        require(not self.tasks.busy("text"), "PROJECT_BUSY", "请在文字任务结束后修改校验模型配置")
+        dialog = ModelConfigDialog(review_provider(), self, profile=REVIEW_SERVICE)
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.refresh_model_status()
@@ -163,8 +286,8 @@ class Workbench(QWidget):
             dialog.deleteLater()
 
     def configure_image_model(self) -> None:
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改生图配置")
-        dialog = ModelConfigDialog("hosted-llm", self, purpose="image")
+        require(not self.tasks.busy("image"), "PROJECT_BUSY", "请在生图任务结束后修改生图配置")
+        dialog = ModelConfigDialog("hosted-llm", self, profile=IMAGE_SERVICE)
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.notice("生图 API 配置已保存")
@@ -177,7 +300,7 @@ class Workbench(QWidget):
     def configure_comfy(self) -> None:
         from .comfy_settings import ComfySettingsDialog
 
-        require(not self.tasks.any_busy, "PROJECT_BUSY", "请在任务结束后修改工作流配置")
+        require(not self.tasks.busy("video"), "PROJECT_BUSY", "请在视频任务结束后修改工作流配置")
         ComfySettingsDialog(self.output_dir, self).exec()
         self.specs.media.refresh()
 
@@ -197,6 +320,7 @@ class Workbench(QWidget):
             "browse_project": "项目打开",
             "project_settings": "项目设置",
             "configure_comfy": "工作流配置",
+            "configure_text_model": "生成模型配置",
             "configure_review_model": "校验模型配置",
             "configure_image_model": "生图 API 配置",
             "generate_images": "资产图片生成",
@@ -265,13 +389,47 @@ class Workbench(QWidget):
         self.host.status.show_notice("success", text)
 
     def submit(self, work: VideoTask, busy_button: QPushButton | None = None) -> None:
-        context = work.task_context
-        self.host._on_video_task_requested(work, busy_button, context.action + "中…")
+        """Run a task on its channel; the status bar lists it and shows how it ended."""
+        channel = self.tasks.admit(work)
+        status = self.host.status
+
+        def ended(**outcome: object) -> None:
+            status.finish_task(channel, work, task_message(work.task_context, **outcome))
+
+        def done() -> None:
+            self.tasks.finish(channel, work)
+            self.refresh_all()
+
+        task = self.tasks.runners[channel].run(
+            work, pass_progress=True, cancel_token=work.token,
+            on_success=lambda value: ended(result=value),
+            on_error=lambda exc: ended(error=exc),
+            on_cancelled=lambda: ended(cancelled=True),
+            on_done=done,
+        )
+        if task is None:
+            self.tasks.finish(channel, work)
+        else:
+            status.start_task(channel, work, lambda: status_text(work))
+            task.signals.progress.connect(
+                lambda _text, fraction: status.update_task(channel, work, fraction),
+                Qt.QueuedConnection,
+            )
+            self.refresh_task_controls()
         self.chat.refresh()
 
     def refresh_task_controls(self) -> None:
+        self.refresh_buttons()
+        if self.showing_shot_tab():
+            self.specs.media.refresh_result()
+            self.specs.refresh_shot_marks()
+
+    def refresh_buttons(self) -> None:
+        """Which buttons can be pressed while tasks run; cheap, so every page is updated."""
         self.project_button.setEnabled(not self.tasks.any_busy)
-        self.model_config_button.setEnabled(not self.tasks.any_busy)
+        for channel, actions in self.service_actions.items():
+            for action in actions:
+                action.setEnabled(not self.tasks.busy(channel))
         for control in [
             self.source.generate_button,
             *[
@@ -283,12 +441,14 @@ class Workbench(QWidget):
                     else [page.generate_button, page.resume_button]
                 )
             ],
-            self.chat.send_button,
         ]:
             control.setEnabled(not self.tasks.busy("text"))
-        self.specs.media.refresh_result()
+        self.chat.refresh_send_button()
         self.specs.images_page.update_controls()
-        self.specs.refresh_image_nodes()
+
+    def showing_shot_tab(self) -> bool:
+        """The video area is on screen only on 提示词 → 镜头."""
+        return self.right.currentWidget() is self.specs and self.specs.on_shot_tab()
 
     def artifact_pages(self) -> list[ArtifactPage | PromptPage]:
         return [self.novel, self.video, self.storyboard, self.specs]
@@ -302,6 +462,15 @@ class Workbench(QWidget):
             if isinstance(page, (ArtifactPage, PromptPage))
             else None
         )
+
+    def shown_pages(self) -> list[SourcePage | ArtifactPage | PromptPage]:
+        """The page on screen; on 改写 only its visible tab."""
+        page = self.right.currentWidget()
+        if page is self.pages["video_source"]:
+            return [self.source]
+        if page is self.adaptation:
+            return [self.adaptation.currentWidget()]
+        return [page] if isinstance(page, (ArtifactPage, PromptPage)) else []
 
     def resolve_page(self, page: SourcePage | ArtifactPage | PromptPage) -> bool:
         if not page.dirty:
@@ -336,32 +505,57 @@ class Workbench(QWidget):
             button.style().unpolish(button)
             button.style().polish(button)
         self.settings.setValue(self.setting_key("page"), key)
-        self.refresh()
+        # Only the page being shown; the chat's attached-shot line follows the page change.
+        self.refresh_shown()
         return True
 
-    def refresh(self) -> None:
-        if self.repository.root.exists():
-            with project_lock(str(self.repository.root / ".v2-project.lock"), timeout=5):
-                self._refresh()
-        else:
-            self._refresh()
-
-    def _refresh(self) -> None:
-        self.refresh_model_status()
-        self.source.refresh()
-        for page in self.artifact_pages():
-            page.refresh()
-        config = self.repository.current("config")
-        self.project_button.setText(
-            (config["content"]["title"] if config else "新项目") or "新项目"
+    @contextmanager
+    def project_reads(self) -> Iterator[None]:
+        """Hold the project lock and let the whole refresh share one read of the project."""
+        root = self.repository.root
+        lock = (
+            project_lock(str(root / ".v2-project.lock"), timeout=5)
+            if root.exists()
+            else nullcontext()
         )
-        self.chat.refresh()
-        self.refresh_task_controls()
+        with lock, shared_project_reads():
+            yield
+
+    def refresh(self) -> None:
+        """After saves, finished tasks or a project change: the page on screen and the chat.
+
+        Hidden pages are left as they are and refresh when shown.
+        """
+        with self.project_reads():
+            self.refresh_model_status()
+            for page in self.shown_pages():
+                page.refresh()
+            config = self.repository.current("config")
+            self.project_button.setText(
+                (config["content"]["title"] if config else "新项目") or "新项目"
+            )
+            self.chat.refresh()
+            # Also the video status: a finished video must show even while prompts are unsaved.
+            self.refresh_task_controls()
+
+    def refresh_shown(self) -> None:
+        with self.project_reads():
+            for page in self.shown_pages():
+                page.refresh()
+            # Pages are never left with unsaved edits, so a shown 镜头 tab has just reloaded
+            # its video area (which also re-marks the shot chips).
+            self.refresh_buttons()
+            # The attachment chip names what the page now shows, such as a draft just loaded.
+            self.chat.refresh_reference()
+
+    def refresh_adaptation_tab(self) -> None:
+        if self.right.currentWidget() is self.adaptation:
+            self.refresh_shown()
 
     def resume_generation(self, stage: str, button: QPushButton | None = None) -> None:
         from core.short_video.v2.runtime import ResumeWork, get_recovery
 
-        require(not self.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        require(not self.tasks.busy("text"), "PROJECT_BUSY", "已有任务在运行")
         if not self.resolve_edits():
             return
         task = get_recovery(self.repository, stage)
@@ -371,7 +565,7 @@ class Workbench(QWidget):
     def start_creation(
         self, stage: str, button: QPushButton | None = None, *, asset_key: str | None = None
     ) -> None:
-        require(not self.host.runner.busy, "PROJECT_BUSY", "已有任务在运行")
+        require(not self.tasks.busy("text"), "PROJECT_BUSY", "已有任务在运行")
         # Save visible edits before freezing any paid request.
         if self.source.dirty and not self.source.save():
             return
@@ -404,7 +598,7 @@ class Workbench(QWidget):
         }[stage]
         if stage in {"novel_copy", "video_copy"}:
             self.adaptation.setCurrentWidget(self.novel if stage == "novel_copy" else self.video)
-        self.host._navigate(target)
+        self.navigate(target)
         self.submit(work, button)
 
     def update_shot_prompts(self) -> None:
@@ -426,7 +620,7 @@ class Workbench(QWidget):
 
     def restore_layout(self) -> None:
         sizes = self.settings.value(self.setting_key("sizes"))
-        self.splitter.setSizes([int(v) for v in sizes] if sizes else [320, 850])
+        self.splitter.setSizes([int(v) for v in sizes] if sizes else [CHAT_WIDTH, 850])
         hidden = self.settings.value(self.setting_key("chat_hidden"), False, type=bool)
         self.chat.setVisible(not hidden)
         self.chat_toggle.setText("展开对话" if hidden else "收起对话")
@@ -507,7 +701,7 @@ class Workbench(QWidget):
         layout.addWidget(model_summary)
 
         def configure_model() -> None:
-            self.host._configure_model()
+            self.perform(self.configure_text_model)
             update_model_summary()
 
         def update_model_summary() -> None:
@@ -518,10 +712,11 @@ class Workbench(QWidget):
         update_model_summary()
         create_action_button("模型配置", configure_model, layout, self)
         layout.addWidget(
-            QLabel("服务商、接口地址、API 密钥和模型与小说创作共用，保存配置后立即生效。")
+            QLabel("各服务商的接口地址、API 密钥和模型与小说创作共用，保存配置后立即生效；"
+                   "短视频用哪个服务商单独记住，不影响小说创作。")
         )
         create_action_button(
-            "返回小说创作", lambda: (dialog.accept(), self.host.switch_mode("novel")), layout, self
+            "返回小说创作", lambda: (dialog.accept(), self.host.open_feature("novel")), layout, self
         )
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dialog.reject)
@@ -569,7 +764,6 @@ class Workbench(QWidget):
         self.chat.input.clear()
         self.restore_layout()
         self.refresh()
-        restored = self.settings.value(self.setting_key("page"), "video_source")
-        self.host._navigate(restored if restored in self.pages else "video_source")
-        self.host.refresh_all()
+        self.navigate(self.last_page())
+        self.refresh_all()
         self.notice("已打开项目")

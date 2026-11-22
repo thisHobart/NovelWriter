@@ -35,11 +35,6 @@ def render_storyboard_text(content: JsonObject, catalog: JsonObject) -> str:
         scenes.append(scene)
         people.extend(characters)
         interval = f"[{seconds(shot['start_ms'])}s–{seconds(shot['end_ms'])}s]"
-        description = list(dict.fromkeys(
-            text.strip() for text in (
-                shot.get("visual_description", ""), shot["action"], shot["visual_prompt_draft"]
-            ) if text.strip()
-        ))
         details = [
             f"{shot['shot_size']}，{shot['camera_movement']}",
             f"场景：{scene}",
@@ -47,7 +42,7 @@ def render_storyboard_text(content: JsonObject, catalog: JsonObject) -> str:
         ]
         if props:
             details.append("道具：" + "、".join(props))
-        details.extend(description)
+        details.append(shot["action"].strip())
         shots.append(f"{interval} 镜头 {shot['order']}：" + "；".join(details))
         sounds = []
         if shot["sound"].strip():
@@ -71,7 +66,7 @@ def render_storyboard_text(content: JsonObject, catalog: JsonObject) -> str:
         "场景概述：" + "；".join(overview),
         "分镜（按时间轴依次呈现，总时长 " + seconds(board["shots"][-1]["end_ms"])
         + " 秒）：\n" + "\n".join(shots),
-        "镜头要求：按各镜标注的景别和运镜执行，按时间点切换镜头，保持动作及空间关系连续。",
+        "镜头要求：按各镜标注的取景范围和运镜执行，按时间点切换镜头，保持动作及空间关系连续。",
         "音频：\n" + "\n".join(audio),
         "限制：不叠加文字、字幕、标志或水印；不使用动画或卡通渲染，避免过度 CG 感；不增加分镜之外的剧情、对白或音效。",
     ])

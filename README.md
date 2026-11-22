@@ -6,6 +6,8 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 项目还提供智能体框架，支持多代理协同、多级质量审阅，以及统一的多后端 LLM 接口，可以将请求路由到托管 API 或本地 CLI 工具。
 
+软件里有两个功能：**小说创作**和**短视频脚本**（网文视频推广）。两者互不连接，各自有页面、后台任务、保存和模型服务选择，可以分别改进；共用的只有模型服务的地址和密钥、后台任务、状态栏等基础部分。代码怎么分、主窗和功能之间约定了什么，见[两个功能的边界](docs/feature_boundaries.md)。
+
 ## 支持的题材类型
 
 - **科幻**：太空歌剧、硬科幻、赛博朋克、时间旅行、末日后、生命朋克
@@ -24,6 +26,7 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 桌面版提供三个模型服务：**第三方 API（OpenAI 兼容）**、**DeepSeek 官方**、**千问官方**。
 在左侧底部的「模型服务」下拉框选择服务，点击「配置」填写地址和密钥，通过「获取模型」查询列表后选择，或手动输入模型名，再保存配置。也保留 `.env` 配置方式。
 当前选项会立即用于下一次生成任务，保存作品参数后也会记住该选项。
+短视频在顶部「服务配置 → 生成模型配置」单独选择服务商，不影响小说；各服务商的地址、密钥和模型两边共用。
 
 将项目中的 `.env.example` 复制为 `.env`，按需填写后重启程序。
 源码运行时放在项目根目录；EXE 运行时放在 EXE 同目录。
@@ -238,33 +241,33 @@ NovelWriter 提供小说创作与短视频脚本两个工作区。
 
 通过界面标签页逐步完成创作：
 
-1. **作品参数（`core/gui/pages/parameters_page.py`）：**
+1. **作品参数（`core/gui/pages/novel/parameters_page.py`）：**
    * 选择题材、子题材、故事篇幅和结构
    * 配置人物性别比例和题材专属选项
    * 手动设置基础故事参数
 
-2. **生成世界观设定（`core/gui/pages/lore_page.py`）：**
+2. **生成世界观设定（`core/gui/pages/novel/lore_page.py`）：**
    * 根据作品参数生成势力和组织
    * 创建带有详细背景、关系的人物
    * 构建完整的世界观元素
    * 根据题材生成具有叙事作用的人物背景
 
-3. **故事结构（`core/gui/pages/structure_page.py`）：**
+3. **故事结构（`core/gui/pages/novel/structure_page.py`）：**
    * 创建人物弧光和势力弧光
    * 使用选定的叙事框架生成高层故事结构
    * 为每一幕或每一部分设计详细情节大纲
 
-4. **场景规划（`core/gui/pages/scene_plan_page.py`）：**
+4. **场景规划（`core/gui/pages/novel/scene_plan_page.py`）：**
    * 根据故事结构生成章节大纲
    * 创建包含人物互动的详细场景计划
 
-5. **章节写作（`core/gui/pages/chapter_writing_page.py`）：**
+5. **章节写作（`core/gui/pages/novel/chapter_writing_page.py`）：**
    * 根据场景计划逐步生成章节正文
    * 单独审阅和改进每个章节
 
 ### 小说生成与检查
 
-小说页面通过 `core/gui/services/step_runner.py` 调用现有阶段管线；完整流程和继续操作依据磁盘产物与契约判断进度。章节生成使用 `agents/writing/chapter_writing_agent.py` 和 `core/generation/chapter_generation_loop.py`，复用现有质量检查与待复审处理。
+小说页面通过 `core/gui/pages/novel/services/step_runner.py` 调用现有阶段管线；完整流程和继续操作依据磁盘产物与契约判断进度。章节生成使用 `agents/writing/chapter_writing_agent.py` 和 `core/generation/chapter_generation_loop.py`，复用现有质量检查与待复审处理。
 
 ### 短视频脚本
 
@@ -274,12 +277,16 @@ NovelWriter 提供小说创作与短视频脚本两个工作区。
 
 ## 技术架构
 
-- `core/gui/`：PySide6 界面、后台任务和页面路由。
+- `core/gui/main_window.py`：主窗，只放置和切换两个功能。
+- `core/gui/pages/novel/`：小说创作的工作区、步骤栏和各阶段页面。
+- `core/gui/pages/short_video/`：短视频工作区和页面。
+- `core/gui/`（其余）：两个功能共用的主题、控件、后台任务和模型服务配置窗口。
+- `core/common/`：两个功能共用的停止信号、项目文件锁和模型服务配置读写。
 - `core/generation/`：小说各阶段生成、检查与保存。
 - `core/short_video/v2/`：短视频项目、Agent Loop、提示词、聊天及导出。
 - `agents/`：仍在使用的基础、审阅和章节写作智能体。
 - `core/config/`、`core/utils/`：配置与工具函数。
-- `tests/`：当前行为、存储、模型边界及界面回归测试。
+- `tests/common/`、`tests/novel/`、`tests/short_video/`：按功能分开的回归测试。
 
 ### 目录结构
 
@@ -291,13 +298,20 @@ NovelWriter/
 │   ├── review/
 │   └── writing/
 ├── core/
+│   ├── common/
 │   ├── config/
 │   ├── generation/
 │   ├── gui/
+│   │   └── pages/
+│   │       ├── novel/
+│   │       └── short_video/
 │   ├── short_video/v2/
 │   └── utils/
 ├── docs/
 └── tests/
+    ├── common/
+    ├── novel/
+    └── short_video/
 ```
 
 作品保存在用户选择的输出目录，具体位置与格式见[项目文件](./docs/file_formats.md)。

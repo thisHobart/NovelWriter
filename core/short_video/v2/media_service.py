@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import httpx
 
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 
 from .comfy_mcp import ComfyMCPClient
 from .contracts import JsonObject, ProgressReporter
@@ -151,9 +151,15 @@ class MediaWork(TaskTracker):
                     "created_at": timestamp(),
                 }
                 repository.save_job(job)
+        command = job["input_snapshot"]
+        images = command.get("images")
+        require(
+            isinstance(images, dict) and bool(images) and bool(command.get("workflow_id")),
+            "INVALID_INPUT",
+            "视频任务缺少当前工作流或图片输入快照，请重新生成",
+        )
         if job["status"] == "succeeded":
             return job
-        command = job["input_snapshot"]
         self.update_context(target="ComfyUI", phase="连接服务")
         client = ComfyMCPClient(command["base_url"], repository, transport=self.transport)
         try:
@@ -163,30 +169,24 @@ class MediaWork(TaskTracker):
                     self.token.raise_if_cancelled()
                     self.update_context(phase="工作流校验")
                     report("正在校验 ComfyUI 工作流…", -1)
+                    template = parse_video_workflow(command["workflow"])
+                    workflow = template.bind(
+                        {node_id: image["image_id"] for node_id, image in images.items()},
+                        command["prompt"],
+                        job["job_id"],
+                        command.get("parameters", {}),
+                    )
                     information = await client.call("comfy_status")
-                    validate_nodes(command["workflow"], information["nodes"])
+                    validate_nodes(workflow, information["nodes"])
                     self.update_context(phase="上传参考图片")
                     report("正在上传参考图片…", -1)
-                    if "images" in command:
-                        images = command["images"]
-                    else:
-                        # 已提交的旧单图任务仍可按原始快照继续执行。
-                        images = {command["image_node"]: command["image"]}
-                    uploaded_images = {}
                     for node_id, image in images.items():
                         self.token.raise_if_cancelled()
                         uploaded = await client.call(
                             "comfy_upload_image", {"image_id": image["image_id"]}
                         )
-                        uploaded_images[node_id] = uploaded["image"]
+                        workflow[node_id]["inputs"]["image"] = uploaded["image"]
                     self.token.raise_if_cancelled()
-                    template = parse_video_workflow(command["workflow"])
-                    workflow = template.bind(
-                        uploaded_images,
-                        command["prompt"],
-                        job["job_id"],
-                        command.get("parameters", {}),
-                    )
                     job["submitted_workflow"] = workflow
                     job["status"] = "submitting"
                     repository.save_job(job)

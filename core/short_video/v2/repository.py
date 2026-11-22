@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
@@ -14,7 +16,7 @@ from pathlib import Path
 
 from filelock import Timeout
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 from .contracts import ArtifactRecord, JsonObject, OperationResult
 from .models import (
@@ -34,6 +36,27 @@ from .storage import atomic_write_text
 from .validation import SPEC_FIELDS, bind_view_prompts, validate_content
 
 logger = logging.getLogger(__name__)
+
+_shared = threading.local()
+
+
+@contextmanager
+def shared_project_reads() -> Iterator[None]:
+    """Let one interface refresh read each project file once and share the result.
+
+    Inside the period every reader on this thread gets the same parsed state, so readers must
+    not change it. Each read still compares the file's modification time and size and reads
+    again when they differ; writes always read their own copy and drop the shared one. Other
+    threads (background tasks) are unaffected. Periods nest; the outermost one ends sharing.
+    """
+    outer = getattr(_shared, "states", None)
+    if outer is None:
+        _shared.states = {}
+    try:
+        yield
+    finally:
+        if outer is None:
+            _shared.states = None
 
 
 class ProjectRepository:
@@ -60,6 +83,30 @@ class ProjectRepository:
         }
 
     def load(self) -> JsonObject:
+        states = getattr(_shared, "states", None)
+        if states is None:
+            return self._read()
+        try:
+            info = self.path.stat()
+        except OSError:
+            return self._read()
+        stamp = (info.st_mtime_ns, info.st_size)
+        cached = states.get(self._shared_key())
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        state = self._read()
+        states[self._shared_key()] = (stamp, state)
+        return state
+
+    def _shared_key(self) -> str:
+        return os.path.normcase(str(self.path))
+
+    def _forget_shared(self) -> None:
+        states = getattr(_shared, "states", None)
+        if states is not None:
+            states.pop(self._shared_key(), None)
+
+    def _read(self) -> JsonObject:
         if not self.path.exists():
             return self.empty()
         try:
@@ -309,7 +356,8 @@ class ProjectRepository:
     def transaction(self, expected_revision: int | None = None) -> Iterator[JsonObject]:
         self.root.mkdir(parents=True, exist_ok=True)
         with project_lock(str(self.root / ".v2-project.lock"), timeout=5):
-            state = self.load()
+            # Writes never use the shared read: the state is changed in place below.
+            state = self._read()
             if expected_revision is not None:
                 require(
                     type(expected_revision) is int and expected_revision == state["revision"],
@@ -325,6 +373,7 @@ class ProjectRepository:
             state["revision"] += 1
             if not state["project_id"]:
                 state["project_id"] = identity("project")
+            self._forget_shared()
             atomic_write_text(self.path, encode(state))
             self._delete_unindexed_files(state)
 

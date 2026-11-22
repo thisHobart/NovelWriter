@@ -24,6 +24,14 @@ WARN = "#B4761D"
 DANGER = "#B3392F"
 DANGER_HOVER = "#9A3129"
 
+
+
+def tint(color: str, alpha: int = 26) -> str:
+    """语义色的浅底（warn / danger / success 的提示条、标签底色），alpha 取 0–255。"""
+    red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
 # --- 尺寸 -----------------------------------------------------------------
 RAIL_WIDTH = 248
 HEADER_HEIGHT = 64

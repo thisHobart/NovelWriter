@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 from .contracts import JsonObject
 from .models import WorkspaceError, encode, require, timestamp

@@ -1,12 +1,12 @@
 # 当前工作流程
 
-更新日期：2026-11-03。界面入口为 `core/gui/app.py` 和 `core/gui/main_window.py`，通过后台任务运行生成，完成后刷新编辑区。
+更新日期：2026-11-03。界面入口为 `core/gui/app.py` 和 `core/gui/main_window.py`。主窗只放置和切换两个功能，两个功能各自运行后台任务、刷新编辑区，边界见[两个功能的边界](feature_boundaries.md)。
 
 ## 小说创作
 
 作品参数 → 世界设定 → 故事结构 → 场景规划 → 章节撰写。
 
-- 页面位于 `core/gui/pages/`，通过 `core/gui/services/step_runner.py` 调用 `core/generation/stage_pipeline.py`。
+- 工作区和页面位于 `core/gui/pages/novel/`，通过 `core/gui/pages/novel/services/step_runner.py` 调用 `core/generation/stage_pipeline.py`。
 - 阶段生成使用任务启动时的参数快照。完整工作流及继续操作依据作品目录、依赖和契约判断下一步，不依赖已删除的多智能体总编排器或 checkpoint 服务。
 - 世界设定生成、直接编辑与恢复见[参数一致性](parameter_consistency.md)和[编辑说明](lore_editing.md)。
 - 章节写作使用现有章节循环、质量闸门及待复审处理，小说功能与短视频工作流分别执行。

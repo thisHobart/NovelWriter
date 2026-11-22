@@ -1,6 +1,6 @@
 # 网文视频推广工作台：接口设计
 
-文档版本：2.23；日期：2026-11-16。本文维护实际调用入口、数据模型与错误契约。
+文档版本：2.24；日期：2026-11-20。本文维护实际调用入口、数据模型与错误契约。
 
 关联：[架构设计](architecture.md)、[交互设计](interaction.md)、[开发文档](development.md)。第 1～9 节描述已有本地 Python 文字服务；第 10 节记录已实现的多工作流视频服务和内置 MCP 工具；第11节记录已实现的可选 Images API 资产生图。
 
@@ -21,8 +21,9 @@
 | 继续未完成任务 | get_recovery(repository, stage) → ResumeWork(repository, task_id) | 校验原任务输入与目标，从检查点继续；不新建生成任务 |
 | 查看／停止 | repository.load()["runs"] / 所选通道 runner.cancel_current() | 页面读取状态，CancelToken 传播停止请求；保留已落盘内容 |
 | 导出 | ExportService.snapshot / export(destination, *, keys, allow_partial=False, overwrite=False) | 仅接受 .md，其他扩展名返回 INVALID_INPUT；本地验证并输出所选内容，不以 confirmation 为门槛 |
-| 聊天讨论 | ConversationService.prepare / execute | 用户消息、有效历史及可选的当前分镜只读上下文；回复供手动修改，不自动写回；保留项目隔离和手动重试 |
+| 聊天讨论 | ConversationService.prepare / preview / execute；chat_attachment(workbench, page, question) | 用户消息、有效历史及当前页面的只读附带内容（分镜、原文、改写、人物／场景／道具提示词、镜头视频设置）；回复供手动修改，不自动写回；保留项目隔离和手动重试 |
 | 聊天修改多个镜头 | ChatPanel.send_edit(items) → ConversationService.prepare(..., storyboard_edit=...) → ChatWork；ShotEditPanel.apply / undo_apply | 回复中的 affected_shots 清单选镜，revised_shots 逐镜检查后由用户应用到编辑稿（未保存），可撤销 |
+| 镜头检查行 | feedback.record_check(repository, record, state, *, shot_index=None) → {status, summary, issues, stale} | status 为 passed／issues／other_shots／incomplete／unchecked；按 target_path 的 shots[i] 筛出本镜问题，issues 是可读的问题加建议；stale 为已更新的来源名称。record_message 保持原有一行文字 |
 
 表中省略号表示省略可选参数，不是待开发 API；实际签名以对应源码为准。原语义占位接口 save_content／generate／continue_from_current／get_run／cancel_run 不作为可调用方法。confirm/rebind、UI 手动检查与 human 记录、目录确认、单独编译确认均不在当前界面路径中。必要校验、关系解析和编译由内部调用完成。
 
@@ -34,7 +35,7 @@
 
 外部质量检查函数为 `review.check_candidate(command,candidate,send,repository,*,repair=None) -> QualityCheckResult(passed: bool, feedback: str, issue_count: int = 0, issues: list = [])`。command提供阶段、原始要求和必要上下文；candidate为最新合法内容。检查器只执行单次审阅并返回结果，不重新生成候选。Agent Loop在审阅JSON／字段／枚举／引用无效时，将error和原始response存入checkpoint.review_repair，清除待解析回复后，用相同校验API反馈修复一次；修复请求由原审阅任务加本轮错误和回复构建，不递归拼接历史请求。修复计数由检查点中的review_repair表示，恢复不重置；合法审阅完成后清除，下一稿独立计数。`quality_check`注入点继续用于检查替身，不新增服务层。
 
-Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。新生成成功结果的 `review_status` 为 passed（通过）或 issues（检查仍有问题）；审阅网络失败进入可恢复失败，不作为成功结果提交。历史 unavailable／incomplete 状态仅兼容读取。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
+Agent Loop 对通过结果立即结束；未通过且尚有质量重试次数时，用原始任务／上下文＋最新候选＋本次反馈重新生成；达到上限正常结束并输出最新候选。新生成成功结果的 `review_status` 为 passed（通过）或 issues（检查仍有问题）；审阅网络失败进入可恢复失败，不作为成功结果提交。`retries_used` 只记录质量修改生成次数，不包含首次生成与格式修复。结果仍可用现有编辑器保存、继续、导出。
 
 分镜任务包含目录与分镜两个 Agent Loop；资产任务逐项运行，不按累计调用次数或耗时停止。新任务不含 max_calls、seconds；calls_used 仅记录调用次数，历史限制字段不参与执行判断。长文分段计划已移除，旧项目 plans/ 目录中的计划文件不再读取或继续。
 
@@ -63,19 +64,22 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - `runs[].snapshot` 保存两份模型快照；`runs[].review_result={passed, feedback, issue_count, issues, candidate_id}` 保存最终完整校验结果及具体字段／原因／建议，绑定实际采用稿。UI 继续使用短摘要，不新增报告页面。
 - 运行格式为2；旧格式检查点通过现有失效机制提示重新生成，已保存当前稿不变。
 
-### 2.2 聊天与分镜只读上下文
+### 2.2 聊天与页面附带内容
 
-- `ConversationService.prepare(conversation_id, user_text, *, request_id=None, storyboard_context=None, storyboard_edit=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息和可选的分镜上下文，调用上下文纯函数；冻结实际历史 ID、context_hash、镜头标注、项目与会话修订号、模型快照和 prompt，不提前落盘 pending。
-- `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。
-- `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带轻量 `storyboard_reference={shot_id, storyboard_id, order, unsaved}`，修改镜头的请求另带 `storyboard_edit={shot_ids, base}`（base 为各镜请求时的内容指纹，不含序号与时间轴），不将完整资料写入消息正文，也不保存检查反馈或候选。
-- 修改镜头：`storyboard_edit={shots: 编辑稿中所选镜头, entities: 本版资产目录}`，须与 `storyboard_context.edit_request` 的镜头一致；命令另带 `edit_check` 供回复检查。`execute` 收到回复后用 `reply_problems` 检查 revised_shots，有问题时把上次回复和问题附在原 prompt 后再请求 1 次，修正后通过的镜头更多（或一样多而问题更少）才采用，否则保存第一次回复。
-- [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)：`reply_blocks`／`display_text` 读取并隐藏回复末尾的 ```affected_shots``` 与 ```revised_shots``` JSON 代码块；`affected_shots(content, shots)` 按 shot_id（未知时按镜号）对应编辑稿，丢弃不存在与重复的镜头；`revised_shots(content, base, entities)` 要求 EDIT_FIELDS 全部字段，`merge_shot` 保留 shot_id、原文与视频块引用，丢弃编辑中的自由文字，再用 `validation.validate_shot` 与正整数时长检查；`shot_changes` 给出（列名，原来，改成）；`shot_fingerprint` 忽略 order／start_ms／end_ms。`StoryboardEditor.apply_shots(shots)` 按 shot_id 替换并标记底色，`restore(content, marked)` 用于撤销，`set_content` 清除标记。
-- `build_conversation_context(..., storyboard_context=None)` 是纯函数，48,000 字符默认上限包含系统规则、序列化消息和本轮附带资料；按最早完整轮次裁剪副本，保留本轮完整消息与上下文。仍超限返回 CONTEXT_TOO_LARGE，不截断镜头／问题，不删除磁盘历史。
-- `StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_chat_context(repository, draft, shot_id, storyboard, *, unsaved=False)` 读取本版分镜绑定的资料，再调用纯函数 `build_storyboard_chat_context(draft, shot_id, storyboard, records, *, unsaved=False, max_source_chars=6000, max_outline_chars=12000, edit_items=None)` 组装本镜、紧邻前后镜、`shot_count` 与其余镜头的 `storyboard_outline`（每条带 shot_id）、`asset_catalog`（全部对象的编号、类型、名称、别名、仅声音标记与状态，不含设定）、资产基础设定及本镜引用的有效原文；传入 `edit_items=[{shot_id, fields, change}]` 时另加按镜号排序的 `edit_request` 与完整的 `edit_shots`，这些镜头不再列入概要，原文片段也包含它们的引用；不带整组视图提示词或原文全文。概要每镜含镜号、时长、场景／人物／道具（名称／状态，人物列编辑过时为原样文字）、动作和对白旁白，不含景别、运镜和画面提示词；超出预算依次截取动作与对白前60字、只留资产、从离本镜最远处整镜省略，并写入 `missing`。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由本镜、邻镜和原文覆盖。
+- `ConversationService.prepare(conversation_id, user_text, *, request_id=None, attachment=None, storyboard_edit=None)`：只读预检；读取会话、选择已完成轮次、加入本轮临时消息和可选的附带资料，调用上下文纯函数；冻结实际历史 ID、context_hash、附带标注（`storyboard_reference`／`storyboard_edit`／`attached`）、项目与会话修订号、模型快照和请求，不提前落盘 pending。`preview(conversation_id, user_text, *, attachment=None)` 返回同样组装的 `ConversationContext`，不保存也不发送；输入框为空时用“（输入框里的消息）”占位。
+- `execute(command, *, token=None, report=None, on_context=None)`：生成锁和 request_id 去重后，保存本轮用户消息，再发送 1 次请求；保存最终回复和运行终态。保存失败、配置变化或修订冲突不继续模型请求。控制台跟踪（NOVELWRITER_LLM_TRACE）的请求头带 `storyboard_reference` 和 `attached`。
+- 附带资料 `attachment={page, label, material, notes, edit}`：page 为 storyboard／source／novel_copy／video_copy／asset_prompts／shot_video（`page_material.ATTACHING_PAGES`），label 是界面和历史里的标注，material 是给模型读的文字，notes 是省略或缺失的说明；只有分镜的另带 `reference`（选中镜头）与 `edit`／`edit_shot_ids`（按清单修改）。`validate_attachment` 拒绝其他页面带 reference 或 edit。
+- `asset_prompts` 附带资料可带 `asset_kind`（character／scene／prop）。请求预览和发送共用 `page_rules`，在通用资产规则后只追加该类型的讨论规则。历史消息仍只保存页面与附带标签。
+- `ConversationStore` 是唯一会话文件读写入口；保存 user／assistant 文本和状态。用户消息可带 `storyboard_reference={shot_id, storyboard_id, order, unsaved, shot_ids?}`（shot_ids 为发送时的镜头顺序），修改镜头的请求另带 `storyboard_edit={shot_ids, base}`（base 为各镜请求时的内容指纹，不含序号与时间轴），其他页面带 `attached={page, label}`（label 不超过 80 字，`validate_attached` 检查）；不将完整资料写入消息正文，也不保存检查反馈或候选。
+- 修改镜头：`storyboard_edit={shots: 编辑稿中所选镜头, entities: 本版资产目录}`，须与附带资料的 `edit_shot_ids` 一致；命令另带 `edit_check`（含发送时的镜头顺序）供回复检查。`execute` 收到回复后用 `reply_problems` 检查 revised_shots，有问题时作为同一对话的下一轮再请求 1 次（原请求 + 上次回复 + `repair_request` 列出的问题），修正后通过的镜头更多（或一样多而问题更少）才采用，否则保存第一次回复。
+- [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)：`reply_blocks`／`display_text` 读取并隐藏回复末尾的 ```affected_shots``` 与 ```revised_shots``` JSON 代码块；`history_text` 在之后的请求里把代码块换成一句说明（如“〔列出了受影响的镜头：第 2–4 镜〕”）。`affected_shots(content, shots, order=None)` 按“镜号”对应编辑稿（order 为发送时的镜头顺序），丢弃不存在与重复的镜头，每项 `{shot_id, order, fields, change}`，“建议时长”（秒）转成 `duration_ms`（取整后至少 100 的毫秒数，其他值忽略）；`revised_shots(content, base, entities, order=None)` 读取镜号、取景范围、镜头运动、场景、人物、道具、动作、对白、旁白、音效、时长，场景／人物／道具和说话人按“名称（状态）”对应资产目录（名称按 `asset_names`，同名对象写“寻井人·2”，也认别名），对不上时给出原因。`merge_shot` 保留 shot_id、原文与视频块引用，丢弃编辑中的自由文字，再用 `validation.validate_shot` 与正整数时长检查；`shot_changes` 给出（列名，原来，改成）；`shot_fingerprint` 忽略 order／start_ms／end_ms。`StoryboardEditor.apply_shots(shots)` 按 shot_id 替换并标记底色。`restore(content, marked)` 用于撤销。
+- `build_conversation_context(history, current_message_id, *, system_rules=DEFAULT_SYSTEM_RULES, max_context_chars=48000, attachment=None)` 是纯函数，返回 `ConversationContext(request, messages, omitted_message_ids, shortened_reply_ids, omitted_reply_ids)`：system 消息按通用要求、本页要求（`PAGE_RULES[page]`）、输出格式（只有分镜）分节，之后是交替的历史轮次，最后的 user 消息为附带资料 + “【我的问题】” + 问题；历史里的用户消息前加“〔当时附带……〕”。48,000 字符默认上限包含规则、历史和本轮附带资料；超出时按较早回复缩成开头（`reply_opening`）、省略较早回复、最近一轮回复、丢弃最早整轮的顺序裁剪副本，用户消息不删。仍超限返回 CONTEXT_TOO_LARGE，不截断附带资料或问题，不删除磁盘历史。
+- 分镜：`StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_material(repository, draft, shot_id, storyboard, *, unsaved=False, question="", edit_items=None)` 只读取本版分镜绑定的资料（不用更新的草稿），再调用纯函数 `storyboard_material(draft, shot_id, storyboard, records, *, unsaved=False, question="", edit_items=None, budget=STORYBOARD_CHARS)`：整份分镜按表单字段写成文字（`shot_text`），附全片合计与时长约束（`TOTAL_LIMIT_MS`=60000、`USUAL_SHOT_MS`=[5000, 8000]、`MODEL_SHOT_MS`=[4000, 15000]，常量在 `validation.py`）、当前选中与消息提到的镜号（`mentioned_shots`）、资产目录（名称、状态、别名、仅出声标记，不含设定）、焦点镜头用到的资产基础设定（`SPEC_CHARS` 8,000 字内）、引用的原文和项目要求（`requirement_rows`）；传入 `edit_items=[{shot_id, fields, change, duration_ms?}]` 时另加“本轮要修改的镜头”。超出 budget（20,000 字）时 `fit_shots` 保持焦点镜头及其前后镜完整，其余按 `LEVEL_NOTES` 从最远处逐级缩短并写入 notes。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由分镜和原文覆盖。
+- 其他页面（[page_material](../../core/short_video/v2/page_material.py)，页面读出纯值后调用）：`source_material(article, ranges, config, *, unsaved)` 为改编范围内的原文（`PAGE_SOURCE_CHARS` 20,000 字封顶）加全部项目要求；`copy_material(stage, rows, config, *, unsaved)` 的 rows 来自 `CopyEditor.form_rows()`，即（名称, 文字）或（块标题, None），项目要求只取 `request_config(stage, …)` 的字段；`asset_prompt_material(spec, entities, current_view, *, unsaved)` 的 spec 为 `PromptEditor.value()`（含正在显示视图的修改）；`shot_video_material(shots, index, entities, video)` 的 video 来自 `MediaPreview.chat_inputs()`：`{prompt, pictures: [{reference, name}], frames: [{label, name}], settings: [{label, value, role}]}`，提示词里没有对应图片的 <Picture N> 写进 notes。界面入口在 [chat_attachments](../../core/gui/pages/short_video/chat_attachments.py)：`chat_offer(page) -> ChatOffer | None` 只读控件，给出标签、按钮写法和不能附带的原因；`chat_attachment(workbench, page, question="")` 组装上述资料。
 - 原文区间限制在绑定选区。镜头的原文坐标由模型写出，常差几个字，`sentence_range(value, start, end, lo, hi)` 将首尾各移到最近的句子边界（句号、问号、叹号、省略号或换行之后，句末右引号／括号归上一句）：向内最多10字，向外最多150字，不越出选区；片段落在一句之内时取整句，150字内无标点时保留原坐标。之后合并重叠或只隔空白的片段，`source_segments` 只含文字，不带原文编号和起止坐标；按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
-- 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。“重试上次问题”只填回输入框，必须再次点击发送，并按当前选择重新取得上下文。聊天只调用生成模型，不进入质量检查或自动写回。
+- 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。聊天只调用生成模型，不进入质量检查或自动写回。
 
-消息存取与历史筛选由 [ConversationStore](../../core/short_video/v2/conversation_store.py) 实现，上下文构造见 [conversation_context.py](../../core/short_video/v2/conversation_context.py)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 将完整 prompt 作为一次 user 消息提交，模型 SDK 不另行读取会话文件。
+消息存取与历史筛选由 [ConversationStore](../../core/short_video/v2/conversation_store.py) 实现，上下文构造见 [conversation_context.py](../../core/short_video/v2/conversation_context.py)。普通聊天使用完整返回的文字，不提供流式 UI；ScriptLLM 把请求的消息列表（system、交替的历史轮次、本轮 user）原样提交，模型 SDK 不另行读取会话文件。
 
 ### 2.3 镜头资产只读查询
 
@@ -200,21 +204,19 @@ schema最多反馈10项、预览最多200字符；syntax沿用行列、偏移及
 
 Storyboard 内容为 `shots[]`；视频文案和资产目录绑定在记录外壳 `dependency_refs.video_copy`／`asset_catalog`。每镜字段如下。
 
-| 字段 | 类型与规则 | 表格显示 |
+| 字段 | 类型与规则 | 界面显示 |
 |---|---|---|
 | shot_id / order | 稳定 ID；order 连续正整数 | 镜号：按当前顺序显示，改顺序不改 ID |
-| duration_ms | 正整数 | 时间轴及可选时长列 |
-| start_ms / end_ms | 由代码按 order 累计，不让模型随意填写 | 时间轴 `[起点,终点)` |
-| shot_size | 远景／全景／中景／近景／特写／自定义 | 景别 |
-| camera_movement | string | 镜头运动 |
-| scene_ref | asset_id,variant_id；有效场景 | 放入扩展场景列／元数据 |
-| characters | 人物引用数组，允许空 | 人物：显示姓名与状态 |
-| props | 道具引用数组，允许空 | 放入扩展道具列／元数据 |
-| action | 非空 string | 动作 |
-| dialogue / narration | 对白数组及 string；允许空 | 对白列以“人物：”“旁白：”区分 |
-| sound | string，允许空 | 音效 |
-| visual_description | 可选 string | 补充画面描述，缺失时文本编排使用动作与画面草稿 |
-| visual_prompt_draft | 非空 string | 画面生成提示词草稿 |
+| duration_ms | 正整数 | 时长列（如“8 秒”），短于 4 秒或超过 15 秒标红、不在 5–8 秒内标黄；表单 0.5 秒一档，可设 1–15 秒 |
+| start_ms / end_ms | 由代码按 order 累计，不让模型随意填写 | 时长格提示与表单标题里的时间段 `[起点,终点)` |
+| shot_size | 远景／全景／中景／近景／特写／主观视角／自定义 | 取景范围列与表单 |
+| camera_movement | string | 表单“镜头运动” |
+| scene_ref | asset_id,variant_id；有效场景 | 表单只读显示场景名 |
+| characters | 人物引用数组，允许空 | 人物列与表单：显示名字 |
+| props | 道具引用数组，允许空 | 表单只读显示道具名 |
+| action | 非空 string | 动作列（只显示一行）与表单 |
+| dialogue / narration | 对白数组及 string；允许空 | 表单“对白（含旁白）”每行一条，以“人物：”“旁白：”区分 |
+| sound | string，允许空 | 表单“音效” |
 | video_block_refs / source_refs | 视频块引用与原文引用 | 元数据，可展开来源 |
 | duration_exception_reason | string 或 null | 超出建议区间时可空，不作为继续操作的门槛，作为 warning 处置 |
 
@@ -228,7 +230,7 @@ storyboard 的 prepare 根据当前配置 storyboard_skill_id 明确选择性加
 
 PromptBundle：`storyboard_version_id,asset_spec_refs[],shots[{shot_id,resolved_prompt,negative_prompt,video_motion_prompt?,video_prompt_binding?,asset_refs,source_refs}]`。编译时验证资产设定版本和变体，无法解析的引用返回具体内容问题；已生成文字仍可按所选范围导出并说明缺项。video_motion_prompt 由视频面板“AI 编写”生成完整视频正文；video_prompt_binding 由代码记录工作流指纹、实际图片与角色／编号／来源、文件哈希及视频时长。文字编排和视频提示词生成都不提交视频模型；提交仍由独立 MediaWork 执行。
 
-PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 PromptBundle 作为完整可编辑结果。缺少该结果时，在内存中将当前分镜的 visual_prompt_draft 显示为只读、可复制的画面草稿，负面提示词留空；不写入 PromptBundle，不作为完整提示词导出。状态显示缺少的资产设定数，生成按钮复用 start_creation("prompts") 补齐资产并编排；用户查看或切换草稿不触发模型请求和项目写入。
+PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 PromptBundle 作为完整可编辑结果。缺少结果时仍可选中和查看分镜，正负提示词编辑器在编排完成后显示。状态显示缺少的资产设定数。生成按钮复用 start_creation("prompts") 补齐资产，并根据取景范围、运镜、动作和资产设定编排。
 
 原文、配置、选区、文案、目录、分镜、阶段模板及各项提示词均按内容键只保留当前一份；人物／场景／道具按 asset_id＋variant_id 分别保存。删除 versions／select 接口和 parent_id 参数。替换后递归清理依赖旧记录的下游及文件；is_current 对所有内容核对当前指针与完整来源链。未完成运行可保留一个最新临时候选与必要检查点；停止或可恢复失败后继续使用，成功、失效或被替代后清理。冲突及停止均不覆盖已有当前内容。
 
@@ -239,7 +241,7 @@ PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 Pro
 
 `storyboard_text.render_storyboard_text(content, catalog) -> str` 是无 I/O 的文本编排函数；输入为结构化分镜 content 和对应资产目录 content。重算连续时间轴，以整数毫秒转为精确秒数，按“视觉风格／场景概述／分镜／镜头要求／音频／限制”输出整段中文，不显示内部编号和来源坐标。
 
-时间段、镜号、景别、运镜、人物与状态、场景、道具、画面、动作及各镜音频均保留。无出镜人物与画外对白分开表达，未指定音频不补写音乐。可选 visual_description 缺失时使用已有动作及 visual_prompt_draft。不会调用模型重写或改变保存数据。
+复制文本包含时间段、镜号、取景范围、运镜、人物与状态、场景、道具、动作及各镜音频。无出镜人物与画外对白分开表达，未指定音频不补写音乐。不会调用模型重写或改变保存数据。
 
 分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
@@ -312,11 +314,11 @@ head_front 使用正面头部特写；body_front 正面站立全身；body_side 
 
 第 9.4～9.6 节为用户原始模板，不是最终交付。当前 asset_spec 阶段由 LLM 一次生成具体人物／场景／道具字段及全部计划视图的正负提示词，保存 source_refs 与 inferred_fields；顶层正负提示词为空，具体文字位于 views。finalize_asset_prompts 仅校验完整性、排序并维护内部指纹，不用模板覆盖文字。compile_shots 根据分镜与已有设定生成镜头提示词，用户优化镜头时通过 shot_prompts 调用模型。禁止遗留未替换变量，禁止把文章没有的信息伪装成原文事实。旧模板编译、单独视图优化和视频运动文字生成分支已删除。
 
-video_prompt 使用专业 AI 视频导演、电影摄影师和 MiniMax H3 提示词工程师角色。VIDEO_PROMPT_RULES 统一约定“参考图 → 场景与构图 → 分阶段动作 → 摄影机运动 → 光影与风格 → 声音 → 负面约束”，完整中文正文写入所选镜头的 video_motion_prompt，包含声音和负面约束，一次复制。现有 resolved_prompt／negative_prompt、精确引用和其他镜头保持不变。前置为已保存分镜、当前有效镜头提示词及实际选图；不齐时明确提示，不隐式生成前置内容。snapshot_video_inputs 依据工作流实际接线压缩 Picture 编号，首尾帧保持角色名称，校验文件哈希与参数；只有图片来源匹配本镜资产、状态和目录时附加资产名和视图，不按文件名猜测。
+video_prompt 开头逐张定义实际选图用途，然后写总体设定及分镜需要的声音和限制，最后按时间描述动作和画面变化。图片编号和首尾帧名称只出现在开头。完整中文正文写入所选镜头的 video_motion_prompt，可一次复制。前置为已保存分镜、当前有效镜头提示词及实际选图。snapshot_video_inputs 依据工作流实际接线压缩 Picture 编号，首尾帧保持角色名称，校验文件哈希与参数。video_prompt_messages 在生成侧发送时按绑定读取图片，附到同一条用户消息，选图原始文件合计上限为 20 MiB。独立审阅模型接收选图信息及正文。
 
 新阶段沿用已有 Agent Loop、独立校验模型、一次质量修订及步骤检查点。每次模型请求与提交前再次核对工作流／图片输入；模型输出不能引用未选的 Picture 编号，也不能修改画面文字或其他镜头。UI 仅在当前镜头、选图、工作流及视频时长匹配时回填保存结果；继续按钮也核对这组输入。生成结果落盘后再审阅，中断审阅可直接继续，不重复请求已保存的视频文字。
 
-video_prompt 只使用当前单镜头协议，无专用协议版本标记或旧协议分支，模型仅返回 {shot_id, video_motion_prompt}，程序合并为当前完整 prompt_bundle。入口和恢复按当前本镜资料及预算字段校验，不支持旧任务迁移或旧请求。生成、审阅和修订使用同一本镜事实资料，补充原文按已有引用读取并受预算约束；审阅不携带完整任务或镜头集合。修订重新组装最新正文和本轮反馈，不拼接旧请求。预算随任务冻结，四类模型请求均在发送前检查字符容量。字段、预算和验收细则见[单镜头上下文](video_prompt_context.md)。
+video_prompt 只使用当前单镜头协议，模型仅返回 {shot_id, video_motion_prompt}，程序合并为当前完整 prompt_bundle。入口和恢复按当前本镜资料及预算字段校验。生成、审阅和修订共享本镜分镜与资产资料，以及有限的邻镜衔接字段。修订重新组装最新正文和本轮反馈，再按同一输入绑定附图。文字预算随任务冻结，每次请求均在发送前检查字符容量，图片预算独立检查。字段、预算和验收细则见[单镜头上下文](video_prompt_context.md)。
 
 review.check_candidate 分别检查故事因果与已有结果、视频声画容量、目录实际对象、分镜执行与衔接、资产多视角、镜头画面及视频文字。合理外化不当作新增关键事实；素材缺结果不得要求编造结局。资产与镜头画面不套用视频文案格式；video_prompt按上述中文视频正文要求检查，复杂动作的必要拆镜建议进入现有 issues，不夹在可复制正文中，不自行拆镜。输出仍为既有 issues，定位具体字段与对应内容，给出可执行修改，不以爆款感或高级感等偏好重写。格式修复仅处理JSON、字段、枚举和引用，不借机改剧情。反馈进入一次质量修订流程，最终完整校验结果保存在 run 中；不新增独立报告文件或图片调用。
 
@@ -334,7 +336,7 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 
 | 入口 | 输入与行为 |
 |---|---|
-| MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。读取旧配置时丢弃未使用的 image_workflow 字段 |
+| MediaConfig.load / save | 按项目读取／保存 base_url、workflows、selected_workflow_id；每项包含 workflow_id、name、graph。读取时校验项目配置格式 |
 | parse_video_workflow(graph) | 从已保存的 API JSON 适配有效图片、提示词、参数和唯一 SaveVideo |
 | MediaRepository.import_image(path, source=None) | 导入 PNG／JPEG／WebP，保存独立文件、哈希、原文件名及来源；供手动导图与后续图片工作流共用 |
 | MediaService.prepare_video(images, prompt, workflow_id=None, parameters=None, target=None, request_id=None) | images 为图片位置标识到 image_id 或 None 的映射；所有模板过滤 None，按实际选图裁剪参考输入及首尾引导，至少选一张。parameters 为参数键到类型值；只读校验并冻结实际输入，不提交 GPU 工作 |
@@ -349,11 +351,11 @@ review.check_candidate 分别检查故事因果与已有结果、视频声画容
 
 ### 10.2 工作流与 MCP 工具
 
-MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析 JSON 并验证支持的模板；新增时生成标识，更新时保留标识。save 将整个列表原子写入项目；旧 video_workflow 路径配置在读取时转为 JSON 快照，不覆盖旧任务。
+MediaConfig.put_workflow(name, api_json, workflow_id=None) 校验名称、解析 JSON 并验证支持的模板；新增时生成标识，更新时保留标识。save 将整个列表原子写入项目。视频任务使用提交时保存的工作流与图片映射。
 
 parse_video_workflow(graph) 返回 VideoWorkflow：有效 graph、image_inputs、output_node、prompt_node／prompt_input、parameters、kind 与 generator_node。参考图按 ref_images.ref_image_N 的数字顺序显示，首尾帧可来自 MiniMaxH3ImageToVideo.first_frame／last_frame，也可来自参考图条件后的 MiniMaxH3AddGuide。允许仅首帧、仅尾帧或二者组合；同时存在时按 frame_idx = 0、-1 依次连接，latent 均来自同一参考图生成节点。图片均直接连接独立 LoadImage。支持一个 SaveVideo，不推测未知节点映射。ImageInput.role 分别为 reference、first_frame、last_frame；VideoWorkflow.reference_count 只计算外观参考图片，不把首尾帧计入 Picture N 编号。kind 为 reference、first_last 或 reference_first_last。
 
-VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 显示固定输入位置“图片节点 N”，选图后另显示实际代称 <Picture M>；M 按已选图片顺序连续编号，与提交顺序一致；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
+VideoWorkflow.prepare_reference_inputs(node_ids) 仅用于 kind=reference，接收界面顺序排列的 1～9 个已选位置标识；复制图、清除原参考图连线，为新增位置创建 LoadImage，再依次连接 ref_image_0～N-1，并裁剪未使用依赖。新增标识不能覆盖其他业务节点。prepare_video 只冻结和上传这些实际图片；空位不保留旧文件名，也不作为空图片提交。UI 卡片底部显示固定位置“图片 N”，选图后角标显示实际代称 <Picture M>；M 按已选图片顺序连续编号，与提交顺序一致；清空中间位置导致已有提示词引用错位时，生成前要求核对修改。附加位置与引用关联仅保留在当前工作流的内存草稿，不写入配置。
 
 WorkflowParameter 包含 node_id、input_name、label、default、minimum、maximum；key 为 node_id.input_name。当前公开时长（PrimitiveFloat 接入帧数换算）、随机种子（RandomNoise）、像素量（ResolutionSelector）、采样步数（PrimitiveInt）及参考图加速开关（PrimitiveBoolean）。像素量下限为当前 ResolutionSelector 允许的 0.1；保留模板的帧率与时长计算关系，不单独暴露 fps。大整数种子使用文本控件读取为 Python int，布尔值不转字符串。
 
@@ -432,7 +434,7 @@ WorkflowService.shot_assets 的 views 可返回 image（含 image_id、relative_
 
 ## 12. 短视频 UI 三通道调度
 
-TaskChannels 维护 text／image／video 三个 TaskRunner，text 复用主窗口原实例。
+TaskChannels 维护 text／image／video 三个 TaskRunner，都由短视频工作区自己持有，不借用小说的任务通道。
 channel(work) 按 ImageGenerationWork／MediaWork 分类，其余为文字任务。
 admit 在启动前检查同类互斥；同镜头 video_prompt 任务阻止新视频，查询原任务例外。
 prompt_busy 按冻结的分镜版本和 shot_id 匹配，恢复任务也在启动前读取原命令的目标。

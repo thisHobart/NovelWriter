@@ -88,23 +88,31 @@ class ArtifactPage(QWidget):
         self.revision = state["revision"]
         record = self.workbench.repository.current(self.stage, state=state)
         if isinstance(self.editor, StoryboardEditor):
+            deps = record["dependency_refs"] if record else {}
             catalog = (
-                self.workbench.repository.record(
-                    record["dependency_refs"]["asset_catalog"], state=state
-                )
+                self.workbench.repository.record(deps["asset_catalog"], state=state)
                 if record
+                else None
+            )
+            config = (
+                self.workbench.repository.record(deps["config"], state=state)
+                if deps.get("config") in state["records"]
                 else None
             )
             self.editor.catalog = (catalog or {}).get("content", {}).get("entities", [])
             self.editor.names = {e["asset_id"]: e["name"] for e in self.editor.catalog}
+            self.editor.target_ms = (config or {}).get("content", {}).get("target_duration_ms")
         changed = not self.record or not record or self.record["id"] != record["id"]
         self.record = record
         if changed:
+            # Opening can tidy the draft (the editor says what); that waits to be saved.
             self.editor.set_content(record["content"] if record else None)
         if not record:
             self.status.setText("尚无稿件，从上一阶段继续。")
         else:
             self.status.setText(record_message(self.workbench.repository, record, state))
+        if self.dirty:
+            self.status.setText("有未保存修改")
 
         from core.short_video.v2.runtime import get_recovery, recovery_message
 

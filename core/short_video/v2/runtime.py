@@ -11,12 +11,20 @@ from typing import TYPE_CHECKING
 import httpx
 from openai import APIError
 
-from core.generation.cancellation import CancelToken, GenerationCancelled
+from core.common.cancellation import CancelToken, GenerationCancelled
 
 from . import models as model_contracts
-from .contracts import ArtifactRecord, JsonObject, ProgressReporter, RequestRecorder, TextTransport
+from .contracts import (
+    ArtifactRecord,
+    JsonObject,
+    ModelRequest,
+    ProgressReporter,
+    RequestRecorder,
+    TextTransport,
+)
 from .feedback import (
     ACTION_NAMES,
+    UNREVIEWED_SUMMARY,
     TaskContext,
     TaskTracker,
     command_target,
@@ -460,6 +468,13 @@ class AgentExecution:
         snapshot = self.command[
             "review_model_snapshot" if purpose == "review" else "model_snapshot"
         ]
+        request: ModelRequest = prompt
+        if compact and purpose == "generation":
+            from .video_prompt import video_prompt_messages
+
+            request = video_prompt_messages(
+                self.repository.output_dir, prompt, self.command["context"]["video_input_binding"]
+            )
 
         def begin() -> None:
             nonlocal call, network_attempt
@@ -514,7 +529,7 @@ class AgentExecution:
                 state["tasks"][self.task_id]["calls_used"] += 1
             self.trace_call_id = call["id"]
 
-        def record(_prompt: str, response: str, error: str | None) -> None:
+        def record(_request: ModelRequest, response: str, error: str | None) -> None:
             with self.repository.transaction() as state:
                 run = next(r for r in state["runs"] if r["id"] == self.run_id)
                 entry = next(c for c in run["calls"] if c["id"] == call["id"])
@@ -561,7 +576,7 @@ class AgentExecution:
             on_retry=lambda error, attempt, maximum, delay: self.tracker.report_network_retry(
                 error, attempt, maximum, delay, self.report, self.on_context
             ),
-        )(prompt)
+        )(request)
 
     def video_generation_prompt(self, *, repair: JsonObject | None = None) -> str:
         from .prompts import video_request
@@ -766,9 +781,19 @@ class AgentExecution:
                     ):
                         raise
                     if "review_repair" in self.cp:
-                        raise WorkspaceError(
-                            "INVALID_OUTPUT", "未取得有效校验结果：" + str(exc) + "；原稿保留"
-                        ) from exc
+                        # The candidate already passed structure and reference checks; a
+                        # reviewer that still cannot answer in format must not discard it.
+                        logger.warning(
+                            "%s：自动审阅未取得有效结果，新稿未经检查：%s",
+                            self.tracker.task_context.target,
+                            exc,
+                        )
+                        result = QualityCheckResult(False, unavailable=str(exc))
+                        trace_event("REVIEW_UNAVAILABLE", self.trace_metadata(), asdict(result))
+                        self.cp.update(step="decide", review=asdict(result), response=None)
+                        self.cp.pop("review_repair", None)
+                        self.save()
+                        continue
                     self.cp.update(
                         review_repair={
                             "error": format_error_feedback(exc),
@@ -786,7 +811,11 @@ class AgentExecution:
                 self.save()
             elif step == "decide":
                 result = QualityCheckResult(**self.cp["review"])
-                if result.passed or self.cp["revision"] >= self.command["max_retries"]:
+                if (
+                    result.passed
+                    or result.unavailable
+                    or self.cp["revision"] >= self.command["max_retries"]
+                ):
                     self.cp["step"] = "commit"
                 else:
                     latest = self.repository.record(self.cp["candidate"])
@@ -816,15 +845,18 @@ class AgentExecution:
                 self.repository.output_dir, self.command["context"]["video_input_binding"]
             )
         review = QualityCheckResult(**self.cp["review"])
+        status = "passed" if review.passed else "unreviewed" if review.unavailable else "issues"
         feedback = {
             "phase": "自动审阅",
             "target": self.tracker.task_context.target,
-            "summary": "自动检查通过"
-            if review.passed
-            else readable_fields(
+            "summary": {
+                "passed": "自动检查通过",
+                "unreviewed": UNREVIEWED_SUMMARY,
+            }.get(status)
+            or readable_fields(
                 concise(review.feedback.splitlines()[0] if review.feedback else "检查发现问题")
             ),
-            "issue_count": review.issue_count or (0 if review.passed else 1),
+            "issue_count": review.issue_count or (1 if status == "issues" else 0),
         }
         with self.repository.transaction() as state:
             task = state["tasks"][self.task_id]
@@ -841,7 +873,7 @@ class AgentExecution:
                 "status": "succeeded",
                 "version_id": latest["id"],
                 "selected": True,
-                "review_status": "passed" if review.passed else "issues",
+                "review_status": status,
                 "feedback": feedback,
                 "retries_used": self.cp["revision"],
                 "invalidated_refs": {},

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""底部状态栏：小说单任务，短视频按通道选择进度和停止对象。
+"""底部状态栏：单个任务，或按通道列出的多个任务（选中哪个就显示哪个的进度和停止）。
 
 同一时刻只显示一个任务：状态、子进度、已用时、停止按钮。
 「停止」只在任务运行时出现，点击后立刻变为「正在停止…」并禁用，
@@ -9,8 +9,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPaintEvent
@@ -21,9 +22,20 @@ from core.gui.widgets.card import vline
 from core.gui.widgets.controls import IconLabel, danger_button
 
 
+@dataclass(frozen=True)
+class TaskText:
+    """What the task list shows for one running task; asked for again on every refresh."""
+
+    action: str
+    target: str = ""
+    location: str = ""
+    stopping: bool = False
+
+
 @dataclass
 class TaskDisplay:
-    work: Any
+    key: object
+    describe: Callable[[], TaskText]
     started_at: float
     fraction: float = -1.0
     result: tuple[str, str, str] | None = None
@@ -108,26 +120,31 @@ class AppStatusBar(QWidget):
         self._timer.timeout.connect(self._tick)
         self._started_at = 0.0
 
-    def start_task(self, channel: str, work: Any) -> None:
+    def start_task(self, channel: str, key: object, describe: Callable[[], TaskText]) -> None:
+        """List a task under its channel; ``key`` tells later updates which task they are for."""
         self._task_notice = None
         self._right.clear()
         self._right.setToolTip("")
-        self._tasks[channel] = TaskDisplay(work, time.monotonic())
+        self._tasks[channel] = TaskDisplay(key, describe, time.monotonic())
         self._refresh_tasks()
 
-    def update_task(self, channel: str, work: Any, fraction: float) -> None:
+    def update_task(self, channel: str, key: object, fraction: float) -> None:
         entry = self._tasks.get(channel)
-        if entry is not None and entry.work is work:
+        if entry is not None and entry.key is key:
             entry.fraction = fraction
             self._refresh_tasks()
 
-    def finish_task(self, channel: str, work: Any, result: tuple[str, str, str]) -> None:
+    def finish_task(self, channel: str, key: object, result: tuple[str, str, str]) -> None:
         entry = self._tasks.get(channel)
-        if entry is not None and entry.work is work:
+        if entry is not None and entry.key is key:
             entry.result = result
             if all(item.result is not None for item in self._tasks.values()):
                 self._task_notice = None
             self._refresh_tasks()
+
+    def selected_task(self) -> str | None:
+        """The channel whose task is picked in the task list."""
+        return self.tasks.currentData()
 
     def clear_tasks(self) -> None:
         self._tasks.clear()
@@ -155,13 +172,13 @@ class AppStatusBar(QWidget):
         self.tasks.blockSignals(True)
         self.tasks.clear()
         for channel, entry in self._tasks.items():
-            context = entry.work.task_context
+            text = entry.describe()
             state = (
-                ("正在停止" if entry.work.token.cancelled else "运行中")
+                ("正在停止" if text.stopping else "运行中")
                 if entry.result is None
                 else entry.result[1]
             )
-            label = " · ".join(part for part in (context.action, context.target, state) if part)
+            label = " · ".join(part for part in (text.action, text.target, state) if part)
             self.tasks.addItem(label, channel)
             self.tasks.setItemData(self.tasks.count() - 1, state, Qt.ToolTipRole)
         index = self.tasks.findData(selected)
@@ -184,9 +201,9 @@ class AppStatusBar(QWidget):
             ](title, detail)
             self._render_task_notice()
             return
-        context = entry.work.task_context
-        self._state.set_state("spinner", theme.ACCENT, context.action + "中…")
-        self._context.setText(context.location())
+        text = entry.describe()
+        self._state.set_state("spinner", theme.ACCENT, text.action + "中…")
+        self._context.setText(text.location)
         self._started_at = entry.started_at
         self._step_started_at = entry.started_at
         self._progress.show()
@@ -197,7 +214,7 @@ class AppStatusBar(QWidget):
             self._progress.setValue(int(max(0.0, min(1.0, entry.fraction)) * 100))
         self._elapsed.show()
         self._stop.show()
-        stopping = entry.work.token.cancelled
+        stopping = text.stopping
         self._stop.setText("正在停止…" if stopping else "停止")
         self._stop.setEnabled(not stopping)
         self._tick()

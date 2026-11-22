@@ -18,7 +18,7 @@ from pathlib import Path
 import tempfile
 from uuid import uuid4
 
-from core.generation.locks import project_lock
+from core.common.locks import project_lock
 
 LORE = "story/lore/"
 META = "system/lore_edits.json"

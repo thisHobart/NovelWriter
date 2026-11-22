@@ -36,7 +36,7 @@ from core.localization import zh_label
 import logging
 from core.config.directory_config import get_directory_manager
 
-from core.generation.cancellation import CancelToken
+from core.common.cancellation import CancelToken
 from core.generation.stage_context import StageContext
 
 

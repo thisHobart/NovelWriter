@@ -65,4 +65,4 @@
 
 `run_stage`、`run_stage_action` 保持原有调用方式，可读取已保存参数，并通过 `parameters` 覆盖部分值；传入 `freeze_parameters(...)` 后视为完整快照，不再补读磁盘。任务工厂接受相同的 `parameters`，完整工作流只在启动时合并一次。
 
-参数与界面端到端的专项测试已随测试精简移除。当前保留 `tests/test_headless_stage_pipeline.py` 的生成入口回归、`tests/test_ui_params_store.py` 的参数存储回归及 `tests/test_ui_smoke.py` 的界面冒烟测试。此前完整验收作为历史记录，见[循环与端到端验收](lore_loop_acceptance.md)，不代表当前自动化覆盖范围。
+参数与界面端到端的专项测试已随测试精简移除。当前保留 `tests/novel/test_headless_stage_pipeline.py` 的生成入口回归、`tests/novel/test_ui_params_store.py` 的参数存储回归及 `tests/novel/test_ui_smoke.py` 的界面冒烟测试。此前完整验收作为历史记录，见[循环与端到端验收](lore_loop_acceptance.md)，不代表当前自动化覆盖范围。

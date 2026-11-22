@@ -6,13 +6,15 @@ from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, TypeAlias, TypedDict
 if TYPE_CHECKING:
     from .feedback import TaskContext
 
-from core.generation.cancellation import CancelToken
+from core.common.cancellation import CancelToken
 
 # Content differs by stage; its concrete fields are checked at the input boundary.
 JsonObject: TypeAlias = dict[str, Any]
 ProgressReporter: TypeAlias = Callable[[str, float], None]
-TextTransport: TypeAlias = Callable[[str], str]
-RequestRecorder: TypeAlias = Callable[[str, str, str | None], None]
+# One text prompt, or role/content messages that may include user image parts.
+ModelRequest: TypeAlias = str | list[JsonObject]
+TextTransport: TypeAlias = Callable[[ModelRequest], str]
+RequestRecorder: TypeAlias = Callable[[ModelRequest, str, str | None], None]
 OperationResult = TypeVar("OperationResult")
 OperationParameters = ParamSpec("OperationParameters")
 

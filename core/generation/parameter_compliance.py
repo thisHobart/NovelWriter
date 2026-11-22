@@ -7,7 +7,7 @@ import re
 from uuid import uuid4
 
 from core.generation.design_contract import DesignContractError
-from core.generation.cancellation import GenerationCancelled
+from core.common.cancellation import GenerationCancelled
 from core.generation.parameters import creation_parameters, parameter_label, record_run, requirements_block
 from core.generation.lore_run import (
     save_receipt, source_fingerprint, LABELS,
