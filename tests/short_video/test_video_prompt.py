@@ -875,11 +875,11 @@ def test_video_request_and_review_use_no_original_text(ready):
     issue = {"rule_id": "FACT", "severity": "warning", "target_path": "video_motion_prompt",
              "explanation": "声称看过原文", "suggestion": "修正", "quote": quote,
              "source_refs": [{"source_id": source["id"], "start": 0, "end": 4, "quote": quote}]}
-    with pytest.raises(WorkspaceError, match="未提供的原文") as caught:
-        check_candidate(command, repository.current("prompt_bundle"),
-                        Mock(return_value=encode({"issues": [issue]})), repository)
-    assert caught.value.details["category"] == "reference"
-    assert caught.value.details["errors"][0]["path"] == "issues[0].source_refs[0]"
+    # Video reviews are shown no original text, so any citation is dropped, never trusted.
+    result = check_candidate(command, repository.current("prompt_bundle"),
+                             Mock(return_value=encode({"issues": [issue]})), repository)
+    assert [(i["quote"], i["source_refs"]) for i in result.issues] == [(None, [])]
+    assert result.issues[0]["explanation"] == "声称看过原文"
 
 
 def test_video_review_contract_is_metered_and_schema_failure_precedes_internal_mapping(ready, monkeypatch):

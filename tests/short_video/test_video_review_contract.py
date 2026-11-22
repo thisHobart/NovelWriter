@@ -157,21 +157,36 @@ def test_container_and_required_errors_locate_the_bad_field(invalid, path):
 
 
 @pytest.mark.parametrize(
-    "invalid", ["unknown_source", "range", "inline_quote", "quote", "selection"]
+    "variant,outcome",
+    [
+        ("unknown_source", "bound"),
+        ("range", "bound"),
+        ("inline_quote", "bound"),
+        ("quote", "dropped"),
+        ("selection", "dropped"),
+        ("coordinates_only", "coordinates"),
+        ("coordinates_only_out_of_range", "dropped"),
+    ],
 )
-def test_business_failures_have_reference_paths(configured, invalid):
+def test_bad_citations_are_rebound_or_dropped_but_never_fail_the_review(
+    configured, variant, outcome
+):
     problem = source_issue(configured)
+    quote, refs = problem["quote"], deepcopy(problem["source_refs"])
     ref = problem["source_refs"][0]
-    expected_path = "issues[0].source_refs[0]"
-    if invalid == "unknown_source":
+    if variant == "unknown_source":
         ref["source_id"] = "unknown_source"
-    elif invalid == "range":
+    elif variant == "range":
         ref["end"] = 10000
-    elif invalid == "inline_quote":
+    elif variant == "inline_quote":
         ref["quote"] = "不是原文"
-    elif invalid == "quote":
+    elif variant == "quote":
         problem["quote"] = "不是原文"
-        expected_path = "issues[0].quote"
+    elif variant == "coordinates_only":
+        problem["quote"] = None
+    elif variant == "coordinates_only_out_of_range":
+        problem["quote"] = None
+        ref["end"] = 10000
     else:
         # Restrict the ancestor selection while keeping the source coordinates valid.
         original_record = configured.record
@@ -183,12 +198,28 @@ def test_business_failures_have_reference_paths(configured, invalid):
             return record
 
         configured.record = selected_record
-    with pytest.raises(WorkspaceError) as caught:
-        review.parse_review(
-            encode({"issues": [problem]}), configured.current("novel_copy"), configured
-        )
-    assert caught.value.details["category"] == "reference"
-    assert caught.value.details["errors"][0]["path"] == expected_path
+    [result] = review.parse_review(
+        encode({"issues": [problem]}), configured.current("novel_copy"), configured
+    )
+    assert result["explanation"] == problem["explanation"]
+    assert (result["quote"], result["source_refs"]) == {
+        "bound": (quote, refs),
+        "coordinates": (None, refs),
+        "dropped": (None, []),
+    }[outcome]
+
+
+def test_extension_references_outside_the_shown_text_are_dropped(configured):
+    problem = source_issue(configured)
+    valid = deepcopy(problem["source_refs"][0])
+    problem["extension"] = {"nested": [{"source_refs": [
+        {**valid, "paragraph_id": "p1"}, {**valid, "source_id": "unknown"}, {**valid, "quote": "不是原文"}]}]}
+    problem["evidence"] = {"source_refs": "不是列表"}
+    [result] = review.parse_review(
+        encode({"issues": [problem]}), configured.current("novel_copy"), configured
+    )
+    assert result["extension"]["nested"][0]["source_refs"] == [valid]
+    assert result["evidence"]["source_refs"] == []
 
 
 def test_corrupt_expected_source_is_not_a_model_format_error(configured, monkeypatch):
@@ -311,11 +342,7 @@ def test_schema_feedback_survives_network_resume_without_new_allowance(
     assert '"category": "schema"' in checkpoint["review_repair"]["error"]
     resumed = sdk_replies(monkeypatch, [("reviewer", {"issues": []} if repaired else invalid)])
     work = ResumeWork(configured, command["request_id"])
-    if repaired:
-        assert work(lambda *_: None)["review_status"] == "passed"
-    else:
-        with pytest.raises(WorkspaceError, match="未取得有效校验结果"):
-            work(lambda *_: None)
+    assert work(lambda *_: None)["review_status"] == ("passed" if repaired else "unreviewed")
     assert len(calls) == 3 and len(resumed) == 1
     repair = json.loads(resumed[0].split("【审阅格式修复】\n", 1)[1])
     assert repair["error"] == checkpoint["review_repair"]["error"]
@@ -324,7 +351,7 @@ def test_schema_feedback_survives_network_resume_without_new_allowance(
 
 
 @pytest.mark.parametrize("invalid", [[], {"issues": [{**issue(), "suggestion": None}]}])
-def test_repeated_schema_failure_preserves_original_after_only_one_repair(
+def test_repeated_schema_failure_keeps_new_draft_unchecked_after_only_one_repair(
     configured, monkeypatch, invalid
 ):
     original = configured.current("novel_copy")
@@ -333,12 +360,13 @@ def test_repeated_schema_failure_preserves_original_after_only_one_repair(
         [("generator", original["content"]), ("reviewer", invalid), ("reviewer", invalid)],
     )
     service = workflow.WorkflowService(configured)
-    with pytest.raises(WorkspaceError, match="未取得有效校验结果.*结构错误"):
-        service.execute(service.prepare("novel_copy"))
-    assert len(calls) == 3 and configured.current("novel_copy")["id"] == original["id"]
+    result = service.execute(service.prepare("novel_copy"))
+    assert len(calls) == 3 and result["review_status"] == "unreviewed"
+    assert configured.current("novel_copy")["id"] == result["version_id"]
+    assert "结构错误" in configured.load()["runs"][-1]["review_result"]["unavailable"]
 
 
-def test_unknown_source_feedback_is_repaired_on_review_api(configured, monkeypatch):
+def test_unknown_source_is_rebound_without_review_repair(configured, monkeypatch):
     valid = source_issue(configured)
     invalid = deepcopy(valid)
     invalid["source_refs"][0]["source_id"] = "not_a_project_source"
@@ -347,15 +375,13 @@ def test_unknown_source_feedback_is_repaired_on_review_api(configured, monkeypat
         [
             ("generator", configured.current("novel_copy")["content"]),
             ("reviewer", {"issues": [invalid]}),
-            ("reviewer", {"issues": [valid]}),
         ],
     )
     service = workflow.WorkflowService(configured, max_retries=0)
     assert service.execute(service.prepare("novel_copy"))["review_status"] == "issues"
-    repair = json.loads(calls[2].split("【审阅格式修复】\n", 1)[1])
-    details = json.loads(repair["error"].split("审阅校验详情：\n", 1)[1])
-    assert details["category"] == "reference"
-    assert details["errors"][0]["path"] == "issues[0].source_refs[0]"
+    assert len(calls) == 2 and "【审阅格式修复】" not in calls[1]
+    stored = configured.load()["runs"][-1]["review_result"]["issues"][0]
+    assert (stored["quote"], stored["source_refs"]) == (valid["quote"], valid["source_refs"])
 
 
 def test_non_video_review_budget_includes_contract_before_sending(configured):

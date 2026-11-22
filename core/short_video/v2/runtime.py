@@ -24,6 +24,7 @@ from .contracts import (
 )
 from .feedback import (
     ACTION_NAMES,
+    UNREVIEWED_SUMMARY,
     TaskContext,
     TaskTracker,
     command_target,
@@ -780,9 +781,19 @@ class AgentExecution:
                     ):
                         raise
                     if "review_repair" in self.cp:
-                        raise WorkspaceError(
-                            "INVALID_OUTPUT", "未取得有效校验结果：" + str(exc) + "；原稿保留"
-                        ) from exc
+                        # The candidate already passed structure and reference checks; a
+                        # reviewer that still cannot answer in format must not discard it.
+                        logger.warning(
+                            "%s：自动审阅未取得有效结果，新稿未经检查：%s",
+                            self.tracker.task_context.target,
+                            exc,
+                        )
+                        result = QualityCheckResult(False, unavailable=str(exc))
+                        trace_event("REVIEW_UNAVAILABLE", self.trace_metadata(), asdict(result))
+                        self.cp.update(step="decide", review=asdict(result), response=None)
+                        self.cp.pop("review_repair", None)
+                        self.save()
+                        continue
                     self.cp.update(
                         review_repair={
                             "error": format_error_feedback(exc),
@@ -800,7 +811,11 @@ class AgentExecution:
                 self.save()
             elif step == "decide":
                 result = QualityCheckResult(**self.cp["review"])
-                if result.passed or self.cp["revision"] >= self.command["max_retries"]:
+                if (
+                    result.passed
+                    or result.unavailable
+                    or self.cp["revision"] >= self.command["max_retries"]
+                ):
                     self.cp["step"] = "commit"
                 else:
                     latest = self.repository.record(self.cp["candidate"])
@@ -830,15 +845,18 @@ class AgentExecution:
                 self.repository.output_dir, self.command["context"]["video_input_binding"]
             )
         review = QualityCheckResult(**self.cp["review"])
+        status = "passed" if review.passed else "unreviewed" if review.unavailable else "issues"
         feedback = {
             "phase": "自动审阅",
             "target": self.tracker.task_context.target,
-            "summary": "自动检查通过"
-            if review.passed
-            else readable_fields(
+            "summary": {
+                "passed": "自动检查通过",
+                "unreviewed": UNREVIEWED_SUMMARY,
+            }.get(status)
+            or readable_fields(
                 concise(review.feedback.splitlines()[0] if review.feedback else "检查发现问题")
             ),
-            "issue_count": review.issue_count or (0 if review.passed else 1),
+            "issue_count": review.issue_count or (1 if status == "issues" else 0),
         }
         with self.repository.transaction() as state:
             task = state["tasks"][self.task_id]
@@ -855,7 +873,7 @@ class AgentExecution:
                 "status": "succeeded",
                 "version_id": latest["id"],
                 "selected": True,
-                "review_status": "passed" if review.passed else "issues",
+                "review_status": status,
                 "feedback": feedback,
                 "retries_used": self.cp["revision"],
                 "invalidated_refs": {},

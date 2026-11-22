@@ -9,7 +9,13 @@ from core.common.cancellation import CancelToken
 
 from . import models as model_contracts
 from .contracts import JsonObject, ProgressReporter, TextTransport
-from .feedback import ACTION_NAMES, TaskContext, TaskTracker, review_message
+from .feedback import (
+    ACTION_NAMES,
+    UNREVIEWED_SUMMARY,
+    TaskContext,
+    TaskTracker,
+    review_message,
+)
 from .models import (
     ASSET_KINDS,
     capture_model_snapshot,
@@ -194,15 +200,24 @@ class CreationWork(TaskTracker):
                     task["items"]["compiled"] = {"result": compiled["id"]}
             self.update_context(completed=repository.load()["tasks"][task_id]["completed"])
         issues = [r for r in results if r["review_status"] == "issues"]
+        unreviewed = [r for r in results if r["review_status"] == "unreviewed"]
         task = repository.load()["tasks"][task_id]
         return {
             "status": "succeeded",
-            "review_status": "issues" if issues else "passed" if results else "not_requested",
+            "review_status": "issues"
+            if issues
+            else "unreviewed"
+            if unreviewed
+            else "passed"
+            if results
+            else "not_requested",
             "version_id": task["outputs"][-1] if task["outputs"] else None,
             "calls": task["calls_used"],
             "review_summary": f"{len(issues)}项检查发现问题："
             + review_message("issues", issues[0].get("feedback"))
             if issues
+            else f"{len(unreviewed)}项{UNREVIEWED_SUMMARY}"
+            if unreviewed
             else "自动检查通过"
             if results
             else "已完成提示词编排，未额外进行AI审阅",

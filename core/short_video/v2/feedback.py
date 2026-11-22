@@ -193,6 +193,10 @@ def failure_feedback(context: TaskContext, error: BaseException) -> dict:
     }
 
 
+# The reviewer never answered in a usable format, so the new content was kept unchecked.
+UNREVIEWED_SUMMARY = "自动审阅没有取得有效结果，内容未经检查"
+
+
 def review_message(status: str | None, feedback: dict | None) -> str:
     feedback = feedback or {}
     if status == "issues":
@@ -201,6 +205,8 @@ def review_message(status: str | None, feedback: dict | None) -> str:
         return summary + (f"（共{count}项问题）" if count > 1 else "")
     if status == "passed":
         return "自动检查通过"
+    if status == "unreviewed":
+        return UNREVIEWED_SUMMARY
     return "尚未自动检查"
 
 
@@ -266,6 +272,8 @@ def record_check(
     status = run.get("review_status")
     if status == "passed":
         return {**result, "status": "passed", "summary": "检查通过"}
+    if status == "unreviewed":
+        return {**result, "summary": UNREVIEWED_SUMMARY}
     if status != "issues":
         return result
     found = (run.get("review_result") or {}).get("issues") or []
@@ -372,7 +380,7 @@ def task_message(
         message = result["review_summary"]
     subject = context.action.removesuffix("生成").removesuffix("优化")
     return (
-        "warning" if status == "issues" else "success",
+        "warning" if status in {"issues", "unreviewed"} else "success",
         subject + "已保存",
         message,
     )

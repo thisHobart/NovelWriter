@@ -49,6 +49,18 @@ def test_connection_timeout_unknown_and_review_results_are_distinct() -> None:
     assert "文件访问被拒绝" in detail
 
 
+def test_unreviewed_result_is_saved_with_a_warning_that_it_was_not_checked() -> None:
+    from core.short_video.v2.feedback import UNREVIEWED_SUMMARY
+
+    feedback = {"summary": UNREVIEWED_SUMMARY, "issue_count": 0}
+    assert review_message("unreviewed", feedback) == UNREVIEWED_SUMMARY
+    severity, title, detail = task_message(
+        TaskContext("小说推文生成", phase="选用结果", saved=True),
+        result={"status": "succeeded", "review_status": "unreviewed", "feedback": feedback},
+    )
+    assert (severity, title, detail) == ("warning", "小说推文已保存", UNREVIEWED_SUMMARY)
+
+
 def test_conflict_and_media_unknown_never_suggest_recreating_remote_tasks() -> None:
     context = TaskContext("资产提示词生成", saved=True, phase="选用结果")
     error = WorkspaceError("TARGET_VERSION_CONFLICT", "提示词在生成期间已被修改")

@@ -49,23 +49,43 @@ def test_review_binds_quote_to_actual_source_without_duplicate_quote_field(confi
     assert result[0]["source_refs"] == problem["source_refs"]
 
 
-@pytest.mark.parametrize("invalid", ["candidate_quote", "missing_refs", "wrong_inline_quote", "out_of_range", "non_text_quote"])
-def test_review_still_rejects_unbound_or_invalid_quotes(configured, invalid):
+def test_review_binds_miscounted_and_retyped_quotes_by_searching_the_source(tmp_path):
+    """The reviewer only copies the sentence; positions and quote marks are settled by search."""
     from core.short_video.v2.review import parse_review
 
-    problem = source_issue(configured)
-    if invalid == "candidate_quote":
-        problem["quote"] = configured.current("novel_copy")["content"]["opening"]["text"]
-    elif invalid == "missing_refs":
-        problem["source_refs"] = []
-    elif invalid == "wrong_inline_quote":
-        problem["source_refs"][0]["quote"] = "伪造的原文"
-    elif invalid == "out_of_range":
-        problem["source_refs"][0]["end"] = 10000
-    else:
-        problem["quote"] = ["引文不是文字"]
-    with pytest.raises(WorkspaceError):
-        parse_review(encode({"issues": [problem]}), configured.current("novel_copy"), configured)
+    repository = ProjectRepository(tmp_path / "quoted")
+    ProjectService(repository).import_text(
+        "雨夜😀巷口。\r\n站在原地的那道“本体”化作白猫，“少年”把它抱进怀里。\r\n白猫走了。白猫走了。",
+        expected_revision=0,
+    )
+    novel(repository)
+    source = repository.current("source")
+    text = source["content"]["normalized_text"]
+    sentence = "站在原地的那道“本体”化作白猫，“少年”把它抱进怀里。"
+    start = text.index(sentence)
+    candidate = repository.current("novel_copy")
+
+    def ref(begin, end):
+        return {"source_id": source["id"], "start": begin, "end": end}
+
+    # As in a real reply: candidate text in quote, the source sentence retyped with ASCII
+    # quotes inside a reference whose coordinates were miscounted.
+    retyped = {**issue(), "quote": candidate["content"]["opening"]["text"], "source_refs": [
+        {**ref(start + 9, start + 40), "quote": sentence.replace("“", "'").replace("”", "'")}]}
+    across_line = {**issue(), "quote": "巷口。站在原地", "source_refs": []}
+    repeated = {**issue(), "quote": "白猫走了。", "source_refs": [ref(len(text) - 3, len(text))]}
+    absent = {**issue(), "quote": "原文里没有这句", "source_refs": [ref(0, 2)]}
+    result = parse_review(
+        encode({"issues": [retyped, across_line, repeated, absent]}), candidate, repository)
+    line_start, line_end = text.index("巷口。"), text.index("站在原地") + 4
+    assert [(r["quote"], r["source_refs"]) for r in result] == [
+        (sentence, [ref(start, start + len(sentence))]),
+        (text[line_start:line_end], [ref(line_start, line_end)]),
+        ("白猫走了。", [ref(text.rindex("白猫走了。"), len(text))]),
+        (None, []),
+    ]
+    assert "\n" in result[1]["quote"]
+    assert all(r["explanation"] == issue()["explanation"] for r in result)
 
 
 def test_review_configuration_is_independent_and_never_falls_back(configured, monkeypatch):
@@ -263,8 +283,20 @@ def test_sdk_accepts_coordinate_only_source_evidence_without_format_repair(confi
     service = workflow.WorkflowService(configured, max_retries=0)
     result = service.execute(service.prepare("novel_copy"))
     assert len(calls) == 2 and result["review_status"] == "issues"
-    assert "Unicode码点、左闭右开" in calls[1]
+    assert "原文位置由程序查找" in calls[1] and "Unicode码点" not in calls[1]
     assert configured.load()["runs"][-1]["review_result"]["issues"][0]["quote"] == problem["quote"]
+
+
+def test_unfound_review_quote_keeps_the_issue_without_format_repair(configured, monkeypatch):
+    content = configured.current("novel_copy")["content"]
+    problem = {**source_issue(configured), "quote": content["opening"]["text"]}
+    calls = sdk_replies(monkeypatch, [("generator", content), ("reviewer", {"issues": [problem]})])
+    service = workflow.WorkflowService(configured, max_retries=0)
+    result = service.execute(service.prepare("novel_copy"))
+    assert len(calls) == 2 and result["review_status"] == "issues"
+    stored = configured.load()["runs"][-1]["review_result"]["issues"][0]
+    assert (stored["quote"], stored["source_refs"]) == (None, [])
+    assert stored["explanation"] == problem["explanation"]
 
 
 @pytest.mark.parametrize("failure", ["generation", "review"])
@@ -299,24 +331,20 @@ def test_json_syntax_feedback_reaches_correct_api_and_retains_content(configured
 
 
 @pytest.mark.parametrize("repaired", [True, False])
-def test_quote_failure_traces_exact_requests_replies_and_one_feedback(configured, monkeypatch, capsys, repaired):
+def test_review_format_failure_traces_exact_requests_replies_and_one_feedback(configured, monkeypatch, capsys, repaired):
     monkeypatch.setenv("NOVELWRITER_LLM_TRACE", "1")
     original = configured.current("novel_copy")
     content = deepcopy(original["content"])
     content["opening"]["text"] += "新增候选内容。"
-    invalid = {**issue(), "quote": content["opening"]["text"]}
+    invalid = {**issue(content["opening"]["text"]), "severity": "error"}
     first = {"issues": [invalid]}
     second = {"issues": [issue()]} if repaired else first
     calls = sdk_replies(monkeypatch, [("generator", content), ("reviewer", first), ("reviewer", second)])
     service = workflow.WorkflowService(configured, max_retries=0)
     command = service.prepare("novel_copy")
-    if repaired:
-        result = service.execute(command)
-        assert result["review_status"] == "issues"
-    else:
-        with pytest.raises(WorkspaceError, match="审阅引文未绑定原文"):
-            service.execute(command)
-        assert configured.current("novel_copy")["id"] == original["id"]
+    result = service.execute(command)
+    assert result["review_status"] == ("issues" if repaired else "unreviewed")
+    assert configured.current("novel_copy")["id"] == result["version_id"] != original["id"]
     output = capsys.readouterr().err
     events = [(name, json.loads(header), body) for name, header, body in re.findall(
         r"\[LLM_TRACE (\w+)\] ([^\n]+)\n(.*?)\n\[END LLM_TRACE \1\]", output, re.S)]
@@ -336,20 +364,22 @@ def test_quote_failure_traces_exact_requests_replies_and_one_feedback(configured
     errors = [(header, json.loads(body)) for name, header, body in events if name == "REVIEW_PARSE_ERROR"]
     assert errors[0][0]["call_id"] == requests[1][0]["call_id"]
     assert errors[0][1]["will_repair"] is True
-    assert "issues[0].quote" in errors[0][1]["error"]
+    assert "issues[0].severity" in errors[0][1]["error"]
     repair = json.loads(calls[2].split("【审阅格式修复】\n", 1)[1])
     assert repair["response"] == encode(first)
     message, detail = repair["error"].split("\n审阅校验详情：\n", 1)
     assert message == errors[0][1]["error"]
     assert json.loads(detail) == errors[0][1]["details"]
-    assert errors[0][1]["details"]["category"] == "reference"
+    assert errors[0][1]["details"]["category"] == "schema"
     assert content["opening"]["text"] in calls[1] and content["opening"]["text"] in calls[2]
+    assert any(name == "COMMITTED_RESULT" and json.loads(body)["version_id"] == result["version_id"] for name, _, body in events)
     if repaired:
         assert any(name == "PARSED_REVIEW" for name, _, _ in events)
-        assert any(name == "COMMITTED_RESULT" and json.loads(body)["version_id"] == result["version_id"] for name, _, body in events)
     else:
         assert len(errors) == 2 and errors[1][1]["will_repair"] is False
-        assert all(name != "COMMITTED_RESULT" for name, _, _ in events)
+        unavailable = [json.loads(body) for name, _, body in events if name == "REVIEW_UNAVAILABLE"]
+        assert len(unavailable) == 1 and "issues[0].severity" in unavailable[0]["unavailable"]
+        assert all(name != "PARSED_REVIEW" for name, _, _ in events)
     assert "generation-key" not in output and "review-key" not in output
 
 
@@ -373,23 +403,40 @@ def test_generation_and_review_format_repairs_use_their_own_apis_once(configured
     assert len({c["step_id"] for c in run["calls"]}) == 4
 
 
-@pytest.mark.parametrize("failure", ["generation", "review"])
-def test_invalid_format_stops_after_one_feedback_repair_and_keeps_original(configured, monkeypatch, failure):
+def test_invalid_generation_format_stops_after_one_feedback_repair_and_keeps_original(configured, monkeypatch):
     original = configured.current("novel_copy")
     replies = [("generator", "坏格式1"), ("generator", "坏格式2")]
-    if failure == "review":
-        replies = [("generator", original["content"]), ("reviewer", "坏格式1"), ("reviewer", "坏格式2")]
     calls = sdk_replies(monkeypatch, replies)
     service = workflow.WorkflowService(configured)
     command = service.prepare("novel_copy")
-    expected = "未取得可用稿件" if failure == "generation" else "未取得有效校验结果"
-    with pytest.raises(WorkspaceError, match=expected):
+    with pytest.raises(WorkspaceError, match="未取得可用稿件"):
         service.execute(command)
     assert len(calls) == len(replies)
     assert configured.current("novel_copy")["id"] == original["id"]
     task = configured.load()["tasks"][command["request_id"]]
     assert task["status"] == "failed" and not task["resumable"]
     assert runtime.get_recovery(configured, "novel_copy") is None
+
+
+def test_review_that_never_answers_in_format_keeps_new_draft_unchecked(configured, monkeypatch):
+    from core.short_video.v2.feedback import UNREVIEWED_SUMMARY, record_message
+
+    content = deepcopy(configured.current("novel_copy")["content"])
+    content["opening"]["text"] = "新的开头。"
+    calls = sdk_replies(monkeypatch, [("generator", content), ("reviewer", "坏格式1"), ("reviewer", "坏格式2")])
+    service = workflow.WorkflowService(configured)
+    command = service.prepare("novel_copy")
+    result = service.execute(command)
+    # No quality revision is attempted without a review, even though retries remain.
+    assert len(calls) == 3 and result["retries_used"] == 0
+    assert result["review_status"] == "unreviewed" and result["selected"] is True
+    assert result["feedback"]["summary"] == UNREVIEWED_SUMMARY and result["feedback"]["issue_count"] == 0
+    current = configured.current("novel_copy")
+    assert current["id"] == result["version_id"] and current["content"]["opening"]["text"] == "新的开头。"
+    run = configured.load()["runs"][-1]
+    assert "回复不是有效 JSON 对象" in run["review_result"]["unavailable"]
+    assert record_message(configured, current, configured.load()) == "已保存；" + UNREVIEWED_SUMMARY
+    assert configured.load()["tasks"][command["request_id"]]["status"] == "succeeded"
 
 
 def test_each_quality_review_has_one_separate_format_repair(configured, monkeypatch):
@@ -423,11 +470,7 @@ def test_review_repair_network_failure_resumes_without_resetting_attempt(configu
     assert checkpoint["review_repair"]["response"] == "审阅坏格式" and checkpoint["response"] is None
     resumed = sdk_replies(monkeypatch, [("reviewer", {"issues": []} if repaired else "仍然坏格式")])
     work = runtime.ResumeWork(configured, command["request_id"])
-    if repaired:
-        assert work(lambda *_: None)["review_status"] == "passed"
-    else:
-        with pytest.raises(WorkspaceError, match="未取得有效校验结果"):
-            work(lambda *_: None)
+    assert work(lambda *_: None)["review_status"] == ("passed" if repaired else "unreviewed")
     assert len(resumed) == 1 and "审阅坏格式" in resumed[0] and "【审阅格式修复】" in resumed[0]
 
 
@@ -454,9 +497,5 @@ def test_saved_repair_response_is_replayed_without_another_api_call(configured, 
     assert checkpoint["response"] == raw and "review_repair" in checkpoint
     monkeypatch.setattr(review, "parse_review", original_parser)
     work = runtime.ResumeWork(configured, command["request_id"])
-    if repaired:
-        assert work(lambda *_: None)["review_status"] == "passed"
-    else:
-        with pytest.raises(WorkspaceError, match="未取得有效校验结果"):
-            work(lambda *_: None)
+    assert work(lambda *_: None)["review_status"] == ("passed" if repaired else "unreviewed")
     assert len(calls) == 3
