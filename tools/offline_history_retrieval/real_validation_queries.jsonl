@@ -1,0 +1,11 @@
+{"id":"check-01","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"屋里换成连续进食之后，哪次交付把后面几样食物留成占位，等品种确定再填？","required_message_ids":["r10a"]}
+{"id":"check-02","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"找阿澈坐着吃的那版，画面只看戴着深色手套的手，汽水也只在第一段显现。","required_message_ids":["r12a"]}
+{"id":"check-03","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"有一版每次吃不同食物前都重新由敞开的房门走入，把这一点解释成有意回切的是哪份改稿？","required_message_ids":["r16a"]}
+{"id":"check-04","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"第5镜已经合门了，哪回纠正成从屋内直接迈向中央餐桌，后面的几次进食也用同一个屋内起点？","required_message_ids":["r18a"]}
+{"id":"check-05","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"第一镜的手伸过去但木门还合着，进屋约一秒后才露出面碗和流动饮品。我要找这一稿。","required_message_ids":["r20a"]}
+{"id":"check-06","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"哪次把第二镜延长到走到桌边端碗就吃，镜尾饮料还是液体、没形成瓶子？","required_message_ids":["r22a"]}
+{"id":"check-07","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"回查两个镜头的分工，先在门外把门推开，下一镜直接迈过门槛。哪份改稿采用了这个顺序？","required_message_ids":["r24a"]}
+{"id":"check-08","group":"late","wording":"frozen_paraphrase","through_turn":27,"question":"哪次把第2到第9镜改成桌脚直接落在木板上、屋里看不见任何铺在地上的织物？","required_message_ids":["r27a"]}
+{"id":"check-missing-01","group":"no_evidence","wording":"frozen_paraphrase","through_turn":27,"question":"改稿里第2镜的饮料最后换成了橙汁，哪次返回的版本明确写了这个？","required_message_ids":[]}
+{"id":"check-missing-02","group":"no_evidence","wording":"frozen_paraphrase","through_turn":22,"question":"找第2到第9镜取消地毯、餐桌直接立在木地板上的改稿。","required_message_ids":[]}
+{"id":"check-missing-03","group":"no_evidence","wording":"frozen_paraphrase","through_turn":27,"question":"哪份改稿把第8镜盘子旁边的电话铃声写进了音效？","required_message_ids":[]}
