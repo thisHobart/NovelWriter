@@ -464,8 +464,7 @@ def test_ui_send_freezes_selection_but_never_saves_or_changes_editor(chat_ui, sc
     assert "建议只保留一个动作" in ui.panel.messages.toPlainText()
     assert ui.page.editor.draft_snapshot() == draft_before_reply and ui.page.dirty
     assert scenario.current("storyboard")["id"] == original
-    ui.panel.retry()
-    assert ui.panel.input.toPlainText() == "简化这镜"
+    ui.panel.input.setPlainText("第三镜呢？")
     ui.panel.send()
     assert ui.pending[-1].command["context_snapshot"]["storyboard_reference"]["shot_id"] == "shot_3"
 
@@ -487,7 +486,7 @@ def test_plain_chat_and_missing_selection_dont_carry_last_shot(chat_ui):
     assert ui.panel.attach_shot.attach_button.toolTip() == "先在分镜表格里选中要讨论的镜头"
 
 
-def test_failed_chat_retry_reads_new_draft_and_cancel_preserves_documents(chat_ui, scenario):
+def test_chat_after_failure_reads_new_draft_and_cancel_preserves_documents(chat_ui, scenario):
     from core.common.cancellation import GenerationCancelled
 
     ui = chat_ui
@@ -499,21 +498,37 @@ def test_failed_chat_retry_reads_new_draft_and_cancel_preserves_documents(chat_u
     ui.panel.send()
     with pytest.raises(ValueError, match="模拟调用失败"):
         ui.pending[0](lambda *_: None)
-    ui.panel.retry()
-    ui.page.editor.detail_fields["action"].setPlainText("重试时最新的编辑")
+    ui.panel.input.setPlainText("看看最新动作")
+    ui.page.editor.detail_fields["action"].setPlainText("重新发送前的编辑")
     ui.workbench.transport = Mock(return_value="普通建议")
     ui.panel.send()
     latest = ui.pending[-1]
     sent = request_text(latest.command["messages"])
-    assert "重试时最新的编辑" in sent and "失败前的编辑" not in sent
+    assert "重新发送前的编辑" in sent and "失败前的编辑" not in sent
     latest.token.cancel()
     with pytest.raises(GenerationCancelled):
         latest(lambda *_: None)
     ui.workbench.transport.assert_not_called()
-    assert ui.page.dirty and ui.page.editor.content["shots"][1]["action"] == "重试时最新的编辑"
+    assert ui.page.dirty and ui.page.editor.content["shots"][1]["action"] == "重新发送前的编辑"
     assert scenario.current("storyboard")["id"] == original
     messages = ui.panel.service().store.get(ui.panel.conversation_id)["messages"]
     assert [m["status"] for m in messages] == ["failed", "cancelled"]
+
+
+def test_history_menu_lists_existing_conversations_and_switches_between_them(chat_ui):
+    panel = chat_ui.panel
+    panel.new_button.click()
+    first_id = panel.conversation_id
+    panel.new_button.click()
+    assert panel.conversation_id != first_id
+
+    panel.fill_history_menu()
+    actions = panel.history_menu.actions()
+    assert len(actions) == panel.conversations.count() == 2
+    assert [action.text() for action in actions] == [panel.conversations.itemText(i) for i in range(2)]
+    assert sum(action.isChecked() for action in actions) == 1
+    actions[panel.conversations.findData(first_id)].trigger()
+    assert panel.conversation_id == first_id
 
 
 def test_attachment_controls_fit_narrow_chat_and_toggling_never_discards_input(chat_ui):

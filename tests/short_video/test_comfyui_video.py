@@ -18,6 +18,7 @@ from core.short_video.v2.media_workflows import (
     default_workflows,
     parse_video_workflow,
     save_shot_drafts,
+    shot_drafts_path,
 )
 from core.short_video.v2.models import WorkspaceError
 
@@ -1244,6 +1245,62 @@ def test_shots_start_vertical_at_one_megapixel_and_keep_what_was_set(tmp_path):
     assert panel.parameter_fields["115.aspect_ratio"].currentText() == "16:9 横屏"
     assert panel.parameter_fields["115.megapixels"].value() == 0.4
     panel.close()
+
+
+@pytest.mark.parametrize(
+    "workflow_id,old_aspect",
+    [
+        ("minimax-reference", "21:9 (Ultrawide)"),
+        ("minimax-first-last", "16:9 (Widescreen)"),
+    ],
+)
+def test_reopening_old_shot_drafts_replaces_only_inherited_resolution_defaults(
+    tmp_path, workflow_id, old_aspect
+):
+    config = MediaConfig(selected_workflow_id=workflow_id)
+    config.save(tmp_path)
+    old_parameters = {"115.aspect_ratio": old_aspect, "115.megapixels": 0.4}
+    shot_drafts_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "old_default": {workflow_id: {"prompt": "Keep the action.", "parameters": old_parameters}},
+                "custom": {
+                    workflow_id: {"parameters": {**old_parameters, "115.megapixels": 2.0}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app, panel, _ = reference_panel(tmp_path)
+    try:
+        panel.set_target({"shot_id": "old_default"})
+        panel.refresh()
+        assert panel.parameter_fields["115.aspect_ratio"].currentText() == "9:16 竖屏"
+        assert panel.parameter_fields["115.megapixels"].value() == 1.0
+        assert panel.prompt.toPlainText() == "Keep the action."
+
+        panel.set_target({"shot_id": "custom"})
+        panel.refresh()
+        assert panel.parameter_values()["115.aspect_ratio"] == old_aspect
+        assert panel.parameter_values()["115.megapixels"] == 2.0
+
+        panel.set_target({"shot_id": "old_default"})
+        panel.refresh()
+        aspect = panel.parameter_fields["115.aspect_ratio"]
+        aspect.setCurrentIndex(aspect.findData(old_aspect))
+        panel.parameter_fields["115.megapixels"].setValue(0.4)
+        panel.remember_draft()
+
+        _, reopened, _ = reference_panel(tmp_path)
+        try:
+            reopened.set_target({"shot_id": "old_default"})
+            reopened.refresh()
+            assert {key: reopened.parameter_values()[key] for key in old_parameters} == old_parameters
+        finally:
+            reopened.close()
+    finally:
+        panel.close()
+        app.processEvents()
 
 
 def test_duration_hint_offers_the_storyboard_length(tmp_path):

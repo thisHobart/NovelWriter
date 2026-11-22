@@ -29,6 +29,10 @@ ASPECT_RATIO_CHOICES = (
 # holds; a shot keeps what was set for it.
 SHOT_ASPECT_RATIO = "9:16 (Portrait Widescreen)"
 SHOT_MEGAPIXELS = 1.0
+_LEGACY_SHOT_ASPECT_RATIOS = {
+    "minimax-reference": "21:9 (Ultrawide)",
+    "minimax-first-last": "16:9 (Widescreen)",
+}
 
 
 def default_workflows() -> list[JsonObject]:
@@ -142,10 +146,23 @@ def _prompt_image_bindings(value: object) -> dict[int, str]:
     }
 
 
-def _stored_draft(draft: JsonObject) -> JsonObject:
+def _stored_draft(workflow_id: str, draft: JsonObject) -> JsonObject:
     stored = {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
     if "prompt_image_bindings" in stored:
         stored["prompt_image_bindings"] = _prompt_image_bindings(stored["prompt_image_bindings"])
+    old_aspect = _LEGACY_SHOT_ASPECT_RATIOS.get(workflow_id)
+    parameters = stored.get("parameters")
+    if old_aspect and "resolution_defaults_version" not in draft and isinstance(parameters, dict):
+        # Old drafts saved every displayed value, including inherited defaults. Drop only
+        # the original pair so the UI falls back to the current workflow defaults.
+        updated = parameters.copy()
+        for key, value in parameters.items():
+            if key.endswith(".aspect_ratio") and value == old_aspect:
+                resolution_key = f"{key.removesuffix('.aspect_ratio')}.megapixels"
+                if parameters.get(resolution_key) == 0.4:
+                    updated.pop(key)
+                    updated.pop(resolution_key)
+        stored["parameters"] = updated
     return stored
 
 
@@ -160,7 +177,7 @@ def load_shot_drafts(output_dir: str | Path) -> dict[str, dict[str, JsonObject]]
         return {}
     return {
         shot_id: {
-            workflow_id: _stored_draft(draft)
+            workflow_id: _stored_draft(workflow_id, draft)
             for workflow_id, draft in workflows.items()
             if isinstance(workflow_id, str) and isinstance(draft, dict)
         }
@@ -172,7 +189,10 @@ def load_shot_drafts(output_dir: str | Path) -> dict[str, dict[str, JsonObject]]
 def save_shot_drafts(output_dir: str | Path, drafts: dict[str, dict[str, JsonObject]]) -> None:
     stored = {
         shot_id: {
-            workflow_id: {k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS}
+            workflow_id: {
+                "resolution_defaults_version": 1,
+                **{k: v for k, v in draft.items() if k in SHOT_DRAFT_FIELDS},
+            }
             for workflow_id, draft in workflows.items()
         }
         for shot_id, workflows in drafts.items()

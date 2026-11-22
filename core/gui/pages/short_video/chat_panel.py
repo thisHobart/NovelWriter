@@ -399,9 +399,6 @@ class ChatPanel(QWidget):
             self.history_menu.addAction(
                 "更多对话…", lambda: self.workbench.perform(self.choose_conversation)
             )
-        if count:
-            self.history_menu.addSeparator()
-        self.history_menu.addAction("重试上次问题", lambda: self.workbench.perform(self.retry))
 
     def choose_conversation(self) -> None:
         labels = [self.conversations.itemText(i) for i in range(self.conversations.count())]
@@ -604,14 +601,3 @@ class ChatPanel(QWidget):
             ChatWork(self.workbench.repository, command, transport=self.workbench.transport),
             self.send_button,
         )
-
-    def retry(self) -> None:
-        require(self.conversation_id is not None, "INVALID_INPUT", "尚无历史消息")
-        users = [
-            m
-            for m in self.service().store.get(self.conversation_id)["messages"]
-            if m["role"] == "user"
-        ]
-        require(bool(users), "INVALID_INPUT", "尚无历史问题")
-        self.input.setPlainText(users[-1]["content"])
-        self.workbench.notice("问题已放回输入框。请核对后再点击发送；不会自动重试。")

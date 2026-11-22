@@ -174,7 +174,7 @@ def test_prompt_tabs_attach_the_objects_settings_and_every_views_prompts(scenari
     value = asset_prompt_material(spec, entities, 1, unsaved=True)
     validate_attachment(value)
     # Two objects are called 寻井人; the second is named as chat names it.
-    assert value["page"] == "asset_prompts"
+    assert value["page"] == "asset_prompts" and value["asset_kind"] == "character"
     assert value["label"] == "人物提示词 · 寻井人·2（常态） · 含未保存修改"
     material = value["material"]
     assert material.startswith(
@@ -274,6 +274,9 @@ def test_each_attaching_page_has_its_own_rules_and_only_the_storyboard_asks_for_
         {"label": " "},
         {"label": None},
         {"page": "elsewhere"},
+        {"asset_kind": "character"},
+        {"page": "asset_prompts", "asset_kind": "unknown"},
+        {"page": "asset_prompts", "asset_kind": []},
     ],
 )
 def test_other_pages_attach_no_shot_reference_or_revision(change):
@@ -453,6 +456,42 @@ def test_prompt_chips_name_the_object_or_shot_and_the_image_tab_attaches_nothing
     assert chat.context_panel.isHidden() and chat.selected_attachment() is None
     specs.tabs.setCurrentIndex(3)
     assert not chat.context_panel.isHidden() and not chip.isChecked()
+
+
+@pytest.mark.parametrize(
+    ("tab", "asset_id", "kind_label", "view_label", "rule"),
+    [
+        (0, "asset_twin", "人物", "全身正面", "配饰和发缝的左右以人物自身为准"),
+        (1, "asset_scene", "场景", "反向全景", "反向全景沿用同一布局"),
+        (2, "asset_prop", "道具", "微侧面", "微侧面补充厚度与侧边结构"),
+    ],
+)
+def test_asset_discussion_previews_and_sends_only_the_selected_kind_rules(
+    pages, tab, asset_id, kind_label, view_label, rule
+):
+    workbench = pages.workbench
+    chat, specs = workbench.chat, workbench.specs
+    calls = []
+    workbench.transport = lambda request: calls.append(request) or "建议保留当前设定。"
+    assert workbench.navigate("video_prompts")
+    specs.tabs.setCurrentIndex(tab)
+    specs.objects.setCurrentIndex(specs.objects.findData(asset_id))
+    specs.views.setCurrentIndex(1)
+    specs.editor.positive.setPlainText("正在编辑的提示词")
+    chat.input.setPlainText("这段哪里不对？")
+
+    preview, attached = chat.request_preview()
+    assert attached and calls == []
+    rules = preview.request[0]["content"]
+    assert "以资料中标为“当前显示”的视图为准" in rules and rule in rules
+    assert [label for label in ("人物", "场景", "道具") if f"\n- {label}：" in rules] == [kind_label]
+    assert f"### {view_label}（当前显示）\n正向提示词：正在编辑的提示词" in preview.request[-1]["content"]
+
+    chat.send()
+    work = pages.pending[0]
+    assert work.command["messages"] == preview.request
+    work(lambda *_: None)
+    assert calls == [preview.request]
 
 
 def test_long_labels_are_shortened_to_fit_and_spelled_out_on_hover(pages):

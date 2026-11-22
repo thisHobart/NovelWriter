@@ -198,7 +198,7 @@ def asset_prompt_material(
     )
     label = asset_prompt_label(kind, name, variant["label"]) + (f" · {UNSAVED}" if unsaved else "")
     intro = f"提示词页「{KIND_LABELS[kind]}」标签当前对象的设定和各视图提示词（{_state(unsaved)}）"
-    return _material("asset_prompts", label, intro, sections, [])
+    return {**_material("asset_prompts", label, intro, sections, []), "asset_kind": kind}
 
 
 # -- 提示词：镜头 -----------------------------------------------------------------------------

@@ -93,11 +93,34 @@ COPY_PAGE_RULES = bullets(
 )
 
 ASSET_PROMPT_PAGE_RULES = bullets(
-    "本轮附带了提示词页当前对象的设定和各视图的正向、负面提示词（含未保存修改）。",
-    "建议修改提示词时，写明是哪个视图的正向还是负面提示词，并写出改后的完整提示词，方便直接替换。",
-    "提示词要和设定一致；设定有冲突或缺失时指出，不悄悄改动设定。",
+    "按用户指定的资产、状态、视图和字段处理。未指定视图时，以资料中标为“当前显示”的视图为准。"
+    "只有用户要求检查整组，或发现共用设定冲突时，才对照其他视图。",
+    "以本轮附带的资产设定和提示词为准，包含未保存修改。设定缺失时把补充内容标为“设计建议”，"
+    "发现冲突时指出需要确认的设定。本轮只有文字时，评价文字的清晰度和一致性。",
+    "用户要点评时，指出具体问题、对画面的影响和改法。用户要求改写时，标明视图与字段，"
+    "给出该字段可直接替换的完整提示词。",
+    "正向提示词优先写希望看到的主体、入画范围和关键可见特征。"
+    "负面提示词只保留会破坏当前视图的具体偏差，并检查是否与正向要求冲突。",
     "回复只是建议，用户在提示词页自己修改并保存。",
 )
+
+ASSET_KIND_PAGE_RULES = {
+    "character": bullets(
+        "人物：保持同一人物的辨识特征、体型、服装和指定状态。正面头部特写重点写脸、发型、表情和入画的衣领。"
+        "全身正、侧、背面描述各角度可见的服装轮廓、站姿和鞋靴。配饰和发缝的左右以人物自身为准。",
+        "把受寒、疲惫等状态写成当前视图中能看到的特征，例如鼻尖冻红、眼下淡青。",
+    ),
+    "scene": bullets(
+        "场景：用门、窗、壁炉等固定物确定空间布局。写清摄影机站在哪里、朝哪里看、哪些区域可见。"
+        "空间全景交代主要区域的关系，反向全景沿用同一布局，按新观察方向描述画面中的左右和遮挡。",
+        "保持关键物件和光源在空间中的位置。设定尚未交代关键物件的位置时，将其列为待确认项。",
+    ),
+    "prop": bullets(
+        "道具：各视图保持道具的轮廓、材质、比例、部件位置和当前状态。正面写正面特征，微侧面补充厚度与侧边结构，"
+        "微俯视写从斜上方能看到的表面、开口或内部。",
+        "默认独立展示道具。涉及空白或已写、打开或关闭等差别时，以当前选中的状态为准。",
+    ),
+}
 
 SHOT_VIDEO_PAGE_RULES = bullets(
     "本轮附带了提示词页「镜头」标签的当前内容：本镜和前后镜的分镜、视频提示词（输入框里的当前内容）、"
@@ -127,7 +150,7 @@ def system_message(general: str, page: str = "", output: str = "") -> str:
 
 def validate_attachment(value: object) -> JsonObject:
     """What a page attaches: its name, a label, the material text, and whether shots are being
-    revised. Only the storyboard's carries a shot reference."""
+    revised. A storyboard can carry a shot reference, an asset prompt its kind."""
     require(
         isinstance(value, dict)
         and value.get("page") in PAGE_RULES
@@ -136,7 +159,15 @@ def validate_attachment(value: object) -> JsonObject:
         and isinstance(value.get("material"), str)
         and bool(value["material"].strip())
         and type(value.get("edit", False)) is bool
-        and (value["page"] == "storyboard" or ("reference" not in value and not value.get("edit"))),
+        and (value["page"] == "storyboard" or ("reference" not in value and not value.get("edit")))
+        and (
+            "asset_kind" not in value
+            or (
+                value["page"] == "asset_prompts"
+                and isinstance(value["asset_kind"], str)
+                and value["asset_kind"] in ASSET_KIND_PAGE_RULES
+            )
+        ),
         "INVALID_INPUT",
         "附带内容无效",
     )
@@ -149,6 +180,8 @@ def page_rules(attachment: JsonObject) -> tuple[str, str]:
     """(本页要求, 输出格式) for the attaching page; only the storyboard asks for a format."""
     edit = attachment.get("edit", False)
     rules = PAGE_RULES[attachment["page"]]
+    if "asset_kind" in attachment:
+        return rules + "\n" + ASSET_KIND_PAGE_RULES[attachment["asset_kind"]], ""
     if attachment["page"] != "storyboard":
         return rules, ""
     if edit:
