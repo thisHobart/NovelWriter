@@ -9,3 +9,6 @@ def rank_turns(
 ) -> list[tuple[str, float | None, list[str]]]:
     """Return (turn ID, score if applicable, matching features) in priority order."""
     return [(turn_id, None, []) for turn_id in reversed(turns)]
+
+def rank_questions(questions: list[str], turns: dict[str, str], revisions: dict) -> list[list]:
+    return [rank_turns(question, turns) for question in questions]

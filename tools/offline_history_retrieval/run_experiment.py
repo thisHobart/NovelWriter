@@ -10,8 +10,9 @@ import subprocess
 from time import perf_counter_ns
 
 from evidence_pack import build_evidence, pack_evidence
-from experiment_ranker import METHOD, SETTINGS, rank_turns
+from experiment_ranker import METHOD, SETTINGS, rank_questions
 from history_retrieval import Message, find_turn_by_message_id
+from revision_evidence import RevisionEvidence, revision_evidence
 
 HERE = Path(__file__).resolve().parent
 TOP_K = 3
@@ -35,16 +36,33 @@ def searchable_text(messages: list[Message]) -> str:
     return "\n".join(paragraphs)
 
 
+def rank_all(
+    queries: list[dict], texts: dict[str, str], revisions: dict[str, RevisionEvidence]
+) -> dict[str, tuple[list, float]]:
+    groups = {}
+    for query in queries:
+        groups.setdefault(query["through_turn"], []).append(query)
+    result = {}
+    for cutoff, group in groups.items():
+        visible = {key: value for key, value in texts.items() if turn_number(key) <= cutoff}
+        cards = {key: value for key, value in revisions.items() if key in visible}
+        start = perf_counter_ns()
+        rankings = rank_questions([q["question"] for q in group], visible, cards)
+        elapsed_us = (perf_counter_ns() - start) / (1000 * len(group))
+        for query, ranked in zip(group, rankings, strict=True):
+            assert all(key in visible for key, _, _ in ranked)
+            result[query["id"]] = ranked, elapsed_us
+    return result
+
+
 def run_query(
     query: dict,
-    texts: dict[str, str],
+    ranked: list[tuple[str, float | None, list[str]]],
+    elapsed_us: float,
     evidence: dict[str, dict[str, str]],
     message_turns: dict[str, str],
+    turn_sources: dict[str, list[str]],
 ) -> dict:
-    visible = {key: value for key, value in texts.items() if turn_number(key) <= query["through_turn"]}
-    start = perf_counter_ns()
-    ranked = rank_turns(query["question"], visible)
-    elapsed_us = (perf_counter_ns() - start) / 1000
     top = ranked[:TOP_K]
 
     selected = pack_evidence([key for key, _, _ in top], evidence, CONTEXT_CHARS)
@@ -54,7 +72,8 @@ def run_query(
     required = query["required_message_ids"]
     # Gold labels are used only for scoring once ranking and packing are complete.
     gold_turns = [message_turns[message_id] for message_id in required]
-    assert all(key in visible for key in gold_turns), query["id"]
+    assert all(turn_number(key) <= query["through_turn"] for key in gold_turns), query["id"]
+    packed_sources = [source for key in packed for source in turn_sources[key]]
     ranks = {key: rank for rank, (key, _, _) in enumerate(ranked, 1)}
     return {
         **query,
@@ -67,7 +86,8 @@ def run_query(
         "packed_turn_ids": packed,
         "packed_formats": {item.turn_id: item.form for item in selected},
         "evidence_chars": used,
-        "covered": all(key in packed for key in gold_turns) if required else None,
+        "packed_message_ids": packed_sources,
+        "covered": all(key in packed_sources for key in required) if required else None,
         "false_positive": bool(packed) if not required else None,
         "ranking_us": round(elapsed_us, 2),
     }
@@ -103,7 +123,12 @@ def main() -> None:
     texts = {key: searchable_text(messages) for key, messages in turns.items()}
     evidence = {key: build_evidence(messages) for key, messages in turns.items()}
     message_turns = {m["id"]: m["turn_id"] for m in history}
-    rows = [run_query(q, texts, evidence, message_turns) for q in queries]
+    turn_sources = {key: [m["id"] for m in group] for key, group in turns.items()}
+    revisions = {
+        key: card for key, group in turns.items() if (card := revision_evidence(group)) is not None
+    }
+    rankings = rank_all(queries, texts, revisions)
+    rows = [run_query(q, *rankings[q["id"]], evidence, message_turns, turn_sources) for q in queries]
     summary = {
         group: {
             "queries": sum(row["group"] == group for row in rows),
