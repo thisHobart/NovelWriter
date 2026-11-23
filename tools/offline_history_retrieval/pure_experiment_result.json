@@ -1,5 +1,5 @@
 {
-  "code_commit": "6d2acf9cec8a544bb30f23c77b35e2640026b738",
+  "code_commit": "76fa0f6302eef02dc3768fb48e1bb3f69a51136e",
   "python": "3.14.5",
   "cases_sha256_utf8_lf": "6d68387682cb7e133750c93701c9d30bd9369511146535df639671261ed03539",
   "data": {
@@ -28,6 +28,7 @@
         "field",
         "state"
       ],
+      "request_scope": "distinguish a preceding context clause",
       "score": "query coverage by weighted 2–4 character terms",
       "evidence_gate": "non-metadata content support and new-value check for substitutions",
       "no_model": true
@@ -56,9 +57,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.3629,
-        "p50_ms": 0.009,
-        "p95_ms": 0.0236,
+        "load_ms": 1.4689,
+        "p50_ms": 0.0092,
+        "p95_ms": 0.0219,
         "queries": [
           {
             "id": "real-near-01",
@@ -423,7 +424,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0236
+            "query_ms": 0.0219
           },
           {
             "id": "real-late-01",
@@ -817,7 +818,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0146
+            "query_ms": 0.0161
           },
           {
             "id": "real-near-02",
@@ -1052,7 +1053,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0086
+            "query_ms": 0.0088
           },
           {
             "id": "real-late-02",
@@ -1446,7 +1447,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0171
+            "query_ms": 0.0106
           },
           {
             "id": "real-near-03",
@@ -1729,7 +1730,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0088
+            "query_ms": 0.0136
           },
           {
             "id": "real-late-03",
@@ -2123,7 +2124,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0108
+            "query_ms": 0.0124
           },
           {
             "id": "real-near-04",
@@ -2364,7 +2365,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0083
+            "query_ms": 0.0092
           },
           {
             "id": "real-late-04",
@@ -2758,7 +2759,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0101
+            "query_ms": 0.011
           },
           {
             "id": "real-near-05",
@@ -3342,7 +3343,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0087
+            "query_ms": 0.009
           },
           {
             "id": "real-near-06",
@@ -3582,7 +3583,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.009
+            "query_ms": 0.0095
           },
           {
             "id": "real-late-06",
@@ -3976,7 +3977,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0081
+            "query_ms": 0.0086
           },
           {
             "id": "real-near-07",
@@ -4178,7 +4179,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.01
+            "query_ms": 0.0108
           },
           {
             "id": "real-late-07",
@@ -4572,7 +4573,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0081
+            "query_ms": 0.0083
           },
           {
             "id": "real-near-08",
@@ -4966,7 +4967,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0099
+            "query_ms": 0.0079
           },
           {
             "id": "real-late-08",
@@ -5360,7 +5361,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0092
+            "query_ms": 0.009
           },
           {
             "id": "real-missing-01",
@@ -5752,7 +5753,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0076
+            "query_ms": 0.0081
           },
           {
             "id": "real-missing-02",
@@ -5990,7 +5991,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0085
+            "query_ms": 0.0087
           },
           {
             "id": "real-missing-03",
@@ -6382,7 +6383,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0078
+            "query_ms": 0.0084
           }
         ]
       },
@@ -6399,9 +6400,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.1568,
-        "p50_ms": 0.0086,
-        "p95_ms": 0.0102,
+        "load_ms": 1.1351,
+        "p50_ms": 0.0084,
+        "p95_ms": 0.0095,
         "queries": [
           {
             "id": "check-01",
@@ -6795,7 +6796,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0099
+            "query_ms": 0.0095
           },
           {
             "id": "check-02",
@@ -7583,7 +7584,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0088
+            "query_ms": 0.0087
           },
           {
             "id": "check-04",
@@ -7977,7 +7978,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0072
+            "query_ms": 0.0073
           },
           {
             "id": "check-05",
@@ -7985,6 +7986,400 @@
             "cutoff": 27,
             "expected": [
               "r20a"
+            ],
+            "candidate_turns": [
+              "T1",
+              "T2",
+              "T3",
+              "T4",
+              "T5",
+              "T6",
+              "T7",
+              "T8",
+              "T9",
+              "T10",
+              "T11",
+              "T12",
+              "T13",
+              "T14",
+              "T15",
+              "T16",
+              "T17",
+              "T18",
+              "T19",
+              "T20",
+              "T21",
+              "T22",
+              "T23",
+              "T24",
+              "T25",
+              "T26",
+              "T27"
+            ],
+            "top": [
+              {
+                "turn": "T27",
+                "score": null,
+                "matches": []
+              },
+              {
+                "turn": "T26",
+                "score": null,
+                "matches": []
+              },
+              {
+                "turn": "T25",
+                "score": null,
+                "matches": []
+              }
+            ],
+            "packed_turns": [
+              "T27"
+            ],
+            "packed_message_ids": [
+              "r27u",
+              "r27a"
+            ],
+            "evidence": {
+              "r27a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    2,
+                    "取景范围"
+                  ],
+                  [
+                    2,
+                    "镜头运动"
+                  ],
+                  [
+                    2,
+                    "场景"
+                  ],
+                  [
+                    2,
+                    "人物"
+                  ],
+                  [
+                    2,
+                    "道具"
+                  ],
+                  [
+                    2,
+                    "动作"
+                  ],
+                  [
+                    2,
+                    "对白"
+                  ],
+                  [
+                    2,
+                    "旁白"
+                  ],
+                  [
+                    2,
+                    "音效"
+                  ],
+                  [
+                    2,
+                    "时长"
+                  ],
+                  [
+                    3,
+                    "取景范围"
+                  ],
+                  [
+                    3,
+                    "镜头运动"
+                  ],
+                  [
+                    3,
+                    "场景"
+                  ],
+                  [
+                    3,
+                    "人物"
+                  ],
+                  [
+                    3,
+                    "道具"
+                  ],
+                  [
+                    3,
+                    "动作"
+                  ],
+                  [
+                    3,
+                    "对白"
+                  ],
+                  [
+                    3,
+                    "旁白"
+                  ],
+                  [
+                    3,
+                    "音效"
+                  ],
+                  [
+                    3,
+                    "时长"
+                  ],
+                  [
+                    4,
+                    "取景范围"
+                  ],
+                  [
+                    4,
+                    "镜头运动"
+                  ],
+                  [
+                    4,
+                    "场景"
+                  ],
+                  [
+                    4,
+                    "人物"
+                  ],
+                  [
+                    4,
+                    "道具"
+                  ],
+                  [
+                    4,
+                    "动作"
+                  ],
+                  [
+                    4,
+                    "对白"
+                  ],
+                  [
+                    4,
+                    "旁白"
+                  ],
+                  [
+                    4,
+                    "音效"
+                  ],
+                  [
+                    4,
+                    "时长"
+                  ],
+                  [
+                    5,
+                    "取景范围"
+                  ],
+                  [
+                    5,
+                    "镜头运动"
+                  ],
+                  [
+                    5,
+                    "场景"
+                  ],
+                  [
+                    5,
+                    "人物"
+                  ],
+                  [
+                    5,
+                    "道具"
+                  ],
+                  [
+                    5,
+                    "动作"
+                  ],
+                  [
+                    5,
+                    "对白"
+                  ],
+                  [
+                    5,
+                    "旁白"
+                  ],
+                  [
+                    5,
+                    "音效"
+                  ],
+                  [
+                    5,
+                    "时长"
+                  ],
+                  [
+                    6,
+                    "取景范围"
+                  ],
+                  [
+                    6,
+                    "镜头运动"
+                  ],
+                  [
+                    6,
+                    "场景"
+                  ],
+                  [
+                    6,
+                    "人物"
+                  ],
+                  [
+                    6,
+                    "道具"
+                  ],
+                  [
+                    6,
+                    "动作"
+                  ],
+                  [
+                    6,
+                    "对白"
+                  ],
+                  [
+                    6,
+                    "旁白"
+                  ],
+                  [
+                    6,
+                    "音效"
+                  ],
+                  [
+                    6,
+                    "时长"
+                  ],
+                  [
+                    7,
+                    "取景范围"
+                  ],
+                  [
+                    7,
+                    "镜头运动"
+                  ],
+                  [
+                    7,
+                    "场景"
+                  ],
+                  [
+                    7,
+                    "人物"
+                  ],
+                  [
+                    7,
+                    "道具"
+                  ],
+                  [
+                    7,
+                    "动作"
+                  ],
+                  [
+                    7,
+                    "对白"
+                  ],
+                  [
+                    7,
+                    "旁白"
+                  ],
+                  [
+                    7,
+                    "音效"
+                  ],
+                  [
+                    7,
+                    "时长"
+                  ],
+                  [
+                    8,
+                    "取景范围"
+                  ],
+                  [
+                    8,
+                    "镜头运动"
+                  ],
+                  [
+                    8,
+                    "场景"
+                  ],
+                  [
+                    8,
+                    "人物"
+                  ],
+                  [
+                    8,
+                    "道具"
+                  ],
+                  [
+                    8,
+                    "动作"
+                  ],
+                  [
+                    8,
+                    "对白"
+                  ],
+                  [
+                    8,
+                    "旁白"
+                  ],
+                  [
+                    8,
+                    "音效"
+                  ],
+                  [
+                    8,
+                    "时长"
+                  ],
+                  [
+                    9,
+                    "取景范围"
+                  ],
+                  [
+                    9,
+                    "镜头运动"
+                  ],
+                  [
+                    9,
+                    "场景"
+                  ],
+                  [
+                    9,
+                    "人物"
+                  ],
+                  [
+                    9,
+                    "道具"
+                  ],
+                  [
+                    9,
+                    "动作"
+                  ],
+                  [
+                    9,
+                    "对白"
+                  ],
+                  [
+                    9,
+                    "旁白"
+                  ],
+                  [
+                    9,
+                    "音效"
+                  ],
+                  [
+                    9,
+                    "时长"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 5076,
+            "covered": false,
+            "false_recall": null,
+            "decision": "recent",
+            "failure": "ranking_or_rejection",
+            "query_ms": 0.0083
+          },
+          {
+            "id": "check-06",
+            "group": "late",
+            "cutoff": 27,
+            "expected": [
+              "r22a"
             ],
             "candidate_turns": [
               "T1",
@@ -8374,400 +8769,6 @@
             "query_ms": 0.0084
           },
           {
-            "id": "check-06",
-            "group": "late",
-            "cutoff": 27,
-            "expected": [
-              "r22a"
-            ],
-            "candidate_turns": [
-              "T1",
-              "T2",
-              "T3",
-              "T4",
-              "T5",
-              "T6",
-              "T7",
-              "T8",
-              "T9",
-              "T10",
-              "T11",
-              "T12",
-              "T13",
-              "T14",
-              "T15",
-              "T16",
-              "T17",
-              "T18",
-              "T19",
-              "T20",
-              "T21",
-              "T22",
-              "T23",
-              "T24",
-              "T25",
-              "T26",
-              "T27"
-            ],
-            "top": [
-              {
-                "turn": "T27",
-                "score": null,
-                "matches": []
-              },
-              {
-                "turn": "T26",
-                "score": null,
-                "matches": []
-              },
-              {
-                "turn": "T25",
-                "score": null,
-                "matches": []
-              }
-            ],
-            "packed_turns": [
-              "T27"
-            ],
-            "packed_message_ids": [
-              "r27u",
-              "r27a"
-            ],
-            "evidence": {
-              "r27a": {
-                "state": "draft",
-                "slots": [
-                  [
-                    2,
-                    "取景范围"
-                  ],
-                  [
-                    2,
-                    "镜头运动"
-                  ],
-                  [
-                    2,
-                    "场景"
-                  ],
-                  [
-                    2,
-                    "人物"
-                  ],
-                  [
-                    2,
-                    "道具"
-                  ],
-                  [
-                    2,
-                    "动作"
-                  ],
-                  [
-                    2,
-                    "对白"
-                  ],
-                  [
-                    2,
-                    "旁白"
-                  ],
-                  [
-                    2,
-                    "音效"
-                  ],
-                  [
-                    2,
-                    "时长"
-                  ],
-                  [
-                    3,
-                    "取景范围"
-                  ],
-                  [
-                    3,
-                    "镜头运动"
-                  ],
-                  [
-                    3,
-                    "场景"
-                  ],
-                  [
-                    3,
-                    "人物"
-                  ],
-                  [
-                    3,
-                    "道具"
-                  ],
-                  [
-                    3,
-                    "动作"
-                  ],
-                  [
-                    3,
-                    "对白"
-                  ],
-                  [
-                    3,
-                    "旁白"
-                  ],
-                  [
-                    3,
-                    "音效"
-                  ],
-                  [
-                    3,
-                    "时长"
-                  ],
-                  [
-                    4,
-                    "取景范围"
-                  ],
-                  [
-                    4,
-                    "镜头运动"
-                  ],
-                  [
-                    4,
-                    "场景"
-                  ],
-                  [
-                    4,
-                    "人物"
-                  ],
-                  [
-                    4,
-                    "道具"
-                  ],
-                  [
-                    4,
-                    "动作"
-                  ],
-                  [
-                    4,
-                    "对白"
-                  ],
-                  [
-                    4,
-                    "旁白"
-                  ],
-                  [
-                    4,
-                    "音效"
-                  ],
-                  [
-                    4,
-                    "时长"
-                  ],
-                  [
-                    5,
-                    "取景范围"
-                  ],
-                  [
-                    5,
-                    "镜头运动"
-                  ],
-                  [
-                    5,
-                    "场景"
-                  ],
-                  [
-                    5,
-                    "人物"
-                  ],
-                  [
-                    5,
-                    "道具"
-                  ],
-                  [
-                    5,
-                    "动作"
-                  ],
-                  [
-                    5,
-                    "对白"
-                  ],
-                  [
-                    5,
-                    "旁白"
-                  ],
-                  [
-                    5,
-                    "音效"
-                  ],
-                  [
-                    5,
-                    "时长"
-                  ],
-                  [
-                    6,
-                    "取景范围"
-                  ],
-                  [
-                    6,
-                    "镜头运动"
-                  ],
-                  [
-                    6,
-                    "场景"
-                  ],
-                  [
-                    6,
-                    "人物"
-                  ],
-                  [
-                    6,
-                    "道具"
-                  ],
-                  [
-                    6,
-                    "动作"
-                  ],
-                  [
-                    6,
-                    "对白"
-                  ],
-                  [
-                    6,
-                    "旁白"
-                  ],
-                  [
-                    6,
-                    "音效"
-                  ],
-                  [
-                    6,
-                    "时长"
-                  ],
-                  [
-                    7,
-                    "取景范围"
-                  ],
-                  [
-                    7,
-                    "镜头运动"
-                  ],
-                  [
-                    7,
-                    "场景"
-                  ],
-                  [
-                    7,
-                    "人物"
-                  ],
-                  [
-                    7,
-                    "道具"
-                  ],
-                  [
-                    7,
-                    "动作"
-                  ],
-                  [
-                    7,
-                    "对白"
-                  ],
-                  [
-                    7,
-                    "旁白"
-                  ],
-                  [
-                    7,
-                    "音效"
-                  ],
-                  [
-                    7,
-                    "时长"
-                  ],
-                  [
-                    8,
-                    "取景范围"
-                  ],
-                  [
-                    8,
-                    "镜头运动"
-                  ],
-                  [
-                    8,
-                    "场景"
-                  ],
-                  [
-                    8,
-                    "人物"
-                  ],
-                  [
-                    8,
-                    "道具"
-                  ],
-                  [
-                    8,
-                    "动作"
-                  ],
-                  [
-                    8,
-                    "对白"
-                  ],
-                  [
-                    8,
-                    "旁白"
-                  ],
-                  [
-                    8,
-                    "音效"
-                  ],
-                  [
-                    8,
-                    "时长"
-                  ],
-                  [
-                    9,
-                    "取景范围"
-                  ],
-                  [
-                    9,
-                    "镜头运动"
-                  ],
-                  [
-                    9,
-                    "场景"
-                  ],
-                  [
-                    9,
-                    "人物"
-                  ],
-                  [
-                    9,
-                    "道具"
-                  ],
-                  [
-                    9,
-                    "动作"
-                  ],
-                  [
-                    9,
-                    "对白"
-                  ],
-                  [
-                    9,
-                    "旁白"
-                  ],
-                  [
-                    9,
-                    "音效"
-                  ],
-                  [
-                    9,
-                    "时长"
-                  ]
-                ]
-              }
-            },
-            "evidence_chars": 5076,
-            "covered": false,
-            "false_recall": null,
-            "decision": "recent",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.0072
-          },
-          {
             "id": "check-07",
             "group": "late",
             "cutoff": 27,
@@ -9159,7 +9160,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0082
+            "query_ms": 0.0084
           },
           {
             "id": "check-08",
@@ -9553,7 +9554,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0075
+            "query_ms": 0.0081
           },
           {
             "id": "check-missing-01",
@@ -9945,7 +9946,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0086
+            "query_ms": 0.008
           },
           {
             "id": "check-missing-02",
@@ -10183,7 +10184,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0102
+            "query_ms": 0.0088
           },
           {
             "id": "check-missing-03",
@@ -10575,7 +10576,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0095
+            "query_ms": 0.0093
           }
         ]
       },
@@ -10597,9 +10598,9 @@
             "false_recall": 5
           }
         },
-        "load_ms": 0.3654,
-        "p50_ms": 0.0108,
-        "p95_ms": 0.0154,
+        "load_ms": 0.3411,
+        "p50_ms": 0.0109,
+        "p95_ms": 0.0129,
         "queries": [
           {
             "id": "near-01",
@@ -10661,7 +10662,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0083
+            "query_ms": 0.0093
           },
           {
             "id": "late-01",
@@ -10773,7 +10774,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0126
+            "query_ms": 0.0146
           },
           {
             "id": "near-02",
@@ -10844,7 +10845,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0079
+            "query_ms": 0.0086
           },
           {
             "id": "late-02",
@@ -10956,7 +10957,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0126
+            "query_ms": 0.0129
           },
           {
             "id": "near-03",
@@ -11028,7 +11029,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0102
+            "query_ms": 0.0089
           },
           {
             "id": "late-03",
@@ -11140,7 +11141,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0109
+            "query_ms": 0.0115
           },
           {
             "id": "near-04",
@@ -11221,7 +11222,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0162
+            "query_ms": 0.0098
           },
           {
             "id": "late-04",
@@ -11333,7 +11334,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0138
+            "query_ms": 0.0117
           },
           {
             "id": "near-05",
@@ -11415,7 +11416,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0118
+            "query_ms": 0.0102
           },
           {
             "id": "late-05",
@@ -11527,7 +11528,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.012
+            "query_ms": 0.0125
           },
           {
             "id": "near-06",
@@ -11614,7 +11615,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0094
+            "query_ms": 0.0095
           },
           {
             "id": "late-06",
@@ -11726,7 +11727,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0102
+            "query_ms": 0.0116
           },
           {
             "id": "near-07",
@@ -11822,7 +11823,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0154
+            "query_ms": 0.0103
           },
           {
             "id": "late-07",
@@ -11934,7 +11935,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0108
+            "query_ms": 0.0109
           },
           {
             "id": "near-08",
@@ -12031,7 +12032,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0105
+            "query_ms": 0.0111
           },
           {
             "id": "late-08",
@@ -12143,7 +12144,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0118
+            "query_ms": 0.0108
           },
           {
             "id": "near-09",
@@ -12249,7 +12250,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0113
+            "query_ms": 0.0115
           },
           {
             "id": "late-09",
@@ -12361,7 +12362,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.011
+            "query_ms": 0.0111
           },
           {
             "id": "near-10",
@@ -12472,7 +12473,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0108
+            "query_ms": 0.0112
           },
           {
             "id": "late-10",
@@ -12584,7 +12585,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0106
+            "query_ms": 0.0109
           },
           {
             "id": "missing-01",
@@ -12694,7 +12695,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0105
+            "query_ms": 0.0106
           },
           {
             "id": "missing-02",
@@ -12804,7 +12805,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0114
+            "query_ms": 0.0121
           },
           {
             "id": "missing-03",
@@ -12914,7 +12915,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0099
+            "query_ms": 0.0105
           },
           {
             "id": "missing-04",
@@ -12984,7 +12985,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0069
+            "query_ms": 0.0076
           },
           {
             "id": "missing-05",
@@ -13094,7 +13095,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0099
+            "query_ms": 0.0105
           }
         ]
       }
@@ -13118,9 +13119,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.1644,
-        "p50_ms": 0.073,
-        "p95_ms": 0.1077,
+        "load_ms": 1.1424,
+        "p50_ms": 0.0754,
+        "p95_ms": 0.1336,
         "queries": [
           {
             "id": "real-near-01",
@@ -13468,7 +13469,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0543
+            "query_ms": 0.056
           },
           {
             "id": "real-late-01",
@@ -13842,7 +13843,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "packing",
-            "query_ms": 0.1002
+            "query_ms": 0.1001
           },
           {
             "id": "real-near-02",
@@ -13864,7 +13865,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0305
+            "query_ms": 0.0302
           },
           {
             "id": "real-late-02",
@@ -13892,7 +13893,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0735
+            "query_ms": 0.0754
           },
           {
             "id": "real-near-03",
@@ -14155,7 +14156,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0428
+            "query_ms": 0.0369
           },
           {
             "id": "real-late-03",
@@ -14437,7 +14438,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.082
+            "query_ms": 0.0834
           },
           {
             "id": "real-near-04",
@@ -14708,7 +14709,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "packing",
-            "query_ms": 0.0495
+            "query_ms": 0.05
           },
           {
             "id": "real-late-04",
@@ -14990,7 +14991,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0845
+            "query_ms": 0.0841
           },
           {
             "id": "real-near-05",
@@ -15168,7 +15169,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0581
+            "query_ms": 0.057
           },
           {
             "id": "real-late-05",
@@ -15549,7 +15550,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0787
+            "query_ms": 0.1336
           },
           {
             "id": "real-near-06",
@@ -15575,7 +15576,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0589
+            "query_ms": 0.0714
           },
           {
             "id": "real-late-06",
@@ -15603,7 +15604,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0776
+            "query_ms": 0.0779
           },
           {
             "id": "real-near-07",
@@ -15833,7 +15834,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "packing",
-            "query_ms": 0.0683
+            "query_ms": 0.0788
           },
           {
             "id": "real-late-07",
@@ -16064,7 +16065,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0821
+            "query_ms": 0.0904
           },
           {
             "id": "real-near-08",
@@ -16438,7 +16439,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.073
+            "query_ms": 0.0804
           },
           {
             "id": "real-late-08",
@@ -16812,7 +16813,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0746
+            "query_ms": 0.0782
           },
           {
             "id": "real-missing-01",
@@ -17034,7 +17035,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0717
+            "query_ms": 0.0739
           },
           {
             "id": "real-missing-02",
@@ -17259,7 +17260,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.058
+            "query_ms": 0.062
           },
           {
             "id": "real-missing-03",
@@ -17487,7 +17488,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.1077
+            "query_ms": 0.0708
           }
         ]
       },
@@ -17504,9 +17505,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.1553,
-        "p50_ms": 0.0774,
-        "p95_ms": 0.0845,
+        "load_ms": 1.1702,
+        "p50_ms": 0.0777,
+        "p95_ms": 0.0818,
         "queries": [
           {
             "id": "check-01",
@@ -17534,7 +17535,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0845
+            "query_ms": 0.0818
           },
           {
             "id": "check-02",
@@ -17562,7 +17563,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.076
+            "query_ms": 0.0743
           },
           {
             "id": "check-03",
@@ -17590,7 +17591,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0704
+            "query_ms": 0.0697
           },
           {
             "id": "check-04",
@@ -17972,7 +17973,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0815
+            "query_ms": 0.0807
           },
           {
             "id": "check-05",
@@ -18000,7 +18001,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.075
+            "query_ms": 0.0777
           },
           {
             "id": "check-06",
@@ -18381,7 +18382,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0729
+            "query_ms": 0.0721
           },
           {
             "id": "check-07",
@@ -18515,7 +18516,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0824
+            "query_ms": 0.0804
           },
           {
             "id": "check-08",
@@ -18897,7 +18898,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0822
+            "query_ms": 0.0813
           },
           {
             "id": "check-missing-01",
@@ -19276,7 +19277,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0817
+            "query_ms": 0.0796
           },
           {
             "id": "check-missing-02",
@@ -19627,7 +19628,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0568
+            "query_ms": 0.0569
           },
           {
             "id": "check-missing-03",
@@ -20006,7 +20007,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0774
+            "query_ms": 0.077
           }
         ]
       },
@@ -20028,9 +20029,9 @@
             "false_recall": 0
           }
         },
-        "load_ms": 0.2922,
-        "p50_ms": 0.0241,
-        "p95_ms": 0.0341,
+        "load_ms": 0.2993,
+        "p50_ms": 0.0236,
+        "p95_ms": 0.0309,
         "queries": [
           {
             "id": "near-01",
@@ -20051,7 +20052,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0151
+            "query_ms": 0.014
           },
           {
             "id": "late-01",
@@ -20081,7 +20082,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0289
+            "query_ms": 0.0288
           },
           {
             "id": "near-02",
@@ -20103,7 +20104,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0138
+            "query_ms": 0.0133
           },
           {
             "id": "late-02",
@@ -20133,7 +20134,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0254
+            "query_ms": 0.0245
           },
           {
             "id": "near-03",
@@ -20180,7 +20181,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0164
+            "query_ms": 0.0159
           },
           {
             "id": "late-03",
@@ -20234,7 +20235,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0282
+            "query_ms": 0.0272
           },
           {
             "id": "near-04",
@@ -20331,7 +20332,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.023
+            "query_ms": 0.0221
           },
           {
             "id": "late-04",
@@ -20434,7 +20435,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0341
+            "query_ms": 0.0324
           },
           {
             "id": "near-05",
@@ -20511,7 +20512,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0241
+            "query_ms": 0.0223
           },
           {
             "id": "late-05",
@@ -20617,7 +20618,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0326
+            "query_ms": 0.0303
           },
           {
             "id": "near-06",
@@ -20667,7 +20668,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0238
+            "query_ms": 0.0218
           },
           {
             "id": "late-06",
@@ -20769,7 +20770,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.031
+            "query_ms": 0.0294
           },
           {
             "id": "near-07",
@@ -20825,7 +20826,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.024
+            "query_ms": 0.0236
           },
           {
             "id": "late-07",
@@ -20884,7 +20885,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0277
+            "query_ms": 0.025
           },
           {
             "id": "near-08",
@@ -20912,7 +20913,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0239
+            "query_ms": 0.0225
           },
           {
             "id": "late-08",
@@ -20994,7 +20995,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0275
+            "query_ms": 0.027
           },
           {
             "id": "near-09",
@@ -21096,7 +21097,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.036
+            "query_ms": 0.0287
           },
           {
             "id": "late-09",
@@ -21199,7 +21200,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0316
+            "query_ms": 0.0297
           },
           {
             "id": "near-10",
@@ -21229,7 +21230,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0289
+            "query_ms": 0.0309
           },
           {
             "id": "late-10",
@@ -21259,7 +21260,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0248
+            "query_ms": 0.0241
           },
           {
             "id": "missing-01",
@@ -21287,7 +21288,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0215
+            "query_ms": 0.0205
           },
           {
             "id": "missing-02",
@@ -21315,7 +21316,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0233
+            "query_ms": 0.0222
           },
           {
             "id": "missing-03",
@@ -21343,7 +21344,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0233
+            "query_ms": 0.0222
           },
           {
             "id": "missing-04",
@@ -21363,7 +21364,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0124
+            "query_ms": 0.0112
           },
           {
             "id": "missing-05",
@@ -21391,17 +21392,17 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0225
+            "query_ms": 0.0214
           }
         ]
       }
     },
-    "C3-content-evidence": {
+    "C4-request-scope": {
       "real": {
         "summary": {
           "near": {
             "queries": 8,
-            "covered": 6,
+            "covered": 7,
             "false_recall": 0
           },
           "late": {
@@ -21415,9 +21416,9 @@
             "false_recall": 1
           }
         },
-        "load_ms": 1.1924,
-        "p50_ms": 1.2079,
-        "p95_ms": 6.3712,
+        "load_ms": 1.2,
+        "p50_ms": 1.2481,
+        "p95_ms": 6.4956,
         "queries": [
           {
             "id": "real-near-01",
@@ -21438,7 +21439,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 1.5246
+            "query_ms": 1.8189
           },
           {
             "id": "real-late-01",
@@ -21466,7 +21467,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 4.9415
+            "query_ms": 5.0632
           },
           {
             "id": "real-near-02",
@@ -21698,7 +21699,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.9292
+            "query_ms": 1.9665
           },
           {
             "id": "real-late-02",
@@ -21956,7 +21957,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.3712
+            "query_ms": 6.4956
           },
           {
             "id": "real-near-03",
@@ -22225,7 +22226,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 2.5131
+            "query_ms": 2.675
           },
           {
             "id": "real-late-03",
@@ -22511,7 +22512,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 4.1477
+            "query_ms": 4.2599
           },
           {
             "id": "real-near-04",
@@ -22520,17 +22521,241 @@
             "expected": [
               "r18a"
             ],
-            "candidate_turns": [],
-            "top": [],
-            "packed_turns": [],
-            "packed_message_ids": [],
-            "evidence": {},
-            "evidence_chars": 0,
-            "covered": false,
+            "candidate_turns": [
+              "T10",
+              "T12",
+              "T16",
+              "T18"
+            ],
+            "top": [
+              {
+                "turn": "T18",
+                "score": 0.024886293925,
+                "matches": [
+                  "字片段 屋内",
+                  "字片段 餐桌",
+                  "字片段 路线",
+                  "字片段 进屋",
+                  "字片段 直接"
+                ]
+              },
+              {
+                "turn": "T16",
+                "score": 0.024886293925,
+                "matches": [
+                  "字片段 五镜",
+                  "字片段 问题",
+                  "字片段 路线",
+                  "字片段 进屋",
+                  "字片段 直接"
+                ]
+              },
+              {
+                "turn": "T10",
+                "score": 0.015312131324,
+                "matches": [
+                  "字片段 改稿",
+                  "字片段 沿用",
+                  "字片段 直接"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T18"
+            ],
+            "packed_message_ids": [
+              "r18u",
+              "r18a"
+            ],
+            "evidence": {
+              "r18a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    6,
+                    "取景范围"
+                  ],
+                  [
+                    6,
+                    "镜头运动"
+                  ],
+                  [
+                    6,
+                    "场景"
+                  ],
+                  [
+                    6,
+                    "人物"
+                  ],
+                  [
+                    6,
+                    "道具"
+                  ],
+                  [
+                    6,
+                    "动作"
+                  ],
+                  [
+                    6,
+                    "对白"
+                  ],
+                  [
+                    6,
+                    "旁白"
+                  ],
+                  [
+                    6,
+                    "音效"
+                  ],
+                  [
+                    6,
+                    "时长"
+                  ],
+                  [
+                    6,
+                    "画面提示词"
+                  ],
+                  [
+                    7,
+                    "取景范围"
+                  ],
+                  [
+                    7,
+                    "镜头运动"
+                  ],
+                  [
+                    7,
+                    "场景"
+                  ],
+                  [
+                    7,
+                    "人物"
+                  ],
+                  [
+                    7,
+                    "道具"
+                  ],
+                  [
+                    7,
+                    "动作"
+                  ],
+                  [
+                    7,
+                    "对白"
+                  ],
+                  [
+                    7,
+                    "旁白"
+                  ],
+                  [
+                    7,
+                    "音效"
+                  ],
+                  [
+                    7,
+                    "时长"
+                  ],
+                  [
+                    7,
+                    "画面提示词"
+                  ],
+                  [
+                    8,
+                    "取景范围"
+                  ],
+                  [
+                    8,
+                    "镜头运动"
+                  ],
+                  [
+                    8,
+                    "场景"
+                  ],
+                  [
+                    8,
+                    "人物"
+                  ],
+                  [
+                    8,
+                    "道具"
+                  ],
+                  [
+                    8,
+                    "动作"
+                  ],
+                  [
+                    8,
+                    "对白"
+                  ],
+                  [
+                    8,
+                    "旁白"
+                  ],
+                  [
+                    8,
+                    "音效"
+                  ],
+                  [
+                    8,
+                    "时长"
+                  ],
+                  [
+                    8,
+                    "画面提示词"
+                  ],
+                  [
+                    9,
+                    "取景范围"
+                  ],
+                  [
+                    9,
+                    "镜头运动"
+                  ],
+                  [
+                    9,
+                    "场景"
+                  ],
+                  [
+                    9,
+                    "人物"
+                  ],
+                  [
+                    9,
+                    "道具"
+                  ],
+                  [
+                    9,
+                    "动作"
+                  ],
+                  [
+                    9,
+                    "对白"
+                  ],
+                  [
+                    9,
+                    "旁白"
+                  ],
+                  [
+                    9,
+                    "音效"
+                  ],
+                  [
+                    9,
+                    "时长"
+                  ],
+                  [
+                    9,
+                    "画面提示词"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 5969,
+            "covered": true,
             "false_recall": null,
-            "decision": "no_supported_match",
-            "failure": "candidate",
-            "query_ms": 0.0745
+            "decision": "content_match",
+            "failure": null,
+            "query_ms": 2.0864
           },
           {
             "id": "real-late-04",
@@ -22540,192 +22765,58 @@
               "r18a"
             ],
             "candidate_turns": [
+              "T10",
+              "T12",
+              "T16",
+              "T18",
+              "T20",
               "T27"
             ],
             "top": [
               {
-                "turn": "T27",
-                "score": 0.019307100813,
+                "turn": "T16",
+                "score": 0.024470429996,
                 "matches": [
-                  "字片段 屋内",
-                  "字片段 直接",
+                  "字片段 五镜",
+                  "字片段 问题",
+                  "字片段 路线",
                   "字片段 进屋",
-                  "字片段 餐桌"
+                  "字片段 直接"
+                ]
+              },
+              {
+                "turn": "T18",
+                "score": 0.020566406127,
+                "matches": [
+                  "字片段 路线",
+                  "字片段 屋内",
+                  "字片段 餐桌",
+                  "字片段 进屋",
+                  "字片段 直接"
+                ]
+              },
+              {
+                "turn": "T10",
+                "score": 0.015504430566,
+                "matches": [
+                  "字片段 改稿",
+                  "字片段 沿用",
+                  "字片段 直接"
                 ]
               }
             ],
             "packed_turns": [
-              "T27"
+              "T16"
             ],
             "packed_message_ids": [
-              "r27u",
-              "r27a"
+              "r16u",
+              "r16a"
             ],
             "evidence": {
-              "r27a": {
+              "r16a": {
                 "state": "draft",
                 "slots": [
                   [
-                    2,
-                    "取景范围"
-                  ],
-                  [
-                    2,
-                    "镜头运动"
-                  ],
-                  [
-                    2,
-                    "场景"
-                  ],
-                  [
-                    2,
-                    "人物"
-                  ],
-                  [
-                    2,
-                    "道具"
-                  ],
-                  [
-                    2,
-                    "动作"
-                  ],
-                  [
-                    2,
-                    "对白"
-                  ],
-                  [
-                    2,
-                    "旁白"
-                  ],
-                  [
-                    2,
-                    "音效"
-                  ],
-                  [
-                    2,
-                    "时长"
-                  ],
-                  [
-                    3,
-                    "取景范围"
-                  ],
-                  [
-                    3,
-                    "镜头运动"
-                  ],
-                  [
-                    3,
-                    "场景"
-                  ],
-                  [
-                    3,
-                    "人物"
-                  ],
-                  [
-                    3,
-                    "道具"
-                  ],
-                  [
-                    3,
-                    "动作"
-                  ],
-                  [
-                    3,
-                    "对白"
-                  ],
-                  [
-                    3,
-                    "旁白"
-                  ],
-                  [
-                    3,
-                    "音效"
-                  ],
-                  [
-                    3,
-                    "时长"
-                  ],
-                  [
-                    4,
-                    "取景范围"
-                  ],
-                  [
-                    4,
-                    "镜头运动"
-                  ],
-                  [
-                    4,
-                    "场景"
-                  ],
-                  [
-                    4,
-                    "人物"
-                  ],
-                  [
-                    4,
-                    "道具"
-                  ],
-                  [
-                    4,
-                    "动作"
-                  ],
-                  [
-                    4,
-                    "对白"
-                  ],
-                  [
-                    4,
-                    "旁白"
-                  ],
-                  [
-                    4,
-                    "音效"
-                  ],
-                  [
-                    4,
-                    "时长"
-                  ],
-                  [
-                    5,
-                    "取景范围"
-                  ],
-                  [
-                    5,
-                    "镜头运动"
-                  ],
-                  [
-                    5,
-                    "场景"
-                  ],
-                  [
-                    5,
-                    "人物"
-                  ],
-                  [
-                    5,
-                    "道具"
-                  ],
-                  [
-                    5,
-                    "动作"
-                  ],
-                  [
-                    5,
-                    "对白"
-                  ],
-                  [
-                    5,
-                    "旁白"
-                  ],
-                  [
-                    5,
-                    "音效"
-                  ],
-                  [
-                    5,
-                    "时长"
-                  ],
-                  [
                     6,
                     "取景范围"
                   ],
@@ -22764,6 +22855,10 @@
                   [
                     6,
                     "时长"
+                  ],
+                  [
+                    6,
+                    "画面提示词"
                   ],
                   [
                     7,
@@ -22806,6 +22901,10 @@
                     "时长"
                   ],
                   [
+                    7,
+                    "画面提示词"
+                  ],
+                  [
                     8,
                     "取景范围"
                   ],
@@ -22846,6 +22945,10 @@
                     "时长"
                   ],
                   [
+                    8,
+                    "画面提示词"
+                  ],
+                  [
                     9,
                     "取景范围"
                   ],
@@ -22884,16 +22987,64 @@
                   [
                     9,
                     "时长"
+                  ],
+                  [
+                    9,
+                    "画面提示词"
+                  ],
+                  [
+                    10,
+                    "取景范围"
+                  ],
+                  [
+                    10,
+                    "镜头运动"
+                  ],
+                  [
+                    10,
+                    "场景"
+                  ],
+                  [
+                    10,
+                    "人物"
+                  ],
+                  [
+                    10,
+                    "道具"
+                  ],
+                  [
+                    10,
+                    "动作"
+                  ],
+                  [
+                    10,
+                    "对白"
+                  ],
+                  [
+                    10,
+                    "旁白"
+                  ],
+                  [
+                    10,
+                    "音效"
+                  ],
+                  [
+                    10,
+                    "时长"
+                  ],
+                  [
+                    10,
+                    "画面提示词"
                   ]
                 ]
               }
             },
-            "evidence_chars": 5076,
+            "evidence_chars": 4980,
             "covered": false,
             "false_recall": null,
             "decision": "content_match",
-            "failure": "candidate",
-            "query_ms": 0.6529
+            "failure": "packing",
+            "query_ms": 3.2623
           },
           {
             "id": "real-near-05",
@@ -23060,7 +23211,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.7552
+            "query_ms": 0.744
           },
           {
             "id": "real-late-05",
@@ -23329,7 +23480,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.2436
+            "query_ms": 1.2399
           },
           {
             "id": "real-near-06",
@@ -23559,7 +23710,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.0353
+            "query_ms": 1.0538
           },
           {
             "id": "real-late-06",
@@ -23803,7 +23954,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.9284
+            "query_ms": 2.0031
           },
           {
             "id": "real-near-07",
@@ -23927,7 +24078,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.2087
+            "query_ms": 1.2481
           },
           {
             "id": "real-late-07",
@@ -24051,7 +24202,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.2079
+            "query_ms": 1.2398
           },
           {
             "id": "real-near-08",
@@ -24418,7 +24569,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.0341
+            "query_ms": 1.0404
           },
           {
             "id": "real-late-08",
@@ -24785,7 +24936,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.0308
+            "query_ms": 1.0416
           },
           {
             "id": "real-missing-01",
@@ -24807,7 +24958,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.7771
+            "query_ms": 0.771
           },
           {
             "id": "real-missing-02",
@@ -24966,7 +25117,7 @@
             "false_recall": true,
             "decision": "content_match",
             "failure": "false_recall",
-            "query_ms": 0.7447
+            "query_ms": 0.7366
           },
           {
             "id": "real-missing-03",
@@ -24985,7 +25136,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.8065
+            "query_ms": 0.7943
           }
         ]
       },
@@ -24993,7 +25144,7 @@
         "summary": {
           "late": {
             "queries": 8,
-            "covered": 6,
+            "covered": 7,
             "false_recall": 0
           },
           "no_evidence": {
@@ -25002,9 +25153,9 @@
             "false_recall": 0
           }
         },
-        "load_ms": 1.3452,
-        "p50_ms": 1.6314,
-        "p95_ms": 6.6258,
+        "load_ms": 1.2589,
+        "p50_ms": 1.9815,
+        "p95_ms": 6.5021,
         "queries": [
           {
             "id": "check-01",
@@ -25229,7 +25380,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 5.5778
+            "query_ms": 5.5876
           },
           {
             "id": "check-02",
@@ -25481,7 +25632,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.2322
+            "query_ms": 6.3933
           },
           {
             "id": "check-03",
@@ -25773,7 +25924,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.2151
+            "query_ms": 6.496
           },
           {
             "id": "check-04",
@@ -25783,196 +25934,68 @@
               "r18a"
             ],
             "candidate_turns": [
+              "T10",
+              "T12",
+              "T16",
+              "T18",
+              "T20",
+              "T22",
+              "T24",
               "T27"
             ],
             "top": [
               {
+                "turn": "T18",
+                "score": 0.110548667227,
+                "matches": [
+                  "字片段 屋内直接",
+                  "字片段 内直接",
+                  "字片段 屋内直",
+                  "字片段 屋内起",
+                  "字片段 用同一",
+                  "字片段 内直",
+                  "字片段 内起",
+                  "字片段 用同"
+                ]
+              },
+              {
                 "turn": "T27",
-                "score": 0.066007154571,
+                "score": 0.072638232834,
                 "matches": [
                   "字片段 中央餐桌",
                   "字片段 中央餐",
                   "字片段 央餐桌",
-                  "字片段 中央",
-                  "字片段 合门",
                   "字片段 央餐",
+                  "字片段 合门",
                   "字片段 屋内",
+                  "字片段 餐桌",
+                  "字片段 进食"
+                ]
+              },
+              {
+                "turn": "T16",
+                "score": 0.018465977221,
+                "matches": [
+                  "字片段 次进",
+                  "字片段 同一",
+                  "字片段 进食",
+                  "字片段 中央",
                   "字片段 直接"
                 ]
               }
             ],
             "packed_turns": [
-              "T27"
+              "T18"
             ],
             "packed_message_ids": [
-              "r27u",
-              "r27a"
+              "r18u",
+              "r18a"
             ],
             "evidence": {
-              "r27a": {
+              "r18a": {
                 "state": "draft",
                 "slots": [
                   [
-                    2,
-                    "取景范围"
-                  ],
-                  [
-                    2,
-                    "镜头运动"
-                  ],
-                  [
-                    2,
-                    "场景"
-                  ],
-                  [
-                    2,
-                    "人物"
-                  ],
-                  [
-                    2,
-                    "道具"
-                  ],
-                  [
-                    2,
-                    "动作"
-                  ],
-                  [
-                    2,
-                    "对白"
-                  ],
-                  [
-                    2,
-                    "旁白"
-                  ],
-                  [
-                    2,
-                    "音效"
-                  ],
-                  [
-                    2,
-                    "时长"
-                  ],
-                  [
-                    3,
-                    "取景范围"
-                  ],
-                  [
-                    3,
-                    "镜头运动"
-                  ],
-                  [
-                    3,
-                    "场景"
-                  ],
-                  [
-                    3,
-                    "人物"
-                  ],
-                  [
-                    3,
-                    "道具"
-                  ],
-                  [
-                    3,
-                    "动作"
-                  ],
-                  [
-                    3,
-                    "对白"
-                  ],
-                  [
-                    3,
-                    "旁白"
-                  ],
-                  [
-                    3,
-                    "音效"
-                  ],
-                  [
-                    3,
-                    "时长"
-                  ],
-                  [
-                    4,
-                    "取景范围"
-                  ],
-                  [
-                    4,
-                    "镜头运动"
-                  ],
-                  [
-                    4,
-                    "场景"
-                  ],
-                  [
-                    4,
-                    "人物"
-                  ],
-                  [
-                    4,
-                    "道具"
-                  ],
-                  [
-                    4,
-                    "动作"
-                  ],
-                  [
-                    4,
-                    "对白"
-                  ],
-                  [
-                    4,
-                    "旁白"
-                  ],
-                  [
-                    4,
-                    "音效"
-                  ],
-                  [
-                    4,
-                    "时长"
-                  ],
-                  [
-                    5,
-                    "取景范围"
-                  ],
-                  [
-                    5,
-                    "镜头运动"
-                  ],
-                  [
-                    5,
-                    "场景"
-                  ],
-                  [
-                    5,
-                    "人物"
-                  ],
-                  [
-                    5,
-                    "道具"
-                  ],
-                  [
-                    5,
-                    "动作"
-                  ],
-                  [
-                    5,
-                    "对白"
-                  ],
-                  [
-                    5,
-                    "旁白"
-                  ],
-                  [
-                    5,
-                    "音效"
-                  ],
-                  [
-                    5,
-                    "时长"
-                  ],
-                  [
                     6,
                     "取景范围"
                   ],
@@ -26011,6 +26034,10 @@
                   [
                     6,
                     "时长"
+                  ],
+                  [
+                    6,
+                    "画面提示词"
                   ],
                   [
                     7,
@@ -26053,6 +26080,10 @@
                     "时长"
                   ],
                   [
+                    7,
+                    "画面提示词"
+                  ],
+                  [
                     8,
                     "取景范围"
                   ],
@@ -26093,6 +26124,10 @@
                     "时长"
                   ],
                   [
+                    8,
+                    "画面提示词"
+                  ],
+                  [
                     9,
                     "取景范围"
                   ],
@@ -26131,16 +26166,20 @@
                   [
                     9,
                     "时长"
+                  ],
+                  [
+                    9,
+                    "画面提示词"
                   ]
                 ]
               }
             },
-            "evidence_chars": 5076,
-            "covered": false,
+            "evidence_chars": 5969,
+            "covered": true,
             "false_recall": null,
             "decision": "content_match",
-            "failure": "candidate",
-            "query_ms": 0.5749
+            "failure": null,
+            "query_ms": 6.5021
           },
           {
             "id": "check-05",
@@ -26407,7 +26446,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.094
+            "query_ms": 1.1353
           },
           {
             "id": "check-06",
@@ -26641,7 +26680,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.9309
+            "query_ms": 1.9815
           },
           {
             "id": "check-07",
@@ -26849,7 +26888,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.6258
+            "query_ms": 6.2713
           },
           {
             "id": "check-08",
@@ -27210,7 +27249,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.6314
+            "query_ms": 1.6247
           },
           {
             "id": "check-missing-01",
@@ -27232,7 +27271,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 1.1072
+            "query_ms": 1.2146
           },
           {
             "id": "check-missing-02",
@@ -27249,7 +27288,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.054
+            "query_ms": 0.0565
           },
           {
             "id": "check-missing-03",
@@ -27272,7 +27311,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 1.0528
+            "query_ms": 1.0402
           }
         ]
       },
@@ -27294,9 +27333,9 @@
             "false_recall": 0
           }
         },
-        "load_ms": 0.33,
-        "p50_ms": 0.2238,
-        "p95_ms": 0.5506,
+        "load_ms": 0.3306,
+        "p50_ms": 0.222,
+        "p95_ms": 0.5482,
         "queries": [
           {
             "id": "near-01",
@@ -27342,7 +27381,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.1051
+            "query_ms": 0.1098
           },
           {
             "id": "late-01",
@@ -27397,7 +27436,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.57
+            "query_ms": 0.5482
           },
           {
             "id": "near-02",
@@ -27418,7 +27457,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.1262
+            "query_ms": 0.125
           },
           {
             "id": "late-02",
@@ -27439,7 +27478,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.1272
+            "query_ms": 0.1231
           },
           {
             "id": "near-03",
@@ -27491,7 +27530,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0822
+            "query_ms": 0.0831
           },
           {
             "id": "late-03",
@@ -27543,7 +27582,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0836
+            "query_ms": 0.0831
           },
           {
             "id": "near-04",
@@ -27597,7 +27636,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.2238
+            "query_ms": 0.222
           },
           {
             "id": "late-04",
@@ -27655,7 +27694,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.4197
+            "query_ms": 0.4167
           },
           {
             "id": "near-05",
@@ -27709,7 +27748,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.292
+            "query_ms": 0.2882
           },
           {
             "id": "late-05",
@@ -27768,7 +27807,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.5506
+            "query_ms": 0.5599
           },
           {
             "id": "near-06",
@@ -27816,7 +27855,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0951
+            "query_ms": 0.0965
           },
           {
             "id": "late-06",
@@ -27864,7 +27903,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0962
+            "query_ms": 0.0928
           },
           {
             "id": "near-07",
@@ -27922,7 +27961,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.3564
+            "query_ms": 0.3451
           },
           {
             "id": "late-07",
@@ -27983,7 +28022,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.5231
+            "query_ms": 0.5134
           },
           {
             "id": "near-08",
@@ -28011,7 +28050,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.4041
+            "query_ms": 0.3989
           },
           {
             "id": "late-08",
@@ -28096,7 +28135,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.5297
+            "query_ms": 0.5165
           },
           {
             "id": "near-09",
@@ -28150,7 +28189,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.1172
+            "query_ms": 0.1129
           },
           {
             "id": "late-09",
@@ -28204,7 +28243,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.1089
+            "query_ms": 0.1097
           },
           {
             "id": "near-10",
@@ -28234,7 +28273,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.5435
+            "query_ms": 0.5387
           },
           {
             "id": "late-10",
@@ -28264,7 +28303,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.5345
+            "query_ms": 0.5153
           },
           {
             "id": "missing-01",
@@ -28292,7 +28331,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.4381
+            "query_ms": 0.4233
           },
           {
             "id": "missing-02",
@@ -28320,7 +28359,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.5242
+            "query_ms": 0.485
           },
           {
             "id": "missing-03",
@@ -28337,7 +28376,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0464
+            "query_ms": 0.0418
           },
           {
             "id": "missing-04",
@@ -28354,7 +28393,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0372
+            "query_ms": 0.0368
           },
           {
             "id": "missing-05",
@@ -28371,7 +28410,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0378
+            "query_ms": 0.0364
           }
         ]
       }
@@ -28468,7 +28507,7 @@
     }
   },
   "gates": {
-    "real_near": false,
+    "real_near": true,
     "real_late": true,
     "real_paraphrase": true,
     "real_false_recall": true,
