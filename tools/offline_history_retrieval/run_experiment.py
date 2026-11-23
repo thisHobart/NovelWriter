@@ -333,13 +333,16 @@ def pure_gates(method: dict, checks: dict) -> dict:
     }
 
 
-def run_pure(output: Path, holdout: bool) -> None:
+def run_pure(output: Path, holdout: bool, real_history: Path | None = None) -> None:
     cases_path = HERE / "pure_experiment_cases.json"
     cases_text = cases_path.read_text(encoding="utf-8")
     cases = json.loads(cases_text)
     datasets, queries, hashes = {}, {}, {}
     for name, specification in cases["known_sets"].items():
-        history_text = (HERE.parents[1] / specification["history"]).read_text(encoding="utf-8")
+        history_path = HERE.parents[1] / specification["history"]
+        if name == "real" and real_history is not None:
+            history_path = real_history
+        history_text = history_path.read_text(encoding="utf-8")
         assert digest(history_text) == specification["history_sha256_utf8_lf"], name
         datasets[name] = json.loads(history_text)
         hashes[name] = {"history": digest(history_text), "queries": {}}
@@ -382,7 +385,7 @@ def run_pure(output: Path, holdout: bool) -> None:
 
 def main() -> None:
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("--history", type=Path, help="Override the built-in history.")
+    parser.add_argument("--history", type=Path, help="Use another history file, or locate the frozen real history with --pure.")
     parser.add_argument("--queries", type=Path, help="Override the frozen query list.")
     parser.add_argument("--output", type=Path, help="Override the result path.")
     parser.add_argument('--pure', action='store_true', help='Run the fixed pure-retrieval comparisons.')
@@ -391,9 +394,9 @@ def main() -> None:
     if options.holdout and not options.pure:
         parser.error('--holdout requires --pure')
     if options.pure:
-        if options.history or options.queries:
-            parser.error('--pure uses the frozen inputs in pure_experiment_cases.json')
-        run_pure(options.output or HERE / 'pure_experiment_result.json', options.holdout)
+        if options.queries:
+            parser.error('--pure uses the frozen queries in pure_experiment_cases.json')
+        run_pure(options.output or HERE / 'pure_experiment_result.json', options.holdout, options.history)
         return
     history_text = (options.history or HERE / "history.json").read_text(encoding="utf-8")
     queries_text = (options.queries or HERE / "queries.jsonl").read_text(encoding="utf-8")
