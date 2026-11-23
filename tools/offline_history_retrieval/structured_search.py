@@ -42,9 +42,10 @@ MESSAGE_ID = re.compile(r"(?<![a-z0-9_])(?:[mp][0-9]+|r[0-9]+[ua]|message_[0-9a-
 APPLIED_QUERY = re.compile(r"(?:已|最后|实际|曾经|最终)?应用|写[回入]|生效|回执")
 DRAFT_QUERY = re.compile(r"给出的|返回的改稿|草稿|未应用|没应用|尚未应用|未写回")
 STRUCTURED_WORDS = re.compile(r"哪一次|哪一版|哪次|哪版|是什么|有什么|怎么写的|怎么写|最后|最近|当时|当前|最终|查找|给我|看看|的|请|查|改稿|改过|改动|了|[^\w]+")
-METHOD = "C3-content-evidence"
+METHOD = "C4-request-scope"
 SETTINGS = {
     "candidate_fields": ["conversation", "cutoff", "shot", "field", "state"],
+    "request_scope": "distinguish a preceding context clause",
     "score": "query coverage by weighted 2–4 character terms",
     "evidence_gate": "non-metadata content support and new-value check for substitutions",
     "no_model": True,
@@ -152,8 +153,21 @@ def mentioned_shots(question: str) -> frozenset[int]:
     return frozenset(shots)
 
 
+CONTEXT_BOUNDARY = re.compile(r"[，,；;]\s*(?=哪(?:一)?[份版稿回次]|找(?:一下)?|回查)")
+
+
+def request_clause(question: str) -> str:
+    """Use a prior shot as context when the question explicitly introduces a later request."""
+    boundary = CONTEXT_BOUNDARY.search(question)
+    if boundary:
+        context, request = question[:boundary.start()], question[boundary.end():]
+        if re.search(r"已经|问题|作为背景", context) and len(request) >= 8:
+            return request
+    return question
+
+
 def parse_request(question: str, current_shot: int | None = None) -> Request:
-    text = normalize("NFKC", question)
+    text = request_clause(normalize("NFKC", question))
     shots = mentioned_shots(text)
     if not shots and current_shot is not None and "本镜" in text:
         shots = frozenset({current_shot})
