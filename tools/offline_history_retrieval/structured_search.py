@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 import json
+from math import log
 import re
 from typing import NamedTuple
 from unicodedata import normalize
 
 from evidence_pack import REVISION_BLOCK
-from experiment_ranker import rank_turns
+from experiment_ranker import query_phrases
 from history_retrieval import Message, find_turn_by_message_id
 from revision_evidence import APPLIED_BLOCK, CARD_CHARS
 
@@ -41,10 +42,10 @@ MESSAGE_ID = re.compile(r"(?<![a-z0-9_])(?:[mp][0-9]+|r[0-9]+[ua]|message_[0-9a-
 APPLIED_QUERY = re.compile(r"(?:已|最后|实际|曾经|最终)?应用|写[回入]|生效|回执")
 DRAFT_QUERY = re.compile(r"给出的|返回的改稿|草稿|未应用|没应用|尚未应用|未写回")
 STRUCTURED_WORDS = re.compile(r"哪一次|哪一版|哪次|哪版|是什么|有什么|怎么写的|怎么写|最后|最近|当时|当前|最终|查找|给我|看看|的|请|查|改稿|改过|改动|了|[^\w]+")
-METHOD = "C1-structured-phrase"
+METHOD = "C2-weighted-characters"
 SETTINGS = {
     "candidate_fields": ["conversation", "cutoff", "shot", "field", "state"],
-    "score": "existing contiguous phrases",
+    "score": "query coverage by weighted 2–4 character terms",
     "no_model": True,
 }
 
@@ -181,6 +182,36 @@ def fits(record: Record, request: Request) -> bool:
     )
 
 
+def character_terms(text: str) -> set[str]:
+    return {
+        block[offset:offset + size]
+        for block in re.findall(r"[\u3400-\u9fffA-Za-z0-9]+", normalize("NFKC", text).lower())
+        for size in (2, 3, 4)
+        for offset in range(len(block) - size + 1)
+    }
+
+
+def rank_characters(question: str, candidates: Sequence[Record]) -> list[tuple[str, float | None, list[str]]]:
+    terms = character_terms(" ".join(query_phrases(question)))
+    documents = {record.turn_id: character_terms(record.wording[:CARD_CHARS]) for record in candidates}
+    if not documents or not terms:
+        return []
+    weights = {
+        term: (len(term) - 1) * (1 + log((len(documents) + 1) / (1 + sum(
+            term in text for text in documents.values()
+        )))) for term in terms
+    }
+    total = sum(weights.values())
+    ranked = []
+    for turn, document in documents.items():
+        matches = document & terms
+        if matches:
+            score = sum(weights[word] for word in matches) / total
+            features = sorted(matches, key=lambda word: (-weights[word], word))[:8]
+            ranked.append((turn, score, ["字片段 " + word for word in features]))
+    return sorted(ranked, key=lambda row: (-row[1], -int(row[0][1:])))
+
+
 def rank_structured(
     question: str,
     visible_turns: dict[str, list[Message]],
@@ -200,7 +231,6 @@ def rank_structured(
     if request.shots and request.fields and request.state and not request.remainder and candidates:
         last = candidates[-1]
         return Ranking([(last.turn_id, None, ["镜号、字段、状态"])], candidate_turns, "exact_slots")
-    texts = {record.turn_id: record.wording[:CARD_CHARS] for record in candidates}
-    ranked = rank_turns(question, texts)
-    return Ranking(ranked, candidate_turns, "phrase_match" if ranked else "no_match")
+    ranked = rank_characters(question, candidates)
+    return Ranking(ranked, candidate_turns, "character_match" if ranked else "no_match")
 
