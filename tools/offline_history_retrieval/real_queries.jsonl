@@ -1,0 +1,19 @@
+{"id":"real-near-01","group":"near","wording":"verified_revision","through_turn":10,"question":"最早把屋内段落改成桌边轮流进食的版本，哪份改稿说后面几镜的菜品先占位，先别定菜？","required_message_ids":["r10a"]}
+{"id":"real-late-01","group":"late","wording":"verified_revision","through_turn":27,"question":"最早把屋内段落改成桌边轮流进食的版本，哪份改稿说后面几镜的菜品先占位，先别定菜？","required_message_ids":["r10a"]}
+{"id":"real-near-02","group":"near","wording":"verified_revision","through_turn":12,"question":"找一下坐着吃东西那版的第一人称改稿，四镜都只看戴手套的手，并且饮料只在第一段逐渐出现。","required_message_ids":["r12a"]}
+{"id":"real-late-02","group":"late","wording":"verified_revision","through_turn":27,"question":"找一下坐着吃东西那版的第一人称改稿，四镜都只看戴手套的手，并且饮料只在第一段逐渐出现。","required_message_ids":["r12a"]}
+{"id":"real-near-03","group":"near","wording":"verified_revision","through_turn":16,"question":"哪份改稿把第六到第九镜都做成跨过门槛再走到桌前，并解释这是有意回切？","required_message_ids":["r16a"]}
+{"id":"real-late-03","group":"late","wording":"verified_revision","through_turn":27,"question":"哪份改稿把第六到第九镜都做成跨过门槛再走到桌前，并解释这是有意回切？","required_message_ids":["r16a"]}
+{"id":"real-near-04","group":"near","wording":"verified_revision","through_turn":18,"question":"后来纠正了第五镜已经进屋的问题，哪份改稿让第六镜直接从屋内朝餐桌走，后面也沿用这条路线？","required_message_ids":["r18a"]}
+{"id":"real-late-04","group":"late","wording":"verified_revision","through_turn":27,"question":"后来纠正了第五镜已经进屋的问题，哪份改稿让第六镜直接从屋内朝餐桌走，后面也沿用这条路线？","required_message_ids":["r18a"]}
+{"id":"real-near-05","group":"near","wording":"verified_revision","through_turn":20,"question":"找第一镜停在未开木门、第二镜进屋大约一秒才看到热面和流动饮品的那次改稿。","required_message_ids":["r20a"]}
+{"id":"real-late-05","group":"late","wording":"verified_revision","through_turn":27,"question":"找第一镜停在未开木门、第二镜进屋大约一秒才看到热面和流动饮品的那次改稿。","required_message_ids":["r20a"]}
+{"id":"real-near-06","group":"near","wording":"verified_revision","through_turn":22,"question":"哪版第 2 镜补了走到桌边端碗吸第一口面，并且镜尾的可乐还没有变成瓶子？","required_message_ids":["r22a"]}
+{"id":"real-late-06","group":"late","wording":"verified_revision","through_turn":27,"question":"哪版第 2 镜补了走到桌边端碗吸第一口面，并且镜尾的可乐还没有变成瓶子？","required_message_ids":["r22a"]}
+{"id":"real-near-07","group":"near","wording":"verified_revision","through_turn":24,"question":"回查第一镜开了门但人还在外面、第二镜已经不用再推门的那份两镜改稿。","required_message_ids":["r24a"]}
+{"id":"real-late-07","group":"late","wording":"verified_revision","through_turn":27,"question":"回查第一镜开了门但人还在外面、第二镜已经不用再推门的那份两镜改稿。","required_message_ids":["r24a"]}
+{"id":"real-near-08","group":"near","wording":"verified_revision","through_turn":27,"question":"找一下第 2 到第 9 镜统一去掉地毯、把桌子直接放在木地板上的修改稿。","required_message_ids":["r27a"]}
+{"id":"real-late-08","group":"late","wording":"verified_revision","through_turn":27,"question":"找一下第 2 到第 9 镜统一去掉地毯、把桌子直接放在木地板上的修改稿。","required_message_ids":["r27a"]}
+{"id":"real-missing-01","group":"no_evidence","wording":"unrelated","through_turn":27,"question":"哪一版给第 2 镜加了吃面之后接起电话的对白？","required_message_ids":[]}
+{"id":"real-missing-02","group":"no_evidence","wording":"future","through_turn":22,"question":"哪一版第 1 镜已经推开门却停在室外，第 2 镜不用再开门？","required_message_ids":[]}
+{"id":"real-missing-03","group":"no_evidence","wording":"wrong_version","through_turn":27,"question":"哪一次改稿把第 2 至第 9 镜的木地板全部改成了白色瓷砖？","required_message_ids":[]}

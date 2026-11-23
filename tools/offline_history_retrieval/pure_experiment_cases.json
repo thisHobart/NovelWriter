@@ -1,0 +1,583 @@
+{
+  "holdout_scope": "Fresh questions from the current verified 27-turn session. The only other saved sessions in the active project have no storyboard revisions.",
+  "known_sets": {
+    "real": {
+      "history": "temp/rag-real-holdout/history.json",
+      "queries": [
+        "real_queries.jsonl",
+        "real_validation_queries.jsonl"
+      ],
+      "history_sha256_utf8_lf": "2355f0c9fa0ca021b5e072099bf166b09c3054110bd6466c944af5d90d10c3c3",
+      "queries_sha256_utf8_lf": {
+        "real_queries.jsonl": "45ed544495591695217aedcc8905f6aa8587165a766eebb943e7f20de80a667e",
+        "real_validation_queries.jsonl": "d35e04e6d33c377bb96200e27b41d4a9b3e44631d540c94474f5d2475ecdcef4"
+      }
+    },
+    "simulated": {
+      "history": "tools/offline_history_retrieval/history.json",
+      "queries": [
+        "queries.jsonl"
+      ],
+      "history_sha256_utf8_lf": "e59252de66a8683f3c07ee9308d7c87b9cac9a12473d348bc1cd8906653c837f",
+      "queries_sha256_utf8_lf": {
+        "queries.jsonl": "752b1889c9c85ed0cc148e52c50139ba60776cfa1e2d483ea2ca7bbe404224d6"
+      }
+    }
+  },
+  "required_records": {
+    "r10a": {
+      "state": "draft",
+      "slots": [
+        [
+          7,
+          "动作"
+        ],
+        [
+          8,
+          "动作"
+        ],
+        [
+          9,
+          "动作"
+        ]
+      ]
+    },
+    "r12a": {
+      "state": "draft",
+      "slots": [
+        [
+          6,
+          "动作"
+        ],
+        [
+          7,
+          "动作"
+        ],
+        [
+          8,
+          "动作"
+        ],
+        [
+          9,
+          "动作"
+        ]
+      ]
+    },
+    "r16a": {
+      "state": "draft",
+      "slots": [
+        [
+          6,
+          "动作"
+        ],
+        [
+          7,
+          "动作"
+        ],
+        [
+          8,
+          "动作"
+        ],
+        [
+          9,
+          "动作"
+        ]
+      ]
+    },
+    "r18a": {
+      "state": "draft",
+      "slots": [
+        [
+          6,
+          "动作"
+        ],
+        [
+          7,
+          "动作"
+        ],
+        [
+          8,
+          "动作"
+        ],
+        [
+          9,
+          "动作"
+        ]
+      ]
+    },
+    "r20a": {
+      "state": "draft",
+      "slots": [
+        [
+          1,
+          "动作"
+        ],
+        [
+          2,
+          "动作"
+        ]
+      ]
+    },
+    "r22a": {
+      "state": "draft",
+      "slots": [
+        [
+          2,
+          "动作"
+        ]
+      ]
+    },
+    "r24a": {
+      "state": "draft",
+      "slots": [
+        [
+          1,
+          "动作"
+        ],
+        [
+          2,
+          "动作"
+        ]
+      ]
+    },
+    "r27a": {
+      "state": "draft",
+      "slots": [
+        [
+          2,
+          "动作"
+        ],
+        [
+          3,
+          "动作"
+        ],
+        [
+          4,
+          "动作"
+        ],
+        [
+          5,
+          "动作"
+        ],
+        [
+          6,
+          "动作"
+        ],
+        [
+          7,
+          "动作"
+        ],
+        [
+          8,
+          "动作"
+        ],
+        [
+          9,
+          "动作"
+        ]
+      ]
+    },
+    "p1": {
+      "state": "applied",
+      "slots": [
+        [
+          1,
+          "动作"
+        ]
+      ]
+    },
+    "p2": {
+      "state": "applied",
+      "slots": [
+        [
+          3,
+          "镜头运动"
+        ],
+        [
+          3,
+          "动作"
+        ]
+      ]
+    },
+    "p3": {
+      "state": "applied",
+      "slots": [
+        [
+          6,
+          "取景范围"
+        ]
+      ]
+    },
+    "p4": {
+      "state": "applied",
+      "slots": [
+        [
+          4,
+          "动作"
+        ],
+        [
+          5,
+          "动作"
+        ]
+      ]
+    },
+    "p5": {
+      "state": "applied",
+      "slots": [
+        [
+          5,
+          "镜头运动"
+        ]
+      ]
+    },
+    "p6": {
+      "state": "applied",
+      "slots": [
+        [
+          6,
+          "动作"
+        ]
+      ]
+    },
+    "p7": {
+      "state": "applied",
+      "slots": [
+        [
+          6,
+          "音效"
+        ],
+        [
+          7,
+          "音效"
+        ]
+      ]
+    },
+    "p8": {
+      "state": "applied",
+      "slots": [
+        [
+          8,
+          "动作"
+        ]
+      ]
+    },
+    "p9": {
+      "state": "applied",
+      "slots": [
+        [
+          10,
+          "动作"
+        ],
+        [
+          10,
+          "音效"
+        ]
+      ]
+    },
+    "p10": {
+      "state": "applied",
+      "slots": [
+        [
+          11,
+          "镜头运动"
+        ],
+        [
+          11,
+          "动作"
+        ]
+      ]
+    },
+    "p101": {
+      "state": "applied",
+      "slots": [
+        [
+          5,
+          "动作"
+        ]
+      ]
+    },
+    "r102a": {
+      "state": "draft",
+      "slots": [
+        [
+          5,
+          "动作"
+        ]
+      ]
+    },
+    "p103": {
+      "state": "applied",
+      "slots": [
+        [
+          5,
+          "动作"
+        ]
+      ]
+    },
+    "p104": {
+      "state": "applied",
+      "slots": [
+        [
+          5,
+          "动作"
+        ]
+      ]
+    }
+  },
+  "holdout": [
+    {
+      "id": "holdout-1",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "最先把一张桌边的用餐拆成连续四段、后三道品种等我定再填，留下占位的那份稿是哪次？",
+      "required_message_ids": [
+        "r10a"
+      ]
+    },
+    {
+      "id": "holdout-2",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "回找四段用餐都从就座时的视线拍，只看深灰针织手套和桌面，全程藏住脸的稿子。",
+      "required_message_ids": [
+        "r12a"
+      ]
+    },
+    {
+      "id": "holdout-3",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "哪一版换一种食物就重复跨进敞门，特意跳回入室那一刻，还把第十镜从起身离桌写成站着转身？",
+      "required_message_ids": [
+        "r16a"
+      ],
+      "required_slots": {
+        "r16a": [
+          [
+            6,
+            "动作"
+          ],
+          [
+            7,
+            "动作"
+          ],
+          [
+            8,
+            "动作"
+          ],
+          [
+            9,
+            "动作"
+          ],
+          [
+            10,
+            "动作"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "holdout-4",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "哪稿让第六至第九镜起幅已经在房里，复用同一路线走到中央餐桌，省掉折回门口的过程？",
+      "required_message_ids": [
+        "r18a"
+      ]
+    },
+    {
+      "id": "holdout-5",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "想找首镜 8 秒、入屋镜改成 6 秒的那回。阿澈的手伸到门前时木门仍闭着，跨进去稍候才把面碗露出来。",
+      "required_message_ids": [
+        "r20a"
+      ]
+    },
+    {
+      "id": "holdout-6",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "只改第二镜、加到 7 秒的是哪次？从入室一路拍到捧碗吸面，另一边碗边的饮料还在聚拢。",
+      "required_message_ids": [
+        "r22a"
+      ]
+    },
+    {
+      "id": "holdout-7",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "想找把推门分到前一镜的两镜稿。门扇在第一镜结束前已向里打开，人还没跨进去，第二镜接过去。",
+      "required_message_ids": [
+        "r24a"
+      ]
+    },
+    {
+      "id": "holdout-8",
+      "group": "late",
+      "wording": "new_real_question_same_session",
+      "through_turn": 27,
+      "question": "哪回覆盖了第 2 到第 9 镜，把餐桌的桌脚直接落在露出的木地面上，屋里连脚下的织物都去掉了？",
+      "required_message_ids": [
+        "r27a"
+      ]
+    },
+    {
+      "id": "holdout-missing-1",
+      "group": "no_evidence",
+      "wording": "new_real_rejection_same_session",
+      "through_turn": 27,
+      "question": "哪份稿把第 2 镜进门后看见的食物换成了一碗热粥？",
+      "required_message_ids": []
+    },
+    {
+      "id": "holdout-missing-2",
+      "group": "no_evidence",
+      "wording": "new_real_rejection_same_session",
+      "through_turn": 23,
+      "question": "到当时为止，哪稿让第一镜开门并停在外面，第二镜只跨进去？",
+      "required_message_ids": []
+    },
+    {
+      "id": "holdout-missing-3",
+      "group": "no_evidence",
+      "wording": "new_real_rejection_same_session",
+      "through_turn": 27,
+      "question": "第 7 镜吃脆皮时还加了一记玻璃杯摔碎声，帮我找写进音效的那次。",
+      "required_message_ids": []
+    },
+    {
+      "id": "holdout-missing-4",
+      "group": "no_evidence",
+      "wording": "new_real_rejection_same_session",
+      "through_turn": 27,
+      "question": "查第 2 镜最后应用的动作回执。",
+      "required_message_ids": []
+    }
+  ],
+  "state_fixture": {
+    "origin": "simulated",
+    "session": "receipt-example",
+    "records": [
+      [
+        "T1",
+        "p101",
+        "applied",
+        5,
+        "动作",
+        "停在门边",
+        "先走到桌前"
+      ],
+      [
+        "T2",
+        "r102a",
+        "draft",
+        5,
+        "动作",
+        null,
+        "坐下端碗，露出双手"
+      ],
+      [
+        "T3",
+        "p103",
+        "applied",
+        5,
+        "动作",
+        "先走到桌前",
+        "绕过桌角再端碗"
+      ],
+      [
+        "T3",
+        "p103",
+        "applied",
+        6,
+        "音效",
+        "没有餐具声",
+        "敲杯声"
+      ],
+      [
+        "T4",
+        "p104",
+        "applied",
+        5,
+        "动作",
+        "绕过桌角再端碗",
+        "先扶椅背再坐下"
+      ]
+    ],
+    "other_session_records": [
+      [
+        "T1",
+        "p199",
+        "applied",
+        7,
+        "动作",
+        "站稳",
+        "伸手拉椅子"
+      ]
+    ],
+    "queries": [
+      [
+        "latest_before_second_receipt",
+        2,
+        "第 5 镜最后应用的动作是什么？",
+        "p101"
+      ],
+      [
+        "draft_has_no_receipt",
+        2,
+        "第 5 镜坐下端碗的动作已经应用了吗？",
+        null
+      ],
+      [
+        "draft_explicitly_requested",
+        2,
+        "查第 5 镜给出的动作改稿。",
+        "r102a"
+      ],
+      [
+        "latest_before_future_receipt",
+        3,
+        "第 5 镜最后应用的动作是什么？",
+        "p103"
+      ],
+      [
+        "latest_after_receipt",
+        4,
+        "第 5 镜最后应用的动作是什么？",
+        "p104"
+      ],
+      [
+        "explicit_other_session_id",
+        4,
+        "查看 p199。",
+        null
+      ],
+      [
+        "same_field_in_other_session",
+        4,
+        "第 7 镜最后应用的动作是什么？",
+        null
+      ],
+      [
+        "mismatched_shot_and_field",
+        4,
+        "第 5 镜最后应用的音效是什么？",
+        null
+      ],
+      [
+        "known_old_value",
+        3,
+        "第 5 镜绕过桌角再端碗那次，应用前的动作是什么？",
+        "p103"
+      ]
+    ]
+  }
+}

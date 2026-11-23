@@ -1,0 +1,1032 @@
+{
+  "method": "recent-3",
+  "code_commit": "cbb16d9ca5716861094115ff72d21198f6729594",
+  "python": "3.14.5",
+  "dataset": {
+    "turns": 50,
+    "roles": {
+      "user": 50,
+      "assistant": 50,
+      "program": 10
+    },
+    "history_sha256_utf8_lf": "e59252de66a8683f3c07ee9308d7c87b9cac9a12473d348bc1cd8906653c837f",
+    "queries_sha256_utf8_lf": "752b1889c9c85ed0cc148e52c50139ba60776cfa1e2d483ea2ca7bbe404224d6"
+  },
+  "parameters": {
+    "top_k": 3,
+    "history_evidence_chars": 6000,
+    "evidence_unit": "complete_turn",
+    "scope": "one conversation; completed turns at or before each query cutoff",
+    "score": {
+      "order": "newest_first"
+    }
+  },
+  "references": {
+    "known_ref_m38": [
+      "m37",
+      "m38",
+      "p4"
+    ],
+    "unknown_ref_returns_empty": true,
+    "future_ref_m98_returns_empty_at_t48": true
+  },
+  "summary": {
+    "near": {
+      "queries": 10,
+      "covered": 10,
+      "false_positives": 0
+    },
+    "late": {
+      "queries": 10,
+      "covered": 1,
+      "false_positives": 0
+    },
+    "no_evidence": {
+      "queries": 5,
+      "covered": 0,
+      "false_positives": 5
+    }
+  },
+  "queries": [
+    {
+      "id": "near-01",
+      "group": "near",
+      "wording": "literal",
+      "through_turn": 4,
+      "question": "最初那段踉跄扶栈道，最后确认是怎么提前到开场的？",
+      "required_message_ids": [
+        "p1"
+      ],
+      "gold_ranks": {
+        "p1": 1
+      },
+      "ranked_count": 4,
+      "top": [
+        {
+          "turn_id": "T4",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T3",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T2",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T4",
+        "T3",
+        "T2"
+      ],
+      "evidence_chars": 790,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 11.3
+    },
+    {
+      "id": "late-01",
+      "group": "late",
+      "wording": "literal",
+      "through_turn": 50,
+      "question": "最初那段踉跄扶栈道，最后确认是怎么提前到开场的？",
+      "required_message_ids": [
+        "p1"
+      ],
+      "gold_ranks": {
+        "p1": 47
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 4.6
+    },
+    {
+      "id": "near-02",
+      "group": "near",
+      "wording": "paraphrase",
+      "through_turn": 9,
+      "question": "第三镜那次避免露出主人公正面，最后怎么让观众感到他受惊？",
+      "required_message_ids": [
+        "p2"
+      ],
+      "gold_ranks": {
+        "p2": 1
+      },
+      "ranked_count": 9,
+      "top": [
+        {
+          "turn_id": "T9",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T8",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T7",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T9",
+        "T8",
+        "T7"
+      ],
+      "evidence_chars": 1022,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.8
+    },
+    {
+      "id": "late-02",
+      "group": "late",
+      "wording": "paraphrase",
+      "through_turn": 50,
+      "question": "第三镜那次避免露出主人公正面，最后怎么让观众感到他受惊？",
+      "required_message_ids": [
+        "p2"
+      ],
+      "gold_ranks": {
+        "p2": 42
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.4
+    },
+    {
+      "id": "near-03",
+      "group": "near",
+      "wording": "literal",
+      "through_turn": 14,
+      "question": "第六镜取景范围最后为什么写成远景到近景，门框还入画吗？",
+      "required_message_ids": [
+        "p3"
+      ],
+      "gold_ranks": {
+        "p3": 1
+      },
+      "ranked_count": 14,
+      "top": [
+        {
+          "turn_id": "T14",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T13",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T12",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T14",
+        "T13",
+        "T12"
+      ],
+      "evidence_chars": 741,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.5
+    },
+    {
+      "id": "late-03",
+      "group": "late",
+      "wording": "literal",
+      "through_turn": 50,
+      "question": "第六镜取景范围最后为什么写成远景到近景，门框还入画吗？",
+      "required_message_ids": [
+        "p3"
+      ],
+      "gold_ranks": {
+        "p3": 37
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.2
+    },
+    {
+      "id": "near-04",
+      "group": "near",
+      "wording": "paraphrase",
+      "through_turn": 19,
+      "question": "天上掉下来的是玩偶还是房子，原落点那次最后改成什么动作了？",
+      "required_message_ids": [
+        "p4"
+      ],
+      "gold_ranks": {
+        "p4": 1
+      },
+      "ranked_count": 19,
+      "top": [
+        {
+          "turn_id": "T19",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T18",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T17",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T19",
+        "T18",
+        "T17"
+      ],
+      "evidence_chars": 984,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.5
+    },
+    {
+      "id": "late-04",
+      "group": "late",
+      "wording": "paraphrase",
+      "through_turn": 50,
+      "question": "天上掉下来的是玩偶还是房子，原落点那次最后改成什么动作了？",
+      "required_message_ids": [
+        "p4"
+      ],
+      "gold_ranks": {
+        "p4": 32
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.4
+    },
+    {
+      "id": "near-05",
+      "group": "near",
+      "wording": "paraphrase",
+      "through_turn": 24,
+      "question": "雪散以后为了不让视线一下子跳到湖对面，最后怎么改了看屋子的方向？",
+      "required_message_ids": [
+        "p5"
+      ],
+      "gold_ranks": {
+        "p5": 1
+      },
+      "ranked_count": 24,
+      "top": [
+        {
+          "turn_id": "T24",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T23",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T22",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T24",
+        "T23",
+        "T22"
+      ],
+      "evidence_chars": 742,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.7
+    },
+    {
+      "id": "late-05",
+      "group": "late",
+      "wording": "paraphrase",
+      "through_turn": 50,
+      "question": "雪散以后为了不让视线一下子跳到湖对面，最后怎么改了看屋子的方向？",
+      "required_message_ids": [
+        "p5"
+      ],
+      "gold_ranks": {
+        "p5": 27
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.6
+    },
+    {
+      "id": "near-06",
+      "group": "near",
+      "wording": "literal",
+      "through_turn": 29,
+      "question": "第六镜从助跑到冰面滑行再推门，实际应用的动作顺序是什么？",
+      "required_message_ids": [
+        "p6"
+      ],
+      "gold_ranks": {
+        "p6": 1
+      },
+      "ranked_count": 29,
+      "top": [
+        {
+          "turn_id": "T29",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T28",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T27",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T29",
+        "T28",
+        "T27"
+      ],
+      "evidence_chars": 770,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.9
+    },
+    {
+      "id": "late-06",
+      "group": "late",
+      "wording": "literal",
+      "through_turn": 50,
+      "question": "第六镜从助跑到冰面滑行再推门，实际应用的动作顺序是什么？",
+      "required_message_ids": [
+        "p6"
+      ],
+      "gold_ranks": {
+        "p6": 22
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.2
+    },
+    {
+      "id": "near-07",
+      "group": "near",
+      "wording": "literal",
+      "through_turn": 34,
+      "question": "第六七镜交接时，风声和柴火声是怎么渐变的？",
+      "required_message_ids": [
+        "p7"
+      ],
+      "gold_ranks": {
+        "p7": 1
+      },
+      "ranked_count": 34,
+      "top": [
+        {
+          "turn_id": "T34",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T33",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T32",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T34",
+        "T33",
+        "T32"
+      ],
+      "evidence_chars": 919,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 0.9
+    },
+    {
+      "id": "late-07",
+      "group": "late",
+      "wording": "literal",
+      "through_turn": 50,
+      "question": "第六七镜交接时，风声和柴火声是怎么渐变的？",
+      "required_message_ids": [
+        "p7"
+      ],
+      "gold_ranks": {
+        "p7": 17
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 2.3
+    },
+    {
+      "id": "near-08",
+      "group": "near",
+      "wording": "paraphrase",
+      "through_turn": 39,
+      "question": "小羊手里的饮品和卡片，最终安排哪个先出现在画面里？",
+      "required_message_ids": [
+        "p8"
+      ],
+      "gold_ranks": {
+        "p8": 1
+      },
+      "ranked_count": 39,
+      "top": [
+        {
+          "turn_id": "T39",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T38",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T37",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T39",
+        "T38",
+        "T37"
+      ],
+      "evidence_chars": 749,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 1.1
+    },
+    {
+      "id": "late-08",
+      "group": "late",
+      "wording": "paraphrase",
+      "through_turn": 50,
+      "question": "小羊手里的饮品和卡片，最终安排哪个先出现在画面里？",
+      "required_message_ids": [
+        "p8"
+      ],
+      "gold_ranks": {
+        "p8": 12
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 1.2
+    },
+    {
+      "id": "near-09",
+      "group": "near",
+      "wording": "literal",
+      "through_turn": 44,
+      "question": "第十镜把明信片投进邮筒的动作和音效最后怎么写的？",
+      "required_message_ids": [
+        "p9"
+      ],
+      "gold_ranks": {
+        "p9": 1
+      },
+      "ranked_count": 44,
+      "top": [
+        {
+          "turn_id": "T44",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T43",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T42",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T44",
+        "T43",
+        "T42"
+      ],
+      "evidence_chars": 958,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 1.1
+    },
+    {
+      "id": "late-09",
+      "group": "late",
+      "wording": "literal",
+      "through_turn": 50,
+      "question": "第十镜把明信片投进邮筒的动作和音效最后怎么写的？",
+      "required_message_ids": [
+        "p9"
+      ],
+      "gold_ranks": {
+        "p9": 7
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": false,
+      "false_positive": null,
+      "ranking_us": 91.8
+    },
+    {
+      "id": "near-10",
+      "group": "near",
+      "wording": "paraphrase",
+      "through_turn": 49,
+      "question": "旅人最后调头看木屋化掉，再朝光亮走，这一段当时怎么改分镜的？",
+      "required_message_ids": [
+        "p10"
+      ],
+      "gold_ranks": {
+        "p10": 1
+      },
+      "ranked_count": 49,
+      "top": [
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T47",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T49",
+        "T48",
+        "T47"
+      ],
+      "evidence_chars": 1027,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 1.4
+    },
+    {
+      "id": "late-10",
+      "group": "late",
+      "wording": "paraphrase",
+      "through_turn": 50,
+      "question": "旅人最后调头看木屋化掉，再朝光亮走，这一段当时怎么改分镜的？",
+      "required_message_ids": [
+        "p10"
+      ],
+      "gold_ranks": {
+        "p10": 2
+      },
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": true,
+      "false_positive": null,
+      "ranking_us": 2.3
+    },
+    {
+      "id": "missing-01",
+      "group": "no_evidence",
+      "wording": "unrelated",
+      "through_turn": 50,
+      "question": "哪一镜的手机震动声已经应用进分镜了？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 1.3
+    },
+    {
+      "id": "missing-02",
+      "group": "no_evidence",
+      "wording": "same_subject",
+      "through_turn": 50,
+      "question": "小羊毛色改成灰色的版本是哪一轮应用的？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 1.3
+    },
+    {
+      "id": "missing-03",
+      "group": "no_evidence",
+      "wording": "same_shot",
+      "through_turn": 50,
+      "question": "第六镜改成俯拍天窗后，最后一次应用的运镜是什么？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 1.1
+    },
+    {
+      "id": "missing-04",
+      "group": "no_evidence",
+      "wording": "future",
+      "through_turn": 10,
+      "question": "第十镜明信片投进邮筒后增加的音效，最终应用的是哪一句？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 10,
+      "top": [
+        {
+          "turn_id": "T10",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T9",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T8",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T10",
+        "T9",
+        "T8"
+      ],
+      "evidence_chars": 1006,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 0.4
+    },
+    {
+      "id": "missing-05",
+      "group": "no_evidence",
+      "wording": "same_field",
+      "through_turn": 50,
+      "question": "哪次应用把出门时的旁白改成‘我再也不会回去’？",
+      "required_message_ids": [],
+      "gold_ranks": {},
+      "ranked_count": 50,
+      "top": [
+        {
+          "turn_id": "T50",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T49",
+          "score": null,
+          "matched_features": []
+        },
+        {
+          "turn_id": "T48",
+          "score": null,
+          "matched_features": []
+        }
+      ],
+      "packed_turn_ids": [
+        "T50",
+        "T49",
+        "T48"
+      ],
+      "evidence_chars": 1009,
+      "covered": null,
+      "false_positive": true,
+      "ranking_us": 1.1
+    }
+  ]
+}
