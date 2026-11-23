@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 import json
-from math import log
+from math import fsum, log
 import re
 from typing import NamedTuple
 from unicodedata import normalize
@@ -42,10 +42,11 @@ MESSAGE_ID = re.compile(r"(?<![a-z0-9_])(?:[mp][0-9]+|r[0-9]+[ua]|message_[0-9a-
 APPLIED_QUERY = re.compile(r"(?:已|最后|实际|曾经|最终)?应用|写[回入]|生效|回执")
 DRAFT_QUERY = re.compile(r"给出的|返回的改稿|草稿|未应用|没应用|尚未应用|未写回")
 STRUCTURED_WORDS = re.compile(r"哪一次|哪一版|哪次|哪版|是什么|有什么|怎么写的|怎么写|最后|最近|当时|当前|最终|查找|给我|看看|的|请|查|改稿|改过|改动|了|[^\w]+")
-METHOD = "C2-weighted-characters"
+METHOD = "C3-content-evidence"
 SETTINGS = {
     "candidate_fields": ["conversation", "cutoff", "shot", "field", "state"],
     "score": "query coverage by weighted 2–4 character terms",
+    "evidence_gate": "non-metadata content support and new-value check for substitutions",
     "no_model": True,
 }
 
@@ -201,15 +202,60 @@ def rank_characters(question: str, candidates: Sequence[Record]) -> list[tuple[s
             term in text for text in documents.values()
         )))) for term in terms
     }
-    total = sum(weights.values())
+    total = fsum(weights.values())
     ranked = []
     for turn, document in documents.items():
         matches = document & terms
         if matches:
-            score = sum(weights[word] for word in matches) / total
+            score = round(fsum(weights[word] for word in matches) / total, 12)
             features = sorted(matches, key=lambda word: (-weights[word], word))[:8]
             ranked.append((turn, score, ["字片段 " + word for word in features]))
     return sorted(ranked, key=lambda row: (-row[1], -int(row[0][1:])))
+
+
+ANSWER_TARGET = re.compile(r"(?:改成|换成|改为|换为|替换[成为]|调整[成为])\s*(?:了)?([^，。！？?；;]+)")
+QUESTION_FRAME = re.compile(
+    r"哪一份|哪一稿|哪一版|哪一次|哪份|哪版|哪稿|哪回|哪次|找一下|回查|找回|"
+    r"有没有|确认过|返回的|明确写|怎么写|是什么|写进了|加了|的版本|"
+    r"用不到|不用再|不必再|不用|不必|这个|当天|当时|改稿|修改稿"
+)
+
+
+def content_terms(text: str) -> set[str]:
+    without_slots = SHOT_MENTION.sub(" ", normalize("NFKC", text))
+    without_slots = FIELD_MENTION.sub(" ", without_slots)
+    without_slots = APPLIED_QUERY.sub(" ", DRAFT_QUERY.sub(" ", without_slots))
+    without_slots = QUESTION_FRAME.sub(" ", without_slots)
+    return character_terms(" ".join(query_phrases(without_slots)))
+
+
+def text_of(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def proof_terms(record: Record, request: Request, new_only: bool) -> set[str]:
+    values = [
+        value for value in record.values
+        if (not request.shots or value.shot in request.shots)
+        and (not request.fields or value.name in request.fields)
+    ]
+    text = [text_of(value.new) for value in values if value.new is not None]
+    if not new_only:
+        text.extend(text_of(value.old) for value in values if value.old is not None)
+        if record.state == "draft" and not request.fields:
+            text.append(record.wording)
+    return character_terms(" ".join(text))
+
+
+def has_support(question: str, request: Request, record: Record, terms: set[str]) -> bool:
+    target = ANSWER_TARGET.search(question)
+    if target and (required := content_terms(target[1])):
+        matches = required & proof_terms(record, request, new_only=True)
+        minimum = min(2, sum(len(word) == 2 for word in required))
+        if sum(len(word) == 2 for word in matches) < minimum:
+            return False
+    matches = terms & proof_terms(record, request, new_only=bool(request.state == "applied" and "已" in question))
+    return len(matches) >= 2 or bool(matches and any(len(word) >= 3 for word in matches))
 
 
 def rank_structured(
@@ -231,6 +277,8 @@ def rank_structured(
     if request.shots and request.fields and request.state and not request.remainder and candidates:
         last = candidates[-1]
         return Ranking([(last.turn_id, None, ["镜号、字段、状态"])], candidate_turns, "exact_slots")
-    ranked = rank_characters(question, candidates)
-    return Ranking(ranked, candidate_turns, "character_match" if ranked else "no_match")
+    terms = content_terms(question)
+    verified = {record.turn_id for record in candidates if has_support(question, request, record, terms)}
+    ranked = [row for row in rank_characters(question, candidates) if row[0] in verified]
+    return Ranking(ranked, candidate_turns, "content_match" if ranked else "no_supported_match")
 
