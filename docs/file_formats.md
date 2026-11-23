@@ -21,7 +21,7 @@
 
 | 路径 | 用途 |
 |---|---|
-| `short_video/project_v2.json` | 项目清单、当前版本引用、已有任务状态等 |
+| `short_video/project_v2.json` | 项目清单、项目名称、当前版本引用与任务状态 |
 | `short_video/artifacts/<版本ID>.json` | 不可变文章、选区、配置、稿件与提示词版本 |
 | `short_video/conversations/` | 项目内聊天消息、状态与模型信息 |
 | `short_video/tasks/` | 多阶段任务的既有进度和恢复信息 |

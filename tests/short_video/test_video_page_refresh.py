@@ -13,6 +13,7 @@ from test_video_v2_repository import novel, project, prompt_project  # noqa: F40
 
 from core.short_video.v2 import conversation
 from core.short_video.v2.models import fingerprint
+from core.short_video.v2.project_service import ProjectService
 from core.short_video.v2.repository import ProjectRepository, shared_project_reads
 
 PAGE_KEYS = ["video_source", "video_adaptation", "video_storyboard", "video_prompts"]
@@ -90,6 +91,71 @@ def counted_reads(monkeypatch):
 
     monkeypatch.setattr(ProjectRepository, "_read", counting)
     return reads
+
+
+def test_new_project_saves_its_name_before_the_first_article(ui, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QLineEdit
+
+    workbench = ui.workbench
+    folder = tmp_path / "新目录"
+    folder.mkdir()
+    candidate = ProjectRepository(folder)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(folder))
+    monkeypatch.setattr(QDialog, "exec", lambda _: QDialog.Rejected)
+    workbench.new_project()
+    assert workbench.output_dir == ui.repository.output_dir
+    assert not candidate.path.exists()
+
+    def enter_name(dialog):
+        name = dialog.findChild(QLineEdit)
+        assert name.text() == folder.name
+        save = dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Save)
+        name.setText("   ")
+        assert not save.isEnabled()
+        name.setText("  白猫短剧  ")
+        save.click()
+        return dialog.result()
+
+    monkeypatch.setattr(QDialog, "exec", enter_name)
+    workbench.new_project()
+    assert candidate.path.is_file()
+    assert workbench.project_button.text() == "白猫短剧"
+    assert not candidate.load()["current"]
+    workbench.source.article.setPlainText("白猫走进小巷。")
+    assert workbench.source.save()
+    workbench.browse_project()
+    assert ProjectService(candidate).title() == workbench.project_button.text() == "白猫短剧"
+
+
+def test_rename_project_preserves_content_and_unsaved_edits(ui, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLineEdit, QPushButton
+
+    workbench = ui.workbench
+    before = ui.repository.load()
+    previous_title = workbench.project_button.text()
+    workbench.source.article.setPlainText("这段原文还没有保存。")
+
+    def rename(dialog):
+        if dialog.windowTitle() == "项目设置":
+            button = next(b for b in dialog.findChildren(QPushButton) if b.text() == "重命名")
+            button.click()
+        else:
+            name = dialog.findChild(QLineEdit)
+            assert name.text() == previous_title
+            name.setText("新的项目名")
+            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).click()
+        return dialog.result()
+
+    monkeypatch.setattr(QDialog, "exec", rename)
+    workbench.project_settings()
+
+    after = ui.repository.load()
+    assert after["project_title"] == workbench.project_button.text() == "新的项目名"
+    assert after["project_id"] == before["project_id"]
+    assert after["current"] == before["current"] and after["records"] == before["records"]
+    assert workbench.output_dir == ui.repository.output_dir
+    assert workbench.source.dirty
+    assert workbench.source.article.toPlainText() == "这段原文还没有保存。"
 
 
 # -- only the shown page -------------------------------------------------------------------

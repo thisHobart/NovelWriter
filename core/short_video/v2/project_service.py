@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import JsonObject, OperationParameters, OperationResult, SourceRange
-from .models import WorkspaceError, default_config, fingerprint, require
+from .models import WorkspaceError, default_config, fingerprint, require, text
 from .repository import ProjectRepository
 from .source import (
     read_source_file,
@@ -21,6 +21,20 @@ from .source import (
 class ProjectService:
     def __init__(self, repository: ProjectRepository) -> None:
         self.repository = repository
+
+    def title(self) -> str:
+        state = self.repository.load()
+        if title := state.get("project_title"):
+            return title
+        config = self.repository.current("config", state=state)
+        return config["content"]["title"] if config else "新项目"
+
+    def set_title(self, title: str, *, expected_revision: int | None = None) -> str:
+        """Save the display title independently of the inputs used by generation."""
+        title = text(title, "项目名称").strip()
+        with self.repository.transaction(expected_revision) as state:
+            state["project_title"] = title
+        return title
 
     def save_inputs(
         self,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -42,6 +43,7 @@ from core.short_video.v2.feedback import (
     task_message,
 )
 from core.short_video.v2.models import WorkspaceError, fingerprint, require
+from core.short_video.v2.project_service import ProjectService
 from core.short_video.v2.repository import ProjectRepository, shared_project_reads
 from core.short_video.v2.service_settings import (
     get_review_config,
@@ -319,6 +321,7 @@ class Workbench(QWidget):
             "export": "内容导出",
             "browse_project": "项目打开",
             "project_settings": "项目设置",
+            "rename_project": "项目重命名",
             "configure_comfy": "工作流配置",
             "configure_text_model": "生成模型配置",
             "configure_review_model": "校验模型配置",
@@ -530,10 +533,7 @@ class Workbench(QWidget):
             self.refresh_model_status()
             for page in self.shown_pages():
                 page.refresh()
-            config = self.repository.current("config")
-            self.project_button.setText(
-                (config["content"]["title"] if config else "新项目") or "新项目"
-            )
+            self.show_project_title(ProjectService(self.repository).title())
             self.chat.refresh()
             # Also the video status: a finished video must show even while prompts are unsaved.
             self.refresh_task_controls()
@@ -689,11 +689,53 @@ class Workbench(QWidget):
         )
         self.notice("已导出：" + path)
 
+    def show_project_title(self, title: str) -> None:
+        self.project_button.setText(title.replace("&", "&&"))
+        self.project_button.setToolTip(f"<qt>{escape(title)}</qt>")
+
+    def ask_project_title(self, parent: QWidget, heading: str, initial: str) -> str | None:
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(heading)
+        layout = QVBoxLayout(dialog)
+        name = QLineEdit(initial)
+        label = QLabel("项目名称")
+        label.setBuddy(name)
+        layout.addWidget(label)
+        layout.addWidget(name)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        save = buttons.button(QDialogButtonBox.Save)
+        save.setEnabled(bool(initial.strip()))
+        name.textChanged.connect(lambda value: save.setEnabled(bool(value.strip())))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        name.setFocus()
+        name.selectAll()
+        return name.text().strip() if dialog.exec() == QDialog.Accepted else None
+
     def project_settings(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("项目设置")
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("项目目录：" + self.output_dir))
+        project = ProjectService(self.repository)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("项目名称"))
+        name_label = QLabel(project.title())
+        name_label.setTextFormat(Qt.PlainText)
+        name_label.setWordWrap(True)
+        name_row.addWidget(name_label, 1)
+
+        def rename_project() -> None:
+            title = self.ask_project_title(dialog, "重命名项目", name_label.text())
+            if title is not None:
+                title = project.set_title(title)
+                name_label.setText(title)
+                self.show_project_title(title)
+                self.notice("项目名称已保存")
+
+        create_action_button("重命名", rename_project, name_row, self)
+        layout.addLayout(name_row)
         layout.addWidget(QLabel("文字模型"))
         model_summary = QLabel()
         model_summary.setWordWrap(True)
@@ -726,14 +768,17 @@ class Workbench(QWidget):
     def new_project(self) -> None:
         require(not self.tasks.any_busy, "PROJECT_BUSY", "运行中无法切换项目")
         path = QFileDialog.getExistingDirectory(self, "选择新项目目录", self.output_dir)
-        if path:
-            require(
-                not ProjectRepository(path).path.exists(),
-                "INVALID_INPUT",
-                "该目录已有项目，请使用打开项目",
-            )
+        if not path:
+            return
+        require(
+            not ProjectRepository(path).path.exists(),
+            "INVALID_INPUT",
+            "该目录已有项目，请使用打开项目",
+        )
+        title = self.ask_project_title(self, "新建项目", Path(path).name)
+        if title is not None:
             self.directory.setText(path)
-            self.open_project()
+            self.open_project(new_title=title)
 
     def browse_project(self) -> None:
         require(not self.tasks.any_busy, "PROJECT_BUSY", "运行中无法切换项目")
@@ -742,18 +787,21 @@ class Workbench(QWidget):
             self.directory.setText(path)
             self.open_project()
 
-    def open_project(self) -> None:
+    def open_project(self, *, new_title: str | None = None) -> None:
         require(not self.tasks.any_busy, "PROJECT_BUSY", "运行中无法切换项目")
         if not self.resolve_edits():
             self.directory.setText(self.output_dir)
             return
         candidate = ProjectRepository(self.directory.text())
         try:
-            candidate.load()
-            ConversationService(candidate).recover()
-            from core.short_video.v2.image_generation import ImageGenerationService
+            if new_title is None:
+                candidate.load()
+                ConversationService(candidate).recover()
+                from core.short_video.v2.image_generation import ImageGenerationService
 
-            ImageGenerationService(candidate).recover()
+                ImageGenerationService(candidate).recover()
+            else:
+                ProjectService(candidate).set_title(new_title, expected_revision=0)
         except (WorkspaceError, OSError):
             self.directory.setText(self.output_dir)
             raise
@@ -766,4 +814,4 @@ class Workbench(QWidget):
         self.refresh()
         self.navigate(self.last_page())
         self.refresh_all()
-        self.notice("已打开项目")
+        self.notice("已打开项目" if new_title is None else "已创建项目")

@@ -131,6 +131,9 @@ class ProjectRepository:
             "INVALID_PROJECT",
             "项目身份缺失或无效",
         )
+        if "project_title" in state:
+            title = state["project_title"]
+            require(isinstance(title, str) and title.strip(), "INVALID_PROJECT", "项目名称无效")
         for key in ("records", "current", "confirmations", "reports", "requests"):
             require(isinstance(state.get(key), dict), "INVALID_PROJECT", f"项目缺少 {key}")
         for key in ("runs", "exports"):
