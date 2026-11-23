@@ -42,10 +42,11 @@ MESSAGE_ID = re.compile(r"(?<![a-z0-9_])(?:[mp][0-9]+|r[0-9]+[ua]|message_[0-9a-
 APPLIED_QUERY = re.compile(r"(?:已|最后|实际|曾经|最终)?应用|写[回入]|生效|回执")
 DRAFT_QUERY = re.compile(r"给出的|返回的改稿|草稿|未应用|没应用|尚未应用|未写回")
 STRUCTURED_WORDS = re.compile(r"哪一次|哪一版|哪次|哪版|是什么|有什么|怎么写的|怎么写|最后|最近|当时|当前|最终|查找|给我|看看|的|请|查|改稿|改过|改动|了|[^\w]+")
-METHOD = "C4-request-scope"
+METHOD = "C5-storyboard-terms"
 SETTINGS = {
     "candidate_fields": ["conversation", "cutoff", "shot", "field", "state"],
     "request_scope": "distinguish a preceding context clause",
+    "lexical_normalization": "fixed storyboard aliases",
     "score": "query coverage by weighted 2–4 character terms",
     "evidence_gate": "non-metadata content support and new-value check for substitutions",
     "no_model": True,
@@ -197,17 +198,43 @@ def fits(record: Record, request: Request) -> bool:
     )
 
 
+STORYBOARD_ALIASES = {
+    "正脸": ("脸部正面", "人物正面", "角色正面", "主角正面", "主人公正面", "正面脸"),
+    "第一人称": ("主观视点", "主观视角", "主观镜头"),
+    "回头": ("回过头", "向后转", "回头看", "调头", "扭头", "回望"),
+    "小屋": ("木屋", "小木屋", "小房子"),
+    "消散": ("化掉", "化开", "散成飞雪", "散成雪花", "化成雪花"),
+    "阳光": ("日光", "光亮"),
+    "桌边": ("餐桌前", "桌子前", "桌前", "桌旁"),
+    "进食": ("用餐", "吃饭", "吃东西"),
+    "坐着": ("就座", "坐下来", "坐下", "坐在", "已坐"),
+    "屋内": ("室内", "房里", "屋里", "房内"),
+    "进屋": ("入室", "入屋", "走进屋", "进入屋内"),
+    "屋外": ("室外", "房外", "门外"),
+    "饮料": ("饮品", "汽水"),
+    "卡片": ("明信片",),
+    "对岸": ("对面",),
+    "雪散": ("雪幕散开", "雪幕散去", "飞雪散去", "风雪散开"),
+}
+STORYBOARD_WORDS = {word: main for main, variants in STORYBOARD_ALIASES.items() for word in variants}
+STORYBOARD_TERMS = re.compile("|".join(re.escape(word) for word in sorted(STORYBOARD_WORDS, key=len, reverse=True)))
+
+
+def normalize_storyboard_text(text: str) -> str:
+    return STORYBOARD_TERMS.sub(lambda match: STORYBOARD_WORDS[match[0]], normalize("NFKC", text).lower())
+
+
 def character_terms(text: str) -> set[str]:
     return {
         block[offset:offset + size]
-        for block in re.findall(r"[\u3400-\u9fffA-Za-z0-9]+", normalize("NFKC", text).lower())
+        for block in re.findall(r"[\u3400-\u9fffA-Za-z0-9]+", normalize_storyboard_text(text))
         for size in (2, 3, 4)
         for offset in range(len(block) - size + 1)
     }
 
 
 def rank_characters(question: str, candidates: Sequence[Record]) -> list[tuple[str, float | None, list[str]]]:
-    terms = character_terms(" ".join(query_phrases(question)))
+    terms = character_terms(" ".join(query_phrases(normalize_storyboard_text(question))))
     documents = {record.turn_id: character_terms(record.wording[:CARD_CHARS]) for record in candidates}
     if not documents or not terms:
         return []
@@ -236,7 +263,7 @@ QUESTION_FRAME = re.compile(
 
 
 def content_terms(text: str) -> set[str]:
-    without_slots = SHOT_MENTION.sub(" ", normalize("NFKC", text))
+    without_slots = SHOT_MENTION.sub(" ", normalize_storyboard_text(text))
     without_slots = FIELD_MENTION.sub(" ", without_slots)
     without_slots = APPLIED_QUERY.sub(" ", DRAFT_QUERY.sub(" ", without_slots))
     without_slots = QUESTION_FRAME.sub(" ", without_slots)
