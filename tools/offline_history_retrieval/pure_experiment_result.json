@@ -1,5 +1,5 @@
 {
-  "code_commit": "76fa0f6302eef02dc3768fb48e1bb3f69a51136e",
+  "code_commit": "f3b3a6ccb20d57d96f4b0f6f2711e2a5db332d1e",
   "python": "3.14.5",
   "cases_sha256_utf8_lf": "6d68387682cb7e133750c93701c9d30bd9369511146535df639671261ed03539",
   "data": {
@@ -29,6 +29,7 @@
         "state"
       ],
       "request_scope": "distinguish a preceding context clause",
+      "lexical_normalization": "fixed storyboard aliases",
       "score": "query coverage by weighted 2–4 character terms",
       "evidence_gate": "non-metadata content support and new-value check for substitutions",
       "no_model": true
@@ -57,9 +58,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.4689,
-        "p50_ms": 0.0092,
-        "p95_ms": 0.0219,
+        "load_ms": 1.2967,
+        "p50_ms": 0.0087,
+        "p95_ms": 0.0189,
         "queries": [
           {
             "id": "real-near-01",
@@ -424,7 +425,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0219
+            "query_ms": 0.0189
           },
           {
             "id": "real-late-01",
@@ -818,7 +819,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0161
+            "query_ms": 0.0144
           },
           {
             "id": "real-near-02",
@@ -1053,7 +1054,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0088
+            "query_ms": 0.0086
           },
           {
             "id": "real-late-02",
@@ -1447,7 +1448,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0106
+            "query_ms": 0.0178
           },
           {
             "id": "real-near-03",
@@ -1730,7 +1731,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0136
+            "query_ms": 0.0129
           },
           {
             "id": "real-late-03",
@@ -2124,7 +2125,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0124
+            "query_ms": 0.0128
           },
           {
             "id": "real-near-04",
@@ -2365,7 +2366,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0092
+            "query_ms": 0.0079
           },
           {
             "id": "real-late-04",
@@ -2759,7 +2760,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.011
+            "query_ms": 0.0094
           },
           {
             "id": "real-near-05",
@@ -2949,7 +2950,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0097
+            "query_ms": 0.0105
           },
           {
             "id": "real-late-05",
@@ -3343,7 +3344,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.009
+            "query_ms": 0.0081
           },
           {
             "id": "real-near-06",
@@ -3583,7 +3584,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0095
+            "query_ms": 0.0098
           },
           {
             "id": "real-late-06",
@@ -3977,7 +3978,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0086
+            "query_ms": 0.0081
           },
           {
             "id": "real-near-07",
@@ -4179,7 +4180,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0108
+            "query_ms": 0.0087
           },
           {
             "id": "real-late-07",
@@ -4573,7 +4574,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0083
+            "query_ms": 0.008
           },
           {
             "id": "real-near-08",
@@ -5361,7 +5362,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.009
+            "query_ms": 0.0085
           },
           {
             "id": "real-missing-01",
@@ -5753,7 +5754,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0081
+            "query_ms": 0.0072
           },
           {
             "id": "real-missing-02",
@@ -5991,7 +5992,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0087
+            "query_ms": 0.0102
           },
           {
             "id": "real-missing-03",
@@ -6383,7 +6384,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0084
+            "query_ms": 0.0077
           }
         ]
       },
@@ -6400,9 +6401,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.1351,
+        "load_ms": 1.1364,
         "p50_ms": 0.0084,
-        "p95_ms": 0.0095,
+        "p95_ms": 0.0102,
         "queries": [
           {
             "id": "check-01",
@@ -6796,7 +6797,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0095
+            "query_ms": 0.01
           },
           {
             "id": "check-02",
@@ -7190,7 +7191,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0086
+            "query_ms": 0.0102
           },
           {
             "id": "check-03",
@@ -7584,7 +7585,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0087
+            "query_ms": 0.0081
           },
           {
             "id": "check-04",
@@ -7978,7 +7979,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0073
+            "query_ms": 0.0088
           },
           {
             "id": "check-05",
@@ -8372,7 +8373,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0083
+            "query_ms": 0.0075
           },
           {
             "id": "check-06",
@@ -8766,7 +8767,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0084
+            "query_ms": 0.0091
           },
           {
             "id": "check-07",
@@ -9160,7 +9161,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0084
+            "query_ms": 0.0073
           },
           {
             "id": "check-08",
@@ -9554,7 +9555,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0081
+            "query_ms": 0.0088
           },
           {
             "id": "check-missing-01",
@@ -9946,7 +9947,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.008
+            "query_ms": 0.0073
           },
           {
             "id": "check-missing-02",
@@ -10184,7 +10185,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0088
+            "query_ms": 0.0084
           },
           {
             "id": "check-missing-03",
@@ -10576,7 +10577,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0093
+            "query_ms": 0.0077
           }
         ]
       },
@@ -10598,9 +10599,9 @@
             "false_recall": 5
           }
         },
-        "load_ms": 0.3411,
-        "p50_ms": 0.0109,
-        "p95_ms": 0.0129,
+        "load_ms": 0.3026,
+        "p50_ms": 0.0106,
+        "p95_ms": 0.0136,
         "queries": [
           {
             "id": "near-01",
@@ -10662,7 +10663,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0093
+            "query_ms": 0.0086
           },
           {
             "id": "late-01",
@@ -10774,7 +10775,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0146
+            "query_ms": 0.0136
           },
           {
             "id": "near-02",
@@ -10845,7 +10846,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0086
+            "query_ms": 0.0085
           },
           {
             "id": "late-02",
@@ -10957,7 +10958,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0129
+            "query_ms": 0.0119
           },
           {
             "id": "near-03",
@@ -11141,7 +11142,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0115
+            "query_ms": 0.0112
           },
           {
             "id": "near-04",
@@ -11222,7 +11223,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0098
+            "query_ms": 0.0095
           },
           {
             "id": "late-04",
@@ -11334,7 +11335,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0117
+            "query_ms": 0.011
           },
           {
             "id": "near-05",
@@ -11416,7 +11417,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0102
+            "query_ms": 0.0096
           },
           {
             "id": "late-05",
@@ -11528,7 +11529,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0125
+            "query_ms": 0.0122
           },
           {
             "id": "near-06",
@@ -11615,7 +11616,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0095
+            "query_ms": 0.0142
           },
           {
             "id": "late-06",
@@ -11727,7 +11728,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0116
+            "query_ms": 0.0106
           },
           {
             "id": "near-07",
@@ -11823,7 +11824,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0103
+            "query_ms": 0.0098
           },
           {
             "id": "late-07",
@@ -11935,7 +11936,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0109
+            "query_ms": 0.0106
           },
           {
             "id": "near-08",
@@ -12032,7 +12033,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0111
+            "query_ms": 0.0108
           },
           {
             "id": "late-08",
@@ -12144,7 +12145,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0108
+            "query_ms": 0.0106
           },
           {
             "id": "near-09",
@@ -12250,7 +12251,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0115
+            "query_ms": 0.0107
           },
           {
             "id": "late-09",
@@ -12362,7 +12363,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0111
+            "query_ms": 0.0107
           },
           {
             "id": "near-10",
@@ -12473,7 +12474,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0112
+            "query_ms": 0.0109
           },
           {
             "id": "late-10",
@@ -12585,7 +12586,7 @@
             "false_recall": null,
             "decision": "recent",
             "failure": null,
-            "query_ms": 0.0109
+            "query_ms": 0.0104
           },
           {
             "id": "missing-01",
@@ -12695,7 +12696,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0106
+            "query_ms": 0.0116
           },
           {
             "id": "missing-02",
@@ -12805,7 +12806,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0121
+            "query_ms": 0.0116
           },
           {
             "id": "missing-03",
@@ -12915,7 +12916,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0105
+            "query_ms": 0.0103
           },
           {
             "id": "missing-04",
@@ -12985,7 +12986,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0076
+            "query_ms": 0.0073
           },
           {
             "id": "missing-05",
@@ -13095,7 +13096,7 @@
             "false_recall": true,
             "decision": "recent",
             "failure": "false_recall",
-            "query_ms": 0.0105
+            "query_ms": 0.0106
           }
         ]
       }
@@ -13119,9 +13120,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.1424,
-        "p50_ms": 0.0754,
-        "p95_ms": 0.1336,
+        "load_ms": 1.1286,
+        "p50_ms": 0.0686,
+        "p95_ms": 0.0987,
         "queries": [
           {
             "id": "real-near-01",
@@ -13469,7 +13470,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.056
+            "query_ms": 0.0476
           },
           {
             "id": "real-late-01",
@@ -13843,7 +13844,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "packing",
-            "query_ms": 0.1001
+            "query_ms": 0.0987
           },
           {
             "id": "real-near-02",
@@ -13865,7 +13866,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0302
+            "query_ms": 0.0301
           },
           {
             "id": "real-late-02",
@@ -13893,7 +13894,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0754
+            "query_ms": 0.0719
           },
           {
             "id": "real-near-03",
@@ -14156,7 +14157,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0369
+            "query_ms": 0.041
           },
           {
             "id": "real-late-03",
@@ -14438,7 +14439,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0834
+            "query_ms": 0.0825
           },
           {
             "id": "real-near-04",
@@ -14709,7 +14710,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "packing",
-            "query_ms": 0.05
+            "query_ms": 0.051
           },
           {
             "id": "real-late-04",
@@ -14991,7 +14992,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0841
+            "query_ms": 0.0835
           },
           {
             "id": "real-near-05",
@@ -15169,7 +15170,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.057
+            "query_ms": 0.0551
           },
           {
             "id": "real-late-05",
@@ -15550,7 +15551,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.1336
+            "query_ms": 0.0761
           },
           {
             "id": "real-near-06",
@@ -15576,7 +15577,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0714
+            "query_ms": 0.0568
           },
           {
             "id": "real-late-06",
@@ -15604,7 +15605,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0779
+            "query_ms": 0.0686
           },
           {
             "id": "real-near-07",
@@ -15834,7 +15835,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "packing",
-            "query_ms": 0.0788
+            "query_ms": 0.066
           },
           {
             "id": "real-late-07",
@@ -16065,7 +16066,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0904
+            "query_ms": 0.0797
           },
           {
             "id": "real-near-08",
@@ -16439,7 +16440,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0804
+            "query_ms": 0.0736
           },
           {
             "id": "real-late-08",
@@ -16813,7 +16814,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0782
+            "query_ms": 0.0744
           },
           {
             "id": "real-missing-01",
@@ -17260,7 +17261,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.062
+            "query_ms": 0.0579
           },
           {
             "id": "real-missing-03",
@@ -17488,7 +17489,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0708
+            "query_ms": 0.0675
           }
         ]
       },
@@ -17505,9 +17506,9 @@
             "false_recall": 3
           }
         },
-        "load_ms": 1.1702,
-        "p50_ms": 0.0777,
-        "p95_ms": 0.0818,
+        "load_ms": 1.132,
+        "p50_ms": 0.0753,
+        "p95_ms": 0.0815,
         "queries": [
           {
             "id": "check-01",
@@ -17535,7 +17536,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0818
+            "query_ms": 0.0763
           },
           {
             "id": "check-02",
@@ -17563,7 +17564,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0743
+            "query_ms": 0.0703
           },
           {
             "id": "check-03",
@@ -17591,7 +17592,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0697
+            "query_ms": 0.0744
           },
           {
             "id": "check-04",
@@ -17973,7 +17974,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0807
+            "query_ms": 0.0815
           },
           {
             "id": "check-05",
@@ -18001,7 +18002,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0777
+            "query_ms": 0.0753
           },
           {
             "id": "check-06",
@@ -18382,7 +18383,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0721
+            "query_ms": 0.0691
           },
           {
             "id": "check-07",
@@ -18516,7 +18517,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0804
+            "query_ms": 0.0782
           },
           {
             "id": "check-08",
@@ -18898,7 +18899,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0813
+            "query_ms": 0.0775
           },
           {
             "id": "check-missing-01",
@@ -19277,7 +19278,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0796
+            "query_ms": 0.0769
           },
           {
             "id": "check-missing-02",
@@ -19628,7 +19629,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.0569
+            "query_ms": 0.0559
           },
           {
             "id": "check-missing-03",
@@ -20007,7 +20008,7 @@
             "false_recall": true,
             "decision": "phrase_match",
             "failure": "false_recall",
-            "query_ms": 0.077
+            "query_ms": 0.0684
           }
         ]
       },
@@ -20029,9 +20030,9 @@
             "false_recall": 0
           }
         },
-        "load_ms": 0.2993,
-        "p50_ms": 0.0236,
-        "p95_ms": 0.0309,
+        "load_ms": 0.2931,
+        "p50_ms": 0.0245,
+        "p95_ms": 0.0333,
         "queries": [
           {
             "id": "near-01",
@@ -20052,7 +20053,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.014
+            "query_ms": 0.0138
           },
           {
             "id": "late-01",
@@ -20082,7 +20083,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0288
+            "query_ms": 0.0275
           },
           {
             "id": "near-02",
@@ -20134,7 +20135,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0245
+            "query_ms": 0.0238
           },
           {
             "id": "near-03",
@@ -20181,7 +20182,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0159
+            "query_ms": 0.0158
           },
           {
             "id": "late-03",
@@ -20235,7 +20236,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0272
+            "query_ms": 0.0284
           },
           {
             "id": "near-04",
@@ -20332,7 +20333,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0221
+            "query_ms": 0.0222
           },
           {
             "id": "late-04",
@@ -20435,7 +20436,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0324
+            "query_ms": 0.0338
           },
           {
             "id": "near-05",
@@ -20512,7 +20513,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0223
+            "query_ms": 0.0262
           },
           {
             "id": "late-05",
@@ -20618,7 +20619,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0303
+            "query_ms": 0.0328
           },
           {
             "id": "near-06",
@@ -20668,7 +20669,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0218
+            "query_ms": 0.0216
           },
           {
             "id": "late-06",
@@ -20770,7 +20771,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0294
+            "query_ms": 0.0273
           },
           {
             "id": "near-07",
@@ -20826,7 +20827,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0236
+            "query_ms": 0.023
           },
           {
             "id": "late-07",
@@ -20885,7 +20886,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.025
+            "query_ms": 0.0279
           },
           {
             "id": "near-08",
@@ -20913,7 +20914,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0225
+            "query_ms": 0.0333
           },
           {
             "id": "late-08",
@@ -20995,7 +20996,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.027
+            "query_ms": 0.0275
           },
           {
             "id": "near-09",
@@ -21097,7 +21098,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0287
+            "query_ms": 0.0273
           },
           {
             "id": "late-09",
@@ -21200,7 +21201,7 @@
             "false_recall": null,
             "decision": "phrase_match",
             "failure": null,
-            "query_ms": 0.0297
+            "query_ms": 0.0287
           },
           {
             "id": "near-10",
@@ -21230,7 +21231,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0309
+            "query_ms": 0.0272
           },
           {
             "id": "late-10",
@@ -21260,7 +21261,7 @@
             "false_recall": null,
             "decision": "no_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.0241
+            "query_ms": 0.0226
           },
           {
             "id": "missing-01",
@@ -21288,7 +21289,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0205
+            "query_ms": 0.0201
           },
           {
             "id": "missing-02",
@@ -21316,7 +21317,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0222
+            "query_ms": 0.0237
           },
           {
             "id": "missing-03",
@@ -21344,7 +21345,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0222
+            "query_ms": 0.0228
           },
           {
             "id": "missing-04",
@@ -21364,7 +21365,7 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0112
+            "query_ms": 0.0116
           },
           {
             "id": "missing-05",
@@ -21392,12 +21393,12 @@
             "false_recall": false,
             "decision": "no_match",
             "failure": null,
-            "query_ms": 0.0214
+            "query_ms": 0.0245
           }
         ]
       }
     },
-    "C4-request-scope": {
+    "C5-storyboard-terms": {
       "real": {
         "summary": {
           "near": {
@@ -21416,9 +21417,9 @@
             "false_recall": 1
           }
         },
-        "load_ms": 1.2,
-        "p50_ms": 1.2481,
-        "p95_ms": 6.4956,
+        "load_ms": 1.198,
+        "p50_ms": 1.4173,
+        "p95_ms": 9.301,
         "queries": [
           {
             "id": "real-near-01",
@@ -21430,16 +21431,348 @@
             "candidate_turns": [
               "T10"
             ],
-            "top": [],
-            "packed_turns": [],
-            "packed_message_ids": [],
-            "evidence": {},
-            "evidence_chars": 0,
-            "covered": false,
+            "top": [
+              {
+                "turn": "T10",
+                "score": 0.045699351563,
+                "matches": [
+                  "字片段 占位",
+                  "字片段 定菜",
+                  "字片段 屋内",
+                  "字片段 改稿",
+                  "字片段 桌边",
+                  "字片段 进食"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T10"
+            ],
+            "packed_message_ids": [
+              "r10u",
+              "r10a"
+            ],
+            "evidence": {
+              "r10a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    6,
+                    "取景范围"
+                  ],
+                  [
+                    6,
+                    "镜头运动"
+                  ],
+                  [
+                    6,
+                    "场景"
+                  ],
+                  [
+                    6,
+                    "人物"
+                  ],
+                  [
+                    6,
+                    "道具"
+                  ],
+                  [
+                    6,
+                    "动作"
+                  ],
+                  [
+                    6,
+                    "对白"
+                  ],
+                  [
+                    6,
+                    "旁白"
+                  ],
+                  [
+                    6,
+                    "音效"
+                  ],
+                  [
+                    6,
+                    "时长"
+                  ],
+                  [
+                    6,
+                    "画面提示词"
+                  ],
+                  [
+                    7,
+                    "取景范围"
+                  ],
+                  [
+                    7,
+                    "镜头运动"
+                  ],
+                  [
+                    7,
+                    "场景"
+                  ],
+                  [
+                    7,
+                    "人物"
+                  ],
+                  [
+                    7,
+                    "道具"
+                  ],
+                  [
+                    7,
+                    "动作"
+                  ],
+                  [
+                    7,
+                    "对白"
+                  ],
+                  [
+                    7,
+                    "旁白"
+                  ],
+                  [
+                    7,
+                    "音效"
+                  ],
+                  [
+                    7,
+                    "时长"
+                  ],
+                  [
+                    7,
+                    "画面提示词"
+                  ],
+                  [
+                    8,
+                    "取景范围"
+                  ],
+                  [
+                    8,
+                    "镜头运动"
+                  ],
+                  [
+                    8,
+                    "场景"
+                  ],
+                  [
+                    8,
+                    "人物"
+                  ],
+                  [
+                    8,
+                    "道具"
+                  ],
+                  [
+                    8,
+                    "动作"
+                  ],
+                  [
+                    8,
+                    "对白"
+                  ],
+                  [
+                    8,
+                    "旁白"
+                  ],
+                  [
+                    8,
+                    "音效"
+                  ],
+                  [
+                    8,
+                    "时长"
+                  ],
+                  [
+                    8,
+                    "画面提示词"
+                  ],
+                  [
+                    9,
+                    "取景范围"
+                  ],
+                  [
+                    9,
+                    "镜头运动"
+                  ],
+                  [
+                    9,
+                    "场景"
+                  ],
+                  [
+                    9,
+                    "人物"
+                  ],
+                  [
+                    9,
+                    "道具"
+                  ],
+                  [
+                    9,
+                    "动作"
+                  ],
+                  [
+                    9,
+                    "对白"
+                  ],
+                  [
+                    9,
+                    "旁白"
+                  ],
+                  [
+                    9,
+                    "音效"
+                  ],
+                  [
+                    9,
+                    "时长"
+                  ],
+                  [
+                    9,
+                    "画面提示词"
+                  ],
+                  [
+                    10,
+                    "取景范围"
+                  ],
+                  [
+                    10,
+                    "镜头运动"
+                  ],
+                  [
+                    10,
+                    "场景"
+                  ],
+                  [
+                    10,
+                    "人物"
+                  ],
+                  [
+                    10,
+                    "道具"
+                  ],
+                  [
+                    10,
+                    "动作"
+                  ],
+                  [
+                    10,
+                    "对白"
+                  ],
+                  [
+                    10,
+                    "旁白"
+                  ],
+                  [
+                    10,
+                    "音效"
+                  ],
+                  [
+                    10,
+                    "时长"
+                  ],
+                  [
+                    10,
+                    "画面提示词"
+                  ],
+                  [
+                    11,
+                    "取景范围"
+                  ],
+                  [
+                    11,
+                    "镜头运动"
+                  ],
+                  [
+                    11,
+                    "场景"
+                  ],
+                  [
+                    11,
+                    "人物"
+                  ],
+                  [
+                    11,
+                    "道具"
+                  ],
+                  [
+                    11,
+                    "动作"
+                  ],
+                  [
+                    11,
+                    "对白"
+                  ],
+                  [
+                    11,
+                    "旁白"
+                  ],
+                  [
+                    11,
+                    "音效"
+                  ],
+                  [
+                    11,
+                    "时长"
+                  ],
+                  [
+                    11,
+                    "画面提示词"
+                  ],
+                  [
+                    12,
+                    "取景范围"
+                  ],
+                  [
+                    12,
+                    "镜头运动"
+                  ],
+                  [
+                    12,
+                    "场景"
+                  ],
+                  [
+                    12,
+                    "人物"
+                  ],
+                  [
+                    12,
+                    "道具"
+                  ],
+                  [
+                    12,
+                    "动作"
+                  ],
+                  [
+                    12,
+                    "对白"
+                  ],
+                  [
+                    12,
+                    "旁白"
+                  ],
+                  [
+                    12,
+                    "音效"
+                  ],
+                  [
+                    12,
+                    "时长"
+                  ],
+                  [
+                    12,
+                    "画面提示词"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 5406,
+            "covered": true,
             "false_recall": null,
-            "decision": "no_supported_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 1.8189
+            "decision": "content_match",
+            "failure": null,
+            "query_ms": 2.5911
           },
           {
             "id": "real-late-01",
@@ -21458,16 +21791,367 @@
               "T24",
               "T27"
             ],
-            "top": [],
-            "packed_turns": [],
-            "packed_message_ids": [],
-            "evidence": {},
-            "evidence_chars": 0,
-            "covered": false,
+            "top": [
+              {
+                "turn": "T10",
+                "score": 0.044092739046,
+                "matches": [
+                  "字片段 占位",
+                  "字片段 定菜",
+                  "字片段 改稿",
+                  "字片段 屋内",
+                  "字片段 进食",
+                  "字片段 桌边"
+                ]
+              },
+              {
+                "turn": "T27",
+                "score": 0.02379896343,
+                "matches": [
+                  "字片段 菜品",
+                  "字片段 屋内",
+                  "字片段 进食",
+                  "字片段 桌边"
+                ]
+              },
+              {
+                "turn": "T18",
+                "score": 0.013652075621,
+                "matches": [
+                  "字片段 屋内",
+                  "字片段 进食",
+                  "字片段 桌边"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T10"
+            ],
+            "packed_message_ids": [
+              "r10u",
+              "r10a"
+            ],
+            "evidence": {
+              "r10a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    6,
+                    "取景范围"
+                  ],
+                  [
+                    6,
+                    "镜头运动"
+                  ],
+                  [
+                    6,
+                    "场景"
+                  ],
+                  [
+                    6,
+                    "人物"
+                  ],
+                  [
+                    6,
+                    "道具"
+                  ],
+                  [
+                    6,
+                    "动作"
+                  ],
+                  [
+                    6,
+                    "对白"
+                  ],
+                  [
+                    6,
+                    "旁白"
+                  ],
+                  [
+                    6,
+                    "音效"
+                  ],
+                  [
+                    6,
+                    "时长"
+                  ],
+                  [
+                    6,
+                    "画面提示词"
+                  ],
+                  [
+                    7,
+                    "取景范围"
+                  ],
+                  [
+                    7,
+                    "镜头运动"
+                  ],
+                  [
+                    7,
+                    "场景"
+                  ],
+                  [
+                    7,
+                    "人物"
+                  ],
+                  [
+                    7,
+                    "道具"
+                  ],
+                  [
+                    7,
+                    "动作"
+                  ],
+                  [
+                    7,
+                    "对白"
+                  ],
+                  [
+                    7,
+                    "旁白"
+                  ],
+                  [
+                    7,
+                    "音效"
+                  ],
+                  [
+                    7,
+                    "时长"
+                  ],
+                  [
+                    7,
+                    "画面提示词"
+                  ],
+                  [
+                    8,
+                    "取景范围"
+                  ],
+                  [
+                    8,
+                    "镜头运动"
+                  ],
+                  [
+                    8,
+                    "场景"
+                  ],
+                  [
+                    8,
+                    "人物"
+                  ],
+                  [
+                    8,
+                    "道具"
+                  ],
+                  [
+                    8,
+                    "动作"
+                  ],
+                  [
+                    8,
+                    "对白"
+                  ],
+                  [
+                    8,
+                    "旁白"
+                  ],
+                  [
+                    8,
+                    "音效"
+                  ],
+                  [
+                    8,
+                    "时长"
+                  ],
+                  [
+                    8,
+                    "画面提示词"
+                  ],
+                  [
+                    9,
+                    "取景范围"
+                  ],
+                  [
+                    9,
+                    "镜头运动"
+                  ],
+                  [
+                    9,
+                    "场景"
+                  ],
+                  [
+                    9,
+                    "人物"
+                  ],
+                  [
+                    9,
+                    "道具"
+                  ],
+                  [
+                    9,
+                    "动作"
+                  ],
+                  [
+                    9,
+                    "对白"
+                  ],
+                  [
+                    9,
+                    "旁白"
+                  ],
+                  [
+                    9,
+                    "音效"
+                  ],
+                  [
+                    9,
+                    "时长"
+                  ],
+                  [
+                    9,
+                    "画面提示词"
+                  ],
+                  [
+                    10,
+                    "取景范围"
+                  ],
+                  [
+                    10,
+                    "镜头运动"
+                  ],
+                  [
+                    10,
+                    "场景"
+                  ],
+                  [
+                    10,
+                    "人物"
+                  ],
+                  [
+                    10,
+                    "道具"
+                  ],
+                  [
+                    10,
+                    "动作"
+                  ],
+                  [
+                    10,
+                    "对白"
+                  ],
+                  [
+                    10,
+                    "旁白"
+                  ],
+                  [
+                    10,
+                    "音效"
+                  ],
+                  [
+                    10,
+                    "时长"
+                  ],
+                  [
+                    10,
+                    "画面提示词"
+                  ],
+                  [
+                    11,
+                    "取景范围"
+                  ],
+                  [
+                    11,
+                    "镜头运动"
+                  ],
+                  [
+                    11,
+                    "场景"
+                  ],
+                  [
+                    11,
+                    "人物"
+                  ],
+                  [
+                    11,
+                    "道具"
+                  ],
+                  [
+                    11,
+                    "动作"
+                  ],
+                  [
+                    11,
+                    "对白"
+                  ],
+                  [
+                    11,
+                    "旁白"
+                  ],
+                  [
+                    11,
+                    "音效"
+                  ],
+                  [
+                    11,
+                    "时长"
+                  ],
+                  [
+                    11,
+                    "画面提示词"
+                  ],
+                  [
+                    12,
+                    "取景范围"
+                  ],
+                  [
+                    12,
+                    "镜头运动"
+                  ],
+                  [
+                    12,
+                    "场景"
+                  ],
+                  [
+                    12,
+                    "人物"
+                  ],
+                  [
+                    12,
+                    "道具"
+                  ],
+                  [
+                    12,
+                    "动作"
+                  ],
+                  [
+                    12,
+                    "对白"
+                  ],
+                  [
+                    12,
+                    "旁白"
+                  ],
+                  [
+                    12,
+                    "音效"
+                  ],
+                  [
+                    12,
+                    "时长"
+                  ],
+                  [
+                    12,
+                    "画面提示词"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 5406,
+            "covered": true,
             "false_recall": null,
-            "decision": "no_supported_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 5.0632
+            "decision": "content_match",
+            "failure": null,
+            "query_ms": 9.301
           },
           {
             "id": "real-near-02",
@@ -21483,7 +22167,7 @@
             "top": [
               {
                 "turn": "T12",
-                "score": 0.065660313073,
+                "score": 0.071100772547,
                 "matches": [
                   "字片段 第一人称",
                   "字片段 一人称",
@@ -21491,15 +22175,17 @@
                   "字片段 一人",
                   "字片段 人称",
                   "字片段 四镜",
-                  "字片段 坐着",
-                  "字片段 手套"
+                  "字片段 手套",
+                  "字片段 第一"
                 ]
               },
               {
                 "turn": "T10",
-                "score": 0.008195901186,
+                "score": 0.015767571456,
                 "matches": [
                   "字片段 改稿",
+                  "字片段 坐着",
+                  "字片段 进食",
                   "字片段 逐渐"
                 ]
               }
@@ -21699,7 +22385,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.9665
+            "query_ms": 1.9554
           },
           {
             "id": "real-late-02",
@@ -21720,22 +22406,8 @@
             ],
             "top": [
               {
-                "turn": "T12",
-                "score": 0.045457711708,
-                "matches": [
-                  "字片段 第一人称",
-                  "字片段 坐着",
-                  "字片段 一人称",
-                  "字片段 第一人",
-                  "字片段 四镜",
-                  "字片段 逐渐",
-                  "字片段 手套",
-                  "字片段 一人"
-                ]
-              },
-              {
                 "turn": "T24",
-                "score": 0.044521629562,
+                "score": 0.049582565915,
                 "matches": [
                   "字片段 戴手套",
                   "字片段 第一人称",
@@ -21749,7 +22421,7 @@
               },
               {
                 "turn": "T20",
-                "score": 0.044521629562,
+                "score": 0.049582565915,
                 "matches": [
                   "字片段 戴手套",
                   "字片段 第一人称",
@@ -21760,20 +22432,202 @@
                   "字片段 一人",
                   "字片段 人称"
                 ]
+              },
+              {
+                "turn": "T12",
+                "score": 0.049582565915,
+                "matches": [
+                  "字片段 第一人称",
+                  "字片段 一人称",
+                  "字片段 第一人",
+                  "字片段 四镜",
+                  "字片段 坐着",
+                  "字片段 逐渐",
+                  "字片段 手套",
+                  "字片段 一人"
+                ]
               }
             ],
             "packed_turns": [
-              "T12"
+              "T24",
+              "T20"
             ],
             "packed_message_ids": [
-              "r12u",
-              "r12a"
+              "r24u",
+              "r24a",
+              "r20u",
+              "r20a"
             ],
             "evidence": {
-              "r12a": {
+              "r24a": {
                 "state": "draft",
                 "slots": [
                   [
+                    1,
+                    "取景范围"
+                  ],
+                  [
+                    1,
+                    "镜头运动"
+                  ],
+                  [
+                    1,
+                    "场景"
+                  ],
+                  [
+                    1,
+                    "人物"
+                  ],
+                  [
+                    1,
+                    "道具"
+                  ],
+                  [
+                    1,
+                    "动作"
+                  ],
+                  [
+                    1,
+                    "对白"
+                  ],
+                  [
+                    1,
+                    "旁白"
+                  ],
+                  [
+                    1,
+                    "音效"
+                  ],
+                  [
+                    1,
+                    "时长"
+                  ],
+                  [
+                    2,
+                    "取景范围"
+                  ],
+                  [
+                    2,
+                    "镜头运动"
+                  ],
+                  [
+                    2,
+                    "场景"
+                  ],
+                  [
+                    2,
+                    "人物"
+                  ],
+                  [
+                    2,
+                    "道具"
+                  ],
+                  [
+                    2,
+                    "动作"
+                  ],
+                  [
+                    2,
+                    "对白"
+                  ],
+                  [
+                    2,
+                    "旁白"
+                  ],
+                  [
+                    2,
+                    "音效"
+                  ],
+                  [
+                    2,
+                    "时长"
+                  ]
+                ]
+              },
+              "r20a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    1,
+                    "取景范围"
+                  ],
+                  [
+                    1,
+                    "镜头运动"
+                  ],
+                  [
+                    1,
+                    "场景"
+                  ],
+                  [
+                    1,
+                    "人物"
+                  ],
+                  [
+                    1,
+                    "道具"
+                  ],
+                  [
+                    1,
+                    "动作"
+                  ],
+                  [
+                    1,
+                    "对白"
+                  ],
+                  [
+                    1,
+                    "旁白"
+                  ],
+                  [
+                    1,
+                    "音效"
+                  ],
+                  [
+                    1,
+                    "时长"
+                  ],
+                  [
+                    2,
+                    "取景范围"
+                  ],
+                  [
+                    2,
+                    "镜头运动"
+                  ],
+                  [
+                    2,
+                    "场景"
+                  ],
+                  [
+                    2,
+                    "人物"
+                  ],
+                  [
+                    2,
+                    "道具"
+                  ],
+                  [
+                    2,
+                    "动作"
+                  ],
+                  [
+                    2,
+                    "对白"
+                  ],
+                  [
+                    2,
+                    "旁白"
+                  ],
+                  [
+                    2,
+                    "音效"
+                  ],
+                  [
+                    2,
+                    "时长"
+                  ],
+                  [
                     6,
                     "取景范围"
                   ],
@@ -21812,152 +22666,16 @@
                   [
                     6,
                     "时长"
-                  ],
-                  [
-                    6,
-                    "画面提示词"
-                  ],
-                  [
-                    7,
-                    "取景范围"
-                  ],
-                  [
-                    7,
-                    "镜头运动"
-                  ],
-                  [
-                    7,
-                    "场景"
-                  ],
-                  [
-                    7,
-                    "人物"
-                  ],
-                  [
-                    7,
-                    "道具"
-                  ],
-                  [
-                    7,
-                    "动作"
-                  ],
-                  [
-                    7,
-                    "对白"
-                  ],
-                  [
-                    7,
-                    "旁白"
-                  ],
-                  [
-                    7,
-                    "音效"
-                  ],
-                  [
-                    7,
-                    "时长"
-                  ],
-                  [
-                    7,
-                    "画面提示词"
-                  ],
-                  [
-                    8,
-                    "取景范围"
-                  ],
-                  [
-                    8,
-                    "镜头运动"
-                  ],
-                  [
-                    8,
-                    "场景"
-                  ],
-                  [
-                    8,
-                    "人物"
-                  ],
-                  [
-                    8,
-                    "道具"
-                  ],
-                  [
-                    8,
-                    "动作"
-                  ],
-                  [
-                    8,
-                    "对白"
-                  ],
-                  [
-                    8,
-                    "旁白"
-                  ],
-                  [
-                    8,
-                    "音效"
-                  ],
-                  [
-                    8,
-                    "时长"
-                  ],
-                  [
-                    8,
-                    "画面提示词"
-                  ],
-                  [
-                    9,
-                    "取景范围"
-                  ],
-                  [
-                    9,
-                    "镜头运动"
-                  ],
-                  [
-                    9,
-                    "场景"
-                  ],
-                  [
-                    9,
-                    "人物"
-                  ],
-                  [
-                    9,
-                    "道具"
-                  ],
-                  [
-                    9,
-                    "动作"
-                  ],
-                  [
-                    9,
-                    "对白"
-                  ],
-                  [
-                    9,
-                    "旁白"
-                  ],
-                  [
-                    9,
-                    "音效"
-                  ],
-                  [
-                    9,
-                    "时长"
-                  ],
-                  [
-                    9,
-                    "画面提示词"
                   ]
                 ]
               }
             },
-            "evidence_chars": 4752,
-            "covered": true,
+            "evidence_chars": 4957,
+            "covered": false,
             "false_recall": null,
             "decision": "content_match",
-            "failure": null,
-            "query_ms": 6.4956
+            "failure": "packing",
+            "query_ms": 6.6106
           },
           {
             "id": "real-near-03",
@@ -21974,7 +22692,7 @@
             "top": [
               {
                 "turn": "T16",
-                "score": 0.208074276962,
+                "score": 0.204848907209,
                 "matches": [
                   "字片段 有意回切",
                   "字片段 跨过门槛",
@@ -22226,7 +22944,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 2.675
+            "query_ms": 2.6182
           },
           {
             "id": "real-late-03",
@@ -22245,7 +22963,7 @@
             "top": [
               {
                 "turn": "T16",
-                "score": 0.213357709528,
+                "score": 0.211770894722,
                 "matches": [
                   "字片段 有意回切",
                   "字片段 跨过门槛",
@@ -22259,17 +22977,17 @@
               },
               {
                 "turn": "T18",
-                "score": 0.015384646735,
+                "score": 0.013398480673,
                 "matches": [
                   "字片段 门槛",
-                  "字片段 桌前"
+                  "字片段 桌边"
                 ]
               },
               {
                 "turn": "T27",
-                "score": 0.006978150918,
+                "score": 0.004975027273,
                 "matches": [
-                  "字片段 桌前"
+                  "字片段 桌边"
                 ]
               }
             ],
@@ -22512,7 +23230,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 4.2599
+            "query_ms": 4.3668
           },
           {
             "id": "real-near-04",
@@ -22529,253 +23247,8 @@
             ],
             "top": [
               {
-                "turn": "T18",
-                "score": 0.024886293925,
-                "matches": [
-                  "字片段 屋内",
-                  "字片段 餐桌",
-                  "字片段 路线",
-                  "字片段 进屋",
-                  "字片段 直接"
-                ]
-              },
-              {
                 "turn": "T16",
-                "score": 0.024886293925,
-                "matches": [
-                  "字片段 五镜",
-                  "字片段 问题",
-                  "字片段 路线",
-                  "字片段 进屋",
-                  "字片段 直接"
-                ]
-              },
-              {
-                "turn": "T10",
-                "score": 0.015312131324,
-                "matches": [
-                  "字片段 改稿",
-                  "字片段 沿用",
-                  "字片段 直接"
-                ]
-              }
-            ],
-            "packed_turns": [
-              "T18"
-            ],
-            "packed_message_ids": [
-              "r18u",
-              "r18a"
-            ],
-            "evidence": {
-              "r18a": {
-                "state": "draft",
-                "slots": [
-                  [
-                    6,
-                    "取景范围"
-                  ],
-                  [
-                    6,
-                    "镜头运动"
-                  ],
-                  [
-                    6,
-                    "场景"
-                  ],
-                  [
-                    6,
-                    "人物"
-                  ],
-                  [
-                    6,
-                    "道具"
-                  ],
-                  [
-                    6,
-                    "动作"
-                  ],
-                  [
-                    6,
-                    "对白"
-                  ],
-                  [
-                    6,
-                    "旁白"
-                  ],
-                  [
-                    6,
-                    "音效"
-                  ],
-                  [
-                    6,
-                    "时长"
-                  ],
-                  [
-                    6,
-                    "画面提示词"
-                  ],
-                  [
-                    7,
-                    "取景范围"
-                  ],
-                  [
-                    7,
-                    "镜头运动"
-                  ],
-                  [
-                    7,
-                    "场景"
-                  ],
-                  [
-                    7,
-                    "人物"
-                  ],
-                  [
-                    7,
-                    "道具"
-                  ],
-                  [
-                    7,
-                    "动作"
-                  ],
-                  [
-                    7,
-                    "对白"
-                  ],
-                  [
-                    7,
-                    "旁白"
-                  ],
-                  [
-                    7,
-                    "音效"
-                  ],
-                  [
-                    7,
-                    "时长"
-                  ],
-                  [
-                    7,
-                    "画面提示词"
-                  ],
-                  [
-                    8,
-                    "取景范围"
-                  ],
-                  [
-                    8,
-                    "镜头运动"
-                  ],
-                  [
-                    8,
-                    "场景"
-                  ],
-                  [
-                    8,
-                    "人物"
-                  ],
-                  [
-                    8,
-                    "道具"
-                  ],
-                  [
-                    8,
-                    "动作"
-                  ],
-                  [
-                    8,
-                    "对白"
-                  ],
-                  [
-                    8,
-                    "旁白"
-                  ],
-                  [
-                    8,
-                    "音效"
-                  ],
-                  [
-                    8,
-                    "时长"
-                  ],
-                  [
-                    8,
-                    "画面提示词"
-                  ],
-                  [
-                    9,
-                    "取景范围"
-                  ],
-                  [
-                    9,
-                    "镜头运动"
-                  ],
-                  [
-                    9,
-                    "场景"
-                  ],
-                  [
-                    9,
-                    "人物"
-                  ],
-                  [
-                    9,
-                    "道具"
-                  ],
-                  [
-                    9,
-                    "动作"
-                  ],
-                  [
-                    9,
-                    "对白"
-                  ],
-                  [
-                    9,
-                    "旁白"
-                  ],
-                  [
-                    9,
-                    "音效"
-                  ],
-                  [
-                    9,
-                    "时长"
-                  ],
-                  [
-                    9,
-                    "画面提示词"
-                  ]
-                ]
-              }
-            },
-            "evidence_chars": 5969,
-            "covered": true,
-            "false_recall": null,
-            "decision": "content_match",
-            "failure": null,
-            "query_ms": 2.0864
-          },
-          {
-            "id": "real-late-04",
-            "group": "late",
-            "cutoff": 27,
-            "expected": [
-              "r18a"
-            ],
-            "candidate_turns": [
-              "T10",
-              "T12",
-              "T16",
-              "T18",
-              "T20",
-              "T27"
-            ],
-            "top": [
-              {
-                "turn": "T16",
-                "score": 0.024470429996,
+                "score": 0.024918307081,
                 "matches": [
                   "字片段 五镜",
                   "字片段 问题",
@@ -22786,21 +23259,22 @@
               },
               {
                 "turn": "T18",
-                "score": 0.020566406127,
+                "score": 0.023631930111,
                 "matches": [
-                  "字片段 路线",
-                  "字片段 屋内",
                   "字片段 餐桌",
+                  "字片段 屋内",
+                  "字片段 路线",
                   "字片段 进屋",
                   "字片段 直接"
                 ]
               },
               {
                 "turn": "T10",
-                "score": 0.015504430566,
+                "score": 0.020125067789,
                 "matches": [
                   "字片段 改稿",
                   "字片段 沿用",
+                  "字片段 屋内",
                   "字片段 直接"
                 ]
               }
@@ -23044,7 +23518,297 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": "packing",
-            "query_ms": 3.2623
+            "query_ms": 2.209
+          },
+          {
+            "id": "real-late-04",
+            "group": "late",
+            "cutoff": 27,
+            "expected": [
+              "r18a"
+            ],
+            "candidate_turns": [
+              "T10",
+              "T12",
+              "T16",
+              "T18",
+              "T20",
+              "T27"
+            ],
+            "top": [
+              {
+                "turn": "T16",
+                "score": 0.024485817066,
+                "matches": [
+                  "字片段 五镜",
+                  "字片段 问题",
+                  "字片段 路线",
+                  "字片段 进屋",
+                  "字片段 直接"
+                ]
+              },
+              {
+                "turn": "T18",
+                "score": 0.01995053571,
+                "matches": [
+                  "字片段 路线",
+                  "字片段 餐桌",
+                  "字片段 屋内",
+                  "字片段 进屋",
+                  "字片段 直接"
+                ]
+              },
+              {
+                "turn": "T10",
+                "score": 0.019280263325,
+                "matches": [
+                  "字片段 改稿",
+                  "字片段 沿用",
+                  "字片段 屋内",
+                  "字片段 直接"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T16"
+            ],
+            "packed_message_ids": [
+              "r16u",
+              "r16a"
+            ],
+            "evidence": {
+              "r16a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    6,
+                    "取景范围"
+                  ],
+                  [
+                    6,
+                    "镜头运动"
+                  ],
+                  [
+                    6,
+                    "场景"
+                  ],
+                  [
+                    6,
+                    "人物"
+                  ],
+                  [
+                    6,
+                    "道具"
+                  ],
+                  [
+                    6,
+                    "动作"
+                  ],
+                  [
+                    6,
+                    "对白"
+                  ],
+                  [
+                    6,
+                    "旁白"
+                  ],
+                  [
+                    6,
+                    "音效"
+                  ],
+                  [
+                    6,
+                    "时长"
+                  ],
+                  [
+                    6,
+                    "画面提示词"
+                  ],
+                  [
+                    7,
+                    "取景范围"
+                  ],
+                  [
+                    7,
+                    "镜头运动"
+                  ],
+                  [
+                    7,
+                    "场景"
+                  ],
+                  [
+                    7,
+                    "人物"
+                  ],
+                  [
+                    7,
+                    "道具"
+                  ],
+                  [
+                    7,
+                    "动作"
+                  ],
+                  [
+                    7,
+                    "对白"
+                  ],
+                  [
+                    7,
+                    "旁白"
+                  ],
+                  [
+                    7,
+                    "音效"
+                  ],
+                  [
+                    7,
+                    "时长"
+                  ],
+                  [
+                    7,
+                    "画面提示词"
+                  ],
+                  [
+                    8,
+                    "取景范围"
+                  ],
+                  [
+                    8,
+                    "镜头运动"
+                  ],
+                  [
+                    8,
+                    "场景"
+                  ],
+                  [
+                    8,
+                    "人物"
+                  ],
+                  [
+                    8,
+                    "道具"
+                  ],
+                  [
+                    8,
+                    "动作"
+                  ],
+                  [
+                    8,
+                    "对白"
+                  ],
+                  [
+                    8,
+                    "旁白"
+                  ],
+                  [
+                    8,
+                    "音效"
+                  ],
+                  [
+                    8,
+                    "时长"
+                  ],
+                  [
+                    8,
+                    "画面提示词"
+                  ],
+                  [
+                    9,
+                    "取景范围"
+                  ],
+                  [
+                    9,
+                    "镜头运动"
+                  ],
+                  [
+                    9,
+                    "场景"
+                  ],
+                  [
+                    9,
+                    "人物"
+                  ],
+                  [
+                    9,
+                    "道具"
+                  ],
+                  [
+                    9,
+                    "动作"
+                  ],
+                  [
+                    9,
+                    "对白"
+                  ],
+                  [
+                    9,
+                    "旁白"
+                  ],
+                  [
+                    9,
+                    "音效"
+                  ],
+                  [
+                    9,
+                    "时长"
+                  ],
+                  [
+                    9,
+                    "画面提示词"
+                  ],
+                  [
+                    10,
+                    "取景范围"
+                  ],
+                  [
+                    10,
+                    "镜头运动"
+                  ],
+                  [
+                    10,
+                    "场景"
+                  ],
+                  [
+                    10,
+                    "人物"
+                  ],
+                  [
+                    10,
+                    "道具"
+                  ],
+                  [
+                    10,
+                    "动作"
+                  ],
+                  [
+                    10,
+                    "对白"
+                  ],
+                  [
+                    10,
+                    "旁白"
+                  ],
+                  [
+                    10,
+                    "音效"
+                  ],
+                  [
+                    10,
+                    "时长"
+                  ],
+                  [
+                    10,
+                    "画面提示词"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 4980,
+            "covered": false,
+            "false_recall": null,
+            "decision": "content_match",
+            "failure": "packing",
+            "query_ms": 3.3875
           },
           {
             "id": "real-near-05",
@@ -23211,7 +23975,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.744
+            "query_ms": 0.8873
           },
           {
             "id": "real-late-05",
@@ -23480,7 +24244,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.2399
+            "query_ms": 1.4173
           },
           {
             "id": "real-near-06",
@@ -23496,21 +24260,21 @@
             "top": [
               {
                 "turn": "T22",
-                "score": 0.16075151621,
+                "score": 0.238259466544,
                 "matches": [
                   "字片段 吸第一口",
+                  "字片段 桌边端碗",
                   "字片段 第一口面",
                   "字片段 可乐还",
                   "字片段 吸第一",
+                  "字片段 桌边端",
                   "字片段 第一口",
-                  "字片段 一口面",
-                  "字片段 乐还",
-                  "字片段 吸第"
+                  "字片段 边端碗"
                 ]
               },
               {
                 "turn": "T20",
-                "score": 0.066208364962,
+                "score": 0.074592083716,
                 "matches": [
                   "字片段 一口面",
                   "字片段 瓶子",
@@ -23519,7 +24283,7 @@
                   "字片段 口面",
                   "字片段 可乐",
                   "字片段 成瓶",
-                  "字片段 端碗"
+                  "字片段 桌边"
                 ]
               }
             ],
@@ -23710,7 +24474,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.0538
+            "query_ms": 1.1113
           },
           {
             "id": "real-late-06",
@@ -23728,21 +24492,21 @@
             "top": [
               {
                 "turn": "T22",
-                "score": 0.170453546,
+                "score": 0.251577238556,
                 "matches": [
                   "字片段 吸第一口",
+                  "字片段 桌边端碗",
                   "字片段 第一口面",
                   "字片段 可乐还",
                   "字片段 吸第一",
+                  "字片段 桌边端",
                   "字片段 第一口",
-                  "字片段 一口面",
-                  "字片段 乐还",
-                  "字片段 吸第"
+                  "字片段 边端碗"
                 ]
               },
               {
                 "turn": "T20",
-                "score": 0.065746203353,
+                "score": 0.072543032491,
                 "matches": [
                   "字片段 一口面",
                   "字片段 瓶子",
@@ -23756,12 +24520,13 @@
               },
               {
                 "turn": "T27",
-                "score": 0.031945329891,
+                "score": 0.037624296545,
                 "matches": [
                   "字片段 没有",
                   "字片段 一口",
                   "字片段 可乐",
                   "字片段 成瓶",
+                  "字片段 桌边",
                   "字片段 第一",
                   "字片段 镜尾"
                 ]
@@ -23954,7 +24719,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 2.0031
+            "query_ms": 2.0609
           },
           {
             "id": "real-near-07",
@@ -24078,7 +24843,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.2481
+            "query_ms": 1.2912
           },
           {
             "id": "real-late-07",
@@ -24202,7 +24967,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.2398
+            "query_ms": 1.2988
           },
           {
             "id": "real-near-08",
@@ -24569,7 +25334,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.0404
+            "query_ms": 1.0953
           },
           {
             "id": "real-late-08",
@@ -24936,7 +25701,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.0416
+            "query_ms": 1.0746
           },
           {
             "id": "real-missing-01",
@@ -24958,7 +25723,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.771
+            "query_ms": 0.8167
           },
           {
             "id": "real-missing-02",
@@ -24971,9 +25736,10 @@
             "top": [
               {
                 "turn": "T20",
-                "score": 0.039137971894,
+                "score": 0.059514219875,
                 "matches": [
                   "字片段 不用",
+                  "字片段 屋外",
                   "字片段 开门"
                 ]
               }
@@ -25117,7 +25883,7 @@
             "false_recall": true,
             "decision": "content_match",
             "failure": "false_recall",
-            "query_ms": 0.7366
+            "query_ms": 0.7585
           },
           {
             "id": "real-missing-03",
@@ -25136,7 +25902,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.7943
+            "query_ms": 0.8241
           }
         ]
       },
@@ -25144,7 +25910,7 @@
         "summary": {
           "late": {
             "queries": 8,
-            "covered": 7,
+            "covered": 8,
             "false_recall": 0
           },
           "no_evidence": {
@@ -25153,9 +25919,9 @@
             "false_recall": 0
           }
         },
-        "load_ms": 1.2589,
-        "p50_ms": 1.9815,
-        "p95_ms": 6.5021,
+        "load_ms": 1.3183,
+        "p50_ms": 1.996,
+        "p95_ms": 6.7514,
         "queries": [
           {
             "id": "check-01",
@@ -25176,8 +25942,19 @@
             ],
             "top": [
               {
+                "turn": "T10",
+                "score": 0.025176022501,
+                "matches": [
+                  "字片段 占位",
+                  "字片段 品种",
+                  "字片段 屋内",
+                  "字片段 进食",
+                  "字片段 食物"
+                ]
+              },
+              {
                 "turn": "T12",
-                "score": 0.012619318388,
+                "score": 0.012700891782,
                 "matches": [
                   "字片段 品种",
                   "字片段 进食",
@@ -25186,14 +25963,14 @@
               }
             ],
             "packed_turns": [
-              "T12"
+              "T10"
             ],
             "packed_message_ids": [
-              "r12u",
-              "r12a"
+              "r10u",
+              "r10a"
             ],
             "evidence": {
-              "r12a": {
+              "r10a": {
                 "state": "draft",
                 "slots": [
                   [
@@ -25371,16 +26148,148 @@
                   [
                     9,
                     "画面提示词"
+                  ],
+                  [
+                    10,
+                    "取景范围"
+                  ],
+                  [
+                    10,
+                    "镜头运动"
+                  ],
+                  [
+                    10,
+                    "场景"
+                  ],
+                  [
+                    10,
+                    "人物"
+                  ],
+                  [
+                    10,
+                    "道具"
+                  ],
+                  [
+                    10,
+                    "动作"
+                  ],
+                  [
+                    10,
+                    "对白"
+                  ],
+                  [
+                    10,
+                    "旁白"
+                  ],
+                  [
+                    10,
+                    "音效"
+                  ],
+                  [
+                    10,
+                    "时长"
+                  ],
+                  [
+                    10,
+                    "画面提示词"
+                  ],
+                  [
+                    11,
+                    "取景范围"
+                  ],
+                  [
+                    11,
+                    "镜头运动"
+                  ],
+                  [
+                    11,
+                    "场景"
+                  ],
+                  [
+                    11,
+                    "人物"
+                  ],
+                  [
+                    11,
+                    "道具"
+                  ],
+                  [
+                    11,
+                    "动作"
+                  ],
+                  [
+                    11,
+                    "对白"
+                  ],
+                  [
+                    11,
+                    "旁白"
+                  ],
+                  [
+                    11,
+                    "音效"
+                  ],
+                  [
+                    11,
+                    "时长"
+                  ],
+                  [
+                    11,
+                    "画面提示词"
+                  ],
+                  [
+                    12,
+                    "取景范围"
+                  ],
+                  [
+                    12,
+                    "镜头运动"
+                  ],
+                  [
+                    12,
+                    "场景"
+                  ],
+                  [
+                    12,
+                    "人物"
+                  ],
+                  [
+                    12,
+                    "道具"
+                  ],
+                  [
+                    12,
+                    "动作"
+                  ],
+                  [
+                    12,
+                    "对白"
+                  ],
+                  [
+                    12,
+                    "旁白"
+                  ],
+                  [
+                    12,
+                    "音效"
+                  ],
+                  [
+                    12,
+                    "时长"
+                  ],
+                  [
+                    12,
+                    "画面提示词"
                   ]
                 ]
               }
             },
-            "evidence_chars": 4752,
-            "covered": false,
+            "evidence_chars": 5406,
+            "covered": true,
             "false_recall": null,
             "decision": "content_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 5.5876
+            "failure": null,
+            "query_ms": 6.7514
           },
           {
             "id": "check-02",
@@ -25402,35 +26311,39 @@
             "top": [
               {
                 "turn": "T12",
-                "score": 0.056194009201,
+                "score": 0.116537496824,
                 "matches": [
+                  "字片段 阿澈坐着",
+                  "字片段 澈坐着",
                   "字片段 画面只",
+                  "字片段 阿澈坐",
                   "字片段 坐着",
                   "字片段 显现",
-                  "字片段 面只",
-                  "字片段 手套",
+                  "字片段 澈坐",
+                  "字片段 面只"
+                ]
+              },
+              {
+                "turn": "T10",
+                "score": 0.08367606374,
+                "matches": [
+                  "字片段 阿澈坐着",
+                  "字片段 澈坐着",
+                  "字片段 阿澈坐",
+                  "字片段 坐着",
+                  "字片段 显现",
+                  "字片段 澈坐",
                   "字片段 画面",
-                  "字片段 阿澈",
-                  "字片段 第一"
+                  "字片段 阿澈"
                 ]
               },
               {
                 "turn": "T24",
-                "score": 0.04035532783,
+                "score": 0.041776769838,
                 "matches": [
                   "字片段 画面只",
                   "字片段 面只",
                   "字片段 手套",
-                  "字片段 画面",
-                  "字片段 阿澈",
-                  "字片段 第一"
-                ]
-              },
-              {
-                "turn": "T16",
-                "score": 0.021075466963,
-                "matches": [
-                  "字片段 着吃",
                   "字片段 画面",
                   "字片段 阿澈",
                   "字片段 第一"
@@ -25632,7 +26545,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.3933
+            "query_ms": 6.6166
           },
           {
             "id": "check-03",
@@ -25924,7 +26837,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.496
+            "query_ms": 6.7435
           },
           {
             "id": "check-04",
@@ -25946,7 +26859,7 @@
             "top": [
               {
                 "turn": "T18",
-                "score": 0.110548667227,
+                "score": 0.109271953953,
                 "matches": [
                   "字片段 屋内直接",
                   "字片段 内直接",
@@ -25960,24 +26873,25 @@
               },
               {
                 "turn": "T27",
-                "score": 0.072638232834,
+                "score": 0.071307103142,
                 "matches": [
                   "字片段 中央餐桌",
                   "字片段 中央餐",
                   "字片段 央餐桌",
                   "字片段 央餐",
                   "字片段 合门",
-                  "字片段 屋内",
                   "字片段 餐桌",
+                  "字片段 屋内",
                   "字片段 进食"
                 ]
               },
               {
-                "turn": "T16",
-                "score": 0.018465977221,
+                "turn": "T10",
+                "score": 0.019924161913,
                 "matches": [
-                  "字片段 次进",
+                  "字片段 合门",
                   "字片段 同一",
+                  "字片段 屋内",
                   "字片段 进食",
                   "字片段 中央",
                   "字片段 直接"
@@ -26179,7 +27093,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.5021
+            "query_ms": 6.5863
           },
           {
             "id": "check-05",
@@ -26446,7 +27360,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.1353
+            "query_ms": 1.1776
           },
           {
             "id": "check-06",
@@ -26463,47 +27377,100 @@
             ],
             "top": [
               {
+                "turn": "T22",
+                "score": 0.142427854467,
+                "matches": [
+                  "字片段 桌边端碗",
+                  "字片段 桌边端",
+                  "字片段 边端碗",
+                  "字片段 边端",
+                  "字片段 端碗",
+                  "字片段 成瓶",
+                  "字片段 桌边",
+                  "字片段 镜尾"
+                ]
+              },
+              {
                 "turn": "T20",
-                "score": 0.060169659758,
+                "score": 0.070737689997,
                 "matches": [
                   "字片段 形成",
                   "字片段 瓶子",
                   "字片段 液体",
                   "字片段 端碗",
                   "字片段 成瓶",
+                  "字片段 桌边",
                   "字片段 镜尾"
                 ]
               },
               {
                 "turn": "T27",
-                "score": 0.023858101559,
+                "score": 0.04613645503,
                 "matches": [
+                  "字片段 饮料",
                   "字片段 液体",
                   "字片段 成瓶",
-                  "字片段 镜尾"
-                ]
-              },
-              {
-                "turn": "T22",
-                "score": 0.023858101559,
-                "matches": [
-                  "字片段 端碗",
-                  "字片段 成瓶",
+                  "字片段 桌边",
                   "字片段 镜尾"
                 ]
               }
             ],
             "packed_turns": [
-              "T20",
-              "T22"
+              "T22",
+              "T20"
             ],
             "packed_message_ids": [
-              "r20u",
-              "r20a",
               "r22u",
-              "r22a"
+              "r22a",
+              "r20u",
+              "r20a"
             ],
             "evidence": {
+              "r22a": {
+                "state": "draft",
+                "slots": [
+                  [
+                    2,
+                    "取景范围"
+                  ],
+                  [
+                    2,
+                    "镜头运动"
+                  ],
+                  [
+                    2,
+                    "场景"
+                  ],
+                  [
+                    2,
+                    "人物"
+                  ],
+                  [
+                    2,
+                    "道具"
+                  ],
+                  [
+                    2,
+                    "动作"
+                  ],
+                  [
+                    2,
+                    "对白"
+                  ],
+                  [
+                    2,
+                    "旁白"
+                  ],
+                  [
+                    2,
+                    "音效"
+                  ],
+                  [
+                    2,
+                    "时长"
+                  ]
+                ]
+              },
               "r20a": {
                 "state": "draft",
                 "slots": [
@@ -26628,51 +27595,6 @@
                     "时长"
                   ]
                 ]
-              },
-              "r22a": {
-                "state": "draft",
-                "slots": [
-                  [
-                    2,
-                    "取景范围"
-                  ],
-                  [
-                    2,
-                    "镜头运动"
-                  ],
-                  [
-                    2,
-                    "场景"
-                  ],
-                  [
-                    2,
-                    "人物"
-                  ],
-                  [
-                    2,
-                    "道具"
-                  ],
-                  [
-                    2,
-                    "动作"
-                  ],
-                  [
-                    2,
-                    "对白"
-                  ],
-                  [
-                    2,
-                    "旁白"
-                  ],
-                  [
-                    2,
-                    "音效"
-                  ],
-                  [
-                    2,
-                    "时长"
-                  ]
-                ]
               }
             },
             "evidence_chars": 4383,
@@ -26680,7 +27602,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.9815
+            "query_ms": 1.996
           },
           {
             "id": "check-07",
@@ -26702,21 +27624,21 @@
             "top": [
               {
                 "turn": "T24",
-                "score": 0.06419095686,
+                "score": 0.061513962855,
                 "matches": [
                   "字片段 镜直接",
                   "字片段 过门槛",
                   "字片段 推开",
                   "字片段 镜直",
-                  "字片段 门外",
                   "字片段 过门",
                   "字片段 门槛",
+                  "字片段 屋外",
                   "字片段 直接"
                 ]
               },
               {
                 "turn": "T22",
-                "score": 0.054041172389,
+                "score": 0.058420411394,
                 "matches": [
                   "字片段 镜直接",
                   "字片段 过门槛",
@@ -26724,18 +27646,19 @@
                   "字片段 一镜",
                   "字片段 过门",
                   "字片段 门槛",
-                  "字片段 直接",
-                  "字片段 镜头"
+                  "字片段 屋外",
+                  "字片段 直接"
                 ]
               },
               {
                 "turn": "T10",
-                "score": 0.044433688418,
+                "score": 0.048785444063,
                 "matches": [
                   "字片段 下一镜",
                   "字片段 改稿",
                   "字片段 下一",
                   "字片段 一镜",
+                  "字片段 屋外",
                   "字片段 直接",
                   "字片段 镜头"
                 ]
@@ -26888,7 +27811,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 6.2713
+            "query_ms": 6.508
           },
           {
             "id": "check-08",
@@ -26903,8 +27826,9 @@
             "top": [
               {
                 "turn": "T27",
-                "score": 0.01962791679,
+                "score": 0.029643525791,
                 "matches": [
+                  "字片段 屋内",
                   "字片段 板上",
                   "字片段 直接"
                 ]
@@ -27249,7 +28173,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 1.6247
+            "query_ms": 1.7308
           },
           {
             "id": "check-missing-01",
@@ -27271,7 +28195,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 1.2146
+            "query_ms": 1.1615
           },
           {
             "id": "check-missing-02",
@@ -27288,7 +28212,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0565
+            "query_ms": 0.0566
           },
           {
             "id": "check-missing-03",
@@ -27311,7 +28235,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 1.0402
+            "query_ms": 1.0409
           }
         ]
       },
@@ -27319,12 +28243,12 @@
         "summary": {
           "near": {
             "queries": 10,
-            "covered": 6,
+            "covered": 9,
             "false_recall": 0
           },
           "late": {
             "queries": 10,
-            "covered": 6,
+            "covered": 9,
             "false_recall": 0
           },
           "no_evidence": {
@@ -27333,9 +28257,9 @@
             "false_recall": 0
           }
         },
-        "load_ms": 0.3306,
-        "p50_ms": 0.222,
-        "p95_ms": 0.5482,
+        "load_ms": 0.2988,
+        "p50_ms": 0.2332,
+        "p95_ms": 0.5818,
         "queries": [
           {
             "id": "near-01",
@@ -27381,7 +28305,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.1098
+            "query_ms": 0.1062
           },
           {
             "id": "late-01",
@@ -27436,7 +28360,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.5482
+            "query_ms": 0.5861
           },
           {
             "id": "near-02",
@@ -27457,7 +28381,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.125
+            "query_ms": 0.1308
           },
           {
             "id": "late-02",
@@ -27478,7 +28402,7 @@
             "false_recall": null,
             "decision": "no_supported_match",
             "failure": "ranking_or_rejection",
-            "query_ms": 0.1231
+            "query_ms": 0.1337
           },
           {
             "id": "near-03",
@@ -27530,7 +28454,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0831
+            "query_ms": 0.0865
           },
           {
             "id": "late-03",
@@ -27582,7 +28506,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0831
+            "query_ms": 0.09
           },
           {
             "id": "near-04",
@@ -27636,7 +28560,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.222
+            "query_ms": 0.2332
           },
           {
             "id": "late-04",
@@ -27694,7 +28618,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.4167
+            "query_ms": 0.4436
           },
           {
             "id": "near-05",
@@ -27712,8 +28636,18 @@
             ],
             "top": [
               {
+                "turn": "T24",
+                "score": 0.086090404558,
+                "matches": [
+                  "字片段 湖对岸",
+                  "字片段 对岸",
+                  "字片段 湖对",
+                  "字片段 雪散"
+                ]
+              },
+              {
                 "turn": "T9",
-                "score": 0.03168794635,
+                "score": 0.032359949372,
                 "matches": [
                   "字片段 方向",
                   "字片段 视线"
@@ -27721,14 +28655,27 @@
               }
             ],
             "packed_turns": [
+              "T24",
               "T9"
             ],
             "packed_message_ids": [
+              "m47",
+              "m48",
+              "p5",
               "m17",
               "m18",
               "p2"
             ],
             "evidence": {
+              "p5": {
+                "state": "applied",
+                "slots": [
+                  [
+                    5,
+                    "镜头运动"
+                  ]
+                ]
+              },
               "p2": {
                 "state": "applied",
                 "slots": [
@@ -27743,12 +28690,12 @@
                 ]
               }
             },
-            "evidence_chars": 778,
-            "covered": false,
+            "evidence_chars": 1287,
+            "covered": true,
             "false_recall": null,
             "decision": "content_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.2882
+            "failure": null,
+            "query_ms": 0.3109
           },
           {
             "id": "late-05",
@@ -27771,8 +28718,18 @@
             ],
             "top": [
               {
+                "turn": "T24",
+                "score": 0.09163924315,
+                "matches": [
+                  "字片段 湖对岸",
+                  "字片段 对岸",
+                  "字片段 湖对",
+                  "字片段 雪散"
+                ]
+              },
+              {
                 "turn": "T9",
-                "score": 0.029600361465,
+                "score": 0.030114182458,
                 "matches": [
                   "字片段 方向",
                   "字片段 视线"
@@ -27780,14 +28737,27 @@
               }
             ],
             "packed_turns": [
+              "T24",
               "T9"
             ],
             "packed_message_ids": [
+              "m47",
+              "m48",
+              "p5",
               "m17",
               "m18",
               "p2"
             ],
             "evidence": {
+              "p5": {
+                "state": "applied",
+                "slots": [
+                  [
+                    5,
+                    "镜头运动"
+                  ]
+                ]
+              },
               "p2": {
                 "state": "applied",
                 "slots": [
@@ -27802,12 +28772,12 @@
                 ]
               }
             },
-            "evidence_chars": 778,
-            "covered": false,
+            "evidence_chars": 1287,
+            "covered": true,
             "false_recall": null,
             "decision": "content_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.5599
+            "failure": null,
+            "query_ms": 0.5818
           },
           {
             "id": "near-06",
@@ -27855,7 +28825,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0965
+            "query_ms": 0.1009
           },
           {
             "id": "late-06",
@@ -27903,7 +28873,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.0928
+            "query_ms": 0.098
           },
           {
             "id": "near-07",
@@ -27961,7 +28931,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.3451
+            "query_ms": 0.3709
           },
           {
             "id": "late-07",
@@ -28022,7 +28992,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.5134
+            "query_ms": 0.5415
           },
           {
             "id": "near-08",
@@ -28041,16 +29011,41 @@
               "T34",
               "T39"
             ],
-            "top": [],
-            "packed_turns": [],
-            "packed_message_ids": [],
-            "evidence": {},
-            "evidence_chars": 0,
-            "covered": false,
+            "top": [
+              {
+                "turn": "T39",
+                "score": 0.079782988691,
+                "matches": [
+                  "字片段 卡片",
+                  "字片段 小羊"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T39"
+            ],
+            "packed_message_ids": [
+              "m77",
+              "m78",
+              "p8"
+            ],
+            "evidence": {
+              "p8": {
+                "state": "applied",
+                "slots": [
+                  [
+                    8,
+                    "动作"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 518,
+            "covered": true,
             "false_recall": null,
-            "decision": "no_supported_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.3989
+            "decision": "content_match",
+            "failure": null,
+            "query_ms": 0.4285
           },
           {
             "id": "late-08",
@@ -28074,7 +29069,7 @@
             "top": [
               {
                 "turn": "T49",
-                "score": 0.176057251603,
+                "score": 0.17735975613,
                 "matches": [
                   "字片段 画面里",
                   "字片段 面里",
@@ -28082,8 +29077,16 @@
                 ]
               },
               {
+                "turn": "T39",
+                "score": 0.07865714202,
+                "matches": [
+                  "字片段 卡片",
+                  "字片段 小羊"
+                ]
+              },
+              {
                 "turn": "T44",
-                "score": 0.078079495288,
+                "score": 0.071258954696,
                 "matches": [
                   "字片段 卡片",
                   "字片段 画面"
@@ -28092,12 +29095,16 @@
             ],
             "packed_turns": [
               "T49",
+              "T39",
               "T44"
             ],
             "packed_message_ids": [
               "m97",
               "m98",
               "p10",
+              "m77",
+              "m78",
+              "p8",
               "m87",
               "m88",
               "p9"
@@ -28116,6 +29123,15 @@
                   ]
                 ]
               },
+              "p8": {
+                "state": "applied",
+                "slots": [
+                  [
+                    8,
+                    "动作"
+                  ]
+                ]
+              },
               "p9": {
                 "state": "applied",
                 "slots": [
@@ -28130,12 +29146,12 @@
                 ]
               }
             },
-            "evidence_chars": 1484,
-            "covered": false,
+            "evidence_chars": 2004,
+            "covered": true,
             "false_recall": null,
             "decision": "content_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.5165
+            "failure": null,
+            "query_ms": 0.5498
           },
           {
             "id": "near-09",
@@ -28150,12 +29166,10 @@
             "top": [
               {
                 "turn": "T44",
-                "score": 0.132789594406,
+                "score": 0.089614703598,
                 "matches": [
-                  "字片段 明信片",
-                  "字片段 信片",
                   "字片段 动作",
-                  "字片段 明信",
+                  "字片段 卡片",
                   "字片段 邮筒",
                   "字片段 音效"
                 ]
@@ -28189,7 +29203,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.1129
+            "query_ms": 0.1174
           },
           {
             "id": "late-09",
@@ -28204,12 +29218,10 @@
             "top": [
               {
                 "turn": "T44",
-                "score": 0.132789594406,
+                "score": 0.089614703598,
                 "matches": [
-                  "字片段 明信片",
-                  "字片段 信片",
                   "字片段 动作",
-                  "字片段 明信",
+                  "字片段 卡片",
                   "字片段 邮筒",
                   "字片段 音效"
                 ]
@@ -28243,7 +29255,7 @@
             "false_recall": null,
             "decision": "content_match",
             "failure": null,
-            "query_ms": 0.1097
+            "query_ms": 0.1117
           },
           {
             "id": "near-10",
@@ -28264,16 +29276,51 @@
               "T44",
               "T49"
             ],
-            "top": [],
-            "packed_turns": [],
-            "packed_message_ids": [],
-            "evidence": {},
-            "evidence_chars": 0,
-            "covered": false,
+            "top": [
+              {
+                "turn": "T49",
+                "score": 0.242472104961,
+                "matches": [
+                  "字片段 小屋消散",
+                  "字片段 小屋消",
+                  "字片段 屋消散",
+                  "字片段 回头",
+                  "字片段 屋消",
+                  "字片段 消散",
+                  "字片段 阳光",
+                  "字片段 小屋"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T49"
+            ],
+            "packed_message_ids": [
+              "m97",
+              "m98",
+              "p10"
+            ],
+            "evidence": {
+              "p10": {
+                "state": "applied",
+                "slots": [
+                  [
+                    11,
+                    "镜头运动"
+                  ],
+                  [
+                    11,
+                    "动作"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 770,
+            "covered": true,
             "false_recall": null,
-            "decision": "no_supported_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.5387
+            "decision": "content_match",
+            "failure": null,
+            "query_ms": 0.5801
           },
           {
             "id": "late-10",
@@ -28294,16 +29341,51 @@
               "T44",
               "T49"
             ],
-            "top": [],
-            "packed_turns": [],
-            "packed_message_ids": [],
-            "evidence": {},
-            "evidence_chars": 0,
-            "covered": false,
+            "top": [
+              {
+                "turn": "T49",
+                "score": 0.242472104961,
+                "matches": [
+                  "字片段 小屋消散",
+                  "字片段 小屋消",
+                  "字片段 屋消散",
+                  "字片段 回头",
+                  "字片段 屋消",
+                  "字片段 消散",
+                  "字片段 阳光",
+                  "字片段 小屋"
+                ]
+              }
+            ],
+            "packed_turns": [
+              "T49"
+            ],
+            "packed_message_ids": [
+              "m97",
+              "m98",
+              "p10"
+            ],
+            "evidence": {
+              "p10": {
+                "state": "applied",
+                "slots": [
+                  [
+                    11,
+                    "镜头运动"
+                  ],
+                  [
+                    11,
+                    "动作"
+                  ]
+                ]
+              }
+            },
+            "evidence_chars": 770,
+            "covered": true,
             "false_recall": null,
-            "decision": "no_supported_match",
-            "failure": "ranking_or_rejection",
-            "query_ms": 0.5153
+            "decision": "content_match",
+            "failure": null,
+            "query_ms": 0.5686
           },
           {
             "id": "missing-01",
@@ -28331,7 +29413,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.4233
+            "query_ms": 0.4641
           },
           {
             "id": "missing-02",
@@ -28359,7 +29441,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.485
+            "query_ms": 0.5165
           },
           {
             "id": "missing-03",
@@ -28376,7 +29458,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0418
+            "query_ms": 0.045
           },
           {
             "id": "missing-04",
@@ -28393,7 +29475,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0368
+            "query_ms": 0.0406
           },
           {
             "id": "missing-05",
@@ -28410,7 +29492,7 @@
             "false_recall": false,
             "decision": "no_supported_match",
             "failure": null,
-            "query_ms": 0.0364
+            "query_ms": 0.0405
           }
         ]
       }
@@ -28511,7 +29593,7 @@
     "real_late": true,
     "real_paraphrase": true,
     "real_false_recall": true,
-    "simulated": false,
+    "simulated": true,
     "source_and_cutoff": true,
     "receipt_and_scope": true,
     "evidence_budget": true,
