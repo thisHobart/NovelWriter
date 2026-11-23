@@ -326,4 +326,3 @@ def rank_structured(
     verified = {record.turn_id for record in candidates if has_support(question, request, record, terms)}
     ranked = [row for row in rank_characters(question, candidates) if row[0] in verified]
     return Ranking(ranked, candidate_turns, "content_match" if ranked else "no_supported_match")
-
