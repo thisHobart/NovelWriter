@@ -61,6 +61,7 @@ class Value(NamedTuple):
 
 
 class Record(NamedTuple):
+    session_id: str
     turn_id: str
     message_id: str
     state: str
@@ -118,7 +119,7 @@ def receipt_values(payload: list) -> tuple[Value, ...]:
     return tuple(values)
 
 
-def record_from_message(message: Message) -> Record | None:
+def record_from_message(message: Message, session_id: str) -> Record | None:
     content = message["content"]
     turn_id, message_id = message["turn_id"], message["id"]
     try:
@@ -129,7 +130,7 @@ def record_from_message(message: Message) -> Record | None:
                 wording = "\n".join(
                     f"第{value.shot}镜 {value.name}，改前：{value.old}；改后：{value.new}" for value in values
                 )
-                return Record(turn_id, message_id, "applied", values, wording)
+                return Record(session_id, turn_id, message_id, "applied", values, wording)
         if message["role"] == "assistant":
             blocks = list(REVISION_BLOCK.finditer(content))
             drafts = [block for block in blocks if block[1] == "revised_shots"]
@@ -138,7 +139,7 @@ def record_from_message(message: Message) -> Record | None:
             payload = json.loads(drafts[0][2])
             if isinstance(payload, dict) and (values := draft_values(payload)):
                 wording = content[:blocks[0].start()].strip() or json.dumps(payload, ensure_ascii=False)
-                return Record(turn_id, message_id, "draft", values, wording)
+                return Record(session_id, turn_id, message_id, "draft", values, wording)
     except (ValueError, TypeError):
         return None
     return None
@@ -303,6 +304,7 @@ def rank_structured(
     question: str,
     visible_turns: dict[str, list[Message]],
     records: Sequence[Record],
+    session_id: str,
     current_shot: int | None = None,
 ) -> Ranking:
     if match := MESSAGE_ID.search(question):
@@ -313,7 +315,9 @@ def rank_structured(
         return Ranking([], [], "unknown_or_invisible_id")
 
     request = parse_request(question, current_shot)
-    candidates = [record for record in records if record.turn_id in visible_turns and fits(record, request)]
+    visible_sources = {(key, message['id']) for key, messages in visible_turns.items() for message in messages}
+    candidates = [record for record in records if record.session_id == session_id
+                  and (record.turn_id, record.message_id) in visible_sources and fits(record, request)]
     candidate_turns = list(dict.fromkeys(record.turn_id for record in candidates))
     if request.shots and request.fields and request.state and not request.remainder and candidates:
         last = candidates[-1]

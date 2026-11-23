@@ -133,9 +133,9 @@ def packed_records(packed: list, turns: dict[str, list[Message]], originals: dic
                 content = compact_revision(content)
             rendered.append(message_block(message, content))
             if message["id"] in originals:
-                record = record_from_message({**message, "content": content})
                 original = originals[message["id"]]
-                assert record and (record.state, record.values) == (original.state, original.values), message["id"]
+                record = record_from_message({**message, "content": content}, original.session_id)
+                assert record and (record.session_id, record.state, record.values) == (original.session_id, original.state, original.values), message["id"]
                 result[record.message_id] = record
         assert item.text == "\n".join(rendered), item.turn_id
     return result
@@ -155,13 +155,13 @@ def evidence_satisfies(query: dict, records: dict[str, Record], labels: dict) ->
     return True
 
 
-def pure_replay(history: list[Message], queries: list[dict], labels: dict, method: str) -> dict:
+def pure_replay(history: list[Message], queries: list[dict], labels: dict, method: str, session_id: str) -> dict:
     start_load = perf_counter_ns()
     turns = grouped_history(history)
     texts = {key: searchable_text(messages) for key, messages in turns.items()}
     evidence = {key: build_evidence(messages) for key, messages in turns.items()}
     cards = {key: card for key, messages in turns.items() if (card := revision_evidence(messages))}
-    records = [record for message in history if (record := record_from_message(message))]
+    records = [record for message in history if (record := record_from_message(message, session_id))]
     originals = {record.message_id: record for record in records}
     load_ms = (perf_counter_ns() - start_load) / 1e6
     results = []
@@ -181,7 +181,7 @@ def pure_replay(history: list[Message], queries: list[dict], labels: dict, metho
                                     {key: cards[key] for key in candidate_ids})[0]
             reason = "phrase_match" if ranked else "no_match"
         else:
-            ranked, candidate_ids, reason = rank_structured(question, visible, records, query.get("selected_shot"))
+            ranked, candidate_ids, reason = rank_structured(question, visible, records, session_id, query.get("selected_shot"))
         assert set(candidate_ids) <= visible.keys(), query["id"]
         assert all(key in visible for key, _, _ in ranked), query["id"]
         packed = pack_evidence([key for key, _, _ in ranked[:TOP_K]], evidence, CONTEXT_CHARS)
@@ -258,14 +258,16 @@ def fixture_history(records: list) -> list[Message]:
     return history
 
 
-def selected_sources(history: list[Message], question: str, cutoff: int) -> list[str]:
+def selected_sources(
+    history: list[Message], question: str, cutoff: int, session_id: str,
+    other_records: tuple[Record, ...] = (),
+) -> list[str]:
     visible = {key: rows for key, rows in grouped_history(history).items() if turn_number(key) <= cutoff}
-    records = [record for message in history if (record := record_from_message(message))]
-    ranked, _, _ = rank_structured(question, visible, records)
+    records = [record for message in history if (record := record_from_message(message, session_id))]
+    ranked, _, _ = rank_structured(question, visible, [*records, *other_records], session_id)
     packed = pack_evidence([row[0] for row in ranked[:TOP_K]],
                            {key: build_evidence(rows) for key, rows in visible.items()}, CONTEXT_CHARS)
     return [m["id"] for item in packed for m in visible[item.turn_id]]
-
 
 def reference_checks(datasets: dict, labels: dict, fixture: dict) -> dict:
     verified = {}
@@ -278,21 +280,27 @@ def reference_checks(datasets: dict, labels: dict, fixture: dict) -> dict:
                 continue
             cutoff = turn_number(message["turn_id"])
             counts[source] = (
-                source in selected_sources(history, f"查阅 {source}。", cutoff)
-                and not selected_sources(history, f"查阅 {source}。", cutoff - 1)
+                source in selected_sources(history, f"查阅 {source}。", cutoff, name)
+                and not selected_sources(history, f"查阅 {source}。", cutoff - 1, name)
             )
-        unknown = not selected_sources(history, "查阅 p9999。", 999)
+        unknown = not selected_sources(history, "查阅 p9999。", 999, name)
         verified[name] = {"known_and_not_visible_before": counts, "unknown_empty": unknown}
 
     history = fixture_history(fixture["records"])
     alternate = fixture_history(fixture["other_session_records"])
+    session_id = fixture["session"]
+    alternate_session = "other-receipt-example"
+    # Include a foreign record whose turn and message ID both collide with the current session.
+    duplicate_id = {**alternate[0], "id": history[0]["id"]}
+    foreign = tuple(record for message in [*alternate, duplicate_id]
+                    if (record := record_from_message(message, alternate_session)))
     references = {}
     for key, cutoff, question, expect in fixture["queries"]:
-        sources = selected_sources(history, question, cutoff)
+        sources = selected_sources(history, question, cutoff, session_id, foreign)
         references[key] = {"expected": expect, "actual": sources,
                            "passed": sources == ([expect] if expect else [])}
     references["other_session_positive_control"] = {
-        "passed": selected_sources(alternate, "查阅 p199。", 4) == ["p199"],
+        "passed": selected_sources(alternate, "查阅 p199。", 4, alternate_session) == ["p199"],
     }
     verified["receipt_and_scope"] = references
     return verified
@@ -346,10 +354,10 @@ def run_pure(output: Path, holdout: bool) -> None:
     methods = {}
     labels = cases["required_records"]
     for name in ("B0", "B2", PURE_METHOD):
-        methods[name] = {
-            group: pure_replay(datasets["simulated" if group == "simulated" else "real"], questions, labels, name)
-            for group, questions in queries.items()
-        }
+        methods[name] = {}
+        for group, questions in queries.items():
+            session_id = "simulated" if group == "simulated" else "real"
+            methods[name][group] = pure_replay(datasets[session_id], questions, labels, name, session_id)
     checks = reference_checks(datasets, labels, cases["state_fixture"])
     gates = pure_gates(methods[PURE_METHOD], checks)
     result = {
