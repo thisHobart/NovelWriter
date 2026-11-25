@@ -256,6 +256,7 @@ def test_lore_tabs_appear_only_with_content(app, tmp_path):
     page.output_dir = str(tmp_path)
     page.refresh()
     assert _tab_names(page) == ["世界观", "势力", "人物"]      # 没有待核对、候选标题、登记表就不摆
+    assert page.header._subtitle.text() == "1 个势力 · 1 个人物"   # 只报看得到的数量，不报文件数
 
     (tmp_path / CONTRACT).write_text(encode({"era": "近未来", "world_constraints": ["没有超自然"],
                                              "canonical_characters": [{"name": "张明", "aliases": ["老张"]}]}),

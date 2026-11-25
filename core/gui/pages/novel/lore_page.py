@@ -865,7 +865,8 @@ class LorePage(StagePage):
         self.steps_meta.setText(f"{done} / {len(self.step_buttons)} 已完成")
         self.counts_hint.setText(self._counts_text())
         self.header.set_subtitle(
-            f"{len(factions)} 个势力 · {len(characters)} 个人物 · {total} 个产物文件"
+            # 只报页面上看得到的数量；文件数会把不再列出的旧背景也算进去。
+            f"{len(factions)} 个势力 · {len(characters)} 个人物"
             if total else "世界构建与背景 · 尚未生成"
         )
         self.generate_button.setText("下一步：故事结构" if self._ready else "生成世界设定")
