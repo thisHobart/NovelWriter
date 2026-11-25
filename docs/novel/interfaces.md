@@ -22,8 +22,9 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 | `lore` | 空 / `full` | 生成世界设定 |
 | | `factions` `characters` `lore` | 生成势力 / 生成人物 / 生成世界观 |
 | | `enhance` | 完善主要人物（`options.subject_name` 指定单个人物） |
-| | `titles` | 推荐作品标题 |
-| | `repair` | 再修复一次（`options.receipt_id` 指定哪条生成结果） |
+| | `titles` | 候选标题页的「换一组」 |
+| | `repair` | 让 AI 再修一次（`options.receipt_id` 指定哪条生成结果）；`options.continue` 为真时是「再修一次并继续生成」：修好后接着跑那次整段生成剩下的几步 |
+| | `continue` | 接着生成后面几项 / 按新势力重写后面几项（`options.steps` 为要跑的步骤，按整段生成的顺序跑；`options.source` 只用于改动记录里的名称） |
 | `structure` | 空 / `full` | 生成故事结构 |
 | | `arcs` `faction_arcs` `locations` `plot` | 生成人物弧光 / 生成势力弧光 / 将地点融入故事弧 / 创建详细情节 |
 | `scenes` | 空 / `full` | 规划场景（整阶段） |
@@ -46,7 +47,7 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 | 故事篇幅 | `story_length` | 短篇 / 中篇 / 长篇三档；短篇走单独管线 |
 | — | `story_structure` | 界面不显示：新作品按篇幅定（短篇、中篇三幕，长篇六幕），已有作品沿用保存的结构；结构和场景规划按幕切分 |
 | 主题 / 基调 | `theme` `tone` | 下拉预设按题材给，可改写；世界设定、场景规划、正文提示词；主题记入账本作为全书核心问题；题材档案匹配的最后一级 |
-| 势力数量 / 人物数量 | `num_factions` `num_characters` | 在「世界设定」页设置，范围 1–10 / 2–10，默认 6 / 8 |
+| — | `num_factions` `num_characters` | 界面不显示：按篇幅定，短篇 3 / 5、中篇 4 / 6、长篇 6 / 8（`story_options.COUNTS_BY_LENGTH`，`normalize_parameters` 里套用）；参数文件里旧的数量原样保留，但不再生效 |
 | 质量闭环档位 | `quality_loop` | 在「章节撰写」页选择：`off` / `standard` / `strict`；只影响章节循环，不发给模型 |
 
 题材、主题、基调的预设在 `core/config/story_options.py`（`GENRE_OPTIONS`、`THEME_OPTIONS`、`TONE_OPTIONS`），只决定下拉列表里有什么；发给模型的是框里最后的文字。
@@ -75,8 +76,10 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 | `quality/pending_review/chapter_N.json` | 待复审记录；文件存在即表示该章待复审，验收后删除 |
 | `quality/` 其他目录 | 各轮评审、章节事务、指标 |
 | `system/generation_runs/<编号>/` | 每次阶段运行的生效参数、指纹和实际提示词 |
-| `system/lore_generation/results/` | 世界设定交付记录：状态、问题、候选、请求数 |
-| `system/lore_edits.json`、`system/lore_history/` | 设定手动编辑的版本、待核对项、事务备份 |
+| `system/lore_generation/results/<编号>.json` | 世界设定每次生成的结果：状态、问题、候选、请求数；另有 `notes`（检查备注）、`reverted`（已被撤回）、`file_digests`（保存时各文件指纹，用来认出手动修改）、`remaining`（整段生成停在这里时还剩哪几步）。旧记录没有这些字段，照常显示 |
+| `system/lore_edits.json` | 设定的版本号、待核对项、后面阶段待核对的文件 |
+| `system/lore_history/changes.json`、`system/lore_history/<编号>/state.json` | 改动记录：每次改动的名称、时间、前后两份完整设定快照的编号；撤回、恢复按它进行 |
+| `system/lore_history/<编号>/transaction.json` | 保存事务的备份，中断后恢复用 |
 
 ## 4. 设定编辑
 
@@ -87,3 +90,10 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 - `save(snapshot, edits, mappings)`：校验、备份并提交；文件被外部改过时拒绝覆盖。
 
 `edits` 的键是设定文件的项目相对路径，值是完整文本。登记条目无法唯一确定时抛 `MappingRequired`，由界面让用户选择。手动保存与阶段生成共用 `system/.lore.lock`。
+
+- 改名：`preview` 同步结构化引用，并把世界设定内自由文本（正文、背景、卡片描述、登记表）里的完整旧名换成新名（`rename_plan`、`swap_names`）。旧名只有一个字或是别的名字的一部分时不换，记在 `LorePreview.kept`；换掉的处数在 `LorePreview.replaced`，编辑窗口用 `rename_impact(preview)` 写成说明。后面阶段的文件不改，列进待核对。
+- 撤回：`change_log()` 返回 `{"undo": 最近一次改动, "redo": 最近一次撤回}`；`undo(id)`、`redo(id)` 拿同一把锁，写入前先把当前磁盘状态记下来。每次保存、生成（经 `tracked_generation`）、采用草稿和 `acknowledge` 都记一条改动；新改动之后不能再恢复更早撤回的那条。
+- 待核对：`review_summary(output_dir)` 把待核对项按阶段汇总成几行，每行带文件列表。
+- 后面阶段的提示词：`lore_context(output_dir)` 只带还属于现有人物的背景文件（`current_backgrounds`，按 `background_<身份>_<姓名>.md` 认人）。
+
+`core/generation/lore_run.py` 从生成记录推算页面状态：`latest_by_product` 每份产物最新一次，`needs_attention` / `attention_receipts` 还要作者处理的几份，`edited_after_save` 保存后是否手动改过，`stale_lore` 按生成先后找出过期的几项。
