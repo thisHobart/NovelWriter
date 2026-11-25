@@ -510,3 +510,13 @@ def test_plain_repair_does_not_run_later_steps(monkeypatch, tmp_path):
     _fake_lore_steps(monkeypatch, ran)
     stage_pipeline.run_stage_action("lore", "repair", project, options={"receipt_id": draft["id"]})
     assert ran == ["repair"]
+
+
+def test_continue_runs_only_the_given_lore_steps_in_order(monkeypatch, tmp_path):
+    ran = []
+    _fake_lore_steps(monkeypatch, ran)
+    project = _project(tmp_path)
+    stage_pipeline.run_stage_action("lore", "continue", project, options={"steps": ["enhance", "lore"]})
+    assert ran == ["lore", "enhance"]
+    with pytest.raises(ValueError):
+        stage_pipeline.run_stage_action("lore", "continue", project, options={"steps": ["nonsense"]})

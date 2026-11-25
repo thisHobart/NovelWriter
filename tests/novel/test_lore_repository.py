@@ -483,3 +483,30 @@ def test_undo_is_rejected_while_generation_holds_the_lock(project):
         with pytest.raises(Timeout):
             future.result(timeout=5)
     assert repo.load_snapshot().files[BODY] == "修改"
+
+
+def _generated(root, kind, at, **extra):
+    from core.generation.lore_run import save_receipt
+    record = {"id": f"{abs(hash((kind, at))):032x}"[:32], "kind": kind, "status": "complete",
+              "disposition": "current", "candidate": "x", "issues": [], "files": [], "created_at": at, **extra}
+    save_receipt(str(root), record)
+    return record
+
+
+def test_later_items_written_before_a_newer_upstream_item_are_stale(tmp_path):
+    from core.generation.lore_run import stale_lore
+    assert stale_lore(tmp_path) is None                      # 旧作品没有收据，不推算
+    _generated(tmp_path, "factions", 1)
+    _generated(tmp_path, "characters", 2)
+    _generated(tmp_path, "world", 3)
+    assert stale_lore(tmp_path) is None                      # 整段生成按顺序写，不算过期
+    newest = _generated(tmp_path, "factions", 4)             # 单独重生成势力
+    assert stale_lore(tmp_path) == {"source": "势力", "stale": ["人物", "世界观"],
+                                    "steps": ["characters", "lore", "enhance"]}
+    newest["reverted"] = True                                # 撤回那次重生成，就不过期了
+    from core.generation.lore_run import save_receipt
+    save_receipt(str(tmp_path), newest)
+    assert stale_lore(tmp_path) is None
+    _generated(tmp_path, "characters", 5)
+    assert stale_lore(tmp_path)["source"] == "人物"
+    assert stale_lore(tmp_path)["steps"] == ["lore", "enhance"]

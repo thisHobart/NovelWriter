@@ -20,6 +20,7 @@ from core.generation.ai_helper import (
     get_supported_models,
 )
 from core.generation.lore_repository import LoreRepository
+from core.generation.lore_run import attention_receipts
 from core.generation.parameters import creation_parameters, normalize_parameters
 from core.generation.stage_pipeline import load_stage_parameters
 from core.generation.workflow_status import (
@@ -424,6 +425,9 @@ class NovelWorkspace(QWidget):
                     states[stage].detail += " · 设定已修改，待核对"
         except (OSError, ValueError):
             pass
+        attention = len(attention_receipts(output_dir))
+        if attention and "lore" in states:
+            states["lore"].detail += f" · {attention} 份待处理"
         return states
 
     def refresh_all(self) -> None:

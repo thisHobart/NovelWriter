@@ -62,6 +62,58 @@ def needs_attention(root, receipt):
     return not edited_after_save(root, receipt)
 
 
+def attention_receipts(root, receipts=None):
+    """每份产物最新那次结果里，还要作者处理的几份（按时间新的在前）。"""
+    receipts = list_receipts(root) if receipts is None else receipts
+    return [latest for latest, _earlier in latest_by_product([r for r in receipts if r.get("kind") in LABELS])
+            if needs_attention(root, latest)]
+
+
+#: 世界设定内部的生成先后，后面的按前面的写：(收据种类, 名称, 分步按钮)
+LORE_ORDER = (("factions", "势力", "factions"), ("characters", "人物", "characters"),
+              ("world", "世界观", "lore"), ("background", "主要人物背景", "enhance"))
+
+
+def _generated_at(root, receipts):
+    """每一项最近一次被采用的生成时间（撤回的不算）。人物背景只看现有主要人物的，取其中最旧的一份。"""
+    from core.generation.lore_repository import current_backgrounds
+    current = {relative.rsplit("/", 1)[-1] for relative in current_backgrounds(root)}
+    times, backgrounds = {}, {}
+    for receipt in receipts:
+        if receipt.get("reverted") or receipt.get("disposition") != "current":
+            continue
+        kind, at = receipt.get("kind"), float(receipt.get("created_at") or 0)
+        if kind == "background":
+            name = str(receipt.get("target") or "").rsplit("/", 1)[-1]
+            if name in current:
+                backgrounds[name] = max(backgrounds.get(name, 0), at)
+        elif kind in {"factions", "characters", "world"}:
+            times[kind] = max(times.get(kind, 0), at)
+    if backgrounds:
+        times["background"] = min(backgrounds.values())
+    return times
+
+
+def stale_lore(root, receipts=None):
+    """按生成先后找过期的几项：前面的某项比后面的新，后面的就是按旧内容写的。
+
+    返回 {"source": 更新过的那一项, "stale": [过期的几项名称], "steps": [重写要跑的分步按钮]}；
+    没有过期，或没有收据可推算（旧作品），返回 None。手动编辑不算，只看生成先后。
+    """
+    receipts = list_receipts(root) if receipts is None else receipts
+    times = _generated_at(root, receipts)
+    source, newest = None, 0.0
+    for index, (kind, name, _step) in enumerate(LORE_ORDER):
+        if kind not in times:
+            continue
+        if times[kind] < newest:
+            later = LORE_ORDER[index:]
+            return {"source": source, "stale": [n for k, n, _s in later if k in times],
+                    "steps": [step for _k, _n, step in later]}
+        source, newest = name, times[kind]
+    return None
+
+
 def save_receipt(root, receipt):
     path = LoreRepository(root).path(f"{RESULTS}/{receipt['id']}.json")
     LoreRepository._atomic(path, encode(receipt).encode("utf-8"))

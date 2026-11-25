@@ -562,6 +562,16 @@ def run_stage_action(
         if action == "repair":
             _repair_lore(context, pipeline, (options or {}).get("receipt_id"), bool((options or {}).get("continue")))
             result = {"step": step, "action": action, "generated_files": sorted(context.extras.get("generated_lore_files", []))}
+        elif action == "continue":
+            # 「接着生成后面几项」「按新势力重写后面几项」：按整段生成的顺序跑给定的几步。
+            known = [key for key, *_rest in LORE_STEPS]
+            keys = [key for key in (options or {}).get("steps", []) if key in known]
+            if not keys:
+                raise ValueError("没有要接着生成的步骤")
+            context.extras.setdefault("num_factions", 6)
+            context.extras.setdefault("num_chars", 8)
+            _run_lore_steps(context, pipeline, keys)
+            result = {"step": step, "action": action, "generated_files": sorted(context.extras.get("generated_lore_files", []))}
         elif action not in actions:
             raise ValueError(f"世界设定阶段没有动作：{action}")
         else:

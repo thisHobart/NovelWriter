@@ -657,6 +657,8 @@ def generation_label(arguments):
             return "让 AI 再修一次"
     if action == "enhance" and options.get("subject_name"):
         return "重新生成人物背景：" + str(options["subject_name"])
+    if action == "continue" and options.get("source"):
+        return f"按新{options['source']}重写后面几项"
     return STEP_LABELS.get(action, "生成世界设定")
 
 

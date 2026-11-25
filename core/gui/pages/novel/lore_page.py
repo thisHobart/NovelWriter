@@ -13,7 +13,7 @@ import os
 import re
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QAction, QTextDocument
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -42,7 +42,8 @@ from core.generation.lore_repository import (
 from core.gui.pages.novel.lore_editor import LoreEditor, ROLE_LABELS
 from core.lore_localization import FIELD_LABELS, display_value, file_label, display_message
 from core.generation.lore_run import (
-    LABELS, edited_after_save, latest_by_product, list_receipts, load_receipt, needs_attention, recover_interrupted,
+    LABELS, attention_receipts, edited_after_save, latest_by_product, list_receipts, load_receipt, needs_attention,
+    recover_interrupted, stale_lore,
 )
 from core.gui.pages.novel.lore_results import GenerationDraftEditor, result_details, result_status
 
@@ -224,12 +225,18 @@ class LorePage(StagePage):
         self.open_records_action = self.more_menu.addAction("打开生成记录")
         self.open_records_action.setToolTip("每次请求的提示词和检查报告原文，排查问题时用")
         self.open_records_action.triggered.connect(lambda: self._open_folder("system/generation_runs"))
+        # 设定齐了以后主按钮变「下一步：故事结构」，重新生成收进这里。
+        self.more_menu.insertSeparator(self.open_folder_action)
+        self.regenerate_action = QAction("重新生成世界设定", self.more_menu)
+        self.regenerate_action.setToolTip("按作品参数重写全部设定；之后可以在页面顶部撤回")
+        self.regenerate_action.triggered.connect(lambda: self._run_step("full", self.generate_button))
+        self.more_menu.insertAction(self.more_menu.actions()[0], self.regenerate_action)
         self.more_button.setMenu(self.more_menu)
         self.generate_button = primary_button("生成世界设定")
         for button in (self.more_button, self.generate_button):
             self.header.add_action(button)
-        self.generate_button.clicked.connect(
-            lambda: self._run_step("full", self.generate_button))
+        self.generate_button.clicked.connect(self._primary_clicked)
+        self._ready = False
 
         self._build_left()
         self._build_inspector()
@@ -259,12 +266,20 @@ class LorePage(StagePage):
         self.change_bar.hide()
         container.body.addWidget(self.change_bar)
 
-        # 还没有任何设定时左侧只有这一块说明，不摆空页签。
-        self.empty_state = hint_label(
-            "还没有世界设定。点「生成世界设定」，按作品参数一次写好势力、人物、世界观和主要人物背景；"
-            "也可以在右侧分步生成。")
-        self.empty_state.setContentsMargins(20, 18, 20, 18)
-        container.body.addWidget(self.empty_state)
+        # 状态说明：一句话说清设定现在怎样、下一步做什么，需要时带一个按钮。
+        # 还没有任何设定时左侧只有这一块，不摆空页签。
+        self.status_strip = QWidget()
+        strip = QHBoxLayout(self.status_strip)
+        strip.setContentsMargins(20, 12, 20, 12)
+        strip.setSpacing(10)
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        self.status_action = secondary_button("")
+        self.status_action.clicked.connect(self._status_action_clicked)
+        strip.addWidget(self.status_label, 1)
+        strip.addWidget(self.status_action, 0, Qt.AlignTop)
+        self._status_task = None
+        container.body.addWidget(self.status_strip)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -563,9 +578,81 @@ class LorePage(StagePage):
     def _show_generation_result(self, _=None):
         self.refresh()
         self.artifacts_changed.emit()
+        # 只有需要作者处理时才切到「生成结果」；其余时候留在原来那一页。
+        if attention_receipts(self.output_dir):
+            self._open_tab("生成结果")
+
+    def _open_tab(self, name) -> None:
         for index in range(self.tabs.count()):
-            if self.tabs.tabText(index) == "生成结果":
+            if self.tabs.tabText(index).split(" ")[0] == name:
                 self.tabs.setCurrentIndex(index)
+
+    # ---------------------------------------------------------------- 状态说明
+    def _primary_clicked(self) -> None:
+        if self._ready:
+            self.navigate_requested.emit("structure")
+        else:
+            self._run_step("full", self.generate_button)
+
+    def _status_action_clicked(self) -> None:
+        task = self._status_task
+        if task == "results":
+            self._open_tab("生成结果")
+        elif isinstance(task, dict):
+            self._continue_steps(task["steps"], task.get("source"))
+
+    def _continue_steps(self, steps, source=None) -> None:
+        if not self.resolve_draft():
+            return
+        options = {"steps": list(steps), **({"source": source} if source else {})}
+        self.run_task(action_work("lore", "continue", self.output_dir, self.model, options=options),
+                      busy_button=self.status_action,
+                      busy_text=f"正在按新{source}重写…" if source else "正在接着生成…",
+                      on_success=self._show_generation_result)
+
+    def _set_status(self, text, action="", task=None) -> None:
+        self.status_label.setText(text)
+        self.status_action.setText(action)
+        self.status_action.setVisible(bool(action))
+        self.status_action.setEnabled(not self.generation_busy)
+        self._status_task = task
+
+    def _refresh_status(self, factions, characters, lore_text, backgrounds, titles, receipts) -> None:
+        """没有设定 → 要处理 → 过期 → 还差几项 → 已就绪，取第一种成立的。"""
+        self._ready = bool(factions and characters and lore_text.strip())
+        if not (factions or characters or lore_text.strip()):
+            self._set_status("还没有世界设定。点「生成世界设定」，按作品参数一次写好势力、人物、世界观和主要人物背景；"
+                             "也可以在右侧分步生成。")
+            return
+        attention = attention_receipts(self.output_dir, receipts)
+        if attention:
+            items = "、".join(f"{self._result_title(r)}（{result_status(r)}）" for r in attention)
+            self._set_status(f"{len(attention)} 份需要处理：{items}。", "去处理", "results")
+            return
+        stale = stale_lore(self.output_dir, receipts)
+        if stale:
+            self._set_status(f"{'、'.join(stale['stale'])}是按旧{stale['source']}写的。",
+                             f"按新{stale['source']}重写后面几项", stale)
+            return
+        main_roles = {"protagonist", "deuteragonist", "antagonist"}
+        present = {"factions": bool(factions), "characters": bool(characters), "lore": bool(lore_text.strip()),
+                   "enhance": bool(backgrounds) or not any(c.raw.get("role") in main_roles for c in characters)}
+        order = ["factions", "characters", "lore", "enhance"]
+        missing = [key for key in order if not present[key]]
+        if missing:
+            steps = order[order.index(missing[0]):] + ([] if titles.strip() else ["titles"])
+            names = "、".join(STEP_TITLES[key] for key in missing)
+            self._set_status(f"还差{names}。", "接着生成后面几项", {"steps": steps})
+            return
+        notes = sum(len(r.get("notes") or []) for r, _earlier in latest_by_product(receipts)
+                    if r.get("status") == "complete" and not r.get("reverted"))
+        parts = [f"{len(factions)} 个势力", f"{len(characters)} 个人物", "世界观"]
+        if backgrounds:
+            parts.append(f"{len(backgrounds)} 份人物背景")
+        text = "世界设定已就绪：" + " · ".join(parts) + "。"
+        if notes:
+            text += f"有 {notes} 条检查备注，在「生成结果」里。"
+        self._set_status(text)
 
     # ---------------------------------------------------------------- 右侧
     def _build_inspector(self) -> None:
@@ -690,7 +777,7 @@ class LorePage(StagePage):
             if self.tabs.tabText(index).split(" ")[0] == previous:
                 self.tabs.setCurrentIndex(index)
         self.tabs.setVisible(self.tabs.count() > 0)
-        self.empty_state.setVisible(total == 0)
+        self._refresh_status(factions, characters, lore_text, backgrounds, titles, receipts)
 
         self.step_buttons["factions"].set_state(
             "done" if factions else "todo", f"{len(factions)} 个" if factions else "")
@@ -716,5 +803,8 @@ class LorePage(StagePage):
             f"{len(factions)} 个势力 · {len(characters)} 个人物 · {total} 个产物文件"
             if total else "世界构建与背景 · 尚未生成"
         )
-        self.generate_button.setText("重新生成世界设定" if total else "生成世界设定")
+        self.generate_button.setText("下一步：故事结构" if self._ready else "生成世界设定")
+        self.generate_button.setToolTip("" if self._ready else "按作品参数一次写好势力、人物、世界观和主要人物背景")
+        self.regenerate_action.setVisible(self._ready)
+        self.regenerate_action.setEnabled(not self.generation_busy)
         self._refresh_change_bar()

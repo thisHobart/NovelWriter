@@ -243,8 +243,9 @@ def test_empty_lore_shows_one_explanation_and_no_tabs(app, tmp_path):
     page.output_dir = str(tmp_path)
     page.refresh()
     assert page.tabs.count() == 0 and page.tabs.isHidden()
-    assert not page.empty_state.isHidden()
-    assert "生成世界设定" in page.empty_state.text()
+    assert page.status_label.text().startswith("还没有世界设定")
+    assert page.status_action.isHidden()
+    assert page.generate_button.text() == "生成世界设定"
     assert page.steps_meta.text() == "0 / 4 已完成"
 
 
@@ -255,7 +256,6 @@ def test_lore_tabs_appear_only_with_content(app, tmp_path):
     page.output_dir = str(tmp_path)
     page.refresh()
     assert _tab_names(page) == ["世界观", "势力", "人物"]      # 没有待核对、候选标题、登记表就不摆
-    assert page.empty_state.isHidden()
 
     (tmp_path / CONTRACT).write_text(encode({"era": "近未来", "world_constraints": ["没有超自然"],
                                              "canonical_characters": [{"name": "张明", "aliases": ["老张"]}]}),
@@ -450,3 +450,86 @@ def test_manual_edit_turns_a_problem_result_into_edited(app, tmp_path):
     page.undo_button.click()                       # 撤回手改，问题又回来
     (card,) = _result_cards(page)
     assert _card_title(card) == "势力 · 有问题，已保存"
+
+
+def test_ready_setting_points_to_the_next_stage_and_hides_regeneration_in_more(app, tmp_path):
+    from core.generation.lore_repository import LORE
+    _lore_project(tmp_path)
+    (tmp_path / LORE / "background_protagonist_张明.md").write_text("张明的背景", encoding="utf-8")
+    _result(tmp_path, "world", "complete", notes=["基调：信息不足", "主题：信息不足"])
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.generate_button.text() == "下一步：故事结构"
+    assert page.regenerate_action.isVisible()
+    assert page.status_label.text() == ("世界设定已就绪：1 个势力 · 1 个人物 · 世界观 · 1 份人物背景。"
+                                        "有 2 条检查备注，在「生成结果」里。")
+    assert page.status_action.isHidden()
+    went = []
+    page.navigate_requested.connect(went.append)
+    page.generate_button.click()
+    assert went == ["structure"]
+
+
+def test_status_line_says_what_is_missing_and_offers_to_continue(app, tmp_path, monkeypatch):
+    from core.generation.lore_repository import BODY
+    _lore_project(tmp_path)
+    (tmp_path / BODY).unlink()
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.generate_button.text() == "生成世界设定"
+    assert not page.regenerate_action.isVisible()
+    assert page.status_label.text() == "还差世界观、主要人物背景。"
+    assert page.status_action.text() == "接着生成后面几项"
+    asked = []
+    monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
+    page.status_action.click()
+    assert asked == ["正在接着生成…"]
+
+
+def test_status_line_sends_problems_to_results_and_flags_stale_items(app, tmp_path, monkeypatch):
+    _lore_project(tmp_path)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    draft = _result(tmp_path, "characters", "draft", "draft", created_at=3, issues=["返回内容尚不能读取"])
+    page.refresh()
+    assert page.status_label.text() == "1 份需要处理：人物（没有采用：返回内容读不出来）。"
+    assert page.status_action.text() == "去处理"
+    page._open_tab("世界观")
+    page.status_action.click()
+    assert _tab_names(page)[page.tabs.currentIndex()] == "生成结果"
+
+    draft["reverted"] = True
+    from core.generation.lore_run import save_receipt
+    save_receipt(str(tmp_path), draft)
+    _result(tmp_path, "characters", "complete", created_at=1)
+    _result(tmp_path, "world", "complete", created_at=2)
+    _result(tmp_path, "factions", "complete", created_at=4)
+    page.refresh()
+    assert page.status_label.text() == "人物、世界观是按旧势力写的。"
+    assert page.status_action.text() == "按新势力重写后面几项"
+    asked = []
+    monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
+    page.status_action.click()
+    assert asked == ["正在按新势力重写…"]
+
+
+def test_finished_generation_stays_on_the_current_tab(app, tmp_path):
+    _lore_project(tmp_path)
+    _result(tmp_path, "factions", "complete")
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    page._open_tab("人物")
+    page._show_generation_result()
+    assert _tab_names(page)[page.tabs.currentIndex()] == "人物"
+
+
+def test_step_rail_counts_results_waiting_for_the_author(app, tmp_path):
+    _lore_project(tmp_path)
+    _result(tmp_path, "characters", "draft", "draft", issues=["返回内容尚不能读取"])
+    window = MainWindow()
+    novel = window.novel
+    novel.parameters_page.output_dir_edit.setText(str(tmp_path))
+    assert novel._stage_states()["lore"].detail.endswith("· 1 份待处理")
