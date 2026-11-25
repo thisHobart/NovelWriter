@@ -18,6 +18,7 @@ from .feedback import TaskTracker, failure_feedback
 from .media_repository import MediaRepository
 from .media_workflows import MediaConfig, parse_video_workflow
 from .models import encode, fingerprint, require, timestamp
+from .scail_dual_scene import DualSceneWorkflow
 
 
 def validate_nodes(workflow: JsonObject, nodes: JsonObject) -> None:
@@ -28,7 +29,7 @@ def validate_nodes(workflow: JsonObject, nodes: JsonObject) -> None:
         inputs = {**definitions.get("required", {}), **definitions.get("optional", {})}
         for name, definition in inputs.items():
             # 模板内的旧文件名会在上传后替换，不能用服务器现有文件列表提前拒绝。
-            if kind == "LoadImage" and name == "image":
+            if (kind, name) in {("LoadImage", "image"), ("VHS_LoadVideo", "video")}:
                 continue
             if name not in node["inputs"]:
                 continue
@@ -60,21 +61,30 @@ class MediaService:
         prompt: str,
         *,
         workflow_id: str | None = None,
+        driving_video_id: str | None = None,
         parameters: JsonObject | None = None,
         target: JsonObject | None = None,
         request_id: str | None = None,
+        tracking_preview: bool = False,
     ) -> JsonObject:
         config = MediaConfig.load(self.output_dir)
         config.validate()
         selected = config.selected(workflow_id)
         template = parse_video_workflow(selected["graph"])
-        selected_images = {}
-        for node_id, image_id in images.items():
-            if image_id is not None:
-                selected_images[node_id] = image_id
-        template = template.prepare_image_inputs(list(selected_images))
+        selected_images = {} if tracking_preview else {node: image for node, image in images.items() if image is not None}
+        if tracking_preview:
+            require(isinstance(template, DualSceneWorkflow), "INVALID_INPUT", "当前工作流不支持动作预览")
+        else:
+            template = template.prepare_image_inputs(list(selected_images))
+        driving_video = None
+        if template.driving_video_node is not None:
+            require(bool(driving_video_id), "INVALID_INPUT", "请选择原视频")
+            driving_video = self.repository.driving_video(driving_video_id)
         # 在本地确认所有输入完整且参数类型正确，再进行外部上传与提交。
-        template.bind(selected_images, prompt, "validation", parameters or {})
+        if tracking_preview:
+            template.bind_tracking_preview("validation", parameters or {}, driving_video=driving_video_id)
+        else:
+            template.bind(selected_images, prompt, "validation", parameters or {}, driving_video=driving_video_id)
         for number in re.findall(r"<Picture\s+(\d+)>", prompt, flags=re.IGNORECASE):
             require(
                 1 <= int(number) <= template.reference_count,
@@ -97,6 +107,8 @@ class MediaService:
             "workflow_id": selected["workflow_id"],
             "workflow_name": selected["name"],
             "images": records,
+            **({"tracking_preview": True} if tracking_preview else {}),
+            **({"driving_video": driving_video} if driving_video is not None else {}),
             "parameters": parameters or {},
             "prompt": prompt,
             "target": target or {},
@@ -115,7 +127,7 @@ class MediaWork(TaskTracker):
         job_id: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        super().__init__("视频生成")
+        super().__init__("动作预览" if (command or {}).get("tracking_preview") else "视频生成")
         self.output_dir, self.command, self.job_id = output_dir, command, job_id
         self.transport = transport
         self.token = CancelToken()
@@ -153,8 +165,9 @@ class MediaWork(TaskTracker):
                 repository.save_job(job)
         command = job["input_snapshot"]
         images = command.get("images")
+        tracking_preview = command.get("tracking_preview") is True
         require(
-            isinstance(images, dict) and bool(images) and bool(command.get("workflow_id")),
+            isinstance(images, dict) and (bool(images) or tracking_preview) and bool(command.get("workflow_id")),
             "INVALID_INPUT",
             "视频任务缺少当前工作流或图片输入快照，请重新生成",
         )
@@ -170,22 +183,42 @@ class MediaWork(TaskTracker):
                     self.update_context(phase="工作流校验")
                     report("正在校验 ComfyUI 工作流…", -1)
                     template = parse_video_workflow(command["workflow"])
-                    workflow = template.bind(
-                        {node_id: image["image_id"] for node_id, image in images.items()},
-                        command["prompt"],
-                        job["job_id"],
-                        command.get("parameters", {}),
-                    )
+                    if isinstance(template, DualSceneWorkflow) and not tracking_preview:
+                        template = template.prepare_image_inputs(list(images))
+                    driving_video = command.get("driving_video")
+                    parameters = command.get("parameters", {})
+
+                    def bind_inputs(image_names: dict[str, str], video_name: str | None) -> JsonObject:
+                        if tracking_preview:
+                            require(isinstance(template, DualSceneWorkflow), "INVALID_INPUT", "当前工作流不支持动作预览")
+                            return template.bind_tracking_preview(job["job_id"], parameters, driving_video=video_name)
+                        return template.bind(image_names, command["prompt"], job["job_id"], parameters, driving_video=video_name)
+
+                    workflow = bind_inputs({node_id: image["image_id"] for node_id, image in images.items()},
+                                           driving_video["video_id"] if driving_video else None)
                     information = await client.call("comfy_status")
                     validate_nodes(workflow, information["nodes"])
-                    self.update_context(phase="上传参考图片")
-                    report("正在上传参考图片…", -1)
+                    if images:
+                        self.update_context(phase="上传参考图片")
+                        report("正在上传参考图片…", -1)
+                    image_names = {}
                     for node_id, image in images.items():
                         self.token.raise_if_cancelled()
                         uploaded = await client.call(
                             "comfy_upload_image", {"image_id": image["image_id"]}
                         )
-                        workflow[node_id]["inputs"]["image"] = uploaded["image"]
+                        image_names[node_id] = uploaded["image"]
+                    video_name = None
+                    if template.driving_video_node is not None:
+                        self.token.raise_if_cancelled()
+                        self.update_context(phase="上传原视频")
+                        report("正在上传原视频…", -1)
+                        uploaded = await client.call(
+                            "comfy_upload_driving_video",
+                            {"video_id": driving_video["video_id"], "sha256": driving_video["sha256"]},
+                        )
+                        video_name = uploaded["video"]
+                    workflow = bind_inputs(image_names, video_name)
                     self.token.raise_if_cancelled()
                     job["submitted_workflow"] = workflow
                     job["status"] = "submitting"
@@ -295,11 +328,14 @@ class MediaWork(TaskTracker):
             raise RuntimeError("ComfyUI 执行失败：" + encode(status.get("messages", [])))
         require(status.get("completed") is True, "INVALID_OUTPUT", "ComfyUI 历史任务未完成")
         output_node = job["input_snapshot"]["output_node"]
-        outputs = history["outputs"].get(output_node, {})
+        clip_prefix = f"{output_node}_clip_"
+        clip_nodes = sorted(node for node in job.get("submitted_workflow", {}) if node.startswith(clip_prefix))
         descriptors = []
-        for field in ("images", "videos", "gifs"):
-            descriptors.extend(outputs.get(field, []))
-        require(bool(descriptors), "INVALID_OUTPUT", f"输出节点 {output_node} 未返回视频文件")
+        for node_id in [output_node, *clip_nodes]:
+            outputs = history["outputs"].get(node_id, {})
+            files = [file for field in ("images", "videos", "gifs") for file in outputs.get(field, [])]
+            require(bool(files), "INVALID_OUTPUT", f"输出节点 {node_id} 未返回视频文件")
+            descriptors.extend(files)
         job["status"] = "collecting"
         repository.save_job(job)
         self.update_context(phase="保存视频")

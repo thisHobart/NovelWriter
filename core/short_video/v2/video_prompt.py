@@ -56,7 +56,7 @@ def snapshot_video_inputs(
     template = parse_video_workflow(selected["graph"])
     chosen = {node: image for node, image in images.items() if image is not None}
     template = template.prepare_image_inputs(list(chosen))
-    template.bind(chosen, "输入结构校验", "validation", parameters)
+    template.bind(chosen, "输入结构校验", "validation", parameters, driving_video="validation")
     media = MediaRepository(output_dir)
     bindings, number = [], 0
     for slot in template.image_inputs:

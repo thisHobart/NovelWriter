@@ -18,6 +18,7 @@ from .storage import atomic_write_text
 
 # Image records stay as imported; the picker's removed entries are listed separately.
 HIDDEN_IMAGES = "hidden_images.json"
+VIDEO_FILE_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv"}
 
 
 class MediaRepository:
@@ -117,6 +118,53 @@ class MediaRepository:
     def image(self, image_id: str) -> JsonObject:
         return self.read(f"images/{image_id}.json")
 
+    def import_driving_video(self, path: str | Path) -> JsonObject:
+        source = Path(path)
+        suffix = source.suffix.lower()
+        video_id = uuid4().hex
+        relative_path = f"driving_videos/{video_id}{suffix}"
+        destination = self.resolve(relative_path)
+        digest = hashlib.sha256()
+        with source.open("rb") as input_file:
+            header = input_file.read(12)
+            require(
+                suffix in VIDEO_FILE_SUFFIXES
+                and (header[4:8] == b"ftyp" or header.startswith(b"\x1aE\xdf\xa3")),
+                "INVALID_INPUT",
+                "请选择有效的 MP4、MOV、WebM 或 MKV 视频",
+            )
+            input_file.seek(0)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as output_file:
+                    temporary = Path(output_file.name)
+                    while chunk := input_file.read(1024 * 1024):
+                        digest.update(chunk)
+                        output_file.write(chunk)
+                    output_file.flush()
+                    os.fsync(output_file.fileno())
+                os.replace(temporary, destination)
+            finally:
+                if temporary and temporary.exists():
+                    temporary.unlink()
+        record = {
+            "video_id": video_id,
+            "name": source.name,
+            "relative_path": relative_path,
+            "sha256": digest.hexdigest(),
+        }
+        self.write(f"driving_videos/{video_id}.json", record)
+        return record
+
+    def driving_video(self, video_id: str) -> JsonObject:
+        require(
+            len(video_id) == 32 and all(c in "0123456789abcdef" for c in video_id),
+            "INVALID_INPUT",
+            "原视频编号无效",
+        )
+        return self.read(f"driving_videos/{video_id}.json")
+
     def jobs(self) -> list[JsonObject]:
         records = []
         for path in (self.root / "jobs").glob("*.json"):
@@ -136,7 +184,10 @@ class MediaRepository:
         job = self.job(job_id)
         created = datetime.fromisoformat(job["created_at"]).astimezone(timezone(timedelta(hours=8)))
         number = job["input_snapshot"].get("target", {}).get("shot_number")
-        label = f"镜头{number:02d}" if type(number) is int and number > 0 else "视频"
+        if job["input_snapshot"].get("tracking_preview") is True:
+            label = "动作预览"
+        else:
+            label = f"镜头{number:02d}" if type(number) is int and number > 0 else "视频"
         return f"videos/{created:%Y-%m-%d_%H-%M-%S}_{label}_{job_id[:8]}_{index + 1:02d}{suffix}"
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap, QTransform
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPaintEvent, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -89,10 +89,13 @@ def section_title(text: str) -> QLabel:
 
 
 class Thumb(QPushButton):
-    """The 16:9 picture of a slot: the image cropped to fill, or an invitation to choose one."""
+    """The reference image preview and its selection button."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, contain: bool = False, mark: str = "") -> None:
         super().__init__()
+        self.contain = contain
+        # A color dot before the tag text, matching the person's color in the tracking preview.
+        self.mark = mark
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("QPushButton { border:0; background:transparent; padding:0; height:auto; }")
@@ -107,7 +110,7 @@ class Thumb(QPushButton):
         self.tag, self.frame_tag = tag, frame
         self.update()
 
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect()
@@ -116,10 +119,13 @@ class Thumb(QPushButton):
         clip.addRoundedRect(QRectF(rect.adjusted(0, 0, 0, theme.RADIUS_CARD)), 5, 5)
         painter.setClipPath(clip)
         if self.source is not None and not self.source.isNull():
+            if self.contain:
+                painter.fillRect(rect, QColor(theme.SURFACE))
             ratio = self.devicePixelRatioF()
             if self.scaled is None or self.scaled[0] != rect.size():
+                aspect_mode = Qt.KeepAspectRatio if self.contain else Qt.KeepAspectRatioByExpanding
                 image = self.source.scaled(
-                    rect.size() * ratio, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+                    rect.size() * ratio, aspect_mode, Qt.SmoothTransformation
                 )
                 image.setDevicePixelRatio(ratio)
                 self.scaled = (rect.size(), image)
@@ -139,15 +145,19 @@ class Thumb(QPushButton):
             font = QFont(self.font())
             font.setPixelSize(theme.FS_XS)
             painter.setFont(font)
-            width = painter.fontMetrics().horizontalAdvance(self.tag) + 12
+            dot = 12 if self.mark else 0
+            width = painter.fontMetrics().horizontalAdvance(self.tag) + 12 + dot
             pill = QRectF(6, 6, width, 18)
             background = QColor(theme.ACCENT if self.frame_tag else theme.INK_900)
             background.setAlpha(230 if self.frame_tag else 190)
             painter.setPen(Qt.NoPen)
             painter.setBrush(background)
             painter.drawRoundedRect(pill, 3, 3)
+            if self.mark:
+                painter.setBrush(QColor(self.mark))
+                painter.drawEllipse(QRectF(pill.left() + 6, pill.top() + 5, 8, 8))
             painter.setPen(QColor(theme.CANVAS))
-            painter.drawText(pill, Qt.AlignCenter, self.tag)
+            painter.drawText(pill.adjusted(dot, 0, 0, 0), Qt.AlignCenter, self.tag)
 
 
 class SlotCard(QFrame):
@@ -156,7 +166,9 @@ class SlotCard(QFrame):
     changed = Signal()
     pick_requested = Signal()
 
-    def __init__(self, node_id: str, caption: str, *, frame: bool = False) -> None:
+    def __init__(
+        self, node_id: str, caption: str, *, frame: bool = False, contain: bool = False, mark: str = "",
+    ) -> None:
         super().__init__()
         self.node_id, self.caption, self.frame = node_id, caption, frame
         self.image_id: str | None = None
@@ -166,7 +178,8 @@ class SlotCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
-        self.thumb = Thumb()
+        self.thumb = Thumb(contain=contain, mark=mark)
+        self.thumb.setAccessibleName(f"选择{caption}")
         self.thumb.clicked.connect(self.pick_requested)
         layout.addWidget(self.thumb, 1)
         foot = QWidget()

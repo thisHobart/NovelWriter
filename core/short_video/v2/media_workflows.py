@@ -1,4 +1,4 @@
-"""Project workflow catalog and the supported MiniMax H3 input mappings."""
+"""Project workflow catalog and supported video input mappings."""
 
 from __future__ import annotations
 
@@ -24,6 +24,16 @@ ASPECT_RATIO_CHOICES = (
     ("3:4 (Portrait Standard)", "3:4 竖屏"),
     ("3:2 (Photo)", "3:2 横屏"),
     ("4:3 (Standard)", "4:3 横屏"),
+)
+SCAIL_ASPECT_RATIO_CHOICES = (
+    ("original", "跟随原视频"),
+    ("16:9", "16:9 横屏"),
+    ("4:3", "4:3 横屏"),
+    ("3:2", "3:2 横屏"),
+    ("1:1", "1:1 方形"),
+    ("9:16", "9:16 竖屏"),
+    ("3:4", "3:4 竖屏"),
+    ("2:3", "2:3 竖屏"),
 )
 # Every shot starts as a vertical video of about one megapixel, whatever the workflow JSON
 # holds; a shot keeps what was set for it.
@@ -118,6 +128,7 @@ class MediaConfig:
 # What the 镜头 video area holds for each shot and workflow, kept across restarts.
 SHOT_DRAFT_FIELDS = (
     "images",
+    "driving_video_id",
     "prompt",
     "parameters",
     "additional_reference_slots",
@@ -217,6 +228,7 @@ class VideoWorkflow:
     parameters: tuple[WorkflowParameter, ...]
     kind: str
     generator_node: str
+    driving_video_node: str | None = None
 
     @property
     def prompt(self) -> str:
@@ -252,6 +264,13 @@ class VideoWorkflow:
         """Retain selected image slots and bypass unused frame conditions for this run."""
         if self.kind == "reference":
             return self.prepare_reference_inputs(node_ids)
+        if self.driving_video_node is not None:
+            require(
+                node_ids == [self.image_inputs[0].node_id],
+                "INVALID_INPUT",
+                "请选择一张角色参考图",
+            )
+            return self
         require(bool(node_ids), "INVALID_INPUT", "请至少选择一张参考图、首帧或尾帧图片")
         selected = set(node_ids)
         require(
@@ -293,7 +312,8 @@ class VideoWorkflow:
         return parse_video_workflow(graph)
 
     def bind(
-        self, image_names: dict[str, str], prompt: str, job_id: str, parameters: JsonObject
+        self, image_names: dict[str, str], prompt: str, job_id: str, parameters: JsonObject,
+        *, driving_video: str | None = None,
     ) -> JsonObject:
         require(bool(prompt.strip()), "INVALID_INPUT", "请填写视频提示词")
         require(
@@ -305,15 +325,27 @@ class VideoWorkflow:
         known = {parameter.key for parameter in self.parameters}
         require(not parameters.keys() - known, "INVALID_INPUT", "包含当前工作流不支持的参数")
         graph = deepcopy(self.graph)
+        if self.driving_video_node is not None:
+            require(bool(driving_video), "INVALID_INPUT", "请选择原视频")
+            graph[self.driving_video_node]["inputs"]["video"] = driving_video
         for image in self.image_inputs:
             graph[image.node_id]["inputs"]["image"] = image_names[image.node_id]
         for parameter in self.parameters:
+            if parameter.role == "source_aspect" and parameter.key not in parameters:
+                # Jobs saved before the aspect control keep their original resize settings.
+                continue
             value = parameters.get(parameter.key, parameter.default)
             if parameter.choices:
                 require(
                     any(value == choice for choice, _ in parameter.choices),
                     "INVALID_INPUT",
                     f"{parameter.label}不在可选范围内",
+                )
+            elif type(parameter.default) is str:
+                require(
+                    isinstance(value, str) and (bool(value.strip()) or parameter.role in {"tracking_cuts", "clip_ranges"}),
+                    "INVALID_INPUT",
+                    f"请填写{parameter.label}",
                 )
             else:
                 expected = type(parameter.default)
@@ -323,7 +355,14 @@ class VideoWorkflow:
                     "INVALID_INPUT",
                     f"{parameter.label}的类型或范围不正确",
                 )
-            graph[parameter.node_id]["inputs"][parameter.input_name] = value
+            inputs = graph[parameter.node_id]["inputs"]
+            if parameter.role == "source_audio":
+                if not value:
+                    inputs.pop(parameter.input_name, None)
+            else:
+                inputs[parameter.input_name] = value
+                if parameter.role == "source_aspect" and value == "original":
+                    inputs["fit"] = "letterbox"
         graph[self.prompt_node]["inputs"][self.prompt_input] = prompt
         graph[self.output_node]["inputs"]["filename_prefix"] = f"video/NovelWriter/{job_id}"
         return graph
@@ -349,11 +388,27 @@ def read_api_workflow(path: str | Path) -> JsonObject:
 
 def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
     validate_api_graph(graph)
-    outputs = []
-    for node_id, node in graph.items():
-        if node["class_type"] == "SaveVideo":
-            outputs.append(node_id)
+    if any(isinstance(meta, dict) and meta.get("novelwriter_dual_scene") is True
+           for meta in (node.get("_meta") for node in graph.values())):
+        from .scail_dual_scene import parse_dual_scene
+
+        return parse_dual_scene(graph)
+    if any(node["class_type"] == "SCAILPose2SCAIL2Condition" for node in graph.values()):
+        return parse_scail_replacement(graph)
+    outputs = [node_id for node_id, node in graph.items() if node["class_type"] == "SaveVideo"]
     require(len(outputs) == 1, "INVALID_INPUT", "工作流需要一个 SaveVideo 输出节点")
+    active = output_dependencies(graph, outputs[0])
+
+    generators = []
+    for node_id, node in active.items():
+        if node["class_type"] in {"MiniMaxH3ReferenceToVideo", "MiniMaxH3ImageToVideo"}:
+            generators.append(node_id)
+    require(len(generators) == 1, "INVALID_INPUT", "请选择已适配的 MiniMax H3 参考图、首尾帧或 SCAIL-2 换角工作流")
+    generator = generators[0]
+    return parse_h3_workflow(active, outputs[0], generator)
+
+
+def output_dependencies(graph: JsonObject, output: str) -> JsonObject:
     active: JsonObject = {}
 
     def visit(node_id: str) -> None:
@@ -366,13 +421,96 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
             if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
                 visit(value[0])
 
-    visit(outputs[0])
-    generators = []
-    for node_id, node in active.items():
-        if node["class_type"] in {"MiniMaxH3ReferenceToVideo", "MiniMaxH3ImageToVideo"}:
-            generators.append(node_id)
-    require(len(generators) == 1, "INVALID_INPUT", "请选择已适配的 MiniMax H3 参考图或首尾帧工作流")
-    generator = generators[0]
+    visit(output)
+    return active
+
+
+def parse_scail_replacement(graph: JsonObject) -> VideoWorkflow:
+    outputs = []
+    for node_id, node in graph.items():
+        inputs = node["inputs"]
+        source = inputs.get("images")
+        if (
+            node["class_type"] == "VHS_VideoCombine"
+            and inputs.get("save_output") is True
+            and isinstance(source, list)
+            and len(source) == 2
+            and isinstance(source[0], str)
+            and graph.get(source[0], {}).get("class_type") == "WanVideoDecode"
+        ):
+            outputs.append(node_id)
+    require(len(outputs) == 1, "INVALID_INPUT", "SCAIL-2 工作流需要一个直接保存解码结果的 Video Combine 节点")
+    output = outputs[0]
+    active = output_dependencies(graph, output)
+
+    def one_node(node_type: str) -> str:
+        matches = [node_id for node_id, node in active.items() if node["class_type"] == node_type]
+        require(len(matches) == 1, "INVALID_INPUT", f"SCAIL-2 工作流需要一个 {node_type} 节点")
+        return matches[0]
+
+    def linked_input(node_id: str, name: str, node_type: str) -> str:
+        link = active[node_id]["inputs"].get(name)
+        require(
+            isinstance(link, list) and len(link) == 2 and isinstance(link[0], str)
+            and active.get(link[0], {}).get("class_type") == node_type,
+            "INVALID_INPUT",
+            f"SCAIL-2 的 {name} 需要连接 {node_type}",
+        )
+        return link[0]
+
+    condition = one_node("SCAILPose2SCAIL2Condition")
+    require(active[condition]["inputs"].get("mode") == "replacement", "INVALID_INPUT", "请选择 SCAIL-2 换角模式")
+    mask = one_node("SCAILPose2ColoredMask")
+    video_tracker = linked_input(mask, "driving_track_data", "SAM3_VideoTrack")
+    image_tracker = linked_input(mask, "ref_track_data", "SAM3_VideoTrack")
+    video_text = linked_input(video_tracker, "conditioning", "CLIPTextEncode")
+    image_text = linked_input(image_tracker, "conditioning", "CLIPTextEncode")
+    image = one_node("LoadImage")
+    video = one_node("VHS_LoadVideo")
+    sampler = one_node("WanVideoSamplerv2")
+    scheduler = linked_input(sampler, "scheduler", "WanVideoSchedulerv2")
+    prompt = linked_input(sampler, "text_embeds", "WanVideoTextEncodeCached")
+    resize = linked_input(condition, "driving_video", "ResizeImageAdvanced")
+    size = linked_input(resize, "scale_to_length", "INTConstant")
+    fields = (
+        (video_text, "text", "原视频人物描述", None, None),
+        (image_text, "text", "参考图角色描述", None, None),
+        (video, "frame_load_cap", "最多读取帧数（0 为全片）", 0, 10000),
+        (size, "value", "输出长边（像素）", 256, 2048),
+        (scheduler, "steps", "采样步数", 1, 100),
+        (sampler, "seed", "随机种子", 0, 2**64 - 1),
+    )
+    parameters = []
+    resize_inputs = active[resize]["inputs"]
+    aspect = resize_inputs.get("aspect_ratio")
+    aspect_choices = SCAIL_ASPECT_RATIO_CHOICES
+    if aspect == "custom":
+        aspect_choices += (("custom", "工作流自定义"),)
+    if resize_inputs.get("resize_mode") == "aspect_ratio" and any(
+        aspect == choice for choice, _ in aspect_choices
+    ):
+        parameters.append(WorkflowParameter(
+            resize, "aspect_ratio", "画幅", "original", role="source_aspect", choices=aspect_choices,
+        ))
+    for node_id, key, label, minimum, maximum in fields:
+        value = active[node_id]["inputs"].get(key)
+        require(
+            isinstance(value, str) and bool(value.strip()) if minimum is None
+            else type(value) is int and minimum <= value <= maximum,
+            "INVALID_INPUT",
+            f"SCAIL-2 的{label}需要可编辑的有效值",
+        )
+        parameters.append(WorkflowParameter(node_id, key, label, value, minimum, maximum))
+    if "audio" in active[output]["inputs"]:
+        parameters.append(WorkflowParameter(output, "audio", "保留原声", True, 0, 1, "source_audio"))
+    require(isinstance(active[prompt]["inputs"].get("positive_prompt"), str), "INVALID_INPUT", "视频提示词不是文本")
+    return VideoWorkflow(
+        deepcopy(active), (ImageInput(image, "角色参考图"),), output, prompt, "positive_prompt",
+        tuple(parameters), "scail2_replacement", sampler, video,
+    )
+
+
+def parse_h3_workflow(active: JsonObject, output: str, generator: str) -> VideoWorkflow:
     inputs = active[generator]["inputs"]
     image_inputs = []
     kind = "reference"
@@ -512,7 +650,7 @@ def parse_video_workflow(graph: JsonObject) -> VideoWorkflow:
     return VideoWorkflow(
         deepcopy(active),
         tuple(image_inputs),
-        outputs[0],
+        output,
         prompt_node,
         prompt_input,
         tuple(parameters),

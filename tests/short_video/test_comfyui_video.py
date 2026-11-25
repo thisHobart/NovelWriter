@@ -14,6 +14,7 @@ from core.short_video.v2.media_service import MediaService, MediaWork, validate_
 from core.short_video.v2.media_workflows import (
     SHOT_ASPECT_RATIO,
     SHOT_MEGAPIXELS,
+    WORKFLOW_DIRECTORY,
     MediaConfig,
     default_workflows,
     parse_video_workflow,
@@ -65,10 +66,11 @@ class ComfyServer:
             return httpx.Response(200, json=nodes)
         if path == "/upload/image":
             self.uploads.append(request.content)
+            suffix = ".mp4" if VIDEO in request.content else ".png"
             return httpx.Response(
                 200,
                 json={
-                    "name": f"server-renamed{len(self.uploads) if len(self.uploads) > 1 else ''}.png",
+                    "name": f"server-renamed{len(self.uploads) if len(self.uploads) > 1 else ''}{suffix}",
                     "subfolder": "NovelWriter",
                     "type": "input",
                 },
@@ -142,6 +144,186 @@ def test_builtin_reference_connects_three_images_and_ignores_orphan_nodes():
     assert bound["137"]["inputs"]["image"] == "NovelWriter/input.png"
     assert bound["138"]["inputs"]["value"] == "Use <Picture 1>."
     assert template.graph["137"]["inputs"]["image"] == original
+
+
+def test_dual_scene_clip_ranges_skip_transitions_and_export_separate_outputs():
+    from core.short_video.v2.media_workflows import WORKFLOW_DIRECTORY, read_api_workflow
+
+    template = parse_video_workflow(read_api_workflow(WORKFLOW_DIRECTORY / "scail2_dual_scene.json"))
+    refs = {slot.node_id: f"{slot.role}.png" for slot in template.image_inputs}
+    parameters = {"139.scene_transition": 2.0, "139.clip_ranges": "0–0.75, 2.125-2.583"}
+    graph = template.bind(refs, "Two people.", "job", parameters, driving_video="source.mp4")
+    assert "joined_scenes" not in graph and "held_scene" not in graph
+    for prefix, start, length, output in (("shot_0_", 0, 18, "139"), ("shot_1_", 51, 11, "139_clip_002")):
+        video = prefix + "417"
+        read = graph[video]["inputs"]
+        assert (read["skip_first_frames"], read["frame_load_cap"], read["format"]) == (start, length, "None")
+        assert graph[prefix + "clip_last"]["inputs"]["image"] == [video, 0]
+        assert graph[prefix + "slice"]["inputs"]["length"] == [video, 1]
+        assert graph[output]["inputs"]["audio"] == [video, 2]
+    preview = template.bind_tracking_preview("job", parameters, driving_video="source.mp4")
+    assert "139_clip_002" not in preview and "shot_0_clip_padded" not in preview
+    with pytest.raises(WorkspaceError, match="不能重叠"):
+        template.bind(refs, "Two people.", "job", {"139.clip_ranges": "0-1, 0.9-2"}, driving_video="source.mp4")
+
+
+def test_dual_scene_workflow_submits_four_images_and_restarts_tracking_at_cuts(tmp_path, image):
+    config = MediaConfig()
+    graph_json = (WORKFLOW_DIRECTORY / "scail2_dual_scene.json").read_text(encoding="utf-8")
+    workflow_id = config.put_workflow("双人动作迁移＋自定义场景", graph_json)
+    config.save(tmp_path)
+    repository = MediaRepository(tmp_path)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(VIDEO)
+    driving = repository.import_driving_video(source)
+    template = parse_video_workflow(config.selected(workflow_id)["graph"])
+    assert [item.role for item in template.image_inputs] == ["role_a", "role_b", "scene_a", "scene_b"]
+    inputs = {slot.node_id: image["image_id"] for slot in template.image_inputs}
+    parameters = {"139.scene_transition": 1.5, "139.action_end": 2.375, "139.tracking_cuts": "0.83, 2.125"}
+    service = MediaService(tmp_path)
+    with pytest.raises(WorkspaceError, match="两张角色参考图和一张场景参考图"):
+        service.prepare_video({"106": image["image_id"]}, "Transfer", driving_video_id=driving["video_id"])
+    with pytest.raises(WorkspaceError, match="动作截止时间必须晚于场景切换"):
+        service.prepare_video(inputs, "Transfer", driving_video_id=driving["video_id"], parameters={"139.action_end": 1})
+    command = service.prepare_video(inputs, "Transfer", parameters=parameters, driving_video_id=driving["video_id"])
+    bound = template.bind(inputs, "Transfer", "validation", parameters, driving_video=driving["video_id"])
+
+    class DualServer(ComfyServer):
+        def request(self, request):
+            response = super().request(request)
+            if request.url.path == "/history/remote-job":
+                history = response.json()
+                outputs = history["remote-job"]["outputs"]
+                outputs["139"] = outputs.pop("92")
+                return httpx.Response(200, json=history)
+            return response
+
+    server = DualServer()
+    server.extra_nodes = {item["class_type"]: {"input": {"required": {}}} for item in bound.values()}
+    job = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(lambda *_: None)
+    graph = server.submissions[0]["prompt"]
+    assert job["status"] == "succeeded"
+    assert len(server.uploads) == 5 and VIDEO in server.uploads[-1]
+    assert [graph[node]["inputs"]["image"] for node in inputs] == [
+        "NovelWriter/server-renamed.png", "NovelWriter/server-renamed2.png",
+        "NovelWriter/server-renamed3.png", "NovelWriter/server-renamed4.png",
+    ]
+    assert [graph[f"shot_{index}_417"]["inputs"]["skip_first_frames"] for index in range(4)] == [0, 20, 36, 51]
+    assert {node["inputs"]["video"] for node in graph.values() if node["class_type"] == "VHS_LoadVideo"} == {
+        "NovelWriter/server-renamed5.mp4"
+    }
+    assert graph["shot_1_resize_scene"]["inputs"]["image"] == ["scene", 0]
+    assert graph["shot_2_resize_scene"]["inputs"]["image"] == ["scene_b", 0]
+    assert graph["shot_2_resize_scene"]["inputs"]["fit"] == "fill"
+    assert graph["139"]["inputs"]["images"] == ["trim_to_source", 0]
+    assert graph["139"]["inputs"]["audio"] == ["source_probe", 2]
+
+    preview = service.prepare_video({}, "", parameters=parameters, driving_video_id=driving["video_id"],
+                                    tracking_preview=True)
+    assert preview["tracking_preview"] is True and not preview["images"]
+    bound_preview = template.bind_tracking_preview("validation", parameters, driving_video=driving["video_id"])
+    server = DualServer()
+    server.extra_nodes = {item["class_type"]: {"input": {"required": {}}} for item in bound_preview.values()}
+    preview_job = MediaWork(str(tmp_path), preview, transport=httpx.MockTransport(server.request))(lambda *_: None)
+    preview_graph = server.submissions[0]["prompt"]
+    assert preview_job["status"] == "succeeded"
+    assert "动作预览" in preview_job["outputs"][0]["relative_path"]
+    assert len(server.uploads) == 1 and VIDEO in server.uploads[0]
+    assert not {node["class_type"] for node in preview_graph.values()} & {"LoadImage", "WanVideoSamplerv2", "WanVideoDecode"}
+    assert preview_graph["shot_2_preview"]["inputs"]["mask"] == ["shot_2_drive_union", 0]
+    assert "audio" not in preview_graph["139"]["inputs"]
+
+
+def test_scail_replacement_requires_and_uploads_driving_video(tmp_path, image):
+    def node(kind, **inputs):
+        return {"class_type": kind, "inputs": inputs}
+
+    graph = {
+        "1": node("LoadImage", image="select_reference_image.png"),
+        "2": node("VHS_LoadVideo", video="select_driving_video.mp4", frame_load_cap=0),
+        "3": node("INTConstant", value=512),
+        "4": node(
+            "ResizeImageAdvanced", image=["2", 0], scale_to_length=["3", 0],
+            resize_mode="aspect_ratio", aspect_ratio="3:4", fit="crop",
+        ),
+        "5": node("CLIPTextEncode", text="person"),
+        "6": node("CLIPTextEncode", text="animal"),
+        "7": node("SAM3_VideoTrack", images=["4", 0], conditioning=["5", 0]),
+        "8": node("SAM3_VideoTrack", images=["1", 0], conditioning=["6", 0]),
+        "9": node("SCAILPose2ColoredMask", driving_track_data=["7", 0], ref_track_data=["8", 0]),
+        "10": node(
+            "SCAILPose2SCAIL2Condition", mode="replacement", driving_video=["4", 0],
+            pose_video_mask=["9", 0], ref_image=["1", 0],
+        ),
+        "11": node("WanVideoSchedulerv2", steps=4),
+        "12": node("WanVideoTextEncodeCached", positive_prompt="A red panda."),
+        "13": node("WanVideoSamplerv2", seed=0, scheduler=["11", 0], text_embeds=["12", 0], image_embeds=["10", 0]),
+        "14": node("WanVideoDecode", samples=["13", 0]),
+        "92": node("VHS_VideoCombine", images=["14", 0], audio=["2", 2], save_output=True),
+        "95": node("VHS_VideoCombine", images=["4", 0], save_output=True),
+    }
+    config = MediaConfig()
+    workflow_id = config.put_workflow("SCAIL-2", json.dumps(graph))
+    config.save(tmp_path)
+    template = parse_video_workflow(graph)
+    assert template.output_node == "92"
+    assert "95" not in template.graph
+
+    app, panel, _ = reference_panel(tmp_path)
+    try:
+        panel.set_target({"shot_id": "s1"})
+        panel.refresh()
+        control = panel.parameter_fields["4.aspect_ratio"]
+        assert control.currentText() == "跟随原视频"
+        default_inputs = template.bind(
+            {"1": "ref.png"}, "A red panda.", "test", panel.parameter_values(), driving_video="in.mp4"
+        )["4"]["inputs"]
+        assert default_inputs["aspect_ratio"] == "original"
+        assert default_inputs["fit"] == "letterbox"
+        legacy_inputs = template.bind(
+            {"1": "ref.png"}, "A red panda.", "test", {}, driving_video="in.mp4"
+        )["4"]["inputs"]
+        assert legacy_inputs == graph["4"]["inputs"]
+        control.setCurrentIndex(control.findData("16:9"))
+        panel.remember_draft()
+        saved = json.loads(shot_drafts_path(tmp_path).read_text(encoding="utf-8"))
+        assert saved["s1"][workflow_id]["parameters"]["4.aspect_ratio"] == "16:9"
+        chosen_aspect = panel.parameter_values()["4.aspect_ratio"]
+    finally:
+        panel.close()
+        app.processEvents()
+
+    service = MediaService(tmp_path)
+    images = {"1": image["image_id"]}
+    with pytest.raises(WorkspaceError, match="请选择原视频"):
+        service.prepare_video(images, "A red panda.")
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(VIDEO)
+    video = service.repository.import_driving_video(source)
+    command = service.prepare_video(
+        images, "A red panda.", driving_video_id=video["video_id"],
+        parameters={
+            "92.audio": False, "2.frame_load_cap": 17, "5.text": "person in blue",
+            "4.aspect_ratio": chosen_aspect,
+        },
+    )
+    server = ComfyServer()
+    server.extra_nodes = {
+        entry["class_type"]: {"input": {"required": {}}}
+        for entry in command["workflow"].values()
+    }
+    work = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))
+    result = work(lambda *_: None)
+    submitted = server.submissions[0]["prompt"]
+    assert result["status"] == "succeeded"
+    assert len(server.uploads) == 2 and VIDEO in server.uploads[1]
+    assert submitted["1"]["inputs"]["image"] == "NovelWriter/server-renamed.png"
+    assert submitted["2"]["inputs"] == {"video": "NovelWriter/server-renamed2.mp4", "frame_load_cap": 17}
+    assert submitted["4"]["inputs"]["aspect_ratio"] == "16:9"
+    assert submitted["5"]["inputs"]["text"] == "person in blue"
+    assert "audio" not in submitted["92"]["inputs"]
+    assert graph["2"]["inputs"]["video"] == "select_driving_video.mp4"
 
 
 def test_generated_image_provider_can_reuse_import_contract(tmp_path):

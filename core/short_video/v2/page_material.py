@@ -248,8 +248,13 @@ def shot_video_material(
     prompt = video.get("prompt", "")
     sections.append("## 视频提示词（输入框里的当前内容）\n" + (prompt.strip() or "（空）"))
     pictures = video.get("pictures", [])
+    pictures_heading = (
+        "## 角色与场景参考（按位置绑定）\n"
+        if video.get("fixed_references")
+        else "## 参考图片（提示词里用 <Picture N> 指代，编号按已选顺序）\n"
+    )
     sections.append(
-        "## 参考图片（提示词里用 <Picture N> 指代，编号按已选顺序）\n"
+        pictures_heading
         + (
             "\n".join(f"{p['reference']}：{p['name']}" for p in pictures)
             if pictures

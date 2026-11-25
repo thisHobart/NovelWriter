@@ -14,7 +14,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .contracts import JsonObject
-from .media_repository import MediaRepository
+from .media_repository import VIDEO_FILE_SUFFIXES, MediaRepository
 from .models import require
 
 
@@ -123,6 +123,31 @@ class ComfyMCPClient:
             return await self.invoke(upload)
 
         @server.tool()
+        async def comfy_upload_driving_video(video_id: str, sha256: str) -> JsonObject:
+            """Upload the validated original clip for a character replacement run."""
+
+            async def upload() -> JsonObject:
+                record = self.repository.driving_video(video_id)
+                path = self.repository.resolve(record["relative_path"])
+                with path.open("rb") as file:
+                    require(
+                        record["sha256"] == sha256 and hashlib.file_digest(file, "sha256").hexdigest() == sha256,
+                        "INVALID_INPUT",
+                        "原视频已被外部修改，请重新导入",
+                    )
+                    file.seek(0)
+                    result = await self.request_json(
+                        "POST", "/upload/image",
+                        files={"image": (path.name, file)},
+                        data={"type": "input", "subfolder": "NovelWriter", "overwrite": "false"},
+                    )
+                require(result.get("type") == "input", "INVALID_OUTPUT", "ComfyUI 未保存到视频输入目录")
+                name, folder = result["name"], result.get("subfolder", "")
+                return {"video": f"{folder}/{name}" if folder else name}
+
+            return await self.invoke(upload)
+
+        @server.tool()
         async def comfy_submit_workflow(workflow: JsonObject, request_id: str) -> JsonObject:
             """Submit exactly once; retain a client tag for reconciling lost responses."""
             return await self.invoke(
@@ -178,7 +203,7 @@ class ComfyMCPClient:
             async def download() -> JsonObject:
                 suffix = Path(output["filename"]).suffix.lower()
                 require(
-                    suffix in {".mp4", ".mov", ".webm", ".mkv"},
+                    suffix in VIDEO_FILE_SUFFIXES,
                     "INVALID_OUTPUT",
                     f"输出不是支持的视频文件：{suffix}",
                 )

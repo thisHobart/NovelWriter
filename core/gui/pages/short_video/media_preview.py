@@ -80,7 +80,20 @@ DEFAULT_VIDEO_PROMPT = (
     "以 <Picture 1> 为画面参考，保持主体外观、环境与构图一致，"
     "生成自然连贯的动态画面和轻微镜头运动。无文字、无水印。"
 )
+DUAL_SHOT_PROMPT = (
+    "The two reference characters perform their corresponding movements in the supplied scene. "
+    "Maintain distinct identities, original framing, and natural motion."
+)
 KIND_LABELS = {"scene": "场景", "character": "人物", "prop": "道具"}
+DUAL_SCENE_WORKFLOW = "scail2_dual_scene"
+DUAL_IMAGE_CAPTIONS = {"role_a": "角色 A", "role_b": "角色 B", "scene_a": "当前场景"}
+# The two people's colors in the tracking preview, repeated on the 角色 A/B tags and the
+# description rows so the pairing reads without opening the preview.
+DUAL_MARKS = {"role_a": "#2F7FD8", "role_b": "#D6453D"}
+DUAL_DESCRIPTION_MARKS = {"443.text": "role_a", "source_b_text.text": "role_b"}
+DUAL_TIMELINE_ROLES = {"single_shot", "scene_transition", "action_end", "tracking_cuts", "hold_tail", "clip_ranges"}
+TRACKING_ROLES = {"source_character", "output_edge"}
+SINGLE_SHOT_KEY = "139.single_shot"
 THUMBNAIL_WIDTH = 480
 JOB_STATES = {
     "prepared": "准备中",
@@ -111,6 +124,8 @@ QLabel#videoPreview[tone="warn"] {{ background:{theme.tint(theme.WARN)}; border:
 QLabel#promptHint {{ font-size:{theme.FS_SM}px; color:{theme.INK_600}; }}
 QLabel#promptHint[tone="warn"] {{ color:{theme.WARN}; }}
 QLabel#promptHint[tone="run"] {{ color:{theme.ACCENT}; }}
+QLabel#promptHint[tone="ok"] {{ color:{theme.SUCCESS}; }}
+QLabel#promptHint[tone="bad"] {{ color:{theme.DANGER}; }}
 QLabel#videoStatus {{ font-size:{theme.FS_SM}px; color:{theme.INK_600}; }}
 QLabel#videoStatus[tone="ok"] {{ color:{theme.SUCCESS}; }}
 QLabel#videoStatus[tone="bad"] {{ color:{theme.DANGER}; }}
@@ -142,8 +157,9 @@ def small_button(text: str) -> QPushButton:
     return button
 
 
-def field_label(text: str) -> QLabel:
-    label = QLabel(text)
+def field_label(text: str, mark: str = "") -> QLabel:
+    """A form row's label; ``mark`` puts a dot of that color before it."""
+    label = QLabel(f"<span style='color:{mark}'>●</span>&nbsp;{text}" if mark else text)
     label.setObjectName("fieldLabel")
     return label
 
@@ -209,11 +225,15 @@ class MediaPreview(QWidget):
         self.video_prompt_fingerprint = None
         self.video_prompt_binding = None
         self.video_path = None
+        self.tracking_preview_job = None
+        self.tracking_preview_path = None
         self.project_dir = None
         self.shot_assets: list[dict] = []
         self.shot_duration_ms: int | None = None
         self.thumbnails: dict[str, tuple[float, QPixmap]] = {}
         self.image_fields: dict[str, SlotCard] = {}
+        self.role_slots: list[SlotCard] = []
+        self.driving_video = None
         self.additional_reference_slots = []
         self.prompt_image_bindings = {}
         self.parameter_fields = {}
@@ -247,13 +267,77 @@ class MediaPreview(QWidget):
         slots_layout.setSpacing(SP[2])
         head = QHBoxLayout()
         head.setSpacing(SP[2])
-        head.addWidget(section_title("参考图片"))
+        self.slots_title = section_title("参考图片")
+        head.addWidget(self.slots_title)
         self.slots_note = muted()
         head.addWidget(self.slots_note)
         head.addStretch()
         slots_layout.addLayout(head)
+        self.driving_video_row = QWidget()
+        video_row = QHBoxLayout(self.driving_video_row)
+        video_row.setContentsMargins(0, 0, 0, 0)
+        video_row.addWidget(field_label("原视频"))
+        self.driving_video_label = muted("未选择")
+        self.driving_video_label.setWordWrap(True)
+        video_row.addWidget(self.driving_video_label, 1)
+        # The dual-scene workflow's tracking preview sits on the source video's line.
+        self.tracking_preview_button = small_button("提取动作预览")
+        self.tracking_preview_button.setToolTip(
+            "只跑人物跟踪、不生成视频，用颜色核对两人有没有对反。\n改了原片人物描述、画幅或输出长边后需要重新提取"
+        )
+        self.tracking_preview_button.clicked.connect(
+            lambda: self.workbench.perform(self.generate_tracking_preview)
+        )
+        video_row.addWidget(self.tracking_preview_button)
+        self.open_tracking_button = small_button("打开动作预览")
+        self.open_tracking_button.clicked.connect(
+            lambda: self.workbench.perform(self.open_tracking_preview)
+        )
+        video_row.addWidget(self.open_tracking_button)
+        self.driving_video_button = small_button("选择原视频")
+        self.driving_video_button.clicked.connect(
+            lambda: self.workbench.perform(self.choose_driving_video)
+        )
+        video_row.addWidget(self.driving_video_button)
+        self.driving_video_row.hide()
+        slots_layout.addWidget(self.driving_video_row)
+        self.tracking_status = QLabel()
+        self.tracking_status.setObjectName("promptHint")
+        self.tracking_status.setWordWrap(True)
+        self.tracking_status.hide()
+        slots_layout.addWidget(self.tracking_status)
         self.slot_grid = SlotGrid()
         slots_layout.addWidget(self.slot_grid)
+        # The dual-scene workflow's pictures: the two people, then the scene, each under its own
+        # heading like 「首尾帧」 below 「参考图片」.
+        self.dual_inputs_section = QWidget()
+        dual_layout = QVBoxLayout(self.dual_inputs_section)
+        dual_layout.setContentsMargins(0, 0, 0, 0)
+        dual_layout.setSpacing(SP[2])
+        role_head = QHBoxLayout()
+        role_head.setContentsMargins(0, SP[2], 0, 0)
+        role_head.setSpacing(SP[2])
+        role_head.addWidget(section_title("角色参考"))
+        role_head.addWidget(muted("蓝色对应角色 A，红色对应角色 B"))
+        self.swap_roles_button = mini_button("对调")
+        self.swap_roles_button.setToolTip("两张角色图互换；原片人物描述不动，动作预览仍然有效")
+        self.swap_roles_button.clicked.connect(lambda: self.workbench.perform(self.swap_roles))
+        role_head.addWidget(self.swap_roles_button)
+        role_head.addStretch()
+        dual_layout.addLayout(role_head)
+        self.role_grid = SlotGrid()
+        dual_layout.addWidget(self.role_grid)
+        scene_head = QHBoxLayout()
+        scene_head.setContentsMargins(0, SP[2], 0, 0)
+        scene_head.setSpacing(SP[2])
+        scene_head.addWidget(section_title("场景参考"))
+        scene_head.addWidget(muted("替换原视频的背景，按画幅裁切"))
+        scene_head.addStretch()
+        dual_layout.addLayout(scene_head)
+        self.scene_grid = SlotGrid()
+        dual_layout.addWidget(self.scene_grid)
+        self.dual_inputs_section.hide()
+        slots_layout.addWidget(self.dual_inputs_section)
         self.frames_head = QWidget()
         frames_head = QHBoxLayout(self.frames_head)
         frames_head.setContentsMargins(0, SP[2], 0, 0)
@@ -277,9 +361,9 @@ class MediaPreview(QWidget):
         prompt_bar.setSpacing(SP[2])
         prompt_bar.addWidget(section_title("视频提示词"))
         # Wraps rather than widening the left column, so the video card fits beside it.
-        prompt_note = muted("用 <Picture N> 指代上面的参考图片")
-        prompt_note.setWordWrap(True)
-        prompt_bar.addWidget(prompt_note, 1)
+        self.prompt_note = muted("用 <Picture N> 指代上面的参考图片")
+        self.prompt_note.setWordWrap(True)
+        prompt_bar.addWidget(self.prompt_note, 1)
         self.generate_prompt_button = small_button("AI 编写")
         self.generate_prompt_button.setToolTip("将本镜选中的参考图和首尾帧发给生成模型，编写视频提示词")
         self.resume_prompt_button = small_button("继续编写")
@@ -540,6 +624,7 @@ class MediaPreview(QWidget):
             "pictures": pictures,
             "frames": frames,
             "settings": settings,
+            **({"fixed_references": True} if self.is_dual_scene else {}),
         }
 
     # -- images ----------------------------------------------------------------------------
@@ -707,6 +792,17 @@ class MediaPreview(QWidget):
     def image_selection(self) -> dict[str, str | None]:
         return {node_id: slot.image_id for node_id, slot in self.image_fields.items()}
 
+    def choose_driving_video(self) -> None:
+        self.require_editable_inputs()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择原视频", self.workbench.output_dir, "视频 (*.mp4 *.mov *.webm *.mkv)"
+        )
+        if path:
+            self.driving_video = MediaRepository(self.workbench.output_dir).import_driving_video(path)
+            self.driving_video_label.setText(self.driving_video["name"])
+            self.refresh_result()
+            self.save_timer.start()
+
     def capture_prompt_image_bindings(self) -> None:
         self.prompt_image_bindings = {}
         self.refresh_reference_labels()
@@ -718,7 +814,18 @@ class MediaPreview(QWidget):
         }
         return {node: image for node, image in self.image_selection().items() if node not in frames}
 
+    @property
+    def is_dual_scene(self) -> bool:
+        template = getattr(self, "template", None)
+        return template is not None and template.kind == DUAL_SCENE_WORKFLOW
+
     def refresh_reference_labels(self) -> None:
+        if self.is_dual_scene:
+            slots = self.image_fields.values()
+            self.slots_note.setText(f"已选 {sum(bool(slot.image_id) for slot in slots)} / {len(slots)}")
+            for slot in slots:
+                slot.set_reference(slot.caption)
+            return
         reference_nodes = self.reference_selection()
         selected_nodes = []
         for node_id, image_id in reference_nodes.items():
@@ -759,14 +866,15 @@ class MediaPreview(QWidget):
     # -- parameters ------------------------------------------------------------------------
 
     def parameter_values(self, *, raw: bool = False) -> dict:
-        values = {}
+        values = {SINGLE_SHOT_KEY: True} if self.is_dual_scene else {}
+        seed_keys = {p.key for p in self.template.parameters if p.input_name in {"noise_seed", "seed"}}
         for key, control in self.parameter_fields.items():
             if isinstance(control, QCheckBox):
                 values[key] = control.isChecked()
             elif isinstance(control, QComboBox):
                 values[key] = control.currentData()
             elif isinstance(control, QLineEdit):
-                values[key] = control.text() if raw else int(control.text())
+                values[key] = int(control.text()) if key in seed_keys and not raw else control.text()
             else:
                 values[key] = control.value()
         return values
@@ -807,10 +915,12 @@ class MediaPreview(QWidget):
         """Keep what the video area shows for this shot and workflow, in memory and in the project."""
         self.save_timer.stop()
         if self.loaded_workflow_id is not None:
+            previous = self.drafts.get(self.loaded_workflow_id, {}) if self.is_dual_scene else {}
             self.drafts[self.loaded_workflow_id] = {
-                "images": self.image_selection(),
+                "images": {**previous.get("images", {}), **self.image_selection()},
+                **({"driving_video_id": self.driving_video["video_id"]} if self.driving_video else {}),
                 "prompt": self.prompt.toPlainText(),
-                "parameters": self.parameter_values(raw=True),
+                "parameters": {**previous.get("parameters", {}), **self.parameter_values(raw=True)},
                 "additional_reference_slots": list(self.additional_reference_slots),
                 "prompt_image_bindings": dict(self.prompt_image_bindings),
                 "page_scroll": self.settings_area.verticalScrollBar().value(),
@@ -857,8 +967,29 @@ class MediaPreview(QWidget):
         self.template = parse_video_workflow(selected["graph"])
         self.loaded_workflow_id = selected["workflow_id"]
         draft = self.drafts.get(self.loaded_workflow_id, {})
+        self.driving_video = None
+        if self.template.driving_video_node is not None and draft.get("driving_video_id"):
+            try:
+                self.driving_video = MediaRepository(self.workbench.output_dir).driving_video(
+                    draft["driving_video_id"]
+                )
+            except (WorkspaceError, OSError, ValueError):
+                logger.warning("无法恢复原视频", exc_info=True)
+        self.driving_video_row.setVisible(self.template.driving_video_node is not None)
+        self.driving_video_label.setText(self.driving_video["name"] if self.driving_video else "未选择")
+        dual_scene = self.is_dual_scene
+        for widget in (self.tracking_preview_button, self.open_tracking_button, self.tracking_status):
+            widget.setVisible(dual_scene)
+        self.slots_title.setText("动作迁移素材" if dual_scene else "参考图片")
+        self.slot_grid.setVisible(not dual_scene)
+        self.dual_inputs_section.setVisible(dual_scene)
+        self.advanced.note.setText("输出长边、采样步数、随机种子" if dual_scene else "采样步数、随机种子")
+        self.prompt_note.setText(
+            "描述最终画面和动作，角色与场景按上面的素材对应"
+            if dual_scene else "用 <Picture N> 指代上面的参考图片"
+        )
         self.additional_reference_slots = []
-        image_inputs = list(self.template.image_inputs)
+        image_inputs = [image for image in self.template.image_inputs if not dual_scene or image.role != "scene_b"]
         if self.template.kind == "reference":
             available = MAX_REFERENCE_IMAGES - len(image_inputs)
             for node_id in draft.get("additional_reference_slots", []):
@@ -870,11 +1001,21 @@ class MediaPreview(QWidget):
                 image_inputs.append(ImageInput(node_id, f"图片节点 {len(image_inputs) + 1}"))
         listed = {image["image_id"] for image in MediaRepository(self.workbench.output_dir).images()}
         self.image_fields = {}
-        references, frames = [], []
+        references, frames, roles, scenes = [], [], [], []
         for image_input in image_inputs:
-            frame = image_input.role != "reference"
-            caption = image_input.label if frame else f"图片 {len(references) + 1}"
-            slot = SlotCard(image_input.node_id, caption, frame=frame)
+            frame = not dual_scene and image_input.role != "reference"
+            if dual_scene:
+                caption = DUAL_IMAGE_CAPTIONS[image_input.role]
+                cells = roles if image_input.role.startswith("role_") else scenes
+            else:
+                caption = image_input.label if frame or self.template.driving_video_node else f"图片 {len(references) + 1}"
+                cells = frames if frame else references
+            slot = SlotCard(
+                image_input.node_id, caption, frame=frame, contain=dual_scene,
+                mark=DUAL_MARKS.get(image_input.role, ""),
+            )
+            if dual_scene:
+                slot.setToolTip(caption)
             selected_id = draft.get("images", {}).get(image_input.node_id)
             slot.image_id = selected_id if selected_id in listed else None
             slot.changed.connect(lambda: self.workbench.perform(self.refresh_result))
@@ -883,20 +1024,21 @@ class MediaPreview(QWidget):
                     lambda: self.pick_image(node_id)
                 )
             )
-            (frames if frame else references).append(slot)
+            cells.append(slot)
             self.image_fields[image_input.node_id] = slot
         self.add_image_button.setVisible(self.template.kind == "reference")
         self.slot_grid.set_cells([*references, self.add_image_button])
+        self.role_slots = roles
+        self.role_grid.set_cells(roles)
+        self.scene_grid.set_cells(scenes)
         self.frame_grid.set_cells(frames)
         self.frames_head.setVisible(bool(frames))
         self.frame_grid.setVisible(bool(frames))
         self.prompt.blockSignals(True)
-        self.prompt.setPlainText(
-            draft.get(
-                "prompt",
-                DEFAULT_VIDEO_PROMPT if self.template.kind == "reference" else self.template.prompt,
-            )
+        default_prompt = DUAL_SHOT_PROMPT if dual_scene else (
+            DEFAULT_VIDEO_PROMPT if self.template.kind == "reference" else self.template.prompt
         )
+        self.prompt.setPlainText(draft.get("prompt", default_prompt))
         self.prompt.blockSignals(False)
         self.prompt_image_bindings = dict(draft.get("prompt_image_bindings", {}))
         self.video_prompt_fingerprint = draft.get("video_prompt_fingerprint")
@@ -909,6 +1051,8 @@ class MediaPreview(QWidget):
         self.parameter_fields = {}
         self.duration_hint = self.make_duration_hint()
         for parameter in self.template.parameters:
+            if dual_scene and parameter.role in DUAL_TIMELINE_ROLES:
+                continue
             value = draft.get("parameters", {}).get(parameter.key, parameter.default)
             field = None
             if parameter.choices:
@@ -919,10 +1063,12 @@ class MediaPreview(QWidget):
                 control.setCurrentIndex(
                     index if index >= 0 else control.findData(parameter.default)
                 )
+                if parameter.role == "source_aspect":
+                    control.setToolTip("跟随原视频保留完整画面。固定画幅可能裁掉画面边缘。")
             elif type(parameter.default) is bool:
                 control = Switch()
                 control.setChecked(value)
-            elif parameter.input_name == "noise_seed":
+            elif parameter.input_name in {"noise_seed", "seed"}:
                 control = QLineEdit(str(value))
                 field = QHBoxLayout()
                 field.setSpacing(6)
@@ -931,6 +1077,10 @@ class MediaPreview(QWidget):
                 again.setFixedHeight(28)
                 again.clicked.connect(lambda checked=False, c=control: self.new_seed(c))
                 field.addWidget(again)
+            elif type(parameter.default) is str:
+                control = QLineEdit(str(value))
+                # Show where a long description starts, not where it ends.
+                control.setCursorPosition(0)
             elif type(parameter.default) is int:
                 control = QSpinBox()
                 control.setRange(int(parameter.minimum), int(parameter.maximum))
@@ -941,6 +1091,7 @@ class MediaPreview(QWidget):
                 control.setValue(value)
             if not isinstance(control, Switch):
                 control.setMinimumHeight(CONTROL_HEIGHT)
+            control.setAccessibleName(parameter.label)
             if isinstance(control, (QSpinBox, QDoubleSpinBox)):
                 control.setMaximumWidth(120)
             if parameter.role == "duration":
@@ -950,16 +1101,28 @@ class MediaPreview(QWidget):
                 field.setSpacing(SP[2])
                 field.addWidget(control)
                 field.addWidget(self.duration_hint, 1)
-            advanced = parameter.input_name == "noise_seed" or (
-                type(parameter.default) is int and parameter.role != "duration"
+            advanced = parameter.input_name in {"noise_seed", "seed"} or (
+                type(parameter.default) is int
+                and parameter.role != "duration"
+                and parameter.input_name != "frame_load_cap"
             )
             form = self.advanced_form if advanced else self.parameter_form
-            form.addRow(field_label(parameter.label), field if field is not None else control)
+            mark = DUAL_MARKS.get(DUAL_DESCRIPTION_MARKS.get(parameter.key, ""), "") if dual_scene else ""
+            form.addRow(field_label(parameter.label, mark), field if field is not None else control)
+            if parameter.role == "source_character":
+                control.textChanged.connect(self.refresh_generate_button)
             for name in ("valueChanged", "currentIndexChanged", "toggled", "textChanged"):
                 signal = getattr(control, name, None)
                 if signal is not None:
                     signal.connect(self.save_timer.start)
             self.parameter_fields[parameter.key] = control
+            if dual_scene and (parameter.role in TRACKING_ROLES or parameter.input_name == "aspect_ratio"):
+                if isinstance(control, QLineEdit):
+                    control.editingFinished.connect(self.refresh_tracking_preview)
+                elif isinstance(control, QComboBox):
+                    control.currentIndexChanged.connect(self.refresh_tracking_preview)
+                else:
+                    control.valueChanged.connect(self.refresh_tracking_preview)
         self.advanced.setVisible(self.advanced_form.rowCount() > 0)
         self.refresh_duration_hint()
         self.refresh_result()
@@ -993,13 +1156,21 @@ class MediaPreview(QWidget):
             node_id: image_id for node_id, image_id in selection.items() if image_id is not None
         }
         self.current_job = None
-        for job in reversed(repository.jobs()):
+        video_id = self.driving_video["video_id"] if self.driving_video else None
+        jobs = repository.jobs()
+        for job in reversed(jobs):
             snapshot = job["input_snapshot"]
+            if snapshot.get("tracking_preview"):
+                continue
             images = snapshot.get("images")
             if not isinstance(images, dict) or not images:
                 continue
             job_images = {node_id: image["image_id"] for node_id, image in images.items()}
-            if snapshot.get("workflow_id") == self.loaded_workflow_id and job_images == selection:
+            if (
+                snapshot.get("workflow_id") == self.loaded_workflow_id
+                and job_images == selection
+                and (snapshot.get("driving_video") or {}).get("video_id") == video_id
+            ):
                 self.current_job = job
                 break
         job = self.current_job
@@ -1009,13 +1180,12 @@ class MediaPreview(QWidget):
             else None
         )
         self.video_path = path
+        self.open_video_button.setText("打开片段" if job and len(job["outputs"]) > 1 else "打开视频")
         self.show_job(job, bool(selection))
         busy = self.workbench.tasks.busy("video")
         prompt_busy = self.workbench.tasks.prompt_busy(self.target)
-        self.generate_button.setEnabled(any(selection.values()) and not busy and not prompt_busy)
-        self.generate_button.setToolTip(
-            "当前镜头的视频提示词正在编写，请完成后再生成视频" if prompt_busy else ""
-        )
+        self.refresh_generate_button()
+        self.swap_roles_button.setEnabled(any(slot.image_id for slot in self.role_slots))
         self.add_image_button.set_room(MAX_REFERENCE_IMAGES - len(self.image_fields))
         self.add_image_button.setEnabled(
             len(self.image_fields) < MAX_REFERENCE_IMAGES and not prompt_busy
@@ -1028,10 +1198,135 @@ class MediaPreview(QWidget):
         self.query_button.setEnabled(waiting and not busy)
         self.open_button.setEnabled(bool(self.workbench.output_dir))
         self.open_video_button.setEnabled(bool(path and path.is_file()))
+        self._sync_tracking_preview(repository, jobs)
         self.refresh_prompt_state()
         self.relayout()
         self.save_timer.start()
         self.inputs_changed.emit()
+
+    def refresh_generate_button(self) -> None:
+        """「生成视频」 waits for the inputs and for running tasks. For two people, the line under the
+        prompt says what is still missing, or which picture plays which person."""
+        tasks = self.workbench.tasks
+        prompt_busy = tasks.prompt_busy(self.target)
+        if self.is_dual_scene:
+            missing = self.dual_missing()
+            ready = not missing
+            self.prompt_status.setText(missing or self.dual_casting())
+            set_tone(self.prompt_status, "warn" if missing else "")
+        else:
+            missing = ""
+            ready = any(self.image_selection().values()) and (
+                self.template.driving_video_node is None or self.driving_video is not None
+            )
+        self.generate_button.setEnabled(ready and not tasks.busy("video") and not prompt_busy)
+        self.generate_button.setToolTip(
+            "当前镜头的视频提示词正在编写，请完成后再生成视频" if prompt_busy else missing
+        )
+
+    def dual_missing(self) -> str:
+        """What the two-person video still needs, as one sentence; empty once everything is in."""
+        pick = [] if self.driving_video else ["原视频"]
+        pick += [
+            slot.caption if slot in self.role_slots else "场景参考图"
+            for slot in self.image_fields.values()
+            if not slot.image_id
+        ]
+        fill = [
+            parameter.label
+            for parameter in self.template.parameters
+            if parameter.role == "source_character"
+            and not self.parameter_fields[parameter.key].text().strip()
+        ]
+        parts = (["请选择" + "、".join(pick)] if pick else []) + (
+            [("填写" if pick else "请填写") + "、".join(fill)] if fill else []
+        )
+        return "，".join(parts)
+
+    def dual_casting(self) -> str:
+        first, second = (picture_name(slot.image_name) for slot in self.role_slots)
+        return f"蓝色 → {first}，红色 → {second}，背景换成场景参考图；提示词可以继续手动修改。"
+
+    def swap_roles(self) -> None:
+        """角色 A and 角色 B trade pictures; the descriptions stay, so the colors keep their people."""
+        self.require_editable_inputs()
+        first, second = self.role_slots
+        first.image_id, second.image_id = second.image_id, first.image_id
+        self.refresh_result()
+
+    def refresh_tracking_preview(self) -> None:
+        repository = MediaRepository(self.workbench.output_dir)
+        self._sync_tracking_preview(repository, repository.jobs())
+
+    def _sync_tracking_preview(self, repository: MediaRepository, jobs: list[dict]) -> None:
+        self.tracking_preview_job = None
+        self.tracking_preview_path = None
+        if not self.is_dual_scene:
+            return
+        video_id = self.driving_video["video_id"] if self.driving_video else None
+        parameters = self.parameter_values(raw=True)
+        tracked = tuple(
+            parameter for parameter in self.template.parameters
+            if parameter.role in TRACKING_ROLES or parameter.input_name == "aspect_ratio"
+        )
+
+        def effective(settings: dict) -> dict:
+            values = {p.key: settings.get(p.key, p.default) for p in tracked}
+            values[SINGLE_SHOT_KEY] = settings.get(SINGLE_SHOT_KEY, False)
+            for parameter in tracked:
+                if parameter.role == "output_edge":
+                    values[parameter.key] = min(512, values[parameter.key])
+            return values
+
+        current = effective(parameters)
+        # A preview of this video made with other settings.
+        outdated = False
+        for job in reversed(jobs):
+            snapshot = job["input_snapshot"]
+            if (
+                video_id is None or not snapshot.get("tracking_preview")
+                or snapshot.get("workflow_id") != self.loaded_workflow_id
+                or (snapshot.get("driving_video") or {}).get("video_id") != video_id
+            ):
+                continue
+            if effective(snapshot.get("parameters", {})) != current:
+                outdated = outdated or job["status"] == "succeeded"
+                continue
+            if self.tracking_preview_job is None:
+                self.tracking_preview_job = job
+            if job["status"] == "succeeded" and job["outputs"]:
+                path = repository.resolve(job["outputs"][0]["relative_path"])
+                if path.is_file():
+                    self.tracking_preview_path = path
+                    break
+        busy = self.workbench.tasks.busy("video")
+        done = self.tracking_preview_path is not None
+        self.tracking_preview_button.setEnabled(video_id is not None and not busy)
+        self.open_tracking_button.setEnabled(done)
+        latest = self.tracking_preview_job
+        status = latest["status"] if latest else ""
+        pending = status in RUNNING or status in {"unknown", "interrupted"}
+        self.tracking_preview_button.setText(
+            "查询动作预览" if pending else "重新提取动作预览" if done or outdated else "提取动作预览"
+        )
+        if video_id is None:
+            hint, tone = "选好原视频后可以提取动作预览，用颜色核对两人有没有对反。", ""
+        elif status in RUNNING:
+            hint, tone = f"正在提取动作预览（{JOB_STATES[status]}）：只跑人物跟踪，不生成视频。", "run"
+        elif pending:
+            hint, tone = f"动作预览{JOB_STATES[status]}，点「查询动作预览」查看结果。", "warn"
+        elif done:
+            hint = "动作预览已提取：打开后核对蓝色是否圈住原片人物 A，红色是否圈住原片人物 B。"
+            tone = "ok"
+        elif status == "failed":
+            hint, tone = "动作预览提取失败，检查服务后重新提取。", "bad"
+        elif outdated:
+            hint, tone = "动作预览是按之前的设置提取的，已过期，请重新提取。", "warn"
+        else:
+            hint = "提取动作预览后，蓝色圈出角色 A 对应的人，红色圈出角色 B 对应的人。不提取也能生成。"
+            tone = ""
+        self.tracking_status.setText(hint)
+        set_tone(self.tracking_status, tone)
 
     def show_job(self, job: dict | None, selected: bool) -> None:
         """The pill, the stand-in picture and the footer sentence for the matching job."""
@@ -1042,12 +1337,16 @@ class MediaPreview(QWidget):
                 if selected
                 else ("请至少选择一张图片" if frames_only else "请至少选择一张参考图片")
             )
+            if self.is_dual_scene and not selected:
+                text = "请选择原视频、角色 A/B 和当前场景"
             self.set_job_view("", "未生成", "生成的视频显示在这里", text, "")
             return
         status = job["status"]
         text = JOB_STATES[status]
         duration = None
-        if job["outputs"]:
+        if len(job["outputs"]) > 1:
+            text += f" · {len(job['outputs'])} 个片段"
+        elif job["outputs"]:
             duration = job["outputs"][0].get("metadata", {}).get("duration")
             if isinstance(duration, (int, float)):
                 text += f"；实际时长 {duration:.2f} 秒"
@@ -1068,7 +1367,8 @@ class MediaPreview(QWidget):
                 "run", "生成中", f"{JOB_STATES[status]}…\n已提交到 ComfyUI，可以先去做别的", text, note
             )
         elif status == "succeeded":
-            self.set_job_view("ok", "已保存", "视频已保存\n点「打开视频」播放", text, note)
+            action = "打开片段" if len(job["outputs"]) > 1 else "打开视频"
+            self.set_job_view("ok", "已保存", f"视频已保存\n点「{action}」播放", text, note)
         elif status == "failed":
             picture = "生成失败" + (f"：{reason}" if reason else "") + "\n检查服务后重新点「生成视频」"
             self.set_job_view("bad", "失败", picture, text, note)
@@ -1098,6 +1398,12 @@ class MediaPreview(QWidget):
             self._refresh_prompt_state()
 
     def _refresh_prompt_state(self) -> None:
+        self.generate_prompt_button.setVisible(not self.is_dual_scene)
+        if self.is_dual_scene:
+            # No prompt writing to report: the status line says what the video still needs.
+            self.resume_prompt_button.hide()
+            self.prompt_shift.hide()
+            return
         from core.short_video.v2.runtime import get_recovery
 
         repository = ProjectRepository(self.workbench.output_dir)
@@ -1164,6 +1470,31 @@ class MediaPreview(QWidget):
 
     # -- actions ---------------------------------------------------------------------------
 
+    def generate_tracking_preview(self) -> None:
+        require(self.is_dual_scene and self.driving_video is not None, "INVALID_INPUT", "请选择原视频")
+        require(not self.workbench.tasks.busy("video"), "PROJECT_BUSY", "已有视频任务在运行")
+        self.refresh_tracking_preview()
+        latest = self.tracking_preview_job
+        if latest and latest["status"] not in {"succeeded", "failed", "cancelled"}:
+            work = MediaWork(self.workbench.output_dir, job_id=latest["job_id"])
+        else:
+            command = MediaService(self.workbench.output_dir).prepare_video(
+                {}, "", workflow_id=self.loaded_workflow_id,
+                driving_video_id=self.driving_video["video_id"], parameters=self.parameter_values(),
+                target=self.target, tracking_preview=True,
+            )
+            work = MediaWork(self.workbench.output_dir, command)
+        self.workbench.submit(work, self.tracking_preview_button)
+
+    def open_tracking_preview(self) -> None:
+        self.refresh_tracking_preview()
+        path = self.tracking_preview_path
+        require(path is not None, "INVALID_INPUT", "请先提取当前设置的动作预览")
+        require(
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))),
+            "OPEN_LOCATION_FAILED", f"无法打开动作预览：{path}",
+        )
+
     def generate(self) -> None:
         require(not self.workbench.tasks.busy("video"), "PROJECT_BUSY", "已有视频任务在运行")
         require(
@@ -1173,10 +1504,13 @@ class MediaPreview(QWidget):
         )
         self.validate_prompt_image_bindings()
         prompt = self.prompt.toPlainText().strip()
+        if self.is_dual_scene and not prompt:
+            prompt = DUAL_SHOT_PROMPT
         command = MediaService(self.workbench.output_dir).prepare_video(
             self.image_selection(),
             prompt,
             workflow_id=self.loaded_workflow_id,
+            driving_video_id=self.driving_video["video_id"] if self.driving_video else None,
             parameters=self.parameter_values(),
             target=self.target,
         )
@@ -1201,15 +1535,32 @@ class MediaPreview(QWidget):
         )
 
     def open_video(self) -> None:
+        if self.current_job and len(self.current_job["outputs"]) > 1:
+            repository = MediaRepository(self.workbench.output_dir)
+            menu = QMenu(self.open_video_button)
+            paths = {}
+            for number, result in enumerate(self.current_job["outputs"], 1):
+                path = repository.resolve(result["relative_path"])
+                action = menu.addAction(result.get("label", f"片段 {number:02d}"))
+                action.setEnabled(path.is_file())
+                paths[action] = path
+            chosen = menu.exec(self.open_video_button.mapToGlobal(self.open_video_button.rect().bottomLeft()))
+            if chosen is None:
+                return
+            self._play_video(paths[chosen])
+            return
         require(
             self.video_path is not None and self.video_path.is_file(),
             "INVALID_INPUT",
             "这组输入还没有生成好的视频",
         )
+        self._play_video(self.video_path)
+
+    def _play_video(self, path: Path) -> None:
         require(
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.video_path))),
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))),
             "OPEN_LOCATION_FAILED",
-            f"无法打开视频：{self.video_path}",
+            f"无法打开视频：{path}",
         )
 
     def require_editable_inputs(self) -> None:
