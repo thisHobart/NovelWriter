@@ -132,12 +132,14 @@ def adopt_draft(root, identity, raw, *, expected_fingerprint=None, expected_rece
         if not files or None in files:
             raise ValueError("草稿缺少保存目标")
         before = repo._files()
+        before_state = repo._state()
         updated = dict(before, **files)
         metadata = repo._revision(repo._metadata(), updated, list(files), ["草稿已手动采用，请核对生成问题。"], True)
         from core.generation.lore_repository import META
         receipt.update(candidate=raw, status="needs_changes", exit_reason="manual_adoption", files=list(files),
                        source_fingerprint=source_fingerprint(root, files), disposition="current")
         repo._transaction({**files, META: encode(metadata), f"{RESULTS}/{identity}.json": encode(receipt)}, "adopt_generation_draft")
+        repo.record_change("采用草稿：" + LABELS.get(kind, "设定"), before_state, [identity])
         return receipt
 
 

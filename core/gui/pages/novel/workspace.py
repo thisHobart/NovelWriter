@@ -39,7 +39,6 @@ from core.gui.pages.novel.step_rail import StepRail, StepState
 from core.gui.pages.novel.structure_page import StructurePage
 from core.gui.pages.novel.workflow_page import WorkflowPage
 from core.gui.task_runner import TaskRunner
-from core.lore_localization import file_label
 
 if TYPE_CHECKING:
     from core.gui.feature import FeatureHost
@@ -271,37 +270,7 @@ class NovelWorkspace(QWidget):
                 self.status.set_error("参数无法用于生成", str(exc))
                 self._navigate("parameters")
                 return
-        action = getattr(work, "lore_action", None)
-        if action == "repair":
-            from core.generation.lore_run import load_receipt
-            try:
-                receipt = load_receipt(self.output_dir(), (work.options or {}).get("receipt_id"))
-                action = {"world": "lore", "background": "enhance"}.get(receipt["kind"], receipt["kind"])
-            except (OSError, ValueError, KeyError) as exc:
-                self.status.set_error("无法读取设定修复对象", str(exc))
-                return
-        if action and action != "titles":
-            try:
-                status = LoreRepository(self.output_dir()).review_status()
-                manual = status.get("manual_files", [])
-                affected = [p for p in manual if action == "full" or
-                            (action == "lore" and p.endswith(("generated_lore.md", "lore_contract.json"))) or
-                            (action == "characters" and p.endswith("characters.json")) or
-                            (action == "factions" and p.endswith("factions.json")) or
-                            (action == "enhance" and "background_" in p)]
-                if action == "enhance" and getattr(work, "options", None) and work.options.get("target"):
-                    affected = [p for p in affected if p == work.options["target"]]
-                if affected:
-                    answer = QMessageBox.question(
-                        self, "重新生成将覆盖人工修改",
-                        "以下人工修改内容可能被覆盖，运行前会自动备份：\n" + "\n".join(file_label(path) for path in affected),
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-                    )
-                    if answer != QMessageBox.Yes:
-                        return
-            except Exception as exc:
-                self.status.set_error("无法检查设定修改状态", str(exc))
-                return
+        # 覆盖人工修改不再弹确认框：世界设定的每次改动都记进改动记录，页面上可以「撤回」。
 
         self.status.set_busy(busy_text, ("本次使用已保存参数 · " if use_saved else "") + f"输出目录 {self.output_dir()}")
 

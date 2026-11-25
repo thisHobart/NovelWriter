@@ -203,6 +203,36 @@ def test_main_window_routes_between_pages(app):
     assert novel.stack.currentWidget() is novel.pages["scenes"]
 
 
+def _lore_project(root):
+    from core.generation.lore_repository import BODY, CHARACTERS, FACTIONS, encode
+    for rel, value in ((BODY, "# 世界\n张明在调查局工作。"),
+                       (CHARACTERS, encode({"characters": [{"name": "张明", "role": "protagonist"}]})),
+                       (FACTIONS, encode([{"name": "调查局", "description": "原描述"}]))):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value, encoding="utf-8")
+
+
+def test_lore_page_offers_undo_and_redo_after_a_change(app, tmp_path):
+    from core.generation.lore_repository import BODY, LoreRepository
+    _lore_project(tmp_path)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.change_bar.isHidden()            # 还没有改动，不摆撤回
+
+    repo = LoreRepository(tmp_path)
+    repo.save(repo.load_snapshot(), {BODY: "改过的世界观"})
+    page.refresh()
+    assert not page.change_bar.isHidden()
+    assert "编辑世界观" in page.change_label.text()
+    page.undo_button.click()
+    assert repo.load_snapshot().files[BODY] == "# 世界\n张明在调查局工作。"
+    assert not page.redo_button.isHidden()
+    page.redo_button.click()
+    assert repo.load_snapshot().files[BODY] == "改过的世界观"
+
+
 def test_refresh_is_not_reentrant(app):
     window = MainWindow()
     novel = window.novel

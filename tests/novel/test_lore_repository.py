@@ -365,3 +365,121 @@ def test_legacy_faction_name_and_shape_are_preserved_and_synchronized(project):
     saved = edit_payload(repo.load_snapshot(), FACTIONS)
     assert saved["factions"][0]["faction_name"] == "新调查局"
     assert saved["metadata"] == {"old": True}
+
+
+# ---------------------------------------------------------------- 撤回与恢复
+def test_old_project_without_change_log_opens_and_has_nothing_to_undo(project):
+    repo = LoreRepository(project)
+    assert repo.change_log() == {"undo": None, "redo": None}
+    with pytest.raises(LoreEditError, match="撤回"):
+        repo.undo()
+
+
+def test_regeneration_can_be_undone_and_redone(project):
+    repo = LoreRepository(project)
+    repo.save(repo.load_snapshot(), {BODY: "人工改过的世界观"})
+    @tracked_generation
+    def regenerate(step, output_dir, action=""):
+        write(Path(output_dir), BODY, "新生成的世界观")
+        write(Path(output_dir), LORE + "background_protagonist_新人.md", "新人背景")
+    regenerate("lore", str(project), action="lore")
+    assert repo.change_log()["undo"]["label"] == "生成世界观"
+
+    repo.undo()
+    files = repo.load_snapshot().files
+    assert files[BODY] == "人工改过的世界观"
+    assert LORE + "background_protagonist_新人.md" not in files
+    assert repo.change_log()["redo"]["label"] == "生成世界观"
+    assert repo.change_log()["undo"]["label"] == "编辑世界观"
+
+    repo.redo()
+    files = repo.load_snapshot().files
+    assert files[BODY] == "新生成的世界观"
+    assert files[LORE + "background_protagonist_新人.md"] == "新人背景"
+    assert repo.change_log()["redo"] is None
+
+
+def test_new_change_after_undo_cuts_the_redo_chain_but_keeps_snapshots(project):
+    repo = LoreRepository(project)
+    repo.save(repo.load_snapshot(), {BODY: "第一版"})
+    repo.undo()
+    snapshots = len(list((project / "system/lore_history").glob("*/state.json")))
+    repo.save(repo.load_snapshot(), {BODY: "另一版"})
+    assert repo.change_log()["redo"] is None
+    assert len(list((project / "system/lore_history").glob("*/state.json"))) == snapshots + 2
+
+
+def test_undo_of_rename_restores_cards_registry_and_background(project):
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][0]["name"] = "张远"
+    repo.save(snapshot, {CHARACTERS: encode(cast)})
+    assert repo.change_log()["undo"]["label"] == "改名：张明 → 张远"
+    repo.undo()
+    restored = repo.load_snapshot().files
+    assert restored == snapshot.files
+
+
+def test_acknowledge_can_be_undone(project):
+    repo = LoreRepository(project)
+    repo.save(repo.load_snapshot(), {BODY: "修改"})
+    status = repo.review_status()
+    repo.acknowledge(status["version"])
+    assert not repo.review_status()["pending"]
+    assert repo.change_log()["undo"]["label"] == "全部标为已看过"
+    repo.undo()
+    after = repo.review_status()
+    assert after["pending"].keys() == status["pending"].keys()
+    assert after["review_items"] == status["review_items"]
+    assert after["version"] > status["version"]
+
+
+def test_undo_marks_downstream_rewritten_meanwhile_for_review(project):
+    repo = LoreRepository(project)
+    @tracked_generation
+    def regenerate(step, output_dir, action=""):
+        write(Path(output_dir), FACTIONS, [{"name": "新势力", "description": "新"}])
+    regenerate("lore", str(project), action="factions")
+    repo.acknowledge(repo.review_status()["version"])
+    repo.undo()  # 撤回「全部标为已看过」
+    repo.undo()  # 撤回「生成势力」
+    assert edit_payload(repo.load_snapshot(), FACTIONS)[0]["name"] == "调查局"
+    assert not repo.review_status().get("pending")
+
+    regenerate("lore", str(project), action="factions")
+    write(project, "story/structure/act.md", "按新势力重写的大纲")
+    repo.acknowledge(repo.review_status()["version"])
+    repo.undo()
+    repo.undo()
+    status = repo.review_status()
+    assert "story/structure/act.md" in status["pending"]
+    assert any("撤回" in item for item in status["review_items"])
+
+
+def test_undo_reverts_generation_receipts(project):
+    receipts = project / "system/lore_generation/results"
+    @tracked_generation
+    def regenerate(step, output_dir, action=""):
+        write(Path(output_dir), FACTIONS, [{"name": "新势力", "description": "新"}])
+        write(receipts.parent.parent.parent, "system/lore_generation/results/abc123.json",
+              {"id": "abc123", "kind": "factions", "status": "complete", "candidate": "", "created_at": 9e12})
+        return {"lore_results": [{"id": "abc123"}]}
+    regenerate("lore", str(project), action="factions")
+    repo = LoreRepository(project)
+    repo.undo()
+    assert json.loads((receipts / "abc123.json").read_text(encoding="utf-8"))["reverted"] is True
+    repo.redo()
+    assert json.loads((receipts / "abc123.json").read_text(encoding="utf-8"))["reverted"] is False
+
+
+def test_undo_is_rejected_while_generation_holds_the_lock(project):
+    from concurrent.futures import ThreadPoolExecutor
+    from filelock import Timeout
+    repo = LoreRepository(project)
+    repo.save(repo.load_snapshot(), {BODY: "修改"})
+    with repo.lock(), ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(repo.undo)
+        with pytest.raises(Timeout):
+            future.result(timeout=5)
+    assert repo.load_snapshot().files[BODY] == "修改"

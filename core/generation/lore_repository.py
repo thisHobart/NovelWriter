@@ -6,22 +6,26 @@ All participating generation entry points and edits share the same project lock.
 from __future__ import annotations
 
 import base64
-from copy import deepcopy
-from dataclasses import dataclass, field
-from functools import wraps
 import hashlib
 import inspect
 import json
 import os
 import re
-from pathlib import Path
 import tempfile
+import time
+from copy import deepcopy
+from dataclasses import dataclass, field
+from functools import wraps
+from pathlib import Path
 from uuid import uuid4
 
 from core.common.locks import project_lock
 
 LORE = "story/lore/"
 META = "system/lore_edits.json"
+#: 改动记录：每次改动前后的完整设定快照，供「撤回」「恢复」使用。快照文件只增不删。
+CHANGES = "system/lore_history/changes.json"
+RECEIPTS = "system/lore_generation/results"
 CHARACTERS = LORE + "characters.json"
 FACTIONS = LORE + "factions.json"
 CONTRACT = LORE + "lore_contract.json"
@@ -92,6 +96,19 @@ class LorePreview:
     files: dict[str, str]
     changed_files: list[str]
     review_items: list[str] = field(default_factory=list)
+    renames: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+FILE_TITLES = {CHARACTERS: "人物", FACTIONS: "势力", CONTRACT: "名称与规则", BODY: "世界观"}
+
+
+def edit_label(changed, renames):
+    """改动记录里给作者看的一句话：改了什么。"""
+    people = [(old, new) for kind, old, new in renames if kind in {"characters", "factions"}]
+    if people:
+        return "改名：" + "、".join(f"{old} → {new}" for old, new in people)
+    titles = [FILE_TITLES.get(rel, "人物背景" if "background_" in rel else "设定") for rel in changed]
+    return "编辑" + "、".join(dict.fromkeys(titles))
 
 
 class LoreRepository:
@@ -352,7 +369,7 @@ class LoreRepository:
             for rel, text in texts.items():
                 if old in text:
                     review.append(f"{rel}：仍含旧名「{old}」（现名「{new}」），请核对。")
-        return LorePreview(files, changed, list(dict.fromkeys(review)))
+        return LorePreview(files, changed, list(dict.fromkeys(review)), renames)
 
     @staticmethod
     def _validate(original, payloads, groups):
@@ -422,12 +439,14 @@ class LoreRepository:
             preview = self.preview(snapshot, edits, mappings)
             if not preview.changed_files:
                 return preview
+            before = self._state()
             metadata = self._revision(snapshot.metadata, preview.files, preview.changed_files, preview.review_items, True)
             changes = {k: preview.files.get(k) for k in preview.changed_files}
             changes[META] = encode(metadata)
             from core.generation.lore_run import receipt_changes_for_edits
             changes.update(receipt_changes_for_edits(self.root, snapshot.files, preview.files))
             self._transaction(changes)
+            self.record_change(edit_label(preview.changed_files, preview.renames), before)
             return preview
 
     def review_status(self):
@@ -442,10 +461,12 @@ class LoreRepository:
             metadata = self._metadata()
             if metadata.get("version") != version:
                 raise LoreEditError("设定版本已变化，请重新核对")
+            before = self._state()
             metadata["pending"] = {k: v for k, v in metadata.get("pending", {}).items() if stage and v["stage"] != stage}
             if stage is None:
                 metadata["review_items"] = []
             self._transaction({META: encode(metadata)}, "acknowledge")
+            self.record_change("全部标为已看过", before)
 
     def backup_generation(self, files):
         if not files:
@@ -453,6 +474,119 @@ class LoreRepository:
         folder = self.history / uuid4().hex
         folder.mkdir(parents=True)
         self._atomic(folder / "backup.json", encode({"reason": "before_generation", "files": files}).encode())
+
+    # ------------------------------------------------------------ 改动记录、撤回与恢复
+    def _state(self):
+        meta = self.path(META)
+        return {"files": self._files(), "meta": meta.read_text(encoding="utf-8") if meta.exists() else None}
+
+    def _store_state(self, state):
+        folder = self.history / uuid4().hex
+        folder.mkdir(parents=True)
+        self._atomic(folder / "state.json", encode(state).encode("utf-8"))
+        return folder.name
+
+    def _load_state(self, name):
+        if not name or any(c not in "0123456789abcdef" for c in name):
+            raise LoreEditError("改动记录编号无效")
+        return json.loads((self.history / name / "state.json").read_text(encoding="utf-8"))
+
+    def _change_index(self):
+        path = self.root / CHANGES
+        if not path.exists():
+            return {"version": 1, "entries": []}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return {"version": 1, "entries": []}
+        if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+            return {"version": 1, "entries": []}
+        return data
+
+    def _write_change_index(self, data):
+        self._atomic(self.root / CHANGES, encode(data).encode("utf-8"))
+
+    def record_change(self, label, before, receipts=()):
+        """调用方持有项目锁。前后没有差别就不记；新改动会截断尚未恢复的撤回链。"""
+        after = self._state()
+        if after == before:
+            return None
+        data = self._change_index()
+        entries = [entry for entry in data["entries"] if entry.get("state") == "done"]
+        entry = {"id": uuid4().hex, "label": label, "at": time.time(), "state": "done",
+                 "before": self._store_state(before), "after": self._store_state(after),
+                 "receipts": list(receipts), "downstream": self.downstream()}
+        entries.append(entry)
+        self._write_change_index({"version": 1, "entries": entries})
+        return entry
+
+    def change_log(self):
+        """界面只要两样：能撤回的最近一次改动，和能恢复的最近一次撤回。"""
+        entries = self._change_index()["entries"]
+        done = [entry for entry in entries if entry.get("state") == "done"]
+        undone = [entry for entry in entries if entry.get("state") == "undone"]
+        return {"undo": done[-1] if done else None, "redo": undone[0] if undone else None}
+
+    def _apply_state(self, target, since, message, reverted, receipts):
+        current = self._files()
+        changes = {rel: None for rel in current if rel not in target["files"]}
+        changes.update({rel: text for rel, text in target["files"].items() if current.get(rel) != text})
+        metadata = json.loads(target["meta"]) if target.get("meta") else {}
+        metadata["version"] = max(int(self._metadata().get("version", 0)), int(metadata.get("version", 0))) + 1
+        now = self.downstream()
+        moved = sorted(rel for rel, item in now.items() if since.get(rel) != item)
+        if moved and changes:
+            # 撤回期间后面阶段已按另一版设定重写的文件，照常标成待核对。
+            pending = dict(metadata.get("pending", {}))
+            pending.update({rel: {"stage": now[rel]["stage"], "version": metadata["version"]} for rel in moved})
+            metadata["pending"] = pending
+            metadata["review_items"] = list(dict.fromkeys(metadata.get("review_items", []) + [message]))
+        changes[META] = encode(metadata)
+        for identity in receipts:
+            path = self.path(f"{RECEIPTS}/{identity}.json")
+            if path.exists():
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record["reverted"] = reverted
+                changes[f"{RECEIPTS}/{identity}.json"] = encode(record)
+        self._transaction(changes, "undo" if reverted else "redo")
+
+    def undo(self, entry_id=None):
+        with self.lock():
+            self._recover()
+            data = self._change_index()
+            done = [entry for entry in data["entries"] if entry.get("state") == "done"]
+            if not done:
+                raise LoreEditError("没有可以撤回的改动")
+            entry = done[-1]
+            if entry_id and entry["id"] != entry_id:
+                raise LoreEditError("改动记录已变化，请刷新后再试")
+            current = self._state()
+            if current != self._load_state(entry["after"]):
+                entry["after"] = self._store_state(current)  # 恢复时回到撤回前磁盘上的样子
+            self._apply_state(self._load_state(entry["before"]), entry.get("downstream", {}),
+                              f"设定已撤回到「{entry['label']}」之前，请核对相关内容。", True, entry.get("receipts", []))
+            entry.update(state="undone", undone_at=time.time(), downstream_at_undo=self.downstream())
+            self._write_change_index(data)
+            return entry
+
+    def redo(self, entry_id=None):
+        with self.lock():
+            self._recover()
+            data = self._change_index()
+            undone = [entry for entry in data["entries"] if entry.get("state") == "undone"]
+            if not undone:
+                raise LoreEditError("没有可以恢复的改动")
+            entry = undone[0]
+            if entry_id and entry["id"] != entry_id:
+                raise LoreEditError("改动记录已变化，请刷新后再试")
+            current = self._state()
+            if current != self._load_state(entry["before"]):
+                entry["before"] = self._store_state(current)
+            self._apply_state(self._load_state(entry["after"]), entry.get("downstream_at_undo", {}),
+                              f"设定已恢复「{entry['label']}」，请核对相关内容。", False, entry.get("receipts", []))
+            entry.update(state="done", downstream=self.downstream())
+            self._write_change_index(data)
+            return entry
 
 
 def lore_context(output_dir):
@@ -472,6 +606,27 @@ def lore_context(output_dir):
             + "\n".join(f"### {key}\n{files[key]}" for key in ordered if key in files))
 
 
+STEP_LABELS = {"": "生成世界设定", "full": "生成世界设定", "factions": "生成势力", "characters": "生成人物",
+               "lore": "生成世界观", "enhance": "完善主要人物", "continue": "接着生成后面几项"}
+KIND_TITLES = {"characters": "人物", "factions": "势力", "world": "世界观", "background": "人物背景"}
+
+
+def generation_label(arguments):
+    """改动记录里这次生成叫什么，用界面上的按钮名。"""
+    action = arguments.get("action") or ""
+    options = arguments.get("options") or {}
+    if action == "repair":
+        try:
+            receipt = json.loads((Path(arguments["output_dir"]) / RECEIPTS / f"{options.get('receipt_id')}.json")
+                                 .read_text(encoding="utf-8"))
+            return "让 AI 再修一次：" + KIND_TITLES.get(receipt.get("kind"), "设定")
+        except (OSError, ValueError):
+            return "让 AI 再修一次"
+    if action == "enhance" and options.get("subject_name"):
+        return "重新生成人物背景：" + str(options["subject_name"])
+    return STEP_LABELS.get(action, "生成世界设定")
+
+
 def tracked_generation(function):
     """Serialize edits with generation and clear only artifacts actually rewritten."""
     signature = inspect.signature(function)
@@ -482,6 +637,8 @@ def tracked_generation(function):
         with repo.lock():
             repo._recover()
             before = repo._files()
+            before_state = repo._state()
+            started = time.time()
             downstream = repo.downstream()
             if bound.arguments["step"] == "lore" and bound.arguments.get("action") != "titles":
                 repo.backup_generation(before)
@@ -511,4 +668,22 @@ def tracked_generation(function):
                         metadata["review_items"] = list(dict.fromkeys(metadata.get("review_items", []) + warnings))
                 if metadata != previous and (previous or after != before or metadata.get("review_items")):
                     repo._transaction({META: encode(metadata)}, "generation_receipt")
+                if after != before:
+                    receipts = [item["id"] for item in (result or {}).get("lore_results", []) if item.get("id")]
+                    if not receipts:
+                        receipts = _receipts_since(repo.root, started)
+                    repo.record_change(generation_label(bound.arguments), before_state, receipts)
     return wrapped
+
+
+def _receipts_since(root, started):
+    folder = Path(root) / RECEIPTS
+    found = []
+    for path in folder.glob("*.json") if folder.exists() else []:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and float(record.get("created_at", 0)) >= started - 1:
+            found.append(record.get("id"))
+    return [identity for identity in found if identity]

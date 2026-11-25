@@ -85,6 +85,15 @@ def read_only_text(text: str, serif: bool = False) -> MarkdownView:
     return MarkdownView(text, serif)
 
 
+def _clock(timestamp) -> str:
+    from datetime import datetime
+    try:
+        moment = datetime.fromtimestamp(float(timestamp))
+    except (TypeError, ValueError, OSError):
+        return ""
+    return moment.strftime("%H:%M" if moment.date() == datetime.now().date() else "%m-%d %H:%M")
+
+
 class EntityCard(QWidget):
     def __init__(self, entity: artifacts.Entity, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -149,10 +158,71 @@ class LorePage(StagePage):
         container.body.setContentsMargins(0, 0, 0, 0)
         container.body.setSpacing(0)
 
+        # 改动条：最近一次改动和「撤回」，撤回后多一个「恢复」。
+        self.change_bar = QWidget()
+        bar = QHBoxLayout(self.change_bar)
+        bar.setContentsMargins(20, 10, 20, 10)
+        bar.setSpacing(10)
+        self.change_label = QLabel("")
+        self.change_label.setObjectName("Tertiary")
+        self.change_label.setWordWrap(True)
+        self.undo_button = secondary_button("撤回")
+        self.redo_button = secondary_button("恢复")
+        self.undo_button.clicked.connect(self._undo)
+        self.redo_button.clicked.connect(self._redo)
+        bar.addWidget(self.change_label, 1)
+        bar.addWidget(self.undo_button)
+        bar.addWidget(self.redo_button)
+        self.change_bar.hide()
+        container.body.addWidget(self.change_bar)
+
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         container.body.addWidget(self.tabs)
         self.set_left(container)
+
+    # ---------------------------------------------------------------- 撤回
+    def _refresh_change_bar(self) -> None:
+        try:
+            log = LoreRepository(self.output_dir).change_log()
+        except Exception:
+            log = {"undo": None, "redo": None}
+        undo, redo = log.get("undo"), log.get("redo")
+        parts = []
+        if undo:
+            parts.append(f"最近一次改动：{undo['label']}（{_clock(undo.get('at'))}）")
+        if redo:
+            parts.append(f"已撤回：{redo['label']}")
+        self.change_label.setText("　·　".join(parts))
+        self.undo_button.setVisible(bool(undo))
+        self.redo_button.setVisible(bool(redo))
+        self.undo_button.setToolTip(f"撤回「{undo['label']}」，回到那之前的设定" if undo else "")
+        self.redo_button.setToolTip(f"恢复「{redo['label']}」" if redo else "")
+        for button in (self.undo_button, self.redo_button):
+            button.setEnabled(not self.generation_busy)
+        self.change_bar.setVisible(bool(undo or redo))
+        self._change_log = log
+
+    def _undo(self) -> None:
+        self._step_history("undo")
+
+    def _redo(self) -> None:
+        self._step_history("redo")
+
+    def _step_history(self, direction: str) -> None:
+        if self.generation_busy or not self.resolve_draft():
+            return
+        entry = (getattr(self, "_change_log", None) or {}).get(direction)
+        try:
+            repo = LoreRepository(self.output_dir)
+            done = repo.undo(entry and entry["id"]) if direction == "undo" else repo.redo(entry and entry["id"])
+        except Exception as exc:
+            self.status_message.emit("error", display_message(exc))
+            self.refresh()
+            return
+        self.refresh()
+        self.artifacts_changed.emit()
+        self.status_message.emit("done", ("已撤回：" if direction == "undo" else "已恢复：") + done["label"])
 
     def _entity_tab(self, entities: List[artifacts.Entity], empty_hint: str) -> QWidget:
         page = QWidget()
@@ -277,7 +347,8 @@ class LorePage(StagePage):
             label = LABELS[receipt["kind"]]
             if receipt.get("subject"):
                 label += "「" + str(receipt["subject"].get("name", "")) + "」"
-            card = Card(label + " · " + STATUS_LABELS.get(receipt["status"], receipt["status"]))
+            card = Card(label + " · " + ("已撤回" if receipt.get("reverted")
+                                         else STATUS_LABELS.get(receipt["status"], receipt["status"])))
             detail = QLabel(f"{REASON_LABELS.get(receipt.get('exit_reason'), '候选已保留')} · 实际请求 {receipt.get('calls', 0)}/6 · 修复 {receipt.get('repairs', 0)} 次 · 用时 {receipt.get('elapsed_seconds', 0):.1f} 秒")
             detail.setWordWrap(True)
             card.body.addWidget(detail)
@@ -542,6 +613,8 @@ class LorePage(StagePage):
         seen = set()
         for record in list_receipts(self.output_dir):
             key = {"world": "lore", "background": "enhance"}.get(record["kind"], record["kind"])
+            if record.get("reverted"):
+                continue
             if key in self.step_buttons and key not in seen:
                 seen.add(key)
                 if record["status"] != "complete":
@@ -560,3 +633,4 @@ class LorePage(StagePage):
             if total else "世界构建与背景 · 尚未生成"
         )
         self.generate_button.setText("重新生成世界设定" if total else "生成世界设定")
+        self._refresh_change_bar()
