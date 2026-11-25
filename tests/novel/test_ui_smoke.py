@@ -437,6 +437,19 @@ def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tm
     assert page.step_buttons["lore"]._meta.text() != "待处理"
 
 
+def test_finished_result_cards_are_one_line_and_name_titles_as_on_the_tab(app, tmp_path):
+    _lore_project(tmp_path)
+    _result(tmp_path, "titles", "complete", created_at=1)
+    _result(tmp_path, "world", "complete", created_at=2, notes=["基调：信息不足"])
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    world, titles = _result_cards(page)
+    assert _card_title(titles) == "候选标题 · 已完成"                 # 和页签同一个叫法
+    assert titles.body.contentsMargins().top() == 0                    # 只有标题的卡不留正文边距
+    assert world.body.contentsMargins().top() > 0
+
+
 def test_manual_edit_turns_a_problem_result_into_edited(app, tmp_path):
     from core.generation.lore_repository import FACTIONS, LoreRepository, encode
     from core.generation.lore_run import file_digests

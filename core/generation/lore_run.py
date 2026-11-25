@@ -8,7 +8,7 @@ from core.generation.lore_repository import LoreRepository, encode, digest, BODY
 from core.generation.design_contract import DesignContractError
 
 RESULTS = "system/lore_generation/results"
-LABELS = {"characters": "人物", "factions": "势力", "world": "世界观", "background": "人物背景", "titles": "推荐标题"}
+LABELS = {"characters": "人物", "factions": "势力", "world": "世界观", "background": "人物背景", "titles": "候选标题"}
 
 
 def source_fingerprint(root, changes=None):

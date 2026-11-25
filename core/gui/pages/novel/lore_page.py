@@ -548,9 +548,13 @@ class LorePage(StagePage):
         receipts = [r for r in list_receipts(self.output_dir) if r["kind"] in LABELS]
         for receipt, earlier in latest_by_product(receipts):
             edited = edited_after_save(self.output_dir, receipt)
-            card = Card(self._result_title(receipt) + " · " + result_status(receipt, edited))
+            attention = needs_attention(self.output_dir, receipt)
+            has_notes = bool(receipt.get("notes")) and not receipt.get("reverted")
+            # 卡上只有标题时不留正文边距，已完成的几份排得紧一些。
+            padding = (20, 18, 20, 20) if attention or has_notes or earlier else (20, 0, 20, 0)
+            card = Card(self._result_title(receipt) + " · " + result_status(receipt, edited), padding=padding)
             card.setToolTip(result_details(receipt))
-            if needs_attention(self.output_dir, receipt):
+            if attention:
                 problems = "\n".join(display_message(issue) for issue in receipt.get("issues", []))
                 if receipt.get("disposition") != "current":
                     # 没采用的那份：标题已说明原因，读取报错原文只放在悬停提示里。
@@ -564,7 +568,7 @@ class LorePage(StagePage):
                     issues.setWordWrap(True)
                     card.body.addWidget(issues)
                 card.body.addLayout(self._result_actions(receipt))
-            if receipt.get("notes") and not receipt.get("reverted"):
+            if has_notes:
                 notes = QLabel("检查备注（不影响交付）：\n" + "\n".join(receipt["notes"]))
                 notes.setWordWrap(True)
                 notes.setObjectName("Tertiary")
