@@ -96,5 +96,6 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 - 待核对：`review_summary(output_dir)` 把待核对项按阶段汇总成几行，每行带文件列表。
 - 后面阶段的提示词：`lore_context(output_dir)` 只带还属于现有人物的背景文件（`current_backgrounds`，按 `background_<身份>_<姓名>.md` 认人）；旧版本留下的 `story/lore/name_mapping.json`（`LEGACY_TABLES`）也不带。两类文件都留在磁盘上。每份文件的小标题用 `lore_localization.file_label` 的中文名（「名称与规则登记表」「人物背景 · 主角 · 沈宁」），不用路径。
 - 故事结构文件的名字：`story_options.act_file_stem(结构, 幕名)` 是故事结构阶段写每一幕时的文件名，`act_for_file(文件名)` 反查是哪一幕；`localization.structure_file_label(路径)` 给出「故事结构 · 开端」「章节大纲 · 结局」这样的中文名，界面幕卡片和全书设定整理的材料都用它。
+- 写章节前整理全书设定的材料：`StoryLedgerManager.load_design_context(max_chars=72000)` 返回 `DesignMaterial`（一段文字），按 故事结构登记表、名称与规则登记表、各幕故事结构、各幕章节大纲、世界观正文、人物资料、势力资料、统一故事弧、人物弧光、势力弧光、人物背景 排列，幕按结构里的先后。超出篇幅时从最后一块起整块去掉（两张登记表总是带），去掉的列在材料末尾，也在 `omitted` 上；保存时记进 `case_bible.json` 的 `design_omitted`。`source_hash` 按原始文件内容算，`case_bible_needs_refresh`、`save_case_bible` 用它判断要不要重新整理；传普通文字时退回按全文算。`includes_lore` 为真时，整理提示词不再另附一份世界设定。
 
 `core/generation/lore_run.py` 从生成记录推算页面状态：`latest_by_product` 每份产物最新一次，`needs_attention` / `attention_receipts` 还要作者处理的几份，`edited_after_save` 保存后是否手动改过，`stale_lore` 按生成先后找出过期的几项。

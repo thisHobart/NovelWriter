@@ -486,7 +486,7 @@ def test_editing_only_the_structure_contract_still_refreshes_the_bible(tmp_path)
     manager.initialize({"Genre": "Mystery", "Subgenre": "Legal Thriller"})
 
     context = manager.load_design_context()
-    assert "## 来源：故事结构登记表" in context
+    assert context.startswith("## 故事结构登记表（必须遵守）")
 
     saved = manager.save_case_bible(
         {**_complete_bible_spine(), **manager.declared_story_spine()}, context

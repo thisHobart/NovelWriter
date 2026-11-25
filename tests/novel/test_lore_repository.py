@@ -254,8 +254,8 @@ def test_lore_change_invalidates_fact_baseline_even_if_only_background_changed(p
     from core.generation.story_ledger import StoryLedgerManager
     manager = StoryLedgerManager(str(project))
     context = manager.load_design_context()
-    from core.generation.story_ledger import source_hash
-    bible = {"status": "ready", "generated_from_design": True, "source_hash": source_hash(context)}
+    bible = {"status": "ready", "generated_from_design": True, "source_hash": context.source_hash}
+    assert not manager.case_bible_needs_refresh(bible, manager.load_design_context())
     repo = LoreRepository(project)
     repo.save(repo.load_snapshot(), {LORE + "background_protagonist_张明.md": "新的背景事实"})
     assert manager.case_bible_needs_refresh(bible, manager.load_design_context())

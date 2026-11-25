@@ -794,16 +794,17 @@ quote 必须是正文中一段连续、逐字可检索的原文；不得用省�
         """Establish whole-story truth once from structure and chapter outlines."""
         profile = self.profile
         existing_rules = baseline.get("domain_rules") or baseline.get("legal_system", {})
+        if getattr(design_context, "includes_lore", False):
+            # 整理材料已经按重要性带上了世界设定，不再另附一份按字数截断的。
+            sources = f"全书设定（按重要性排列，篇幅放不下的整块没带，列在末尾）：\n{design_context}"
+        else:
+            sources = f"世界观：\n{lore[:12000]}\n\n全书结构与章节大纲：\n{design_context[:60000]}"
         prompt = f"""你是{profile.bible_role}。请把已经存在的全书结构和章节大纲整理成稳定的“{profile.bible_noun}”，供后续所有章节核对。只提取材料明确支持的事实，不补写新的关键转折、新设定或新结局。
 
 作品参数：
 {compact_json(parameters, 4000)}
 
-世界观：
-{lore[:12000]}
-
-全书结构与章节大纲：
-{design_context[:60000]}
+{sources}
 
 已有领域基线（可按世界观明确设定调整，但必须保持同一体系）：
 {compact_json(existing_rules, 5000)}

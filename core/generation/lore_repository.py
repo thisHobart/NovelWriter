@@ -773,27 +773,35 @@ def current_backgrounds(output_dir):
     return found
 
 
+def _current_lore(output_dir):
+    """已经不属于现有人物的旧背景、旧版本留下的表不算在内（文件仍在磁盘上）。"""
+    files = LoreRepository(output_dir)._files()
+    keep = {LORE + relative for relative in current_backgrounds(output_dir)}
+    return {key: value for key, value in files.items()
+            if key not in LEGACY_TABLES and (not is_background(key) or key in keep)}
+
+
+def lore_files(output_dir):
+    """后面阶段要用的世界设定文件，按 登记表、正文、人物、势力、人物背景 排好：[(路径, 原文)]。"""
+    files = _current_lore(output_dir)
+    ordered = [key for key in (CONTRACT, BODY, CHARACTERS, FACTIONS) if key in files]
+    ordered += sorted(set(files) - set(ordered))
+    return [(key, files[key]) for key in ordered]
+
+
 def lore_context(output_dir):
     """Complete source fingerprint precedes prose, so truncation cannot hide changes."""
-    repo = LoreRepository(output_dir)
-    files = repo._files()
-    if not files:
+    pairs = lore_files(output_dir)
+    if not pairs:
         return ""
-    # 已经不属于现有人物的旧背景、旧版本留下的表不写进提示词（文件仍在磁盘上）。
-    keep = {LORE + relative for relative in current_backgrounds(output_dir)}
-    files = {key: value for key, value in files.items()
-             if key not in LEGACY_TABLES and (not is_background(key) or key in keep)}
-    ordered = [CONTRACT, BODY, CHARACTERS, FACTIONS]
-    ordered += sorted(set(files) - set(ordered))
     from core.generation.prompt_context import sanitize_lore_content
     from core.lore_localization import file_label
-    fingerprint = digest(encode(files))
-    if BODY in files:
-        files[BODY] = sanitize_lore_content(files[BODY])
+    fingerprint = digest(encode(_current_lore(output_dir)))
+    files = {key: sanitize_lore_content(text) if key == BODY else text for key, text in pairs}
     # 小标题用中文名，不用文件路径：英文路径会让模型在正文里也跟着写英文。
     return (f"\n## 当前世界设定（人工保存版本优先）\n完整设定指纹：{fingerprint}\n"
             + "名称、年代、技术与规则以名称登记表为准；人物及势力属性以对应卡片为准。自由文本若有旧设定，按当前登记与卡片纠正。\n"
-            + "\n".join(f"### {file_label(key)}\n{files[key]}" for key in ordered if key in files))
+            + "\n".join(f"### {file_label(key)}\n{files[key]}" for key, _ in pairs))
 
 
 STEP_LABELS = {"": "生成世界设定", "full": "生成世界设定", "factions": "生成势力", "characters": "生成人物",

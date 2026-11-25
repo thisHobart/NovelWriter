@@ -7,7 +7,6 @@ import json
 import os
 import re
 import tempfile
-from glob import glob
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -17,7 +16,9 @@ from core.common.locks import project_lock
 from core.generation.domain_profiles import DomainProfile, get_domain_profile, resolve_domain_profile
 from core.generation.helper_fns import read_json
 from core.generation.prompt_context import normalize_story_parameters
+from core.config.story_options import act_for_file
 from core.localization import structure_file_label
+from core.lore_localization import describe_value
 
 
 # v3：case_bible 的 `legal_system` 泛化为 `domain_rules`，并记录 `domain_profile`。
@@ -30,6 +31,65 @@ MIN_CASE_BIBLE_TRUTHS = 3
 
 def source_hash(content: str) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+#: 写章节前整理全书设定时材料的总字数上限。以前世界设定和结构大纲分两段、
+#: 各按字数截（12000 和 60000），现在合成一份，按重要性整块取舍。
+DESIGN_BUDGET = 72000
+
+#: 故事结构目录里的弧光文件，排在幕和章节大纲后面，依次是统一故事弧、人物弧光、势力弧光
+ARC_FILES = ("reconciled_arcs", "character_arcs", "faction_arcs")
+
+
+class DesignMaterial(str):
+    """写章节前整理全书设定的材料（就是一段文字），另带三项说明。
+
+    source_hash：按原始文件内容算的指纹，措辞、排版和篇幅取舍变了都不变；
+    omitted：篇幅放不下、这次没带的几块；includes_lore：带没带世界设定。
+    """
+
+    source_hash = ""
+    omitted: Tuple[str, ...] = ()
+    includes_lore = False
+
+
+def design_hash(design_context: str) -> str:
+    """整理材料的指纹；普通文字（旧调用方、测试）退回按全文算。"""
+    return getattr(design_context, "source_hash", "") or source_hash(design_context)
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _markdown_files(folder: str) -> List[str]:
+    try:
+        return [os.path.join(folder, name) for name in os.listdir(folder) if name.endswith(".md")]
+    except OSError:
+        return []
+
+
+def _act_sorted(paths: Iterable[str], prefix: str = "") -> List[str]:
+    """认得出是哪一幕的按幕的先后排，其余按文件名排在后面。"""
+    def key(path):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if prefix and stem.lower().startswith(prefix):
+            stem = stem[len(prefix):]
+        act = act_for_file(stem)
+        return (act is None, act[0] if act else 0, os.path.basename(path).lower())
+    return sorted(paths, key=key)
+
+
+def _readable(text: str) -> str:
+    """人物、势力、登记表这类数据写成中文条目；读不出来就照原文。"""
+    try:
+        return describe_value(json.loads(text))
+    except (TypeError, ValueError):
+        return text
 
 
 def _unique_extend(target: List[Any], values: Iterable[Any]) -> None:
@@ -376,66 +436,90 @@ class StoryLedgerManager:
         key = self.load_case_bible().get("domain_profile")
         return get_domain_profile(key) if key else None
 
-    def load_design_context(self, max_chars: int = 60000) -> str:
-        """Load stable whole-story design sources used to establish case truth."""
-        from core.generation.lore_repository import lore_context
-        lore = lore_context(self.output_dir)
-        # Keep the full-source fingerprint even when the prose is truncated.
-        lore_section = lore[:min(16000, max_chars // 3)]
-        max_chars -= len(lore_section)
-        structure_contract = self.load_structure_contract()
-        contract_section = ""
-        if structure_contract:
-            canonical_contract = json.dumps(
-                structure_contract, ensure_ascii=False, sort_keys=True
-            )
-            contract_section = (
-                "\n## 来源：故事结构登记表"
-                "（结构阶段的完整声明，优先于散文）\n"
-                f"完整契约指纹：{source_hash(canonical_contract)}\n"
-                + json.dumps(structure_contract, ensure_ascii=False, indent=2)
-                + "\n"
-            )
+    def _design_blocks(self) -> List[Dict[str, Any]]:
+        """整理全书设定要用的材料，按重要性从高到低排。
 
-        # 为完整结构契约预留预算。即使契约异常庞大而需要截短，位于开头的完整
-        # 指纹仍会让任何字段变化进入 case_bible 的 source_hash。
-        reserved = min(len(contract_section), max_chars)
-        prose_budget = max(0, max_chars - reserved)
-        patterns = (
-            os.path.join(self.output_dir, "story", "structure", "*.md"),
-            os.path.join(
-                self.output_dir,
-                "story",
-                "planning",
-                "chapter_outlines",
-                "*.md",
-            ),
-        )
-        paths = sorted(path for pattern in patterns for path in glob(pattern))
-        sections = []
-        total = 0
-        for path in paths:
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    content = handle.read().strip()
-            except OSError:
-                continue
-            if not content:
-                continue
-            section = f"\n## 来源：{structure_file_label(path)}\n{content}\n"
-            if total + len(section) > prose_budget:
-                remaining = prose_budget - total
-                if remaining > 200:
-                    partial = section[:remaining]
-                    sections.append(partial)
-                    total += len(partial)
-                break
-            sections.append(section)
-            total += len(section)
+        每块是 {key, label, text, source, required, lore}：text 是给模型看的写法，
+        source 是原始内容（算指纹用），required 的两张登记表篇幅再紧也带。
+        """
+        from core.generation.lore_repository import BODY, CHARACTERS, CONTRACT, FACTIONS, lore_files
+        from core.generation.prompt_context import sanitize_lore_content
+        from core.lore_localization import file_label
 
-        if contract_section:
-            sections.append(contract_section[: max_chars - total])
-        return (lore_section + "".join(sections)).strip()
+        blocks: List[Dict[str, Any]] = []
+
+        def add(key, label, text, source, required=False, lore=False):
+            if str(text or "").strip():
+                blocks.append({"key": key, "label": label, "text": str(text).strip(), "source": source,
+                               "required": required, "lore": lore})
+
+        lore = dict(lore_files(self.output_dir))
+        contract = self.load_structure_contract()
+        if contract:
+            add("structure_contract", "故事结构登记表",
+                "结构阶段的完整声明，优先于下面的散文；其中的编号照原样沿用。\n"
+                + json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(contract, ensure_ascii=False, sort_keys=True), required=True)
+        if CONTRACT in lore:
+            add(CONTRACT, file_label(CONTRACT), _readable(lore[CONTRACT]), lore[CONTRACT],
+                required=True, lore=True)
+
+        structure_dir = os.path.join(self.output_dir, "story", "structure")
+        outline_dir = os.path.join(self.output_dir, "story", "planning", "chapter_outlines")
+        main, arcs = [], {}
+        for path in _act_sorted(_markdown_files(structure_dir)):
+            stem = os.path.splitext(os.path.basename(path))[0].lower()
+            arc = next((name for name in ARC_FILES if stem.startswith(name)), None)
+            (arcs.setdefault(arc, []) if arc else main).append(path)
+        for path in main + _act_sorted(_markdown_files(outline_dir), prefix="chapter_outlines_"):
+            text = _read_text(path)
+            add(os.path.relpath(path, self.output_dir), structure_file_label(path), text, text)
+
+        for key in (BODY, CHARACTERS, FACTIONS):
+            if key in lore:
+                text = sanitize_lore_content(lore[key]) if key == BODY else _readable(lore[key])
+                add(key, file_label(key), text, lore[key], lore=True)
+        for name in ARC_FILES:
+            for path in arcs.get(name, []):
+                text = _read_text(path)
+                add(os.path.relpath(path, self.output_dir), structure_file_label(path), text, text)
+        for key, text in lore.items():
+            if key not in (CONTRACT, BODY, CHARACTERS, FACTIONS):
+                add(key, file_label(key), _readable(text), text, lore=True)
+        return blocks
+
+    def load_design_context(self, max_chars: int = DESIGN_BUDGET) -> "DesignMaterial":
+        """写章节前整理全书设定的材料：按重要性排，超出篇幅时从最不重要的一块起整块去掉。
+
+        去掉的几块列在材料末尾，也记在 omitted 上。是否需要重新整理看 source_hash，
+        它只跟原始内容有关，跟这里的写法和取舍无关。
+        """
+        blocks = self._design_blocks()
+
+        def render(kept, omitted):
+            # 每块的标题是二级；块里原有的标题降两级，免得和块标题混在一起。
+            parts = [f"## {block['label']}{'（必须遵守）' if block['required'] else ''}\n"
+                     + re.sub(r"^(#{1,4})(?=\s)", r"##\1", block["text"], flags=re.M)
+                     for block in kept]
+            if omitted:
+                parts.append("## 篇幅放不下、这次没带的材料\n" + "\n".join(
+                    f"- {block['label']}（{len(block['text'])} 字）" for block in omitted))
+            return "\n\n".join(parts)
+
+        kept, omitted = list(blocks), []
+        droppable = [block for block in reversed(blocks) if not block["required"]]
+        text = render(kept, omitted)
+        while len(text) > max_chars and droppable:
+            block = droppable.pop(0)
+            kept = [item for item in kept if item is not block]
+            omitted.insert(0, block)
+            text = render(kept, omitted)
+        material = DesignMaterial(text)
+        material.source_hash = source_hash(json.dumps(
+            [[block["key"], block["source"]] for block in blocks], ensure_ascii=False))
+        material.omitted = tuple(block["label"] for block in omitted)
+        material.includes_lore = any(block["lore"] for block in kept)
+        return material
 
     def load_structure_contract(self) -> Dict[str, Any]:
         """Load the declarations the structure stage made about the whole story.
@@ -591,7 +675,7 @@ class StoryLedgerManager:
     def case_bible_needs_refresh(case_bible: Dict[str, Any], design_context: str) -> bool:
         if not design_context:
             return False
-        expected_hash = source_hash(design_context)
+        expected_hash = design_hash(design_context)
         if case_bible.get("status") in {"uninitialized", "degraded", "incomplete"}:
             return True
         return bool(
@@ -612,7 +696,9 @@ class StoryLedgerManager:
         else:
             saved["status"] = "incomplete" if gaps else "ready"
         saved["generated_from_design"] = True
-        saved["source_hash"] = source_hash(design_context)
+        saved["source_hash"] = design_hash(design_context)
+        # 篇幅放不下、整理时没带的几块记在这里，事后查得到。
+        saved["design_omitted"] = list(getattr(design_context, "omitted", ()))
         saved["updated_at"] = datetime.now().isoformat()
         _atomic_write_json(self.case_bible_path, saved)
         return saved
