@@ -39,6 +39,7 @@ class ComplianceReview:
         self.attempt = 0
         self.manual_repair = False
         self.warning_start = len(context.extras.get("parameter_warnings", []))
+        self.note_start = len(context.extras.get("parameter_notes", []))
         self.phase = "准备"
         self.phase_started = time.monotonic()
         self.calls = 0
@@ -93,6 +94,9 @@ class ComplianceReview:
         return response
 
     def finish(self, status, reason, issues):
+        notes = self.context.extras.get("parameter_notes", [])[self.note_start:]
+        if notes:
+            self.receipt["notes"] = list(dict.fromkeys(notes))
         self.receipt.update(status=status, exit_reason=reason, issues=list(dict.fromkeys(issues)),
                             calls=self.calls, repairs=self.attempt if self.manual_repair else max(0, self.attempt - 1),
                             elapsed_seconds=round(time.monotonic() - self.started, 3))
@@ -234,7 +238,13 @@ fail 必须有候选中的原文短句作为 evidence，以及具体 expected、
         uncertain = [c for c in checks if c["status"] == "uncertain"]
         report["status"] = "fail" if failed else "uncertain" if uncertain else "pass"
         self._write(f"attempt_{self.attempt}_report.json", json.dumps(report, ensure_ascii=False, indent=2))
-        if uncertain and not failed:
+        if uncertain and not failed and not preflight:
+            # 只有“信息不足、无法判断”的条目不算问题：这份产物照常交付，意见作为检查备注留在生成记录里。
+            notes = [f"{parameter_label(c['parameter_key'])}：{c['reason']}" for c in uncertain]
+            self.context.extras.setdefault("parameter_notes", []).extend(notes)
+            self.context.progress("检查备注：" + "；".join(notes), -1)
+            self._write("notes.json", json.dumps(notes, ensure_ascii=False, indent=2))
+        elif uncertain and not failed:
             messages = [f"参数「{parameter_label(c['parameter_key'])}」需人工核对：{c['reason']}" for c in uncertain]
             self.context.extras.setdefault("parameter_warnings", []).extend(messages)
             self.context.progress("参数符合性检查有待核对事项：" + "；".join(messages), -1)

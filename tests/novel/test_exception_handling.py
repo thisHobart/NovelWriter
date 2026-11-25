@@ -327,3 +327,42 @@ def test_lore_repairs_can_complete_beyond_the_old_call_and_time_limits(tmp_path)
     assert send.call_count == 9
     assert review.receipt["status"] == "complete"
     assert review.receipt["elapsed_seconds"] >= 10000
+
+
+def _checked_review(tmp_path, report):
+    context = make_context(str(tmp_path), "test-model", {"genre": "爱情", "tone": "阴郁"})
+    context.extras["run_directory"] = str(tmp_path / "run")
+    send = Mock(side_effect=["候选内容", json.dumps(report, ensure_ascii=False)] * 3)
+    review = ComplianceReview(context, "characters", send)
+    return review, context, send
+
+
+def test_uncertain_only_check_is_delivered_with_notes_not_needs_changes(tmp_path):
+    report = {"status": "uncertain", "checks": [
+        {"parameter_key": "genre", "status": "pass", "expected": "爱情", "actual": "爱情", "evidence": "候选", "reason": "符合"},
+        {"parameter_key": "tone", "status": "uncertain", "expected": "阴郁", "actual": "看不出",
+         "evidence": "候选", "reason": "仅凭人物资料无法判断成篇后的压迫感"},
+    ]}
+    review, context, send = _checked_review(tmp_path, report)
+
+    review.run("generate", lambda raw: (review(raw), raw)[1], lambda raw: raw)
+
+    assert send.call_count == 2                        # 不为“无法判断”去修复
+    assert review.receipt["status"] == "complete"
+    assert review.receipt["issues"] == []
+    assert review.receipt["notes"] == ["基调：仅凭人物资料无法判断成篇后的压迫感"]
+    assert not context.extras.get("parameter_warnings")
+
+
+def test_failed_check_still_counts_as_needs_changes_after_repairs(tmp_path):
+    report = {"status": "fail", "checks": [
+        {"parameter_key": "genre", "status": "fail", "expected": "爱情", "actual": "科幻",
+         "evidence": "候选内容", "reason": "题材不符"},
+        {"parameter_key": "tone", "status": "pass", "expected": "阴郁", "actual": "阴郁", "evidence": "候选", "reason": "符合"},
+    ]}
+    review, context, send = _checked_review(tmp_path, report)
+
+    review.run("generate", lambda raw: (review(raw), raw)[1], lambda raw: raw)
+
+    assert review.receipt["status"] == "needs_changes"
+    assert "notes" not in review.receipt

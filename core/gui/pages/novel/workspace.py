@@ -45,6 +45,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("core.gui.novel")
 
+
+def _lore_notes(value) -> list:
+    """世界设定生成结果里的检查备注（信息不足、无法判断的条目），不算待修改。"""
+    if not isinstance(value, dict):
+        return []
+    notes = [note for item in value.get("lore_results", []) or [] if isinstance(item, dict)
+             for note in item.get("notes", [])]
+    for child in value.values():
+        if isinstance(child, dict):
+            notes.extend(_lore_notes(child))
+    return list(dict.fromkeys(notes))
+
 STAGE_NAMES = {
     "lore": "世界设定",
     "structure": "故事结构",
@@ -294,7 +306,9 @@ class NovelWorkspace(QWidget):
             elif warnings or outcome == "needs_changes":
                 self.status.set_dirty("已生成，待修改", "；".join(warnings))
             else:
-                self.status.set_done("任务已完成", busy_text.rstrip("…"))
+                notes = _lore_notes(value)
+                self.status.set_done("任务已完成" + (f" · 有 {len(notes)} 条检查备注" if notes else ""),
+                                     busy_text.rstrip("…"))
 
         def error(exc: BaseException) -> None:
             self.refresh_all()

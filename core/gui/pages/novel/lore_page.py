@@ -347,14 +347,22 @@ class LorePage(StagePage):
             label = LABELS[receipt["kind"]]
             if receipt.get("subject"):
                 label += "「" + str(receipt["subject"].get("name", "")) + "」"
-            card = Card(label + " · " + ("已撤回" if receipt.get("reverted")
-                                         else STATUS_LABELS.get(receipt["status"], receipt["status"])))
+            status = ("已撤回" if receipt.get("reverted")
+                      else STATUS_LABELS.get(receipt["status"], receipt["status"]))
+            if receipt.get("notes") and receipt["status"] == "complete" and not receipt.get("reverted"):
+                status += " · 有检查备注"
+            card = Card(label + " · " + status)
             detail = QLabel(f"{REASON_LABELS.get(receipt.get('exit_reason'), '候选已保留')} · 实际请求 {receipt.get('calls', 0)}/6 · 修复 {receipt.get('repairs', 0)} 次 · 用时 {receipt.get('elapsed_seconds', 0):.1f} 秒")
             detail.setWordWrap(True)
             card.body.addWidget(detail)
             issues = QLabel("\n".join(display_message(issue) for issue in receipt.get("issues", [])) or "当前没有检查问题。")
             issues.setWordWrap(True)
             card.body.addWidget(issues)
+            if receipt.get("notes"):
+                notes = QLabel("检查备注（不影响交付）：\n" + "\n".join(receipt["notes"]))
+                notes.setWordWrap(True)
+                notes.setObjectName("Tertiary")
+                card.body.addWidget(notes)
             version = QLabel("此结果已保存为设定；页面中的设定卡片展示当前磁盘版本。" if receipt.get("disposition") == "current"
                              else "此结果仅保留为草稿，尚未替换当前设定。继续下一步将读取当前已保存设定；需要使用此草稿时请先修复结构并采用。")
             version.setWordWrap(True)
