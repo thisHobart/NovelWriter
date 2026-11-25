@@ -80,6 +80,7 @@
 | 带截断或内部字段的提示词份数 | 30 份（截断 22 份，都是「既有事实、时间事件与已了结线索」；内部字段 30 份） | 0（截断 0，内部字段 0；材料去掉块的 0 份，大纲点名却没带卡片的人物 0） |
 | 大纲和规划里点到、登记表里没有的人名 / 地名 | 大纲 1 / 0，规划 1 / 0（都是「陆巡」） | 1 / 0，1 / 0（量的是已有文件，重新生成后才会变） |
 | 大纲提示词带名称与规则登记表 / 人物和势力名单 / 上一幕最后一章的份数（共 6 幕） | 0 / 0 / 0（基线时检查还不量这一项，按当时的提示词数） | 6 / 6 / 5（第一幕前面没有幕） |
+| 场景数不在建议范围里的章（长篇 2–4 场） | 基线时还不量；按当时的场景数是 0 | 0 |
 | 跨章检查问题数 | 0 | 0 |
 
 ## 三、要改的事（按顺序做，每条有完成标准）
@@ -140,7 +141,7 @@
 - 不是 0 就补上名称与规则登记表、人物和势力名单（名字、身份），以及上一幕最后一章的大纲。同样用 `fit_blocks`。
 - 完成标准：提示词里有这几块；有单元测试；检查数字下降。
 
-**5. 补齐规划阶段不花调用的检查。**
+**5. 补齐规划阶段不花调用的检查。**——**完成**（第 6 轮；改成打回要等第八节的两个决定）
 
 - 长篇每章场景数的上下限：照基线先定一个范围，写进第八节，等作者确认后再改成打回。
 - 规划里出现、登记表里没有的人名和地名：先只计数、写进日志，不打回。误报看清楚以后，再把要不要打回写进第八节。
@@ -227,7 +228,8 @@
 
 执行中新增：
 
-（空）
+- **长篇每章场景数的范围（第 5 条，第 6 轮）**：照基线先定成每章 2–4 场（样例 30 章：第 1–10 章 2 场，第 11–28 章 3 场，第 29 章 4 场，第 30 章 3 场）。现在不在范围里的只写进运行记录（「第 N 章场景规划共 5 场，不在建议的 2–4 场之内（只记录，不打回）」），检查脚本计数。要作者定：范围是不是 2–4；要不要改成和其他契约问题一起退回重写。改成退回只需要在「规划场景」收下规划之前把这句当成问题。
+- **登记表外的名字要不要打回（第 5 条，第 6 轮）**：样例作品里大纲和规划都只报出一个人名「陆巡」，没有地名。他是顾阳波已故的搭档，写在顾阳波的人物背景（`background_deuteragonist_顾阳波.md`，6 处）里，只是没进名称与规则登记表——不是模型编的，按登记表判算对，按设定看是误报。现在改成打回，提到他的规划会被白白退回。可选：一直只记录；作者把人物背景里出现的人补进登记表后再打回；或者判断时把人物背景里的名字也算登记过。
 
 建议的实跑（作者看过次数再决定跑不跑）：
 
@@ -235,6 +237,7 @@
 - 第 2 条（后续章节依赖本章）：和第 1 条是同一次实跑，不另加次数。重规划第 12 章后看新契约：有没有把第 1、3、4、5、9、11 章埋下的悬念再埋一次，有没有先了结第 13、14 章要了结的悬念，自己的 PT-012-01、F-012-01 是不是照旧埋下、引入。
 - 第 3 条（材料重排）：还是和第 1 条同一次实跑，不另加次数。另看新规划有没有用到前后两章才发生的事、有没有因为材料里少了没点名的人物和人物背景而写错身份，运行记录里「第 12 章规划材料带了：…」那一行是不是九块都在。
 - 第 4 条（大纲带设定）：另做一次，和上面那次分开。先把工作副本再复制一份（重新生成一幕大纲后，这一幕已有的场景规划和契约就对不上了，只在这份复制件上看大纲，不接着规划场景），删掉第二幕「情节上升」的大纲文件 `chapter_outlines_6-act_structure_rising_action.md`，点「生成章节大纲」，只会补这一幕（其他几幕已有大纲会跳过）。次数：大纲 1 次，被代码检查打回最多再 2 次，每份过了代码检查的稿子再加 1 次大纲评审，合计 2–6 次（质量闭环关掉时没有评审，1–3 次）。看：运行记录里「“情节上升”大纲材料带了：…」是不是三块都在；跑规划检查，新的第二幕大纲里登记表外的人名是不是从 1（陆巡）降到 0，或者新人物在“涉及人物”里写明了身份；第 6 章开头接不接得上第一幕最后一章（第 5 章）的结尾。
+- 第 5 条（场景数和登记表外的名字）：不用单独跑。第 1 条和第 4 条那两次实跑时看运行记录里有没有句末是「只记录，不打回」的行，报出来的名字是不是都像陆巡这样在设定里有出处、还是模型新编的人，用来定第八节那两个决定。
 
 ## 九、进度记录
 
@@ -245,6 +248,7 @@
 | 3 | 2. 修掉提示词里的矛盾和空名字 | 「后续章节依赖本章」按出处分两组：本章自己埋下、引入的写「本章必须埋下 / 引入」；更早章节的写「第 X 章已埋下，第 Y 章要了结，本章不能了结它，也不能把它写没」（事实写「不能推翻它」），原定截止章已到的另说写 extend 推迟；名字为空时取引入那一章写的名字，谁都没写时只写编号；重规划的章先了结后面的章要了结的悬念，退回重写。代码：`planning_contract.py`（`downstream_obligations` 记出处章和名字，`contract_instruction_blocks` 分组，`iter_history_defects` 加 `thread_closed_before_payoff`，`_named`）、`tools/check_planning.py`（认得没名字的条目）；测试 `tests/novel/test_planning_obligations.py`，`test_check_planning.py` 改了预期并加一项 | 早已存在的「本章必须埋下 / 引入」299 → 0；空名字 8 → 0；契约文件逐字节不变；提示词中位 44633 → 44760（每条多了出处章） | `fix(novel): say which obligations an earlier chapter already set up and name every record` |
 | 4 | 3. 「规划场景」的材料按原则重排 | 「规划场景」每章的材料按九块排：本章那一段大纲、名称与规则登记表、本章大纲点名人物的卡、相关势力、上一章结束时的状态、仍未了结的悬念和后续章节依赖、既有事实和时间事件（按编号和名字挑，中文条目）、前后相邻两章的大纲、世界观正文；超出篇幅整块去掉并列出，带了、没带的块写进运行记录；叙事图写成中文条目；不再带整份世界设定、整幕大纲和人物背景。修了检查脚本关掉日志不恢复。代码：`planning_prompt.py`（`planning_material`、`PlanningMaterial`、`_picked_records`、`book_outlines`、`chapter_parts`、`scene_plan_prompt` 改排、`PLANNING_BUDGET`）、`planning_contract.py`（`established_records_text`、`graph_context_text`、`previous_state_text`、`MATERIAL_LABELS`，衔接规则和上一章结尾分块）、`scene_material.py`（`setting_records`、`setting_terms`）、`scene_pipeline.py`（读全书大纲、写运行记录）、`tools/check_planning.py`（去掉的块、缺卡片的人物）；测试 `tests/novel/test_planning_material.py` | 提示词中位 44760 → 17350（基线 44292）；截断 22 份 → 0；内部字段 30 份 → 0；缺卡片 0；去掉块 0 份；契约文件逐字节不变 | `fix(novel): rebuild the scene-planning material from ranked blocks with nothing cut` |
 | 5 | 4. 「生成章节大纲」补上该有的设定 | 先量了基线：大纲点到、登记表里没有的人名 1 个（陆巡，六幕里五幕都有），不是 0，所以做。「生成章节大纲」每一幕在故事结构后面接上名称与规则登记表、人物和势力名单（角色定位、职业、所属势力；势力的类型和活动地点；人物卡的称号常和职业对不上，不带）、上一幕最后一章的大纲（标题挪到三级，第一幕没有）；写法要求加一句用登记表里的名字、新人物写明身份；超出篇幅整块去掉，带了、没带的块写进运行记录。检查脚本的块名按提示词先后排，新增每一幕带了哪几块设定材料。代码：`planning_prompt.py`（`outline_material`、`cast_roster`、`previous_act_ending`、`_headings_from_third`、`_fitted`、`OUTLINE_BUDGET`、`outline_prompt` 新参数）、`scene_pipeline.py`（`_generate_chapter_outline` 传作品目录和上一幕最后一章、写运行记录）、`tools/check_planning.py`（`outline_texts`、设定材料那一行、`_labels`）；测试 `tests/novel/test_outline_material.py` | 大纲提示词中位 4334 → 5874；带登记表 / 名单 / 上一幕最后一章 0 / 0 / 0 → 6 / 6 / 5；去掉块 0 份；登记表外人名 1 → 1（已有大纲文件不变，要实跑才看得到）；契约文件逐字节不变 | `fix(novel): give the outline prompt the registry, the cast and the previous act's last chapter` |
+| 6 | 5. 补齐规划阶段不花调用的检查 | 「规划场景」收下一章规划（含跨章修复重写的那一章）、「生成章节大纲」收下一幕大纲之后，把两项写进运行记录，只记录、不打回：场景数在不在建议范围里（长篇 2–4 场，短篇 3–6 场），有没有登记表里没有的人名和地名。检查脚本「【场景数】」加一行建议范围和范围外的章数，和运行记录同一套判断。看了唯一报出的「陆巡」：写在顾阳波的人物背景里、没进登记表，不是模型编的；范围和要不要打回写进第八节。代码：`planning_checks.py`（`LONG_FORM_SCENE_RANGE`、`scene_count_note`、`name_note`）、`scene_pipeline.py`（`_note_accepted_plan`、`_generate_valid_scene_response` 的 `scene_range`、三处调用、大纲收下后记录）、`tools/check_planning.py`（场景数范围那一行）；测试 `tests/novel/test_planning_notes.py` | 范围外的章 0（30 章都在 2–4 场）；登记表外人名 大纲 1、规划 1（陆巡，都不变）；其余数字和第 5 轮一样；契约文件逐字节不变 | `fix(novel): log scene counts outside the range and names missing from the registry` |
 
 ## 代码位置
 
@@ -254,7 +258,7 @@
 | 两个按钮的提示词（只拼文字、只读） | `core/generation/planning_prompt.py`（`outline_prompt`、`scene_plan_prompt`、`short_story_prompt`、`contract_instructions`、`planning_lore`） |
 | 「生成章节大纲」每一幕的设定材料 | `core/generation/planning_prompt.py`（`outline_material`、`cast_roster`、`previous_act_ending`、`OUTLINE_BUDGET`、`outline_prompt` 的 `output_dir` / `previous_ending`） |
 | 「规划场景」每章的材料 | `core/generation/planning_prompt.py`（`planning_material`、`_picked_records`、`book_outlines`、`chapter_parts`）；挑人物、读卡片用 `scene_material.py`（`pick_characters`、`pick_factions`、`setting_records`、`setting_terms`）；契约说明里的中文条目在 `planning_contract.py`（`established_records_text`、`graph_context_text`、`previous_state_text`） |
-| 不花调用的规划检查 | `tools/check_planning.py`；认名字 `core/generation/planning_checks.py` |
+| 不花调用的规划检查 | `tools/check_planning.py`；认名字、场景数范围 `core/generation/planning_checks.py`（`unregistered_names`、`name_note`、`scene_count_note`、`LONG_FORM_SCENE_RANGE`），正式流程收下规划、大纲后写运行记录在 `scene_pipeline.py`（`_note_accepted_plan`、`_generate_chapter_outline`） |
 | 契约格式说明、跨章检查、后续章节依赖 | `core/generation/planning_contract.py`（`contract_output_instructions`、`contract_instruction_blocks` 里按出处分组的「后续章节依赖本章」、`downstream_obligations`（出处章和补名字）、`iter_history_defects`（含 `thread_closed_before_payoff`）、`validate_contract_sequence`） |
 | 写场景时读边界、新规划的边界检查 | `core/generation/planning_contract.py`（`contract_for_scene`、`later_scene_boundaries`、`boundary_scenes`、`scene_boundary_defects`） |
 | 编号撞车的判断 | `core/generation/semantic_identity.py` |

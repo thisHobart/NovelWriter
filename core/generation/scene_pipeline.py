@@ -44,6 +44,13 @@ from core.generation.chapter_continuity import (
     continuity_instructions,
     continuity_schema_block,
 )
+from core.generation.planning_checks import (
+    LONG_FORM_SCENE_RANGE,
+    load_registry,
+    name_note,
+    scene_count_note,
+    unregistered_names,
+)
 from core.generation.planning_prompt import (
     MISSING_LORE,
     SHORT_STORY_MAX_SCENES,
@@ -361,6 +368,24 @@ class ScenePipeline:
                 "Could not archive planning attempt for Chapter %s: %s", chapter_number, exc
             )
 
+    def _note_accepted_plan(self, chapter_number, scene_markdown, output_dir, scene_range):
+        """收下的规划再看两项，只写进运行记录、不打回：场景数在不在建议范围里，有没有
+        登记表里没有的人名和地名。判断和规划检查脚本是同一套（``planning_checks``）。"""
+        if scene_range:
+            note = scene_count_note(len(parse_scene_sections(scene_markdown)), scene_range)
+            if note:
+                self.app.logger.warning(
+                    "第 %s 章场景规划%s（只记录，不打回）", chapter_number, note
+                )
+        if output_dir:
+            note = name_note(unregistered_names(scene_markdown, load_registry(output_dir)))
+            if note:
+                self.app.logger.warning(
+                    "第 %s 章场景规划里有登记表没有的名字：%s（只记录，不打回）",
+                    chapter_number,
+                    note,
+                )
+
     def _generate_valid_scene_response(
         self,
         prompt,
@@ -370,8 +395,13 @@ class ScenePipeline:
         story_params,
         require_complete_sequence=False,
         output_dir=None,
+        scene_range=None,
     ):
-        """Generate one scene plan, feeding each rejected draft back for repair."""
+        """Generate one scene plan, feeding each rejected draft back for repair.
+
+        收下的规划再按 ``scene_range``（场景数的建议范围）和名称与规则登记表看一遍，
+        只写进运行记录、不打回（``_note_accepted_plan``）。
+        """
         seen_defects = []
         rejected_draft = ""
         previous_signature = None
@@ -396,6 +426,7 @@ class ScenePipeline:
                     require_complete_sequence,
                 )
             if result is not None:
+                self._note_accepted_plan(chapter_number, result[1], output_dir, scene_range)
                 return result
 
             self._archive_planning_attempt(
@@ -683,6 +714,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                     lore_content,
                     story_params,
                     output_dir=output_dir,
+                    scene_range=LONG_FORM_SCENE_RANGE,
                 )
                 self._save_scene_plan_and_contract(
                     output_dir,
@@ -989,6 +1021,13 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             os.makedirs(chapter_outlines_dir, exist_ok=True)
             write_file(output_filepath, response)
             generated_sections.append(current_section_name)
+            note = name_note(unregistered_names(response, load_registry(output_dir)))
+            if note:
+                self.app.logger.warning(
+                    "“%s”大纲里有登记表没有的名字：%s（只记录，不打回）",
+                    zh_label(current_section_name),
+                    note,
+                )
             self.app.logger.info(
                 "Chapter outline for %s saved to %s", current_section_name, output_filepath
             )
@@ -1199,6 +1238,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                         lore_content,
                         story_params,
                         output_dir=output_dir,
+                        scene_range=LONG_FORM_SCENE_RANGE,
                     )
                 except PlanningContractError as exc:
                     # Keep going so one bad chapter does not abandon the run,
@@ -1339,6 +1379,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                 story_params,
                 require_complete_sequence=True,
                 output_dir=output_dir,
+                scene_range=(SHORT_STORY_MIN_SCENES, SHORT_STORY_MAX_SCENES),
             )
         except PlanningContractError as exc:
             self.app.logger.error("Short story planning contract is invalid: %s", exc)

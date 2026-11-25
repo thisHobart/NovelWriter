@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """规划结果的几项不花调用的判断。
 
-现在有一项：章节大纲和场景规划里点到的人名、地名，名称与规则登记表里有没有。认名字的办法
+现在有两项。
+
+一、章节大纲和场景规划里点到的人名、地名，名称与规则登记表里有没有。认名字的办法
 和写场景材料挑人物时一样（别名算同一个，长名字先认）。
 
 - 人名：从「涉及人物」「出场人物」这两栏里取。认不出登记过的名字、又像个人名（两到四个
@@ -11,8 +13,13 @@
   那一段认不出登记过的地点，才算登记表里没有。「临山·废弃矿区实验室」里的具体位置本来就
   不登记。
 
-不花调用的规划检查（``tools/check_planning.py``）用它计数；以后正式流程要记日志或打回，
-也用这一套，两边不会各判各的。
+二、每章场景数在不在建议范围里。长篇的范围照样例作品的基线先定成每章 2–4 场
+（``LONG_FORM_SCENE_RANGE``），短篇用「规划场景」提示词里要求的 3–6 场。
+
+两项现在都只计数、记进运行记录，不打回：「生成章节大纲」「规划场景」收下一份大纲或规划
+之后把结果写进运行记录（``name_note``、``scene_count_note``），不花调用的规划检查
+（``tools/check_planning.py``）用同一套函数计数，两边不会各判各的。要不要改成打回，等作者
+看过误报再定（``docs/novel/chapter_planning_goal.md`` 第八节）。
 """
 from __future__ import annotations
 
@@ -23,6 +30,10 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 from core.generation.lore_repository import CONTRACT, lore_files
 from core.generation.scene_material import mentioned, name_terms
+
+#: 长篇每章场景数的建议范围。样例作品 30 章是 2–4 场（前 10 章 2 场，后面 3 场，一章 4 场）；
+#: 作者确认前只记进运行记录，不打回。
+LONG_FORM_SCENE_RANGE: Tuple[int, int] = (2, 4)
 
 PEOPLE_FIELDS = ("涉及人物", "出场人物")
 PLACE_FIELDS = ("环境与具体地点", "具体地点")
@@ -109,6 +120,24 @@ def unregistered_names(text: str, registry: Dict[str, Any]) -> NameFindings:
             if city and not mentioned(city, place_terms) and city not in found.places:
                 found.places.append(city)
     return found
+
+
+def name_note(findings: NameFindings) -> str:
+    """登记表里没有的人名、地名写成一句（“人名：陆巡；地名：雾港”）；一个都没有时是空文字。"""
+    parts = []
+    if findings.people:
+        parts.append("人名：" + "、".join(findings.people))
+    if findings.places:
+        parts.append("地名：" + "、".join(findings.places))
+    return "；".join(parts)
+
+
+def scene_count_note(count: int, scene_range: Tuple[int, int]) -> str:
+    """场景数不在范围里时写成一句（“共 5 场，不在建议的 2–4 场之内”）；在范围里是空文字。"""
+    low, high = scene_range
+    if low <= int(count) <= high:
+        return ""
+    return f"共 {int(count)} 场，不在建议的 {low}–{high} 场之内"
 
 
 def looks_like_a_name(item: str) -> bool:

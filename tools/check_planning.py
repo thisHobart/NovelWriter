@@ -42,9 +42,11 @@ from core.generation.helper_fns import (  # noqa: E402
 )
 from core.generation.lore_repository import lore_files  # noqa: E402
 from core.generation.planning_checks import (  # noqa: E402
+    LONG_FORM_SCENE_RANGE,
     NameFindings,
     listed_names,
     load_registry,
+    scene_count_note,
     unregistered_names,
 )
 from core.generation.planning_contract import (  # noqa: E402
@@ -57,6 +59,8 @@ from core.generation.planning_contract import (  # noqa: E402
 )
 from core.generation.planning_prompt import (  # noqa: E402
     MISSING_LORE,
+    SHORT_STORY_MAX_SCENES,
+    SHORT_STORY_MIN_SCENES,
     act_files,
     book_outlines,
     contract_instructions,
@@ -415,6 +419,16 @@ def render(report: PlanningReport, *, chapters: bool = False) -> str:
         "【场景数】" + (_runs(planned) if planned else "没有场景规划")
         + (f"（最少 {min(counts)}，最多 {max(counts)}）" if counts else "")
     )
+    if planned:
+        # 和「规划场景」收下规划时写运行记录用的是同一个判断（只计数，不打回）。
+        scene_range = (
+            (SHORT_STORY_MIN_SCENES, SHORT_STORY_MAX_SCENES) if report.short_story else LONG_FORM_SCENE_RANGE
+        )
+        outside = [item for item in planned if scene_count_note(item.scenes, scene_range)]
+        lines.append(
+            f"  建议每章 {scene_range[0]}–{scene_range[1]} 场；不在范围里的 {len(outside)} 章"
+            + (f"（{_preview(f'第 {i.chapter} 章 {i.scenes} 场' for i in outside)}）" if outside else "")
+        )
 
     total = sum(item.boundaries for item in report.chapters)
     lines.append(
