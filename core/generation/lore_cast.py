@@ -271,6 +271,14 @@ def validate_relationships(
     return defects
 
 
+#: 人物格式示例里的占位名；模型照抄时退回去重写。
+_PLACEHOLDER_NAMES = ("主角姓名", "反派姓名", "人物姓名", "角色姓名", "配角姓名")
+
+
+def _is_placeholder_name(name: str) -> bool:
+    return name in _PLACEHOLDER_NAMES or name.endswith("姓名")
+
+
 def validate_characters(characters: Sequence[Dict[str, Any]]) -> List[str]:
     """人物卡的确定性缺陷清单；空列表表示通过。"""
     defects: List[str] = []
@@ -293,6 +301,8 @@ def validate_characters(characters: Sequence[Dict[str, Any]]) -> List[str]:
 
         if name and name in seen_names:
             defects.append(_defect(f"人物名「{name}」重复了，每个人物必须有唯一的名字"))
+        if _is_placeholder_name(name):
+            defects.append(_defect(f"{label}的名字「{name}」是格式示例里的占位词，请按本作新取一个中文姓名"))
         seen_names.add(name)
 
         role = str(person.get("role", "")).strip()
@@ -483,7 +493,8 @@ def _character_prompt(
 {_premise_block(parameters)}
 
 {faction_block}要求：
-- 全部用中文写，名字是普通的中文姓名。职业、职务要符合这个题材、时代及作品设定，不得强行套用当代职业体系。
+- 全部用中文写，名字是普通的中文姓名，按本作的题材、时代和地域新取；下面格式里的「主角姓名」「反派姓名」只是占位，
+  不能照抄。职业、职务要符合这个题材、时代及作品设定，不得强行套用当代职业体系。
 - role 只能是 protagonist / deuteragonist / antagonist / supporting，
   至少要有一位 protagonist 和一位 antagonist。
 - gender 只写「男」或「女」，男女多少由故事本身决定。
@@ -496,7 +507,7 @@ def _character_prompt(
 只输出 JSON：
 {{"characters": [
   {{
-    "name": "梁浩",
+    "name": "主角姓名",
     "role": "protagonist",
     "gender": "男",
     "age": 44,
@@ -512,7 +523,7 @@ def _character_prompt(
     "description": "外形与给人的第一印象"
   }},
   {{
-    "name": "郑娜敏",
+    "name": "反派姓名",
     "role": "antagonist",
     "gender": "女",
     "age": 35,
@@ -526,11 +537,11 @@ def _character_prompt(
     "arc": "转变",
     "background": "前史",
     "description": "外形",
-    "opposes": {{"character": "梁浩", "blocked_goal": "她具体挡住了梁浩的哪个目标"}}
+    "opposes": {{"character": "主角姓名", "blocked_goal": "她具体挡住了主角的哪个目标"}}
   }}
 ],
  "relationships": [
-  {{"character1": "梁浩", "character2": "郑娜敏",
+  {{"character1": "主角姓名", "character2": "反派姓名",
    "type": "符合故事的关系类型", "description": "一句话说清他们之间发生过什么"}}
  ]}}
 

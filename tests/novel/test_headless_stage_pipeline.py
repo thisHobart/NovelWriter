@@ -89,6 +89,21 @@ def test_character_cards_have_no_gender_quota():
     assert any("gender" in defect for defect in validate_characters(cards))
 
 
+def test_character_example_names_are_placeholders_and_copying_them_is_rejected():
+    from core.generation.lore_cast import _character_prompt
+    prompt = _character_prompt({"genre": "科幻"}, 5, [])
+    assert "梁浩" not in prompt and "郑娜敏" not in prompt
+    assert "主角姓名" in prompt and "不能照抄" in prompt
+    cards = [
+        {"name": name, "role": role, "gender": "男", "age": 30, "occupation": "检察官",
+         "goal": "查清旧案", "flaw": "固执", "background": "在本地长大", "description": "瘦高"}
+        for name, role in (("主角姓名", "protagonist"), ("郑伟川", "antagonist"))
+    ]
+    assert any("占位词" in defect and "主角姓名" in defect for defect in validate_characters(cards))
+    cards[0]["name"] = "林知远"
+    assert not any("占位词" in defect for defect in validate_characters(cards))
+
+
 def test_all_pipeline_objects_construct_without_a_ui(tmp_path):
     context = make_context(
         str(tmp_path), "test-model", {"genre": "Mystery", "story_length": "Novel"}
