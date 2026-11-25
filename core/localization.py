@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+
 ZH_LABELS = {
     # 人物卡里的 role 是英文枚举，界面上曾经原样显示成 protagonist。
     "protagonist": "主角",
@@ -183,6 +186,37 @@ FIELD_ZH_LABELS = {
 def zh_label(value: str) -> str:
     """返回业务标识的中文显示名称；未知值保持原样。"""
     return ZH_LABELS.get(value, value)
+
+
+def act_label(section: str) -> str:
+    """一幕的中文名。三幕式的名字自带「第一幕：」，序号另外显示，这里只留后半截。"""
+    return re.sub(r"^第[一二三四五六七八九十]+幕：", "", zh_label(section))
+
+
+#: 故事结构目录里不是「幕」的文件
+STRUCTURE_FILE_LABELS = (
+    ("character_arcs", "人物弧光"),
+    ("faction_arcs", "势力弧光"),
+    ("reconciled_arcs", "统一故事弧"),
+    ("plot_short_story", "短篇完整情节"),
+)
+
+
+def structure_file_label(path: str) -> str:
+    """故事结构和章节大纲文件的中文名，例如「故事结构 · 开端」「章节大纲 · 结局」。"""
+    from core.config.story_options import act_for_file
+
+    stem = os.path.splitext(os.path.basename(str(path)))[0]
+    kind = "故事结构"
+    if stem.lower().startswith("chapter_outlines_"):
+        stem, kind = stem[len("chapter_outlines_"):], "章节大纲"
+    act = act_for_file(stem)
+    if act:
+        return f"{kind} · {act_label(act[1])}"
+    for prefix, label in STRUCTURE_FILE_LABELS:
+        if stem.lower().startswith(prefix):
+            return label
+    return f"{kind} · {stem}"
 
 
 def internal_label(display_value: str, mapping: dict[str, str] | None = None) -> str:

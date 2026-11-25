@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List
 
 from core.localization import zh_label
+from core.lore_localization import display_value
 
 
 PARAMETER_ALIASES = {
@@ -301,10 +302,14 @@ def format_faction_summary(factions_data: Any, limit: int = 5) -> str:
         details = [f"势力名称：{name}", f"简介：{profile}"]
         faction_type = faction.get("type")
         if faction_type:
-            details.append(f"类型：{faction_type}")
+            details.append(f"类型：{display_value(faction_type)}")
         jurisdiction = faction.get("jurisdiction") or faction.get("territory")
+        if isinstance(jurisdiction, dict):
+            # 新卡的活动地点是 {"name": 地名, "kind": 类别}，原样打印会把英文键名写进提示词。
+            place, kind = str(jurisdiction.get("name") or "").strip(), str(jurisdiction.get("kind") or "").strip()
+            jurisdiction = f"{place}（{kind}）" if place and kind else place
         if jurisdiction:
-            details.append(f"管辖或活动范围：{jurisdiction}")
+            details.append(f"管辖或活动范围：{display_value(jurisdiction)}")
         traits = _as_list(faction.get("primary_traits") or faction.get("traits"))
         if traits:
             details.append(f"主要特征：{', '.join(traits[:3])}")

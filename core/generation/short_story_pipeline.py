@@ -43,6 +43,7 @@ import logging
 from core.config.directory_config import get_directory_manager
 from core.config.story_options import STRUCTURE_SECTIONS_MAP
 from core.localization import zh_label
+from core.lore_localization import display_value
 
 from core.generation.stage_context import StageContext
 
@@ -285,8 +286,8 @@ class ShortStoryPipeline:
         summaries = []
         for char_info in characters_data["characters"]:
             details = [f"\n\n姓名：{char_info.get('name', '无')}\n"]
-            details.append(f" - 角色：{char_info.get('role', '无')}\n")
-            details.append(f" - 性别：{char_info.get('gender', '无')}\n")
+            details.append(f" - 角色：{display_value(char_info.get('role', '无'))}\n")
+            details.append(f" - 性别：{display_value(char_info.get('gender', '无'))}\n")
             details.append(f" - 年龄：{char_info.get('age', '无')}\n")
             details.append(f" - 外貌：{first_field(char_info, 'appearance_summary', 'description') or '无'}\n")
             # 新卡是单数，旧项目是复数数组；两种都读。

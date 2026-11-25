@@ -786,12 +786,14 @@ def lore_context(output_dir):
     ordered = [CONTRACT, BODY, CHARACTERS, FACTIONS]
     ordered += sorted(set(files) - set(ordered))
     from core.generation.prompt_context import sanitize_lore_content
+    from core.lore_localization import file_label
     fingerprint = digest(encode(files))
     if BODY in files:
         files[BODY] = sanitize_lore_content(files[BODY])
+    # 小标题用中文名，不用文件路径：英文路径会让模型在正文里也跟着写英文。
     return (f"\n## 当前世界设定（人工保存版本优先）\n完整设定指纹：{fingerprint}\n"
             + "名称、年代、技术与规则以名称登记表为准；人物及势力属性以对应卡片为准。自由文本若有旧设定，按当前登记与卡片纠正。\n"
-            + "\n".join(f"### {key}\n{files[key]}" for key in ordered if key in files))
+            + "\n".join(f"### {file_label(key)}\n{files[key]}" for key in ordered if key in files))
 
 
 STEP_LABELS = {"": "生成世界设定", "full": "生成世界设定", "factions": "生成势力", "characters": "生成人物",

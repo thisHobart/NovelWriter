@@ -17,6 +17,7 @@ from core.common.locks import project_lock
 from core.generation.domain_profiles import DomainProfile, get_domain_profile, resolve_domain_profile
 from core.generation.helper_fns import read_json
 from core.generation.prompt_context import normalize_story_parameters
+from core.localization import structure_file_label
 
 
 # v3：case_bible 的 `legal_system` 泛化为 `domain_rules`，并记录 `domain_profile`。
@@ -389,7 +390,7 @@ class StoryLedgerManager:
                 structure_contract, ensure_ascii=False, sort_keys=True
             )
             contract_section = (
-                "\n## 来源：story/structure/structure_contract.json"
+                "\n## 来源：故事结构登记表"
                 "（结构阶段的完整声明，优先于散文）\n"
                 f"完整契约指纹：{source_hash(canonical_contract)}\n"
                 + json.dumps(structure_contract, ensure_ascii=False, indent=2)
@@ -421,8 +422,7 @@ class StoryLedgerManager:
                 continue
             if not content:
                 continue
-            relative_path = os.path.relpath(path, self.output_dir)
-            section = f"\n## 来源：{relative_path}\n{content}\n"
+            section = f"\n## 来源：{structure_file_label(path)}\n{content}\n"
             if total + len(section) > prose_budget:
                 remaining = prose_budget - total
                 if remaining > 200:

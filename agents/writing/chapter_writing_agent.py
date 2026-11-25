@@ -64,6 +64,7 @@ from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filena
 from core.generation.story_ledger import StoryLedgerManager
 from core.config.directory_config import get_directory_manager
 from core.config.story_options import STRUCTURE_SECTIONS_MAP
+from core.lore_localization import display_value
 
 # Import review system (with fallback if not available)
 try:
@@ -1299,8 +1300,8 @@ class ChapterWritingAgent(BaseAgent):
                 for char in characters_data["characters"]:
                     details = [
                         f"\n\n姓名：{char.get('name', '无')}",
-                        f"角色：{char.get('role', '无')}",
-                        f"性别：{char.get('gender', '无')}",
+                        f"角色：{display_value(char.get('role', '无'))}",
+                        f"性别：{display_value(char.get('gender', '无'))}",
                         f"年龄：{char.get('age', '无')}",
                         f"外貌：{first_field(char, 'appearance_summary', 'description') or '无'}",
                     ]

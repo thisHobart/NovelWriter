@@ -31,8 +31,9 @@ from core.generation.domain_profiles import resolve_domain_profile
 import os
 import traceback
 import json
-from core.config.story_options import STRUCTURE_SECTIONS_MAP
+from core.config.story_options import STRUCTURE_SECTIONS_MAP, act_file_stem
 from core.localization import zh_label
+from core.lore_localization import display_value
 import logging
 from core.config.directory_config import get_directory_manager
 
@@ -110,11 +111,11 @@ class StructurePipeline:
                     self.app.logger.info(f"Identified {role_raw}: {name} (sanitized for filename: {safe_name_for_file})")
 
                 # Build summary for character roster (including flaws and strengths)
-                summary_parts = [f"  - {name}（{char_info.get('role', '无')}）"]
+                summary_parts = [f"  - {name}（{display_value(char_info.get('role', '无'))}）"]
                 if title:
                     summary_parts.append(f"头衔：{title}")
                 summary_parts.append(f"年龄：{age}")
-                summary_parts.append(f"性别：{gender}")
+                summary_parts.append(f"性别：{display_value(gender)}")
                 summary_parts.append(f"所属势力：{faction}")
                 
                 # 新卡是单数 goal/strength/flaw，旧项目是复数数组；两种都读。
@@ -184,7 +185,7 @@ class StructurePipeline:
                 self.app.logger.info(f"Loaded backstory for {role} from {filepath}.")
             elif filepath: # Filepath was determined but doesn't exist
                 self.app.logger.warning(f"Background file for {role} not found at {filepath}. Skipping {role} backstory.")
-                backstory_content[role] = f"{zh_label(role.capitalize())}的背景故事缺失（找不到文件：{os.path.basename(filepath)}）。"
+                backstory_content[role] = f"{zh_label(role.capitalize())}的背景故事缺失（找不到这个人物的背景文件）。"
             else: # Filepath could not be determined (name for role not found)
                 # Already logged earlier, but good to have a placeholder for prompt
                 backstory_content[role] = f"{zh_label(role.capitalize())}的背景故事缺失（未识别到对应人物）。"
@@ -209,7 +210,7 @@ class StructurePipeline:
             prompt_lines.append("\n## 人物名单（供参考）：")
             prompt_lines.extend(character_roster_summaries)
         else:
-            prompt_lines.append("\n## 人物名单（供参考）：未从 characters.json 加载到其他人物")
+            prompt_lines.append("\n## 人物名单（供参考）：人物资料里没有其他人物")
 
         prompt_lines.append("\n## 主要人物背景：")
         for role, story in backstory_content.items():
@@ -568,7 +569,7 @@ class StructurePipeline:
                 f"我正在使用“{zh_label(selected_structure_name)}”框架创作小说，需要细化各部分情节。",
                 f"完整框架包含：{', '.join(zh_label(section) for section in sections_to_iterate)}。",
                 f"请重点详细扩写 **{zh_label(current_section_name_for_prompt)}**。此处还不是写具体场景，而是为这一部分撰写更详细的情节概述。",
-                f"\n## 整体故事结构（来自 {os.path.basename(story_structure_path)}）：\n{story_structure_content}"
+                f"\n## 整体故事结构：\n{story_structure_content}"
             ]
 
             # Add context from the immediately preceding detailed section (if not the first section)
@@ -592,7 +593,8 @@ class StructurePipeline:
             ])
             prompt = "\n".join(prompt_lines)
             prompt += "\n\n" + structure_contract_instructions(
-                section_name=current_section_name_for_prompt,
+                # 契约里的 section 只是给人看的名字，程序按 section_index 认第几部分。
+                section_name=zh_label(current_section_name_for_prompt),
                 section_index=i + 1,
                 total_sections=len(sections_to_iterate),
                 known_threads=open_threads_after(section_contracts),
@@ -662,8 +664,7 @@ class StructurePipeline:
 
             section_contracts.append(section_contract)
 
-            safe_section_name_for_output = current_section_name_for_prompt.lower().replace(' ', '_').replace(':','').replace('/','_')
-            output_filename_base = f"{selected_structure_name.lower().replace(' ', '_')}_{safe_section_name_for_output}.md"
+            output_filename_base = act_file_stem(selected_structure_name, current_section_name_for_prompt) + ".md"
             output_filename_full_path = os.path.join(output_dir, "story", "structure", output_filename_base)
             write_file(output_filename_full_path, response)
             self.app.logger.info(f"Saved details for section '{current_section_name_for_prompt}' to {output_filename_full_path}")
@@ -741,7 +742,7 @@ class StructurePipeline:
             char_data = read_json(char_json_path)
             if char_data and "characters" in char_data:
                 chars = [c.get('name', '无') for c in char_data["characters"]]
-                characters_summary = f"主要人物：{', '.join(chars[:5])}{'……' if len(chars) > 5 else ''}（完整名单见 characters.json）。"
+                characters_summary = f"主要人物：{', '.join(chars[:5])}{'……' if len(chars) > 5 else ''}（完整名单见人物资料）。"
             self.app.logger.info(f"Loaded character data for summary from {char_json_path}")
 
         faction_json_path = os.path.join(output_dir, "story", "lore", "factions.json")
@@ -753,7 +754,7 @@ class StructurePipeline:
                     for f in faction_data
                     if isinstance(f, dict)
                 ]
-                factions_summary = f"主要势力：{', '.join(factions_list[:3])}{'……' if len(factions_list) > 3 else ''}（完整名单见 factions.json）。"
+                factions_summary = f"主要势力：{', '.join(factions_list[:3])}{'……' if len(factions_list) > 3 else ''}（完整名单见势力资料）。"
             self.app.logger.info(f"Loaded faction data for summary from {faction_json_path}")
 
 
@@ -771,7 +772,7 @@ class StructurePipeline:
             "各阶段之间必须自然、连贯地推进，并逐步走向高潮和结局。",
             "\n## 世界观设定：",
             lore_content,
-            f"\n## 人物弧光与势力背景（来自 {os.path.basename(arcs_path) if 'arcs_path' in locals() else '整合后的故事弧文件'}，如有）：",
+            "\n## 人物弧光与势力背景（如有）：",
             reconciled_arcs_content,
             "\n## 主要人物摘要：",
             characters_summary,

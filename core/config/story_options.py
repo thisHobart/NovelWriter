@@ -91,3 +91,19 @@ def counts_for(length: str) -> tuple[int, int] | None:
 
 def sections_for(structure: str) -> tuple[str, ...]:
     return STRUCTURE_SECTIONS_MAP.get(structure, ())
+
+
+def act_file_stem(structure: str, section: str) -> str:
+    """故事结构阶段写某一幕时的文件名（不含扩展名），例如 6-act_structure_first_climax。"""
+    part = section.lower().replace(" ", "_").replace(":", "").replace("/", "_")
+    return f"{structure.lower().replace(' ', '_')}_{part}"
+
+
+def act_for_file(stem: str) -> tuple[int, str] | None:
+    """文件名认得出是哪一幕时，返回（在结构里的序号, 幕名）。"""
+    stem = stem.lower()
+    for structure, names in STRUCTURE_SECTIONS_MAP.items():
+        for order, name in enumerate(names):
+            if act_file_stem(structure, name) == stem:
+                return order, name
+    return None
