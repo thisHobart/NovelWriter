@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from core.gui import theme  # noqa: E402
 from core.gui.main_window import MainWindow  # noqa: E402
-from core.gui.pages.novel import params_store  # noqa: E402
+from core.gui.pages.novel import params_store, story_options  # noqa: E402
 from core.gui.pages.novel.chapter_writing_page import ChapterWritingPage  # noqa: E402
 from core.gui.pages.novel.lore_page import LorePage  # noqa: E402
 from core.gui.pages.novel.parameters_page import ParametersPage  # noqa: E402
@@ -47,7 +47,7 @@ def test_parameters_page_round_trip(app, tmp_path):
     page = ParametersPage()
     page.output_dir_edit.setText(str(tmp_path))
     page.title_edit.setText("静默星环")
-    page.genre_edit.setText("近未来科幻")
+    page.genre_combo.setEditText("近未来科幻")
     assert page.dirty is True
     assert page.save() is True
     assert page.dirty is False
@@ -69,7 +69,7 @@ def test_parameters_page_requires_genre(app, tmp_path):
     page = ParametersPage()
     page.output_dir_edit.setText(str(tmp_path))
     page.title_edit.setText("镜中囚徒")
-    page.genre_edit.setText("")
+    page.genre_combo.setEditText("")
     assert "genre" in page.validate()
     assert page.save() is False
 
@@ -89,7 +89,7 @@ def test_parameters_page_converts_old_file_and_drops_removed_fields(app, tmp_pat
     page = ParametersPage()
     page.load(str(tmp_path))
 
-    assert page.genre_edit.text() == "爱情（当代爱情）"
+    assert page.genre_combo.currentText() == "爱情（当代爱情）"
     assert page.length_combo.currentText() == "长篇小说"
     assert page.quality_mode() == "strict"
     assert page.dirty is True          # 换算过旧格式，提醒作者保存
@@ -104,6 +104,67 @@ def test_parameters_page_converts_old_file_and_drops_removed_fields(app, tmp_pat
     for removed in ("Subgenre", "Author Name", "Gender Generation Bias String",
                     "Female Percentage", "Happy Ending", "Protagonist Type"):
         assert removed not in saved
+
+
+def _choose_genre(page, genre):
+    combo = page.genre_combo
+    index = combo.findText(genre)
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
+def test_genre_offers_presets_and_accepts_custom_text(app, tmp_path):
+    page = ParametersPage()
+    page.load(str(tmp_path))
+    combo = page.genre_combo
+    assert combo.isEditable()
+    assert [combo.itemText(i) for i in range(combo.count())] == ["悬疑推理", "恐怖", "科幻", "爱情"]
+    assert combo.currentText() == ""            # 新作品不替作者选题材
+
+    combo.setEditText("赛博朋克复仇")
+    combo.lineEdit().editingFinished.emit()
+    assert page.parameters()["genre"] == "赛博朋克复仇"
+    assert combo.count() == 4                   # 自己写的题材不加进列表
+
+
+def test_theme_and_tone_follow_the_chosen_genre(app, tmp_path):
+    page = ParametersPage()
+    page.load(str(tmp_path))
+    _choose_genre(page, "科幻")
+    theme_items = [page.theme_combo.itemText(i) for i in range(page.theme_combo.count())]
+    assert theme_items == list(story_options.THEME_OPTIONS["科幻"])
+    assert page.theme_combo.currentText() == theme_items[0]
+    assert page.tone_combo.currentText() == story_options.TONE_OPTIONS["科幻"][0]
+
+    page.tone_combo.setEditText("冷到骨子里")   # 作者自己写的基调
+    _choose_genre(page, "爱情")
+    assert page.theme_combo.currentText() == story_options.THEME_OPTIONS["爱情"][0]
+    assert page.tone_combo.currentText() == "冷到骨子里"
+    tone_items = [page.tone_combo.itemText(i) for i in range(page.tone_combo.count())]
+    assert tone_items == list(story_options.TONE_OPTIONS["爱情"])
+
+
+def test_custom_genre_uses_presets_of_matching_keywords(app):
+    assert story_options.preset_genre_for("都市悬疑") == "悬疑推理"
+    assert story_options.preset_genre_for("爱情（当代爱情）") == "爱情"
+    assert story_options.preset_genre_for("古风权谋") == ""
+    assert story_options.theme_options_for("古风权谋") == list(story_options.THEME_OPTIONS[""])
+
+
+def test_loading_keeps_saved_theme_and_tone(app, tmp_path):
+    system = tmp_path / "system"
+    system.mkdir()
+    (system / "parameters.txt").write_text(
+        f"Output Directory: {tmp_path}\nGenre: 科幻\nStory Length: Novella\n"
+        "Novel Title: 静默星环\nTheme: 记忆的代价\nTone: 何以为人\n",
+        encoding="utf-8",
+    )
+    page = ParametersPage()
+    page.load(str(tmp_path))
+    assert page.theme_combo.currentText() == "记忆的代价"
+    assert page.tone_combo.currentText() == "何以为人"
+    assert page.dirty is False
+    assert page.theme_combo.itemText(0) == story_options.THEME_OPTIONS["科幻"][0]
 
 
 def test_length_change_picks_default_structure(app, tmp_path):
