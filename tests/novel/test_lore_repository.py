@@ -567,3 +567,17 @@ def test_review_is_summarised_per_stage(project):
         "章节撰写：1 个文件是按旧设定写的。",
     ]
     assert summary["groups"][0]["files"] == [("story/structure/act.md", ["张明"])]
+
+
+def test_rename_also_updates_other_lore_tables_but_not_their_keys(project):
+    from core.generation.lore_repository import review_summary
+    write(project, LORE + "name_mapping.json", {"names": {"Zhang Ming": "张明", "张明": "keep key"}})
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][0]["name"] = "张远"
+    repo.save(snapshot, {CHARACTERS: encode(cast)})
+    mapping = json.loads((project / LORE / "name_mapping.json").read_text(encoding="utf-8"))
+    assert mapping == {"names": {"Zhang Ming": "张远", "张明": "keep key"}}
+    lore_group = review_summary(project)["groups"][0]          # 键里的旧名不换，留在待核对
+    assert lore_group["stage"] == "lore" and lore_group["files"] == [(LORE + "name_mapping.json", ["张明"])]

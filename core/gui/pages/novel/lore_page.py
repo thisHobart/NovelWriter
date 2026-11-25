@@ -741,7 +741,7 @@ class LorePage(StagePage):
         if not params:
             return "势力、人物数量按作品篇幅决定。"
         length = zh_label(str(params.get("story_length", "")))
-        return f"按篇幅（{length}）：{params.get('num_factions', 6)} 个势力 · {params.get('num_characters', 8)} 个人物"
+        return f"按篇幅（{length}）生成 {params.get('num_factions', 6)} 个势力 · {params.get('num_characters', 8)} 个人物"
 
     def _open_folder(self, subdirectory=None) -> None:
         import subprocess

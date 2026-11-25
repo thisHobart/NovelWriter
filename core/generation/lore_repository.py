@@ -211,7 +211,9 @@ def review_summary(root):
                 olds.setdefault((old, new), []).append(relative)
         named = "，".join(f"{len(paths)} 个仍写着旧名「{old}」（现名「{new}」）" for (old, new), paths in olds.items())
         if stage == "lore":
-            line = f"{title}：{named}，没有自动替换。" if named else f"{title}：{len(files)} 个文件待核对。"
+            line = (f"{title}：" + "，".join(f"{len(paths)} 个文件仍写着旧名「{old}」（现名「{new}」）"
+                                             for (old, new), paths in olds.items()) + "，没有自动替换。"
+                    if olds else f"{title}：{len(files)} 个文件待核对。")
         else:
             line = f"{title}：{len(files)} 个文件是按旧设定写的" + (f"，其中 {named}" if named else "") + "。"
         groups.append({"stage": stage, "title": title, "line": line,
@@ -480,8 +482,19 @@ class LoreRepository:
             groups = {key: records(payloads[key], kind) if key in payloads else []
                       for key, kind in ((CHARACTERS, "characters"), (FACTIONS, "factions"))}
             for rel in list(files):
-                if rel.startswith(LORE) and rel.endswith(".md"):
+                if not rel.startswith(LORE) or rel in payloads:
+                    continue
+                if rel.endswith(".md"):
                     files[rel] = swap_names(files[rel], safe, counts)
+                elif rel.endswith(".json"):
+                    # 其他设定表（如旧的 name_mapping.json）只换值，不动键。
+                    try:
+                        data = json.loads(files[rel])
+                    except json.JSONDecodeError:
+                        continue
+                    swapped = swap_in_value(data, safe, counts)
+                    if swapped != data:
+                        files[rel] = encode(swapped)
         replaced = [(old, new, counts.get(old, 0)) for old, new in safe.items()]
         self._validate(original, payloads, groups)
         for key, value in payloads.items():
