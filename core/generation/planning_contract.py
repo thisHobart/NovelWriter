@@ -337,7 +337,7 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
   "reader_knows_before": [],
   "reader_knows_after": [],
   "reader_must_not_know_yet": [],
-  "scene_boundaries": [],
+  "scene_boundaries": [{{"scene_number": 1, "must_do": ["这一场必须发生的事"], "must_not_do": ["这一场不能提前写的事"], "end_state": "这一场停在哪里"}}],
   "personal_cost": "本章个人代价；没有则留空",
   "cost_character": "承担代价的人物；没有则留空",
   "irreversible_change": "确有不可逆变化时填写；过渡、余波、关系或沉淀章可留空",
@@ -363,6 +363,13 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
 {CONTRACT_END}
 
 契约只记录本章场景已经明确安排的内容，没有相应内容的数组留空。
+
+scene_boundaries 每一场写一条，场景规划有几场就写几条，scene_number 填第几场（1、2、3…）：
+- must_do：这一场必须发生的事；
+- must_not_do：这一场不能提前写的事，通常是后面几场才发生的事；
+- end_state：这一场停在哪里，写最后的动作、画面或人物处境，一句具体的话，不能留空。
+写第 N 场正文时只看得到到这一场为止的规划，后面几场的边界会列成不许碰的清单，
+写的人靠 end_state 知道这一场写到哪里为止。
 
 timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene_2…）。写第 N 场时，
 提示词里只会放到第 N 场为止的内容；标错场次会让某一场提前拿到后面才该发生的事。
@@ -590,29 +597,30 @@ def contract_for_scene(
     scene_number = int(scene_number)
     scoped = deepcopy(contract)
 
-    def belongs_to_a_later_scene(item: Any, is_boundary: bool) -> bool:
+    def belongs_to_a_later_scene(item: Any) -> bool:
         marked = None
         if isinstance(item, dict):
             # 只看已知的场次标记键，不把整个字典 str() 之后拿去匹配：那样任何
             # 一个恰好写着 "scene 3" 的自由文本都会被当成场次标记。
-            keys = ("scene_number", *_SCENE_MARKER_KEYS) if is_boundary else _SCENE_MARKER_KEYS
-            for key in keys:
+            for key in _SCENE_MARKER_KEYS:
                 marked = _marked_scene(item.get(key))
                 if marked is None and str(item.get(key, "")).strip().isdigit():
                     marked = int(item[key])
                 if marked is not None:
                     break
-        elif is_boundary:
-            marked = _marked_scene(item)
         return marked is not None and marked > scene_number
 
     for name, value in list(scoped.items()):
         if not isinstance(value, list):
             continue
-        is_boundary = name == "scene_boundaries"
-        scoped[name] = [
-            item for item in value if not belongs_to_a_later_scene(item, is_boundary)
-        ]
+        if name == "scene_boundaries":
+            scoped[name] = [
+                item
+                for item, marked in zip(value, boundary_scenes(value))
+                if marked is None or marked <= scene_number
+            ]
+            continue
+        scoped[name] = [item for item in value if not belongs_to_a_later_scene(item)]
     return scoped
 
 
@@ -632,31 +640,85 @@ def later_scene_boundaries(
     if not isinstance(boundaries, list):
         return []
     later: List[str] = []
-    for item in boundaries:
-        marked = boundary_scene(item)
+    for item, marked in zip(boundaries, boundary_scenes(boundaries)):
         text = json.dumps(item, ensure_ascii=False) if isinstance(item, dict) else str(item)
         if marked is not None and marked > scene_number:
             later.append(text)
     return later
 
 
+#: 场景边界里写「这条属于第几场」的键，按先后认。新规划写 scene_number；旧作品里还见过
+#: scene_index、scene 这几种。
+_BOUNDARY_SCENE_KEYS = ("scene_number", "scene_index", *_SCENE_MARKER_KEYS)
+#: 文字写法的开头：「scene_2: …」「场景 2：…」「第 2 场 …」。
+_BOUNDARY_TEXT = re.compile(r"^\s*(?:scene[_\s-]*(\d+)|场景\s*(\d+)|第\s*(\d+)\s*场)", re.IGNORECASE)
+
+
+def _scene_mark(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text) or None
+    match = _BOUNDARY_TEXT.match(text)
+    if match:
+        return int(next(group for group in match.groups() if group))
+    # 旧代码对文字写法是在整段里找「scene N」，认得的这里照旧认得。
+    return _marked_scene(text)
+
+
 def boundary_scene(item: Any) -> int | None:
-    """一条场景边界属于第几场；认不出时返回 None。"""
+    """一条场景边界自己写明属于第几场；认不出时返回 None。
+
+    认得的写法：带 scene_number、scene_index、scene 等键的对象（值是数字、数字文字或
+    「scene_2」），「scene_2: …」「场景 2：…」「第 2 场 …」这样的文字，纯数字。
+    """
     if isinstance(item, dict):
-        marked = _marked_scene(item.get("scene_number"))
-        if marked is None and str(item.get("scene_number", "")).strip().isdigit():
-            marked = int(item["scene_number"])
-        if marked is None:
-            marked = next(
-                (
-                    _marked_scene(item.get(key))
-                    for key in _SCENE_MARKER_KEYS
-                    if _marked_scene(item.get(key)) is not None
-                ),
-                None,
-            )
-        return marked
-    return _marked_scene(item)
+        for key in _BOUNDARY_SCENE_KEYS:
+            marked = _scene_mark(item.get(key))
+            if marked is not None:
+                return marked
+        return None
+    return _scene_mark(item)
+
+
+def boundary_scenes(boundaries: Any) -> List[int | None]:
+    """一章的场景边界各属于第几场。
+
+    整份列表一条都没写场次时（旧作品里见过只写地点的），按先后当第 1、2、3 场；有的写了、
+    有的没写时，没写的那条认不出，留给本场。旧契约文件不改，只是读法放宽。
+    """
+    items = boundaries if isinstance(boundaries, list) else []
+    marks = [boundary_scene(item) for item in items]
+    if items and all(mark is None for mark in marks):
+        return list(range(1, len(items) + 1))
+    return marks
+
+
+def scene_boundary_defects(contract: Dict[str, Any], scene_count: int) -> List[str]:
+    """新规划的场景边界哪里不合格：每一场都要有一条带 scene_number 和非空 end_state 的边界。
+
+    只用在新生成的规划上；旧契约照旧能读、能用，不因为这一条判不合格。
+    """
+    boundaries = contract.get("scene_boundaries") if isinstance(contract, dict) else None
+    covered = set()
+    for item in boundaries if isinstance(boundaries, list) else []:
+        if not isinstance(item, dict):
+            continue
+        number = _scene_mark(item.get("scene_number"))
+        if number is not None and str(item.get("end_state") or "").strip():
+            covered.add(number)
+    missing = [number for number in range(1, int(scene_count) + 1) if number not in covered]
+    if not missing:
+        return []
+    return [
+        "scene_boundaries 缺少第 " + "、".join(str(number) for number in missing) + " 场："
+        f"场景规划共 {scene_count} 场，每一场都要写一条 "
+        '{"scene_number": 第几场, "must_do": [...], "must_not_do": [...], '
+        '"end_state": "这一场停在哪里"}，end_state 不能留空'
+    ]
 
 
 def load_planning_contracts(output_dir: str) -> List[Dict[str, Any]]:

@@ -32,6 +32,7 @@ from core.generation.planning_contract import (
     downstream_obligations,
     extract_scene_plan_contract,
     load_planning_contracts,
+    scene_boundary_defects,
     validate_contract_sequence,
     validate_planning_contract,
 )
@@ -264,6 +265,17 @@ class ScenePipeline:
                 for issue in graph_issues
                 if issue.get("severity") == "error"
             )
+
+        # 每一场都要写明停在哪里：写第 N 场时，后面几场的边界列成不许碰的清单，
+        # 写的人靠这一句知道到哪为止。只查新生成的规划，旧契约照旧能用。
+        defects.extend(
+            PlanningContractError(
+                message, chapters=(chapter_number,), code="scene_boundary_missing"
+            )
+            for message in scene_boundary_defects(
+                contract, len(parse_scene_sections(scene_markdown))
+            )
+        )
 
         if require_complete_sequence:
             try:

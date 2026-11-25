@@ -94,10 +94,10 @@ def test_the_check_reports_what_planning_left_behind(tmp_path):
     report = _collect(_work(tmp_path))
     by_chapter = {item.chapter: item for item in report.chapters}
     assert [by_chapter[n].scenes for n in (1, 2, 3)] == [2, 3, 2]
-    # 场景边界：第 1 章写在 scene_index 里、第 2 章开头一条写成「场景 1：」，现在的代码认不出。
-    assert (by_chapter[1].should_block_first, by_chapter[1].blocked_first) == (1, 0)
+    # 场景边界：第 1 章写在 scene_index 里、第 2 章开头一条写成「场景 1：」，都认得出。
+    assert (by_chapter[1].should_block_first, by_chapter[1].blocked_first) == (1, 1)
     assert (by_chapter[2].should_block_first, by_chapter[2].blocked_first) == (2, 2)
-    assert by_chapter[2].recognised == 2
+    assert by_chapter[2].recognised == 3
     assert by_chapter[3].with_end_state == 2
     # 重规划第 2 章时，第 1 章就埋下的悬念被写成「本章必须埋下」。
     assert by_chapter[2].stale_obligations == ["PT-001-01"]
@@ -113,8 +113,8 @@ def test_the_check_reports_what_planning_left_behind(tmp_path):
     assert report.defects == []
 
     text = check_planning.render(report, chapters=True)
-    assert "写第 1 场时应拦 / 实际拦的后面场次边界：4 / 3" in text
-    assert "第 2 章｜3｜3/2/0｜2/2" in text
+    assert "写第 1 场时应拦 / 实际拦的后面场次边界：4 / 4" in text
+    assert "第 2 章｜3｜3/3/0｜2/2" in text
 
 
 def test_the_check_never_calls_the_model(tmp_path, monkeypatch, capsys):

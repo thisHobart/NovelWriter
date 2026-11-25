@@ -70,13 +70,13 @@
 
 | 指标 | 基线 | 当前 |
 |---|---|---|
-| 写第 1 场时应拦 / 实际拦的后面场次边界 | 51 / 31（手工量也是 51 / 31） | 51 / 31 |
-| 写每一场时合计应拦 / 实际拦 | 73 / 46 | 73 / 46 |
-| 代码认得出场次的边界条数 / 总数 | 48 / 81 | 48 / 81 |
-| 写明「停在哪里」（end_state）的边界条数 / 总数 | 0 / 81（旧写法里写了结尾的 18 条） | 0 / 81 |
+| 写第 1 场时应拦 / 实际拦的后面场次边界 | 51 / 31（手工量也是 51 / 31） | 51 / 51 |
+| 写每一场时合计应拦 / 实际拦 | 73 / 46 | 73 / 73 |
+| 代码认得出场次的边界条数 / 总数 | 48 / 81 | 78 / 81（另 3 条只写了地点，按先后算场次） |
+| 写明「停在哪里」（end_state）的边界条数 / 总数 | 0 / 81（旧写法里写了结尾的 18 条） | 0 / 81（旧契约不改；新规划每一场都要写） |
 | 「本章必须埋下 / 引入」里其实早已存在的条目 | 299 条，涉及 28 章 | 299 |
 | 名字为空的条目 | 8 条 | 8 |
-| 规划提示词字数（最小 / 中位 / 最大） | 35321 / 44292 / 46063（存下的旧提示词 7340 / 12987 / 14691） | 35321 / 44292 / 46063 |
+| 规划提示词字数（最小 / 中位 / 最大） | 35321 / 44292 / 46063（存下的旧提示词 7340 / 12987 / 14691） | 35662 / 44633 / 46404 |
 | 带截断或内部字段的提示词份数 | 30 份（截断 22 份，都是「既有事实、时间事件与已了结线索」；内部字段 30 份） | 30 |
 | 大纲和规划里点到、登记表里没有的人名 / 地名 | 大纲 1 / 0，规划 1 / 0（都是「陆巡」） | 1 / 0，1 / 0 |
 | 跨章检查问题数 | 0 | 0 |
@@ -97,7 +97,7 @@
   - 测试里把发送函数换成一调用就报错的假函数，证明脚本不调模型；
   - 脚本只读作品目录，跑完目录里每个文件的修改时间不变。
 
-**1. 场景边界写清楚，写场景时读得到。**
+**1. 场景边界写清楚，写场景时读得到。**——**完成**（第 2 轮）
 
 - 规划提示词用中文说明每条边界写什么，字段名保持英文：`{"scene_number": 1, "must_do": [...], "must_not_do": [...], "end_state": "这一场停在哪里"}`。
 - 代码检查：每一场都有一条带 `scene_number` 和非空 `end_state` 的边界。不合格的和其他契约问题一起退回重写。
@@ -230,13 +230,14 @@
 
 建议的实跑（作者看过次数再决定跑不跑）：
 
-（空）
+- 第 1 条（场景边界）：在工作副本上删掉一章的场景规划（例如第 12 章，删规划文件即可，契约留着会被新规划覆盖），点「规划场景」只补这一章，看新规划是不是每一场都带 `end_state`、有没有因为边界被退回、`end_state` 写得够不够具体。次数：规划 1–3 次调用（第一次不合格最多再重试 2 次），新事实可能和已有事实是同一件时另加语义判断若干次；补完后跨章检查若点名别的章，每章再加 1–3 次。
 
 ## 九、进度记录
 
 | 轮 | 条目 | 改了什么（按界面讲） | 检查数字：前 → 后 | 提交 |
 |---|---|---|---|---|
 | 1 | 0. 不花调用的规划检查 | 「生成章节大纲」「规划场景」（含短篇）拼提示词的部分抽成不调模型、不写文件的函数，两个按钮改用它们；改前改后在工作副本上抓下 30 章规划、6 幕大纲、1 份短篇的提示词，逐字相同。新增规划检查脚本，拼出的 30 章提示词和正式流程逐字相同，跑完工作副本里每个文件的修改时间不变。代码：`core/generation/planning_prompt.py`（新）、`core/generation/planning_checks.py`（新，认名字）、`tools/check_planning.py`（新）、`planning_contract.py`（`contract_instruction_blocks`、`boundary_scene`）、`narrative_graph.py`（`NarrativeGraphManager.reader`）、`scene_pipeline.py`；测试 `tests/novel/test_check_planning.py` | 无 → 基线：应拦 / 实拦 51 / 31；end_state 0 / 81；早已存在 299；空名字 8；字数 35321 / 44292 / 46063；带截断或内部字段 30 份；登记表里没有的人名 1、地名 0；跨章 0 | `fix(novel): add a no-call planning check that rebuilds every planning prompt` |
+| 2 | 1. 场景边界写清楚，写场景时读得到 | 「规划场景」的提示词用中文逐项说明每一场写一条边界：第几场、必须发生的事、不能提前写的事、这一场停在哪里；新规划每一场都要有写明场次和停在哪里的一条，不合格的和其他契约问题一起退回重写；写一场戏时认得旧作品的各种边界写法（场次写在 scene_index、scene 里，「场景 2：」「第 2 场」开头，纯数字，整份没写场次的按先后算），旧契约文件不改。代码：`planning_contract.py`（提示词里的 `scene_boundaries` 示例和说明、`boundary_scene`、`boundary_scenes`、`scene_boundary_defects`、`contract_for_scene`、`later_scene_boundaries`）、`scene_pipeline.py`（`_validate_planning_draft` 加边界检查）；测试 `tests/novel/test_scene_boundaries.py`，`test_check_planning.py` 改了预期数字 | 写第 1 场应拦 / 实拦 51 / 31 → 51 / 51；每一场合计 73 / 46 → 73 / 73；认得出场次 48 → 78 / 81；契约文件逐字节不变；提示词中位 44292 → 44633（多了边界说明） | `fix(novel): spell out where each scene stops and read every old boundary format` |
 
 ## 代码位置
 
@@ -246,7 +247,7 @@
 | 两个按钮的提示词（只拼文字、只读） | `core/generation/planning_prompt.py`（`outline_prompt`、`scene_plan_prompt`、`short_story_prompt`、`contract_instructions`、`planning_lore`） |
 | 不花调用的规划检查 | `tools/check_planning.py`；认名字 `core/generation/planning_checks.py` |
 | 契约格式说明、跨章检查、后续章节依赖 | `core/generation/planning_contract.py`（`contract_output_instructions`、`downstream_obligations`、`iter_history_defects`、`validate_contract_sequence`） |
-| 写场景时读边界 | `core/generation/planning_contract.py`（`contract_for_scene`、`later_scene_boundaries`、`_SCENE_MARKER_KEYS`） |
+| 写场景时读边界、新规划的边界检查 | `core/generation/planning_contract.py`（`contract_for_scene`、`later_scene_boundaries`、`boundary_scenes`、`scene_boundary_defects`） |
 | 编号撞车的判断 | `core/generation/semantic_identity.py` |
 | 材料取舍、写场景的材料 | `core/generation/prompt_material.py`、`core/generation/scene_material.py` |
 | 叙事图 | `core/generation/narrative_graph.py` |
