@@ -40,7 +40,12 @@ from core.generation.planning_contract import (
     load_planning_contracts,
 )
 from core.generation.prompt_context import build_story_parameter_lines, sanitize_lore_content
-from core.generation.prompt_material import MaterialBlock, fit_blocks, render_blocks
+from core.generation.prompt_material import (
+    OMITTED_HEADING,
+    MaterialBlock,
+    fit_blocks,
+    render_blocks,
+)
 from core.generation.scene_material import (
     card_text,
     mentioned,
@@ -52,6 +57,7 @@ from core.generation.scene_material import (
 )
 from core.generation.story_ledger import StoryLedgerManager
 from core.localization import zh_label
+from core.lore_localization import display_value
 
 #: 短篇的场景数上下限。短篇整篇是作为**一个章节**送进质量闸门的，而那套闸门的
 #: 重修预算与分数门槛都是在 2-3 场的章节上实测定下来的。实测一篇 10 场的短篇在
@@ -65,6 +71,9 @@ MISSING_LORE = "缺少整体世界观背景。"
 
 #: 「规划场景」每章材料的总字数上限（不含要求和契约格式）。和写一场戏的设定材料一样。
 PLANNING_BUDGET = 30000
+
+#: 「生成章节大纲」每一幕的设定材料（登记表、人物和势力名单、上一幕最后一章）的字数上限。
+OUTLINE_BUDGET = 12000
 
 Block = Tuple[str, str]
 
@@ -240,6 +249,117 @@ def book_outlines(
 # ---------------------------------------------------------------- 生成章节大纲
 
 
+def previous_act_ending(
+    output_dir: str,
+    structure_name: str,
+    sections: Sequence[str],
+    section_name: str,
+    chapter_outlines_dir: str,
+) -> str:
+    """这一幕前面最近一幕已有大纲的最后一章那一段；第一幕或前面都没有大纲时是空文字。"""
+    sections = list(sections)
+    if section_name not in sections:
+        return ""
+    for earlier in reversed(sections[: sections.index(section_name)]):
+        files = act_files(output_dir, structure_name, earlier, chapter_outlines_dir, "")
+        try:
+            with open(files.outline_file, "r", encoding="utf-8") as handle:
+                parts = chapter_parts(handle.read())
+        except (OSError, UnicodeError):
+            continue
+        if parts:
+            return parts[-1][1]
+    return ""
+
+
+def cast_roster(cast: Sequence[Dict[str, Any]], faction_cards: Sequence[Dict[str, Any]]) -> str:
+    """人物和势力名单：每人一行名字和身份（角色定位、职业、所属势力），每个势力一行
+    类型和活动地点。目标、成长方向这些不带：大纲只需要知道有谁、是什么人。
+
+    卡片里的称号（title）不带：生成卡片时它常和职业对不上（辩护律师配“地方检察官”），
+    放进大纲就成了自相矛盾的身份。"""
+
+    def shown(value: Any) -> str:
+        if isinstance(value, str):
+            return display_value(value).strip()
+        if isinstance(value, (list, tuple)):
+            return "、".join(item for item in (shown(part) for part in value) if item)
+        return ""
+
+    lines: List[str] = []
+    if cast:
+        lines.append("人物：")
+        for card in cast:
+            parts: List[str] = []
+            for key in ("role", "profession", "occupation"):
+                text = shown(card.get(key))
+                if text and text not in parts:
+                    parts.append(text)
+            faction = shown(card.get("faction"))
+            if faction and not faction.startswith("无"):
+                parts.append(f"所属：{faction}")
+            lines.append(f"- {name_of(card)}：{'；'.join(parts)}" if parts else f"- {name_of(card)}")
+    if faction_cards:
+        lines.append("势力：")
+        for card in faction_cards:
+            parts = [text for text in (shown(card.get("type")),) if text]
+            territory = shown(card.get("territory")) or shown(card.get("territories"))
+            if territory:
+                parts.append(f"活动地点：{territory}")
+            lines.append(f"- {name_of(card)}：{'；'.join(parts)}" if parts else f"- {name_of(card)}")
+    return "\n".join(lines)
+
+
+def outline_material(
+    output_dir: str, previous_ending: str = "", *, max_chars: int = OUTLINE_BUDGET
+) -> PlanningMaterial:
+    """「生成章节大纲」一幕的设定材料：名称与规则登记表（必须遵守，总是带）、人物和势力
+    名单（必须遵守）、上一幕最后一章的大纲（参考）。超出篇幅时从最后一块起整块去掉。
+
+    作品没有设定文件时只有最后一块。
+    """
+    files = dict(lore_files(output_dir))
+    registry, cast, faction_cards = setting_records(files)
+    blocks: List[MaterialBlock] = []
+    if files:
+        blocks.append(MaterialBlock("registry", "名称与规则登记表", registry_text(registry).strip(),
+                                    required=True, authority="必须遵守"))
+    roster = cast_roster(cast, faction_cards)
+    if roster:
+        blocks.append(MaterialBlock("roster", "人物和势力名单", roster, authority="必须遵守", demote=False))
+    if str(previous_ending or "").strip():
+        blocks.append(MaterialBlock("ending", "上一幕最后一章的大纲", _headings_from_third(previous_ending.strip()),
+                                    authority="参考", demote=False))
+    blocks = [block for block in blocks if block.text]
+    return _fitted(blocks, max_chars)
+
+
+def _headings_from_third(text: str) -> str:
+    """把一段大纲里的标题整体挪到最高一级是三级（“### 第 N 章：标题”），
+    和要求的章标题写法一致，又不和块标题（二级）混在一起。"""
+    levels = [len(match.group(1)) for match in re.finditer(r"^(#{1,6})(?=\s)", text, flags=re.M)]
+    shift = 3 - min(levels) if levels else 0
+    if shift <= 0:
+        return text
+    return re.sub(r"^(#{1,6})(?=\s)", lambda match: "#" * min(6, len(match.group(1)) + shift), text, flags=re.M)
+
+
+def _fitted(blocks: Sequence[MaterialBlock], max_chars: int) -> PlanningMaterial:
+    """按 ``fit_blocks`` 取舍后的材料，blocks 按块切开（首尾相接就是整段）。"""
+    text, kept, omitted = fit_blocks(blocks, max_chars)
+    parts = [(block.label, render_blocks([block])) for block in kept]
+    if omitted:
+        parts.append((OMITTED_HEADING, render_blocks([], omitted)))
+    material = PlanningMaterial(text)
+    material.blocks = tuple(
+        (label, part + ("\n\n" if index < len(parts) - 1 else ""))
+        for index, (label, part) in enumerate(parts)
+    )
+    material.kept = tuple(block.label for block in kept)
+    material.omitted = tuple(block.label for block in omitted)
+    return material
+
+
 def outline_prompt(
     *,
     genre_label: str,
@@ -250,10 +370,30 @@ def outline_prompt(
     start_chapter: int,
     story_params: Dict[str, Any],
     location_guidance: Sequence[str],
+    output_dir: str | None = None,
+    previous_ending: str = "",
+    material_budget: int = OUTLINE_BUDGET,
 ) -> PlanningPrompt:
-    """「生成章节大纲」给一幕的提示词。"""
+    """「生成章节大纲」给一幕的提示词。给了 ``output_dir`` 时，这一幕的故事结构后面接上
+    设定材料（``outline_material``）。"""
     section = zh_label(section_name)
-    return _prompt([
+    material = (
+        outline_material(output_dir, previous_ending, max_chars=material_budget)
+        if output_dir else PlanningMaterial("")
+    )
+    material_blocks = [
+        (label, ("\n\n" if index == 0 else "") + text)
+        for index, (label, text) in enumerate(material.blocks)
+    ]
+    naming = ""
+    if "名称与规则登记表" in material.kept:
+        naming += (
+            "列人物、势力和地点时用名称与规则登记表里的名字；确实需要登记表里没有的新人物时，"
+            "在“涉及人物”里写明此人的身份。"
+        )
+    if "上一幕最后一章的大纲" in material.kept:
+        naming += "“上一幕最后一章的大纲”只用来接上前情，不要重写那一章的事。"
+    prompt = _prompt([
         (
             "任务说明",
             f"请为一部{genre_label}小说生成章节大纲。"
@@ -262,11 +402,13 @@ def outline_prompt(
             f"当前重点是 **{section}**。以下是这一部分的详细规划：\n\n",
         ),
         ("这一幕的故事结构", section_content),
+        *material_blocks,
         (
             "写法要求",
             f"\n\n请根据“{section}”的详细规划，逐章生成大纲。"
             "每一章都应有明确目的，并推动这一结构部分的故事。"
             "为每章建议所含场景，并列出本章涉及的人物、势力和具体地点。"
+            + naming +
             f"“{section}”从第 {start_chapter} 章开始，请依次分配章号。\n"
             "每一章必须单独起一行标题，写成“### 第 N 章：标题”，使用阿拉伯数字，"
             "不要用“第一章”这样的中文数字，也不要把章标题混进正文段落。\n",
@@ -275,6 +417,8 @@ def outline_prompt(
         ("地点要求", "\n".join(f"- {line}" for line in location_guidance) + "\n"),
         ("输出格式", "请以 Markdown 格式输出，不要使用代码围栏，也不要在响应中写出“Markdown”一词。"),
     ])
+    prompt.kept, prompt.omitted = material.kept, material.omitted
+    return prompt
 
 
 # ---------------------------------------------------------------- 规划场景
@@ -430,17 +574,7 @@ def planning_material(
     elif not files:
         add("body", "世界观正文", lore_content or MISSING_LORE, "参考")
 
-    text, kept, omitted = fit_blocks(blocks, max_chars)
-    parts = [(block.label, render_blocks([block])) for block in kept]
-    if omitted:
-        parts.append(("篇幅放不下、这次没带的材料", render_blocks([], omitted)))
-    material = PlanningMaterial(text)
-    material.blocks = tuple(
-        (label, part + ("\n\n" if index < len(parts) - 1 else ""))
-        for index, (label, part) in enumerate(parts)
-    )
-    material.kept = tuple(block.label for block in kept)
-    material.omitted = tuple(block.label for block in omitted)
+    material = _fitted(blocks, max_chars)
     material.characters = tuple(name_of(card) for card in chosen)
     return material
 
@@ -633,6 +767,7 @@ def block_sizes(prompt: Any) -> Dict[str, int]:
 __all__ = [
     "ActFiles",
     "MISSING_LORE",
+    "OUTLINE_BUDGET",
     "PLANNING_BUDGET",
     "PlanningMaterial",
     "PlanningPrompt",
@@ -641,12 +776,15 @@ __all__ = [
     "act_files",
     "block_sizes",
     "book_outlines",
+    "cast_roster",
     "chapter_parts",
     "continuity_context",
     "contract_instructions",
+    "outline_material",
     "outline_prompt",
     "planning_lore",
     "planning_material",
+    "previous_act_ending",
     "scene_plan_prompt",
     "short_story_prompt",
     "slug",

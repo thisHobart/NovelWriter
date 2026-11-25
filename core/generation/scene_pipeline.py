@@ -54,6 +54,7 @@ from core.generation.planning_prompt import (
     contract_instructions,
     outline_prompt,
     planning_lore,
+    previous_act_ending,
     scene_plan_prompt,
     short_story_prompt,
 )
@@ -927,6 +928,20 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                 start_chapter=chapter_number_offset,
                 story_params=story_params,
                 location_guidance=location_guidance,
+                output_dir=output_dir,
+                previous_ending=previous_act_ending(
+                    output_dir,
+                    selected_structure_name,
+                    sections_to_process,
+                    current_section_name,
+                    chapter_outlines_dir,
+                ),
+            )
+            self.app.logger.info(
+                "“%s”大纲材料带了：%s；篇幅放不下没带：%s",
+                zh_label(current_section_name),
+                "、".join(prompt.kept) or "无",
+                "、".join(prompt.omitted) or "无",
             )
             save_prompt_to_file(
                 output_dir,

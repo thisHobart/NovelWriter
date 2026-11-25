@@ -62,6 +62,7 @@ from core.generation.planning_prompt import (  # noqa: E402
     contract_instructions,
     outline_prompt,
     planning_lore,
+    previous_act_ending,
     scene_plan_prompt,
     short_story_prompt,
     slug,
@@ -71,6 +72,7 @@ from core.generation.prompt_context import (  # noqa: E402
     format_genre_label,
     normalize_story_parameters,
 )
+from core.generation.prompt_material import OMITTED_HEADING  # noqa: E402
 from core.generation.scene_material import mentioned, name_terms, setting_records  # noqa: E402
 from core.generation.stage_pipeline import load_stage_parameters  # noqa: E402
 from core.generation.story_ledger import StoryLedgerManager  # noqa: E402
@@ -130,6 +132,8 @@ class PlanningReport:
     expected_chapters: int = 0
     chapters: List[ChapterReport] = field(default_factory=list)
     outline_prompts: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    #: 每一幕大纲提示词的原文（不打印，测试拿它和正式流程比对）。
+    outline_texts: Dict[str, str] = field(default_factory=dict)
     outline_names: NameFindings = field(default_factory=NameFindings)
     plan_names: NameFindings = field(default_factory=NameFindings)
     registry_found: bool = False
@@ -201,8 +205,11 @@ def _collect_long_form(report, output_dir, structure, story_length, story_params
                 genre_label=genre_label, structure_name=structure, sections=sections,
                 section_name=section, section_content=content, start_chapter=offset,
                 story_params=story_params, location_guidance=location_guidance,
+                output_dir=output_dir,
+                previous_ending=previous_act_ending(output_dir, structure, sections, section, outlines_dir),
             )
             report.outline_prompts[section] = {"全文": len(prompt), **_sizes(prompt)}
+            report.outline_texts[section] = str(prompt)
         if outline and parse_chapter_numbers(outline):
             offset = max(offset, max(parse_chapter_numbers(outline)) + 1)
             report.outline_names.merge(unregistered_names(outline, registry))
@@ -480,6 +487,14 @@ def render(report: PlanningReport, *, chapters: bool = False) -> str:
             f"{int(statistics.median(totals))} / 最多 {max(totals)}；块："
             + "、".join(_labels({k: v for k, v in s.items() if k != "全文"} for s in report.outline_prompts.values()))
         )
+        outline_sizes = list(report.outline_prompts.values())
+        lines.append(
+            "  带了设定材料的：" + "，".join(
+                f"{label} {sum(label in sizes for sizes in outline_sizes)} 份"
+                for label in ("名称与规则登记表", "人物和势力名单", "上一幕最后一章的大纲")
+            )
+            + f"；篇幅放不下、去掉了块的 {sum(OMITTED_HEADING in sizes for sizes in outline_sizes)} 份"
+        )
 
     lines.append("")
     if report.registry_found:
@@ -539,11 +554,14 @@ def _runs(items: Sequence[ChapterReport]) -> str:
 
 
 def _labels(groups: Iterable[Dict[str, int]]) -> List[str]:
+    """各份提示词的块名合成一列；后面几份才有的块，插在它在那份里的前一块后面。"""
     seen: List[str] = []
     for group in groups:
+        previous = None
         for label in group:
             if label not in seen:
-                seen.append(label)
+                seen.insert(seen.index(previous) + 1 if previous in seen else len(seen), label)
+            previous = label
     return seen
 
 
