@@ -188,14 +188,55 @@ def _pretty_section(filename: str) -> str:
     return stem.replace("_", " ").replace("-", " ").strip().title() or filename
 
 
+def _act_file_stems() -> Dict[str, tuple]:
+    """每一幕的文件名（不含扩展名）→（在结构里的序号, 中文名）。
+
+    文件名的拼法和 core/generation/structure_pipeline.py 写文件时一致：
+    结构名小写、空格换下划线，再接幕名（去掉冒号、斜杠换下划线）。
+    """
+    from core.config.story_options import STRUCTURE_SECTIONS_MAP
+
+    stems = {}
+    for structure, names in STRUCTURE_SECTIONS_MAP.items():
+        prefix = structure.lower().replace(" ", "_")
+        for order, name in enumerate(names):
+            part = name.lower().replace(" ", "_").replace(":", "").replace("/", "_")
+            # 三幕式的幕名自带「第一幕：」，卡片上已经有「第 1 幕」，只留后半截。
+            title = re.sub(r"^第[一二三四五六七八九十]+幕：", "", zh_label(name))
+            stems[f"{prefix}_{part}"] = (order, title)
+    return stems
+
+
+#: 故事结构目录里不是「幕」的文件，排在幕后面
+_STRUCTURE_EXTRAS = (
+    ("character_arcs", "人物弧光"),
+    ("faction_arcs", "势力弧光"),
+    ("reconciled_arcs", "统一故事弧"),
+    ("plot_short_story", "短篇完整情节"),
+)
+
+
+def _structure_title(stem: str) -> Optional[str]:
+    for prefix, title in _STRUCTURE_EXTRAS:
+        if stem.lower().startswith(prefix):
+            return title
+    return None
+
+
 def structure_sections(output_dir: str) -> List[Section]:
+    """故事结构目录里的文件，认得出的幕按结构里的先后排、用中文名，其余排在后面。"""
     base = os.path.join(output_dir, STRUCTURE_DIR)
+    known = _act_file_stems()
     sections = []
     for name in _listdir(base, ".md"):
         path = os.path.join(base, name)
-        sections.append(Section(os.path.splitext(name)[0], _pretty_section(name),
-                                path, _read_text(path), _mtime_label(path)))
-    return sections
+        stem = os.path.splitext(name)[0]
+        order, title = known.get(stem.lower(),
+                                 (None, _structure_title(stem) or _pretty_section(name)))
+        sections.append((order is None, order or 0, Section(
+            stem, title, path, _read_text(path), _mtime_label(path))))
+    sections.sort(key=lambda item: item[:2])
+    return [section for _, _, section in sections]
 
 
 def character_arcs(output_dir: str) -> Optional[str]:

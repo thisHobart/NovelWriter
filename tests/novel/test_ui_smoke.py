@@ -601,3 +601,43 @@ def test_review_tab_groups_by_stage_jumps_there_and_can_be_cleared_and_undone(ap
     assert "全部标为已看过" in page.change_label.text()
     page.undo_button.click()
     assert "待核对" in _tab_names(page)
+
+
+def test_structure_acts_use_chinese_titles_in_story_order(app, tmp_path):
+    import re
+
+    from core.gui.pages.novel.structure_page import SectionCard
+    base = tmp_path / "story" / "structure"
+    base.mkdir(parents=True)
+    # 磁盘上按字母排是 beginning、first_climax、resolution……，界面要按六幕的先后排。
+    for name in ("beginning", "first_climax", "resolution", "rising_action",
+                 "second_climax", "solution_finding"):
+        (base / f"6-act_structure_{name}.md").write_text("" if name == "resolution" else "内容",
+                                                        encoding="utf-8")
+    (base / "character_arcs.md").write_text("弧光", encoding="utf-8")
+    page = StructurePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    layout = page._sections_layout
+    cards = [layout.itemAt(i).widget() for i in range(layout.count())]
+    cards = [card for card in cards if isinstance(card, SectionCard)]
+    shown = [[label.text() for label in card.findChildren(QLabel)][:2] for card in cards]
+    assert shown == [["第 1 幕", "开端"], ["第 2 幕", "情节上升"], ["第 3 幕", "第一次高潮"],
+                     ["第 4 幕", "寻找解决方案"], ["第 5 幕", "第二次高潮"], ["第 6 幕", "结局"]]
+    gate = [label.text() for label in page.gate.findChildren(QLabel)]
+    assert "结局：文件为空。" in gate
+    assert not any(re.search("[A-Za-z]", text) for text in gate)
+
+    scenes = ScenePlanPage()
+    scenes.output_dir = str(tmp_path)
+    scenes.refresh()
+    assert "结局" in [label.text() for label in scenes.findChildren(QLabel)]
+
+
+def test_three_act_titles_drop_the_repeated_act_number(tmp_path):
+    from core.gui.pages.novel.services import artifacts
+    base = tmp_path / "story" / "structure"
+    base.mkdir(parents=True)
+    for name in ("act_3_resolution", "act_1_setup", "act_2_confrontation"):
+        (base / f"3-act_structure_{name}.md").write_text("内容", encoding="utf-8")
+    assert [s.title for s in artifacts.structure_sections(str(tmp_path))] == ["铺垫", "对抗", "结局"]
