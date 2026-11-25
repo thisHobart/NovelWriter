@@ -17,6 +17,51 @@ def source_fingerprint(root, changes=None):
     return digest(encode(dict(sorted(files.items()))))
 
 
+def file_digests(files):
+    """保存时每个文件的指纹；之后磁盘内容和它不同，就是作者手动改过。"""
+    return {path: digest(str(text).replace("\r\n", "\n")) for path, text in files.items()}
+
+
+def edited_after_save(root, receipt):
+    """这份结果保存后作者有没有手动改过（编辑、改名都算）。撤回到保存时的样子就又不算了。
+
+    旧收据没有记指纹，一律当没改过。
+    """
+    saved = receipt.get("file_digests")
+    if receipt.get("disposition") != "current" or not saved:
+        return False
+    repo = LoreRepository(root)
+    for path, value in saved.items():
+        try:
+            text = repo.path(path).read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return True
+        if digest(text.replace("\r\n", "\n")) != value:
+            return True
+    return False
+
+
+def product_key(receipt):
+    """同一份产物的几次生成归到一起：人物背景按人物分，其余按种类。"""
+    subject = receipt.get("subject") if isinstance(receipt.get("subject"), dict) else {}
+    return receipt.get("kind"), str(subject.get("name", "")) if receipt.get("kind") == "background" else ""
+
+
+def latest_by_product(receipts):
+    """按产物分组，每组最新一次在前：[(最新收据, [更早的收据…]), …]，组按最新时间排。"""
+    groups = {}
+    for receipt in sorted(receipts, key=lambda r: r.get("created_at", 0), reverse=True):
+        groups.setdefault(product_key(receipt), []).append(receipt)
+    return [(items[0], items[1:]) for items in groups.values()]
+
+
+def needs_attention(root, receipt):
+    """这份最新结果还要不要作者处理：已完成、已撤回、保存后手动改过的都不用。"""
+    if receipt.get("reverted") or receipt.get("status") == "complete":
+        return False
+    return not edited_after_save(root, receipt)
+
+
 def save_receipt(root, receipt):
     path = LoreRepository(root).path(f"{RESULTS}/{receipt['id']}.json")
     LoreRepository._atomic(path, encode(receipt).encode("utf-8"))
@@ -137,7 +182,8 @@ def adopt_draft(root, identity, raw, *, expected_fingerprint=None, expected_rece
         metadata = repo._revision(repo._metadata(), updated, list(files), ["草稿已手动采用，请核对生成问题。"], True)
         from core.generation.lore_repository import META
         receipt.update(candidate=raw, status="needs_changes", exit_reason="manual_adoption", files=list(files),
-                       source_fingerprint=source_fingerprint(root, files), disposition="current")
+                       source_fingerprint=source_fingerprint(root, files), disposition="current",
+                       file_digests=file_digests(files), remaining=[])
         repo._transaction({**files, META: encode(metadata), f"{RESULTS}/{identity}.json": encode(receipt)}, "adopt_generation_draft")
         repo.record_change("采用草稿：" + LABELS.get(kind, "设定"), before_state, [identity])
         return receipt

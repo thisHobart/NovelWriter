@@ -15,6 +15,37 @@ REASON_LABELS = {"checked": "检查结束", "attempt_limit": "达到自动修复
 REASON_LABELS["interrupted"] = "上次运行意外中断"
 REASON_LABELS["generated"] = "生成结束（标题不作模型检查）"
 
+#: 没能采用时，卡片上「没有采用：…」后面的原因。
+NOT_ADOPTED = {"cancelled": "已停止", "external_change": "生成期间设定被改过", "save_failed": "保存失败",
+               "interrupted": "上次运行中断"}
+
+
+def result_status(receipt, edited=False):
+    """生成结果卡上的状态，用作者听得懂的话。"""
+    status = receipt.get("status")
+    current = receipt.get("disposition") == "current"
+    if receipt.get("reverted"):
+        return "已撤回"
+    if edited and current:
+        return "已手动修改"
+    if status == "complete":
+        return "已完成 · 有检查备注" if receipt.get("notes") else "已完成"
+    if current and status == "needs_changes":
+        return "有问题，已保存"
+    if current and status == "unchecked":
+        return "已保存，检查没做完"
+    if status == "failed":
+        return "没有取得内容"
+    if receipt.get("exit_reason") == "manual_draft":
+        return "草稿已保存，还没采用"
+    return "没有采用：" + NOT_ADOPTED.get(receipt.get("exit_reason"), "返回内容读不出来")
+
+
+def result_details(receipt):
+    """请求次数、修复次数、用时：放在悬停提示里。"""
+    return (f"{REASON_LABELS.get(receipt.get('exit_reason'), '候选已保留')} · 请求 {receipt.get('calls', 0)} 次"
+            f" · 修复 {receipt.get('repairs', 0)} 次 · 用时 {receipt.get('elapsed_seconds', 0):.1f} 秒")
+
 
 def extract_body(raw, kind):
     """只提取能可靠解码的文本字段；不把局部对象伪装成有效设定。"""

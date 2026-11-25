@@ -44,7 +44,7 @@ from core.generation.stage_context import StageContext
 from core.generation.parameters import requirements_block
 from core.generation.parameter_compliance import ComplianceReview, guard_manual_sources
 from core.generation.lore_repository import LoreRepository, BODY, CHARACTERS, FACTIONS, CONTRACT, encode, background_name
-from core.generation.lore_run import readable_world, save_receipt, source_fingerprint, load_receipt, LABELS, RESULTS
+from core.generation.lore_run import readable_world, save_receipt, source_fingerprint, load_receipt, file_digests, LABELS, RESULTS
 
 
 def _log_notice(level: str, title: str, message: str) -> None:
@@ -105,7 +105,8 @@ class LorePipeline:
                 changes = dict(files)
                 if review and review.outcome:
                     published = dict(review.outcome, files=list(files), disposition="current",
-                                     source_fingerprint=source_fingerprint(ui.output_dir, files))
+                                     source_fingerprint=source_fingerprint(ui.output_dir, files),
+                                     file_digests=file_digests(files))
                     changes[f"{RESULTS}/{published['id']}.json"] = encode(published)
                 repo._transaction(changes, "checked_generation")
             except Exception:

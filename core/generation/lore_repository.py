@@ -651,7 +651,8 @@ def generation_label(arguments):
         try:
             receipt = json.loads((Path(arguments["output_dir"]) / RECEIPTS / f"{options.get('receipt_id')}.json")
                                  .read_text(encoding="utf-8"))
-            return "让 AI 再修一次：" + KIND_TITLES.get(receipt.get("kind"), "设定")
+            prefix = "再修一次并继续生成：" if options.get("continue") else "让 AI 再修一次："
+            return prefix + KIND_TITLES.get(receipt.get("kind"), "设定")
         except (OSError, ValueError):
             return "让 AI 再修一次"
     if action == "enhance" and options.get("subject_name"):

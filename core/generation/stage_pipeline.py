@@ -132,23 +132,36 @@ def _guard_upstream_lore(context):
                          lambda prompt: send_prompt(prompt, model=context.model), "upstream_lore")
 
 
+#: 整段生成世界设定的顺序：(步骤, 进度, 进度文字, 方法名)。续跑也按这张表走。
+LORE_STEPS = (
+    ("factions", 0.08, "生成势力", "_generate_factions"),
+    ("characters", 0.28, "生成人物", "_generate_characters"),
+    ("lore", 0.50, "生成世界观", "_generate_lore"),
+    ("enhance", 0.72, "完善主要人物", "_main_character_enhancement"),
+    ("titles", 0.88, "推荐标题", "_suggest_titles"),
+)
+
+
+def _run_lore_steps(context: StageContext, pipeline: LorePipeline, keys: Sequence[str]) -> None:
+    """按顺序跑这几步；某一步没能采用（只留了草稿）就停下，并在那张收据上记下还剩哪几步。"""
+    from core.generation.lore_run import save_receipt
+    steps = [step for step in LORE_STEPS if step[0] in keys]
+    for index, (_key, fraction, label, method) in enumerate(steps):
+        context.progress(label, fraction)
+        getattr(pipeline, method)(context)
+        outcomes = context.extras.get("lore_results", [])
+        if outcomes and outcomes[-1].get("disposition") == "draft":
+            context.extras.setdefault("parameter_warnings", []).append("当前步骤已交付草稿，采用可读取内容后可继续世界设定生成。")
+            outcomes[-1]["remaining"] = [step[0] for step in steps[index + 1:]]
+            save_receipt(context.output_dir, outcomes[-1])
+            return
+
+
 def _run_lore(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
     pipeline = LorePipeline(host)
     context.extras.setdefault("num_factions", 6)
     context.extras.setdefault("num_chars", 8)
-    for fraction, label, operation in (
-        (0.08, "生成势力", pipeline._generate_factions),
-        (0.28, "生成人物", pipeline._generate_characters),
-        (0.50, "生成世界观", pipeline._generate_lore),
-        (0.72, "完善主要人物", pipeline._main_character_enhancement),
-        (0.88, "推荐标题", pipeline._suggest_titles),
-    ):
-        context.progress(label, fraction)
-        operation(context)
-        outcomes = context.extras.get("lore_results", [])
-        if outcomes and outcomes[-1].get("disposition") == "draft":
-            context.extras.setdefault("parameter_warnings", []).append("当前步骤已交付草稿，采用可读取内容后可继续世界设定生成。")
-            break
+    _run_lore_steps(context, pipeline, [step[0] for step in LORE_STEPS])
     files = _files(
         context.output_dir,
         (
@@ -159,6 +172,22 @@ def _run_lore(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
         ),
     )
     return {"step": "lore", "generated_files": files}
+
+
+def _repair_lore(context: StageContext, pipeline: LorePipeline, identity: str, then_continue: bool) -> None:
+    """「让 AI 再修一次」；整段生成停在这份时（「再修一次并继续生成」）修好后接着跑完剩下几步。"""
+    from core.generation.lore_run import load_receipt, save_receipt
+    remaining = list(load_receipt(context.output_dir, identity).get("remaining") or []) if then_continue else []
+    pipeline._repair_result(context, identity)
+    outcomes = context.extras.get("lore_results", [])
+    if not remaining or not outcomes:
+        return
+    if outcomes[-1].get("disposition") == "draft":
+        # 还是没能采用：新收据接着记住剩下几步，下次按钮仍是「再修一次并继续生成」。
+        outcomes[-1]["remaining"] = remaining
+        save_receipt(context.output_dir, outcomes[-1])
+        return
+    _run_lore_steps(context, pipeline, remaining)
 
 
 def _run_structure(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
@@ -531,7 +560,7 @@ def run_stage_action(
                        ("story/planning/suggested_titles.md",)),
         }
         if action == "repair":
-            pipeline._repair_result(context, (options or {}).get("receipt_id"))
+            _repair_lore(context, pipeline, (options or {}).get("receipt_id"), bool((options or {}).get("continue")))
             result = {"step": step, "action": action, "generated_files": sorted(context.extras.get("generated_lore_files", []))}
         elif action not in actions:
             raise ValueError(f"世界设定阶段没有动作：{action}")

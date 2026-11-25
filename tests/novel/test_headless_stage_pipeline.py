@@ -435,3 +435,78 @@ def test_full_workflow_runs_all_headless_stages_in_order(monkeypatch, tmp_path):
     )
 
     assert seen == ["lore", "structure", "scenes", "chapters"]
+
+
+def _fake_lore_steps(monkeypatch, ran, draft_kinds=()):
+    """把世界设定的几步换成只写收据的假步骤；draft_kinds 里的那几步只留草稿。"""
+    import time
+    from uuid import uuid4
+    from core.generation.lore_pipeline import LorePipeline
+    from core.generation.lore_run import save_receipt
+
+    def step(kind, name):
+        def run(self, context, *args):
+            ran.append(name)
+            draft = name in draft_kinds
+            record = {"id": uuid4().hex, "kind": kind, "status": "draft" if draft else "complete",
+                      "disposition": "draft" if draft else "current", "candidate": "x", "issues": [],
+                      "files": [], "calls": 1, "created_at": time.time()}
+            save_receipt(context.output_dir, record)
+            context.extras.setdefault("lore_results", []).append(record)
+        return run
+
+    monkeypatch.setattr(stage_pipeline, "set_backend", lambda *_args: None)
+    for method, kind, name in (("_generate_factions", "factions", "factions"),
+                               ("_generate_characters", "characters", "characters"),
+                               ("_generate_lore", "world", "lore"),
+                               ("_main_character_enhancement", "background", "enhance"),
+                               ("_suggest_titles", "titles", "titles"),
+                               ("_repair_result", "characters", "repair")):
+        monkeypatch.setattr(LorePipeline, method, step(kind, name))
+
+
+def test_full_lore_run_remembers_what_is_left_and_continues_after_repair(monkeypatch, tmp_path):
+    from core.generation.lore_run import list_receipts
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, draft_kinds={"characters"})
+    project = _project(tmp_path)
+    stage_pipeline.run_stage_action("lore", "full", project)
+    assert ran == ["factions", "characters"]                 # 停在读不出来的人物
+    draft = next(r for r in list_receipts(project) if r["disposition"] == "draft")
+    assert draft["remaining"] == ["lore", "enhance", "titles"]
+
+    ran.clear()
+    _fake_lore_steps(monkeypatch, ran)                       # 这次修好了
+    stage_pipeline.run_stage_action("lore", "repair", project,
+                                    options={"receipt_id": draft["id"], "continue": True})
+    assert ran == ["repair", "lore", "enhance", "titles"]
+
+
+def test_repair_that_still_fails_keeps_the_remaining_steps(monkeypatch, tmp_path):
+    from core.generation.lore_run import list_receipts
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, draft_kinds={"characters"})
+    project = _project(tmp_path)
+    stage_pipeline.run_stage_action("lore", "full", project)
+    draft = next(r for r in list_receipts(project) if r["disposition"] == "draft")
+
+    ran.clear()
+    _fake_lore_steps(monkeypatch, ran, draft_kinds={"repair"})
+    stage_pipeline.run_stage_action("lore", "repair", project,
+                                    options={"receipt_id": draft["id"], "continue": True})
+    assert ran == ["repair"]
+    newest = max(list_receipts(project), key=lambda r: r["created_at"])
+    assert newest["remaining"] == ["lore", "enhance", "titles"]
+
+
+def test_plain_repair_does_not_run_later_steps(monkeypatch, tmp_path):
+    from core.generation.lore_run import list_receipts
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, draft_kinds={"characters"})
+    project = _project(tmp_path)
+    stage_pipeline.run_stage_action("lore", "full", project)
+    draft = next(r for r in list_receipts(project) if r["disposition"] == "draft")
+    ran.clear()
+    _fake_lore_steps(monkeypatch, ran)
+    stage_pipeline.run_stage_action("lore", "repair", project, options={"receipt_id": draft["id"]})
+    assert ran == ["repair"]

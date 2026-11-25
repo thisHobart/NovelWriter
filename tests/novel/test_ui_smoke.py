@@ -12,7 +12,7 @@ pytest.importorskip("PySide6", reason="未安装 PySide6，跳过界面冒烟测
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton, QTextBrowser  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTextBrowser  # noqa: E402
 
 from core.gui import theme  # noqa: E402
 from core.gui.main_window import MainWindow  # noqa: E402
@@ -376,3 +376,77 @@ def test_refresh_is_not_reentrant(app):
     novel._stage_states = lambda: (calls.append(1), original())[1]
     novel.refresh_all()
     assert len(calls) == 1, "一次 refresh_all 只应做一次磁盘评估"
+
+
+def _result(root, kind, status, disposition="current", **extra):
+    import time
+    from uuid import uuid4
+    from core.generation.lore_run import save_receipt
+    record = {"id": uuid4().hex, "kind": kind, "status": status, "disposition": disposition, "candidate": "x",
+              "issues": [], "files": [], "calls": 2, "created_at": extra.pop("created_at", time.time()), **extra}
+    save_receipt(str(root), record)
+    return record
+
+
+def _result_cards(page):
+    from core.gui.widgets import Card
+    index = _tab_names(page).index("生成结果")
+    return page.tabs.widget(index).findChildren(Card)
+
+
+def _card_title(card):
+    return card.findChild(QLabel, "CardTitle").text()
+
+
+def _buttons(widget):
+    return [b.text() for b in widget.findChildren(QPushButton)]
+
+
+def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tmp_path):
+    from core.generation.lore_repository import FACTIONS
+    from core.generation.lore_run import file_digests
+    _lore_project(tmp_path)
+    saved = (tmp_path / FACTIONS).read_text(encoding="utf-8")
+    _result(tmp_path, "factions", "needs_changes", created_at=1, issues=["旧的问题"])
+    _result(tmp_path, "factions", "needs_changes", created_at=2, issues=["势力数量不对"],
+            files=[FACTIONS], file_digests=file_digests({FACTIONS: saved}))
+    _result(tmp_path, "characters", "draft", "draft", created_at=3, issues=["返回内容尚不能读取"],
+            remaining=["lore", "enhance", "titles"])
+    _result(tmp_path, "world", "complete", created_at=4, notes=["基调：信息不足"])
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+
+    assert [_card_title(card) for card in _result_cards(page)] == [
+        "世界观 · 已完成 · 有检查备注", "人物 · 没有采用：返回内容读不出来", "势力 · 有问题，已保存"]
+    world, cast, faction = _result_cards(page)
+    assert _buttons(world) == []
+    assert _buttons(cast) == ["再修一次并继续生成", "编辑原文"]
+    assert _buttons(faction) == ["让 AI 再修一次", "编辑", "更早的记录（1）"]
+    assert page.step_buttons["factions"]._meta.text() == "待处理"
+    assert page.step_buttons["lore"]._meta.text() != "待处理"
+
+
+def test_manual_edit_turns_a_problem_result_into_edited(app, tmp_path):
+    from core.generation.lore_repository import FACTIONS, LoreRepository, encode
+    from core.generation.lore_run import file_digests
+    _lore_project(tmp_path)
+    saved = (tmp_path / FACTIONS).read_text(encoding="utf-8")
+    _result(tmp_path, "factions", "needs_changes", issues=["势力描述太短"],
+            files=[FACTIONS], file_digests=file_digests({FACTIONS: saved}))
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.step_buttons["factions"]._meta.text() == "待处理"
+
+    repo = LoreRepository(tmp_path)
+    repo.save(repo.load_snapshot(), {FACTIONS: encode([{"name": "调查局", "description": "作者改写的描述"}])})
+    page.refresh()
+    (card,) = _result_cards(page)
+    assert _card_title(card) == "势力 · 已手动修改"
+    assert _buttons(card) == []
+    assert page.step_buttons["factions"]._meta.text() != "待处理"
+
+    page.undo_button.click()                       # 撤回手改，问题又回来
+    (card,) = _result_cards(page)
+    assert _card_title(card) == "势力 · 有问题，已保存"

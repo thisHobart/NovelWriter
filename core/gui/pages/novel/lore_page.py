@@ -41,8 +41,10 @@ from core.generation.lore_repository import (
 )
 from core.gui.pages.novel.lore_editor import LoreEditor, ROLE_LABELS
 from core.lore_localization import FIELD_LABELS, display_value, file_label, display_message
-from core.generation.lore_run import list_receipts, load_receipt, recover_interrupted, LABELS
-from core.gui.pages.novel.lore_results import GenerationDraftEditor, STATUS_LABELS, REASON_LABELS
+from core.generation.lore_run import (
+    LABELS, edited_after_save, latest_by_product, list_receipts, load_receipt, needs_attention, recover_interrupted,
+)
+from core.gui.pages.novel.lore_results import GenerationDraftEditor, result_details, result_status
 
 
 class MarkdownView(QTextBrowser):
@@ -94,6 +96,9 @@ def _clock(timestamp) -> str:
         return ""
     return moment.strftime("%H:%M" if moment.date() == datetime.now().date() else "%m-%d %H:%M")
 
+
+#: 续跑时提示「修好后接着生成：…」用的步骤名
+STEP_TITLES = {"factions": "势力", "characters": "人物", "lore": "世界观", "enhance": "主要人物背景", "titles": "候选标题"}
 
 _TITLE_LINE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[-*•])\s*(.+?)\s*$")
 
@@ -452,73 +457,91 @@ class LorePage(StagePage):
         except Exception as exc:
             self.status_message.emit("error", display_message(exc))
 
+    @staticmethod
+    def _result_title(receipt) -> str:
+        label = LABELS.get(receipt["kind"], "设定")
+        if receipt.get("subject"):
+            label += "「" + str(receipt["subject"].get("name", "")) + "」"
+        return label
+
     def _generation_results_tab(self):
+        """每份产物只摆最新一张卡，按钮按状态出现；更早的记录收在卡片底部。"""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
         self.result_buttons = []
-        for receipt in list_receipts(self.output_dir):
-            if receipt["kind"] not in LABELS:
-                continue
-            label = LABELS[receipt["kind"]]
-            if receipt.get("subject"):
-                label += "「" + str(receipt["subject"].get("name", "")) + "」"
-            status = ("已撤回" if receipt.get("reverted")
-                      else STATUS_LABELS.get(receipt["status"], receipt["status"]))
-            if receipt.get("notes") and receipt["status"] == "complete" and not receipt.get("reverted"):
-                status += " · 有检查备注"
-            card = Card(label + " · " + status)
-            detail = QLabel(f"{REASON_LABELS.get(receipt.get('exit_reason'), '候选已保留')} · 实际请求 {receipt.get('calls', 0)}/6 · 修复 {receipt.get('repairs', 0)} 次 · 用时 {receipt.get('elapsed_seconds', 0):.1f} 秒")
-            detail.setWordWrap(True)
-            card.body.addWidget(detail)
-            issues = QLabel("\n".join(display_message(issue) for issue in receipt.get("issues", [])) or "当前没有检查问题。")
-            issues.setWordWrap(True)
-            card.body.addWidget(issues)
-            if receipt.get("notes"):
+        receipts = [r for r in list_receipts(self.output_dir) if r["kind"] in LABELS]
+        for receipt, earlier in latest_by_product(receipts):
+            edited = edited_after_save(self.output_dir, receipt)
+            card = Card(self._result_title(receipt) + " · " + result_status(receipt, edited))
+            card.setToolTip(result_details(receipt))
+            if needs_attention(self.output_dir, receipt):
+                issues = QLabel("\n".join(display_message(issue) for issue in receipt.get("issues", [])))
+                issues.setWordWrap(True)
+                card.body.addWidget(issues)
+                if receipt.get("disposition") != "current":
+                    kept = QLabel("当前设定没有被替换；返回的原文保留着，可以让 AI 再修一次，或自己改成能读的内容后采用。")
+                    kept.setWordWrap(True)
+                    kept.setObjectName("Tertiary")
+                    card.body.addWidget(kept)
+                card.body.addLayout(self._result_actions(receipt))
+            if receipt.get("notes") and not receipt.get("reverted"):
                 notes = QLabel("检查备注（不影响交付）：\n" + "\n".join(receipt["notes"]))
                 notes.setWordWrap(True)
                 notes.setObjectName("Tertiary")
                 card.body.addWidget(notes)
-            version = QLabel("此结果已保存为设定；页面中的设定卡片展示当前磁盘版本。" if receipt.get("disposition") == "current"
-                             else "此结果仅保留为草稿，尚未替换当前设定。继续下一步将读取当前已保存设定；需要使用此草稿时请先修复结构并采用。")
-            version.setWordWrap(True)
-            card.body.addWidget(version)
-            row = QHBoxLayout()
-            edit = secondary_button("手动修改" if receipt.get("disposition") == "current" else "编辑草稿 / 修复结构")
-            edit.clicked.connect(lambda checked=False, identity=receipt["id"]: self._edit_generation_result(identity))
-            repair = secondary_button("再修复一次")
-            repair.clicked.connect(lambda checked=False, identity=receipt["id"]: self._repair_generation_result(identity))
-            regenerate = secondary_button("重新生成")
-            regenerate.clicked.connect(lambda checked=False, identity=receipt["id"]: self._regenerate_generation_result(identity))
-            next_button = secondary_button("继续下一步")
-            next_action = {"factions": "characters", "characters": "lore", "world": "enhance", "background": "titles"}.get(receipt["kind"])
-            if next_action:
-                next_button.clicked.connect(lambda checked=False, key=next_action: self._run_step(key))
-            else:
-                next_button.setEnabled(False)
-            for button in (edit, repair, regenerate, next_button):
-                if next_action or button is not next_button:
-                    button.setEnabled(not self.generation_busy)
-                row.addWidget(button)
-                self.result_buttons.append(button)
-            card.body.addLayout(row)
-            if receipt.get("disposition") == "current":
-                raw = secondary_button("编辑原始结构")
-                raw.setEnabled(not self.generation_busy)
-                raw.clicked.connect(lambda checked=False, identity=receipt["id"]: self._edit_generation_result(identity, raw=True))
-                card.body.addWidget(raw)
-                self.result_buttons.append(raw)
+            if earlier:
+                card.body.addWidget(self._earlier_results(earlier))
             layout.addWidget(card)
         layout.addStretch(1)
         scroll.setWidget(page)
         return scroll
 
-    def _edit_generation_result(self, identity, raw=False):
+    def _result_actions(self, receipt) -> QHBoxLayout:
+        """有问题：「让 AI 再修一次」+「编辑」；读不出来：「让 AI 再修一次」+「编辑原文」。
+        整段生成停在这份时，主按钮是「再修一次并继续生成」。"""
+        row = QHBoxLayout()
+        identity = receipt["id"]
+        then_continue = bool(receipt.get("remaining")) and receipt.get("disposition") != "current"
+        repair = primary_button("再修一次并继续生成" if then_continue else "让 AI 再修一次")
+        if then_continue:
+            names = "、".join(STEP_TITLES.get(key, key) for key in receipt["remaining"])
+            repair.setToolTip(f"修好后接着生成：{names}")
+        repair.clicked.connect(lambda checked=False: self._repair_generation_result(identity, then_continue))
+        buttons = [repair]
+        if receipt.get("status") != "failed":
+            edit = secondary_button("编辑" if receipt.get("disposition") == "current" else "编辑原文")
+            edit.clicked.connect(lambda checked=False: self._edit_generation_result(identity))
+            buttons.append(edit)
+        for button in buttons:
+            button.setEnabled(not self.generation_busy)
+            row.addWidget(button)
+            self.result_buttons.append(button)
+        row.addStretch(1)
+        return row
+
+    def _earlier_results(self, earlier) -> QWidget:
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 4, 0, 0)
+        toggle = secondary_button(f"更早的记录（{len(earlier)}）")
+        toggle.setCheckable(True)
+        lines = QLabel("\n".join(f"{_clock(r.get('created_at'))}　{result_status(r)}" for r in earlier))
+        lines.setObjectName("Tertiary")
+        lines.hide()
+        toggle.toggled.connect(lines.setVisible)
+        layout.addWidget(toggle, 0, Qt.AlignLeft)
+        layout.addWidget(lines)
+        return box
+
+    def _edit_generation_result(self, identity):
         if self.generation_busy or not self.resolve_draft():
             return
         record = load_receipt(self.output_dir, identity)
-        if not raw and record["kind"] != "titles" and record.get("disposition") == "current" and record.get("files"):
+        if record["kind"] != "titles" and record.get("disposition") == "current" and record.get("files"):
             self.edit_file(record["files"][0])
             return
         editor = GenerationDraftEditor(self.output_dir, identity, self)
@@ -529,21 +552,13 @@ class LorePage(StagePage):
         self.artifacts_changed.emit()
         editor.deleteLater()
 
-    def _repair_generation_result(self, identity):
+    def _repair_generation_result(self, identity, then_continue=False):
         if self.generation_busy or not self.resolve_draft():
             return
-        self.run_task(action_work("lore", "repair", self.output_dir, self.model, options={"receipt_id": identity}),
-                      busy_text="正在修复设定一次…", on_success=self._show_generation_result)
-
-    def _regenerate_generation_result(self, identity):
-        receipt = load_receipt(self.output_dir, identity)
-        if receipt["kind"] != "background":
-            return self._run_step({"world": "lore"}.get(receipt["kind"], receipt["kind"]))
-        if self.generation_busy or not self.resolve_draft():
-            return
-        self.run_task(action_work("lore", "enhance", self.output_dir, self.model,
-                                  options={"subject_name": receipt["subject"]["name"], "target": receipt.get("target")}),
-                      busy_text="正在重新生成该人物背景…", on_success=self._show_generation_result)
+        options = {"receipt_id": identity, **({"continue": True} if then_continue else {})}
+        self.run_task(action_work("lore", "repair", self.output_dir, self.model, options=options),
+                      busy_text="正在修复并接着生成…" if then_continue else "正在修复设定一次…",
+                      on_success=self._show_generation_result)
 
     def _show_generation_result(self, _=None):
         self.refresh()
@@ -687,16 +702,12 @@ class LorePage(StagePage):
             "done" if backgrounds else ("todo" if characters else "locked"),
             f"{len(backgrounds)} 份" if backgrounds else ("" if characters else "需先生成人物"))
 
-        seen = set()
-        for record in receipts:
+        # 某一步最新那份结果还要处理（没完成、没撤回、也没被手动改过），分步按钮上挂「待处理」。
+        for record, _earlier in latest_by_product(receipts):
             key = {"world": "lore", "background": "enhance"}.get(record["kind"], record["kind"])
-            if record.get("reverted"):
-                continue
-            if key in self.step_buttons and key not in seen:
-                seen.add(key)
-                if record["status"] != "complete":
-                    button = self.step_buttons[key]
-                    button.set_state(button.state, STATUS_LABELS.get(record["status"], "需核对"))
+            if key in self.step_buttons and needs_attention(self.output_dir, record):
+                button = self.step_buttons[key]
+                button.set_state(button.state, "待处理")
 
         done = sum(1 for button in self.step_buttons.values() if button.state == "done")
         self.steps_meta.setText(f"{done} / {len(self.step_buttons)} 已完成")
