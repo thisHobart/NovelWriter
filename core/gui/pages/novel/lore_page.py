@@ -1,20 +1,23 @@
 # -*- coding: utf-8 -*-
 """阶段 2 · 世界设定。
 
-左侧浏览生成结果，并通过独立编辑窗口修改已有设定。
-生成参数与分步按钮收进右栏检查器。
+左侧只显示有内容的产物页签，并通过独立编辑窗口修改已有设定。
+分步按钮收进右栏检查器；势力、人物数量按篇幅由系统定。
 规格见 docs/novel/interaction.md 第 4 节。
 """
 from __future__ import annotations
 
 from typing import List, Optional
 import json
+import os
+import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMenu,
     QScrollArea,
     QTabWidget,
     QTextBrowser,
@@ -34,10 +37,10 @@ from core.gui.widgets import (
 )
 from core.gui.pages.novel.inspector import StepButton
 from core.generation.lore_repository import (
-    LoreRepository, LORE, BODY, CHARACTERS, FACTIONS, CONTRACT, background_name,
+    LoreRepository, LORE, BODY, CHARACTERS, FACTIONS, CONTRACT, background_name, current_backgrounds,
 )
-from core.gui.pages.novel.lore_editor import LoreEditor
-from core.lore_localization import display_value, file_label, display_message
+from core.gui.pages.novel.lore_editor import LoreEditor, ROLE_LABELS
+from core.lore_localization import FIELD_LABELS, display_value, file_label, display_message
 from core.generation.lore_run import list_receipts, load_receipt, recover_interrupted, LABELS
 from core.gui.pages.novel.lore_results import GenerationDraftEditor, STATUS_LABELS, REASON_LABELS
 
@@ -92,6 +95,74 @@ def _clock(timestamp) -> str:
     return moment.strftime("%H:%M" if moment.date() == datetime.now().date() else "%m-%d %H:%M")
 
 
+_TITLE_LINE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[-*•])\s*(.+?)\s*$")
+
+
+def parse_titles(text: str) -> List[str]:
+    """候选标题文件里一行一个标题：去掉编号、加粗、书名号和破折号后的解释。"""
+    titles: List[str] = []
+    for line in str(text or "").splitlines():
+        match = _TITLE_LINE.match(line)
+        if not match:
+            continue
+        title = re.split(r"——| — | - ", match.group(1))[0].strip().strip("*").strip().strip("《》").strip()
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _names(items, with_role=False) -> List[str]:
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            lines.append(f"- {display_value(item)}")
+            continue
+        line = f"- {item.get('name', '（未命名）')}"
+        aliases = [str(alias) for alias in item.get("aliases") or [] if str(alias).strip()]
+        if aliases:
+            line += f"（别名：{'、'.join(aliases)}）"
+        if with_role and item.get("role"):
+            line += f"：{display_value(item['role'])}"
+        lines.append(line)
+    return lines
+
+
+def contract_markdown(data) -> str:
+    """名称与规则登记表按字段写成可读的几段。"""
+    if not isinstance(data, dict):
+        return ""
+    parts = []
+    for key in ("era", "technology_level"):
+        if data.get(key):
+            parts.append(f"**{FIELD_LABELS[key]}**：{display_value(data[key])}")
+    rules = data.get("world_constraints") or []
+    if rules:
+        parts.append(f"### {FIELD_LABELS['world_constraints']}\n" + "\n".join(f"- {display_value(rule)}" for rule in rules))
+    for key in ("canonical_characters", "canonical_factions", "canonical_locations"):
+        if data.get(key):
+            parts.append(f"### {FIELD_LABELS[key]}\n" + "\n".join(_names(data[key], key == "canonical_characters")))
+    shown = {"era", "technology_level", "world_constraints", "canonical_characters", "canonical_factions",
+             "canonical_locations", "schema_version", "origin"}
+    for key, value in data.items():
+        if key not in shown and value not in (None, "", [], {}):
+            parts.append(f"**{FIELD_LABELS.get(key, key)}**：{display_value(value)}")
+    return "\n\n".join(parts)
+
+
+def relationships_markdown(relations) -> str:
+    lines = []
+    for item in relations or []:
+        if not isinstance(item, dict):
+            continue
+        line = f"- **{item.get('character1', '')}** 与 **{item.get('character2', '')}**"
+        if item.get("type"):
+            line += f"：{display_value(item['type'])}"
+        if item.get("description"):
+            line += f"。{display_value(item['description'])}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 class EntityCard(QWidget):
     def __init__(self, entity: artifacts.Entity, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -111,7 +182,9 @@ class EntityCard(QWidget):
         name.setStyleSheet(
             f"font-family: {theme.SERIF_STACK}; font-size: 14px; font-weight: 600;"
             f"border: none;")
-        kind = QLabel(entity.kind)
+        # 人物卡角标写身份（主角 / 反派…），势力卡写「势力」。
+        role = entity.raw.get("role") if entity.kind == "人物" else None
+        kind = QLabel(ROLE_LABELS.get(role, entity.kind))
         kind.setStyleSheet(
             f"background: {theme.SURFACE}; border: 1px solid {theme.LINE};"
             f"border-radius: 10px; padding: 2px 8px; font-size: {theme.FS_XS}px;"
@@ -129,20 +202,27 @@ class EntityCard(QWidget):
 
 class LorePage(StagePage):
     stage_key = "lore"
+    #: 作者在「候选标题」里点了「用作作品标题」
+    title_chosen = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("世界设定", "世界构建与背景")
         self.active_editor = None
         self.generation_busy = False
 
-        # 「完善主要人物」只在右栏「分步生成」里出现一次；页头留右栏没有的
-        # 「推荐作品标题」和跑完整阶段的主按钮。
-        self.titles_button = secondary_button("推荐作品标题")
+        # 页头只留跑完整阶段的主按钮；平时用不上的入口收进「更多」。
+        # 推荐标题是整段生成的一部分，不再单独摆在页头。
+        self.more_button = secondary_button("更多")
+        self.more_menu = QMenu(self.more_button)
+        self.open_folder_action = self.more_menu.addAction("打开设定文件夹")
+        self.open_folder_action.triggered.connect(lambda: self._open_folder())
+        self.open_records_action = self.more_menu.addAction("打开生成记录")
+        self.open_records_action.setToolTip("每次请求的提示词和检查报告原文，排查问题时用")
+        self.open_records_action.triggered.connect(lambda: self._open_folder("system/generation_runs"))
+        self.more_button.setMenu(self.more_menu)
         self.generate_button = primary_button("生成世界设定")
-        for button in (self.titles_button, self.generate_button):
+        for button in (self.more_button, self.generate_button):
             self.header.add_action(button)
-        self.titles_button.clicked.connect(
-            lambda: self._run_step("titles", self.titles_button))
         self.generate_button.clicked.connect(
             lambda: self._run_step("full", self.generate_button))
 
@@ -173,6 +253,13 @@ class LorePage(StagePage):
         bar.addWidget(self.redo_button)
         self.change_bar.hide()
         container.body.addWidget(self.change_bar)
+
+        # 还没有任何设定时左侧只有这一块说明，不摆空页签。
+        self.empty_state = hint_label(
+            "还没有世界设定。点「生成世界设定」，按作品参数一次写好势力、人物、世界观和主要人物背景；"
+            "也可以在右侧分步生成。")
+        self.empty_state.setContentsMargins(20, 18, 20, 18)
+        container.body.addWidget(self.empty_state)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -232,7 +319,7 @@ class LorePage(StagePage):
             layout.addWidget(hint_label(empty_hint))
         for index, entity in enumerate(entities):
             card = EntityCard(entity)
-            edit = secondary_button("查看 / 编辑")
+            edit = secondary_button("编辑")
             kind = "characters" if entity.kind == "人物" else "factions"
             edit.setEnabled(not self.generation_busy)
             edit.clicked.connect(lambda checked=False, k=kind, i=index: self._edit_entity(k, i))
@@ -241,7 +328,7 @@ class LorePage(StagePage):
                 expected = background_name(entity.raw)
                 for relative in artifacts.background_files(self.output_dir):
                     if relative.replace("\\", "/").split("/")[-1] == expected:
-                        background = secondary_button("编辑人物详细背景")
+                        background = secondary_button("编辑详细背景")
                         background.setEnabled(not self.generation_busy)
                         background.clicked.connect(lambda checked=False, p=relative: self.edit_file(LORE + p.replace("\\", "/")))
                         card.layout().addWidget(background)
@@ -253,17 +340,48 @@ class LorePage(StagePage):
         scroll.setWidget(page)
         return scroll
 
-    def _text_tab(self, text: str, relative_path=None) -> QWidget:
+    def _text_tab(self, text: str, relative_path=None, object_path=(), serif=True) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(20, 18, 20, 18)
         if relative_path and text.strip():
             edit = secondary_button("编辑")
             edit.setEnabled(not self.generation_busy)
-            edit.clicked.connect(lambda: self.edit_file(relative_path))
-            layout.addWidget(edit)
-        layout.addWidget(read_only_text(text, serif=True))
+            edit.clicked.connect(lambda: self.edit_file(relative_path, object_path))
+            layout.addWidget(edit, 0, Qt.AlignLeft)
+        layout.addWidget(read_only_text(text, serif=serif))
         return page
+
+    def _titles_tab(self, titles_text: str) -> QWidget:
+        """候选标题：每个标题旁「用作作品标题」，底部「换一组」。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(8)
+        titles = parse_titles(titles_text)
+        if not titles:
+            layout.addWidget(read_only_text(titles_text, serif=True))
+        for title in titles:
+            row = QHBoxLayout()
+            label = QLabel(title)
+            label.setStyleSheet(f"font-family: {theme.SERIF_STACK}; font-size: 15px;")
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            use = secondary_button("用作作品标题")
+            use.setEnabled(not self.generation_busy)
+            use.clicked.connect(lambda checked=False, t=title: self.title_chosen.emit(t))
+            row.addWidget(label, 1)
+            row.addWidget(use)
+            layout.addLayout(row)
+        self.retitle_button = secondary_button("换一组")
+        self.retitle_button.setToolTip("按当前世界设定重新推荐一组标题（1 次模型调用）")
+        self.retitle_button.setEnabled(not self.generation_busy)
+        self.retitle_button.clicked.connect(lambda: self._run_step("titles", self.retitle_button))
+        layout.addWidget(self.retitle_button, 0, Qt.AlignLeft)
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
 
     def _edit_entity(self, kind, index):
         relative = CHARACTERS if kind == "characters" else FACTIONS
@@ -313,14 +431,15 @@ class LorePage(StagePage):
             items = status.get("review_items", [])
             pending = status.get("pending", {})
             lines = [display_message(item) for item in items] + [f"{file_label(path)}：设定已修改，待核对" for path in pending]
+            if not lines:
+                return None  # 没有事项，页签不出现
             view = QTextBrowser()
-            view.setPlainText("\n\n".join(lines) or "当前没有待核对事项。")
+            view.setPlainText("\n\n".join(lines))
             layout.addWidget(view)
-            if lines:
-                acknowledge = secondary_button("已核对当前版本")
-                acknowledge.setEnabled(not self.generation_busy)
-                acknowledge.clicked.connect(lambda: self._acknowledge(status["version"]))
-                layout.addWidget(acknowledge)
+            acknowledge = secondary_button("已核对当前版本")
+            acknowledge.setEnabled(not self.generation_busy)
+            acknowledge.clicked.connect(lambda: self._acknowledge(status["version"]))
+            layout.addWidget(acknowledge)
         except Exception as exc:
             layout.addWidget(hint_label(f"读取核对状态失败：{exc}"))
         return page
@@ -430,7 +549,7 @@ class LorePage(StagePage):
         self.refresh()
         self.artifacts_changed.emit()
         for index in range(self.tabs.count()):
-            if self.tabs.tabText(index) == "生成结果与草稿":
+            if self.tabs.tabText(index) == "生成结果":
                 self.tabs.setCurrentIndex(index)
 
     # ---------------------------------------------------------------- 右侧
@@ -445,23 +564,12 @@ class LorePage(StagePage):
             "factions": StepButton("factions", "生成势力"),
             "characters": StepButton("characters", "生成人物"),
             "lore": StepButton("lore", "生成世界观"),
-            "enhance": StepButton("enhance", "完善主要人物", "可选"),
+            "enhance": StepButton("enhance", "完善主要人物"),
         }
         for button in self.step_buttons.values():
             button.clicked.connect(self._run_step)
             steps.body.addWidget(button)
         self.add_card(steps)
-
-        self.files_meta = QLabel("")
-        self.files_meta.setObjectName("Tertiary")
-        outputs = Card("产物", self.files_meta)
-        self.open_folder_button = secondary_button("打开设定文件夹", "folder")
-        self.open_folder_button.clicked.connect(self._open_folder)
-        outputs.body.addWidget(self.open_folder_button)
-        self.open_diagnostics_button = secondary_button("打开参数检查记录", "folder")
-        self.open_diagnostics_button.clicked.connect(lambda: self._open_folder("system/generation_runs"))
-        outputs.body.addWidget(self.open_diagnostics_button)
-        self.add_card(outputs)
 
         self.finish_inspector()
 
@@ -499,7 +607,6 @@ class LorePage(StagePage):
         return f"按篇幅（{length}）：{params.get('num_factions', 6)} 个势力 · {params.get('num_characters', 8)} 个人物"
 
     def _open_folder(self, subdirectory=None) -> None:
-        import os
         import subprocess
         import sys
 
@@ -513,6 +620,13 @@ class LorePage(StagePage):
             subprocess.Popen(["open", path])
         else:
             subprocess.Popen(["xdg-open", path])
+
+    def _read_json(self, relative):
+        try:
+            with open(os.path.join(self.output_dir, relative), encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
 
     # ---------------------------------------------------------------- 刷新
     def refresh(self) -> None:
@@ -529,60 +643,39 @@ class LorePage(StagePage):
         characters = artifacts.characters(self.output_dir)
         lore_text = artifacts.lore_text(self.output_dir)
         titles = artifacts.suggested_titles(self.output_dir)
-        backgrounds = artifacts.background_files(self.output_dir)
+        # 只算还属于现有人物的背景；人物改名或重生成后留下的旧背景文件不列出（仍在磁盘上）。
+        backgrounds = current_backgrounds(self.output_dir)
         total = artifacts.lore_file_count(self.output_dir)
+        receipts = list_receipts(self.output_dir)
 
-        current = self.tabs.currentIndex()
+        # 页签按内容出现；刷新后按名字回到原来那一页（数字会变，只比名字）。
+        previous = self.tabs.tabText(self.tabs.currentIndex()).split(" ")[0] if self.tabs.count() else ""
         self.tabs.clear()
-        self.tabs.addTab(self._text_tab(lore_text, BODY), "世界观")
-        self.tabs.addTab(self._entity_tab(factions, "尚未生成势力。"),
-                         f"势力 {len(factions)}" if factions else "势力")
-        self.tabs.addTab(self._entity_tab(characters, "尚未生成人物。"),
-                         f"人物 {len(characters)}" if characters else "人物")
+        if lore_text.strip():
+            self.tabs.addTab(self._text_tab(lore_text, BODY), "世界观")
+        if factions:
+            self.tabs.addTab(self._entity_tab(factions, ""), f"势力 {len(factions)}")
+        if characters:
+            self.tabs.addTab(self._entity_tab(characters, ""), f"人物 {len(characters)}")
+        contract = contract_markdown(self._read_json(CONTRACT))
+        if contract:
+            self.tabs.addTab(self._text_tab(contract, CONTRACT, serif=False), "名称与规则")
+        cast = self._read_json(CHARACTERS)
+        relations = relationships_markdown(cast.get("relationships")) if isinstance(cast, dict) else ""
+        if relations:
+            self.tabs.addTab(self._text_tab(relations, CHARACTERS, ("relationships",), serif=False), "人物关系")
         if titles.strip():
-            self.tabs.addTab(self._text_tab(titles), "候选标题")
-        import os
-        if os.path.exists(os.path.join(self.output_dir, CONTRACT)):
-            registry = QWidget()
-            registry_layout = QVBoxLayout(registry)
-            registry_layout.addWidget(hint_label("编辑年代、技术水平、世界规则与规范名称。修改后请核对世界观正文。"))
-            edit_registry = secondary_button("编辑名称与规则登记表")
-            edit_registry.setEnabled(not self.generation_busy)
-            edit_registry.clicked.connect(lambda: self.edit_file(CONTRACT))
-            registry_layout.addWidget(edit_registry)
-            registry_layout.addStretch()
-            self.tabs.addTab(registry, "名称与规则")
-        if backgrounds:
-            background_page = QWidget()
-            background_layout = QVBoxLayout(background_page)
-            for relative in backgrounds:
-                button = secondary_button(file_label(relative))
-                button.setEnabled(not self.generation_busy)
-                button.clicked.connect(lambda checked=False, p=relative: self.edit_file(LORE + p.replace("\\", "/")))
-                background_layout.addWidget(button)
-            background_layout.addStretch()
-            self.tabs.addTab(background_page, "人物背景")
-        try:
-            cast_path = os.path.join(self.output_dir, CHARACTERS)
-            if os.path.exists(cast_path):
-                with open(cast_path, encoding="utf-8") as handle:
-                    cast = json.load(handle)
-                if isinstance(cast, dict) and isinstance(cast.get("relationships", []), list):
-                    relation_page = QWidget()
-                    relation_layout = QVBoxLayout(relation_page)
-                    relation_button = secondary_button("编辑人物关系")
-                    relation_button.setEnabled(not self.generation_busy)
-                    relation_button.clicked.connect(lambda: self.edit_file(CHARACTERS, ("relationships",)))
-                    relation_layout.addWidget(relation_button)
-                    relation_layout.addStretch()
-                    self.tabs.addTab(relation_page, "人物关系")
-        except (OSError, ValueError):
-            pass
-        self.tabs.addTab(self._review_tab(), "待核对")
-        if list_receipts(self.output_dir):
-            self.tabs.addTab(self._generation_results_tab(), "生成结果与草稿")
-        if 0 <= current < self.tabs.count():
-            self.tabs.setCurrentIndex(current)
+            self.tabs.addTab(self._titles_tab(titles), "候选标题")
+        review = self._review_tab()
+        if review is not None:
+            self.tabs.addTab(review, "待核对")
+        if receipts:
+            self.tabs.addTab(self._generation_results_tab(), "生成结果")
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index).split(" ")[0] == previous:
+                self.tabs.setCurrentIndex(index)
+        self.tabs.setVisible(self.tabs.count() > 0)
+        self.empty_state.setVisible(total == 0)
 
         self.step_buttons["factions"].set_state(
             "done" if factions else "todo", f"{len(factions)} 个" if factions else "")
@@ -592,11 +685,10 @@ class LorePage(StagePage):
             "done" if lore_text.strip() else "todo", "1 篇" if lore_text.strip() else "")
         self.step_buttons["enhance"].set_state(
             "done" if backgrounds else ("todo" if characters else "locked"),
-            f"{len(backgrounds)} 份" if backgrounds else
-            ("可选" if characters else "需先生成人物"))
+            f"{len(backgrounds)} 份" if backgrounds else ("" if characters else "需先生成人物"))
 
         seen = set()
-        for record in list_receipts(self.output_dir):
+        for record in receipts:
             key = {"world": "lore", "background": "enhance"}.get(record["kind"], record["kind"])
             if record.get("reverted"):
                 continue
@@ -606,14 +698,9 @@ class LorePage(StagePage):
                     button = self.step_buttons[key]
                     button.set_state(button.state, STATUS_LABELS.get(record["status"], "需核对"))
 
-        self.titles_button.setEnabled(bool(lore_text.strip()))
-        self.titles_button.setToolTip("" if lore_text.strip() else "需先生成世界观。")
-
-        done = sum(1 for key in ("factions", "characters", "lore")
-                   if self.step_buttons[key].state == "done")
-        self.steps_meta.setText(f"{done} / 3 已完成")
+        done = sum(1 for button in self.step_buttons.values() if button.state == "done")
+        self.steps_meta.setText(f"{done} / {len(self.step_buttons)} 已完成")
         self.counts_hint.setText(self._counts_text())
-        self.files_meta.setText(f"{total} 个文件")
         self.header.set_subtitle(
             f"{len(factions)} 个势力 · {len(characters)} 个人物 · {total} 个产物文件"
             if total else "世界构建与背景 · 尚未生成"

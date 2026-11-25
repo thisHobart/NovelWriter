@@ -589,12 +589,44 @@ class LoreRepository:
             return entry
 
 
+def is_background(relative):
+    """世界设定里的人物背景文件：story/lore/background_*.md 或 story/lore/backgrounds/*.md。"""
+    if not relative.startswith(LORE) or not relative.endswith(".md"):
+        return False
+    rest = relative[len(LORE):]
+    return rest.startswith("backgrounds/") or ("/" not in rest and rest.startswith("background_"))
+
+
+def current_backgrounds(output_dir):
+    """还属于现有人物的背景文件（相对 story/lore/ 的路径）。
+
+    人物改名、换身份或整批重生成后，旧人物的背景文件留在磁盘上；它们不再列出，
+    也不再写进后面阶段的提示词。按 background_<身份>_<姓名>.md 的文件名认人。
+    """
+    root = Path(output_dir)
+    try:
+        cast = records(json.loads((root / CHARACTERS).read_text(encoding="utf-8")), "characters")
+    except (OSError, ValueError, LoreEditError):
+        return []
+    expected = {background_name(record) for record in cast if isinstance(record, dict)}
+    found = []
+    for folder in (root / LORE, root / LORE / "backgrounds"):
+        for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+            relative = path.relative_to(root).as_posix()
+            if is_background(relative) and path.name in expected:
+                found.append(relative[len(LORE):])
+    return found
+
+
 def lore_context(output_dir):
     """Complete source fingerprint precedes prose, so truncation cannot hide changes."""
     repo = LoreRepository(output_dir)
     files = repo._files()
     if not files:
         return ""
+    # 已经不属于现有人物的旧背景不写进提示词（文件仍在磁盘上）。
+    keep = {LORE + relative for relative in current_backgrounds(output_dir)}
+    files = {key: value for key, value in files.items() if not is_background(key) or key in keep}
     ordered = [CONTRACT, BODY, CHARACTERS, FACTIONS]
     ordered += sorted(set(files) - set(ordered))
     from core.generation.prompt_context import sanitize_lore_content

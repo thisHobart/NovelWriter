@@ -170,6 +170,7 @@ class NovelWorkspace(QWidget):
         page.operation_failed.connect(self.status.set_error)
         page.model_loaded.connect(self._restore_model)
         self.chapter_page.quality_mode_changed.connect(page.set_quality_mode)
+        self.lore_page.title_chosen.connect(self._use_title)
 
         for stage in self.stage_pages:
             stage.task_requested.connect(self._on_task_requested)
@@ -321,7 +322,7 @@ class NovelWorkspace(QWidget):
 
         def cancelled() -> None:
             self.refresh_all()
-            self.status.set_dirty("任务已取消", "已返回内容保留，可到「世界设定 → 生成结果与草稿」查看。")
+            self.status.set_dirty("任务已取消", "已返回内容保留，可到「世界设定 → 生成结果」查看。")
 
         self.runner.run(
             work,
@@ -342,6 +343,21 @@ class NovelWorkspace(QWidget):
             "error": lambda: self.status.set_error("出错", text),
             "done": lambda: self.status.set_done("完成", text),
         }.get(kind, lambda: self.status.set_idle(text))()
+
+    def _use_title(self, title: str) -> None:
+        """「候选标题」里点了「用作作品标题」：填进作品参数并保存，状态栏写明原标题。"""
+        page = self.parameters_page
+        previous = page.title_edit.text().strip()
+        if title == previous:
+            self.status.set_done("作品标题未变", f"当前标题已经是「{title}」")
+            return
+        had_other_edits = page.dirty
+        page.title_edit.setText(title)
+        if had_other_edits:
+            # 作品参数页还有别的没保存的修改，不替作者一起保存。
+            self.status.set_dirty("作品标题已填入", f"「{title}」（原来是「{previous}」）· 作品参数页还有未保存的修改，保存后生效")
+        elif page.save():
+            self.status.set_done("作品标题已改为「" + title + "」", f"原来是「{previous}」，可在作品参数页改回")
 
     def _on_task_progress(self, text: str, fraction: float) -> None:
         """Update the status bar and refresh chapters at durable checkpoints."""

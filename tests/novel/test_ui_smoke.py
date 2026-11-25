@@ -12,7 +12,7 @@ pytest.importorskip("PySide6", reason="未安装 PySide6，跳过界面冒烟测
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QTextBrowser  # noqa: E402
 
 from core.gui import theme  # noqa: E402
 from core.gui.main_window import MainWindow  # noqa: E402
@@ -232,6 +232,87 @@ def test_lore_page_offers_undo_and_redo_after_a_change(app, tmp_path):
     assert not page.redo_button.isHidden()
     page.redo_button.click()
     assert repo.load_snapshot().files[BODY] == "改过的世界观"
+
+
+def _tab_names(page):
+    return [page.tabs.tabText(i).split(" ")[0] for i in range(page.tabs.count())]
+
+
+def test_empty_lore_shows_one_explanation_and_no_tabs(app, tmp_path):
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.tabs.count() == 0 and page.tabs.isHidden()
+    assert not page.empty_state.isHidden()
+    assert "生成世界设定" in page.empty_state.text()
+    assert page.steps_meta.text() == "0 / 4 已完成"
+
+
+def test_lore_tabs_appear_only_with_content(app, tmp_path):
+    from core.generation.lore_repository import CHARACTERS, CONTRACT, encode
+    _lore_project(tmp_path)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert _tab_names(page) == ["世界观", "势力", "人物"]      # 没有待核对、候选标题、登记表就不摆
+    assert page.empty_state.isHidden()
+
+    (tmp_path / CONTRACT).write_text(encode({"era": "近未来", "world_constraints": ["没有超自然"],
+                                             "canonical_characters": [{"name": "张明", "aliases": ["老张"]}]}),
+                                     encoding="utf-8")
+    cast = {"characters": [{"name": "张明", "role": "protagonist"}, {"name": "李华", "role": "antagonist"}],
+            "relationships": [{"character1": "张明", "character2": "李华", "type": "宿敌"}]}
+    (tmp_path / CHARACTERS).write_text(encode(cast), encoding="utf-8")
+    titles = tmp_path / "story/planning/suggested_titles.md"
+    titles.parent.mkdir(parents=True, exist_ok=True)
+    titles.write_text("1. **雾港回声** —— 解释\n\n2. 《静默证词》\n", encoding="utf-8")
+    page.refresh()
+    assert _tab_names(page) == ["世界观", "势力", "人物", "名称与规则", "人物关系", "候选标题"]
+    contract_view = page.tabs.widget(3).findChildren(QTextBrowser)[0]
+    assert "近未来" in contract_view.toPlainText() and "老张" in contract_view.toPlainText()
+    relation_view = page.tabs.widget(4).findChildren(QTextBrowser)[0]
+    assert "宿敌" in relation_view.toPlainText()
+
+    chosen = []
+    page.title_chosen.connect(chosen.append)
+    uses = [b for b in page.tabs.widget(5).findChildren(QPushButton) if b.text() == "用作作品标题"]
+    assert len(uses) == 2
+    uses[1].click()
+    assert chosen == ["静默证词"]
+    assert any(b.text() == "换一组" for b in page.tabs.widget(5).findChildren(QPushButton))
+
+
+def test_old_backgrounds_are_not_listed_or_sent_to_later_stages(app, tmp_path):
+    from core.generation.lore_repository import LORE, current_backgrounds, lore_context
+    _lore_project(tmp_path)
+    (tmp_path / LORE / "background_protagonist_张明.md").write_text("张明的背景", encoding="utf-8")
+    (tmp_path / LORE / "background_protagonist_王五.md").write_text("早已不在名单里的王五", encoding="utf-8")
+    assert current_backgrounds(tmp_path) == ["background_protagonist_张明.md"]
+    context = lore_context(tmp_path)
+    assert "张明的背景" in context and "王五" not in context
+    assert (tmp_path / LORE / "background_protagonist_王五.md").exists()   # 文件不删
+
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert "人物背景" not in _tab_names(page)
+    assert page.step_buttons["enhance"].state == "done"
+    labels = [b.text() for b in page.tabs.widget(2).findChildren(QPushButton)]
+    assert labels == ["编辑", "编辑详细背景"]
+
+
+def test_use_as_title_saves_the_parameter_and_names_the_old_one(app, tmp_path):
+    system = tmp_path / "system"
+    system.mkdir()
+    (system / "parameters.txt").write_text(
+        f"Output Directory: {tmp_path}\nGenre: 科幻\nStory Length: Novella\nStory Structure: 3-Act Structure\n"
+        "Novel Title: 静默星环\nTheme: 记忆的代价\nTone: 冷峻理性\n", encoding="utf-8")
+    window = MainWindow()
+    novel = window.novel
+    novel.parameters_page.load(str(tmp_path))
+    novel.lore_page.title_chosen.emit("雾港回声")
+    assert params_store.load(str(tmp_path))["Novel Title"] == "雾港回声"
+    assert novel.parameters_page.dirty is False
 
 
 def test_counts_follow_story_length_and_are_not_asked(app, tmp_path):
