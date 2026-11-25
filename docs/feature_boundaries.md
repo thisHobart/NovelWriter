@@ -38,6 +38,42 @@
 - 短视频的「校验模型配置」和「生图 API 配置」只属于短视频，存在同一个文件的 `review`、`image` 两节里，只由 `core/short_video/v2/service_settings.py` 读写和检查；共用层只负责读写整节，不检查内容。
 - 任何一边保存了模型服务配置，两边显示的配置状态都会更新。
 
+## 共用界面
+
+两个功能共用的界面规则，代码在 `core/gui/theme.py`、`icons.py`、`task_runner.py`、`widgets/`。
+
+**配色与尺寸**
+
+| token | 值 | 用途 |
+|---|---|---|
+| `ink.900` / `ink.600` / `ink.400` | `#1C1B19` / `#6E6C67` / `#9A9792` | 主文字 / 次要文字 / 三级文字与禁用 |
+| `line` / `line.strong` | `#E4E4E1` / `#D6D5D1` | 分隔线与卡片边框 / 次要按钮边框 |
+| `rail` / `canvas` / `surface` | `#F4F3F0` / `#FFFFFF` / `#FAFAF8` | 左侧栏 / 卡片与编辑区 / 内容区与状态栏 |
+| `accent` / `accent.tint` | `#2C4A7C` / `#EDF1F8` | 主按钮、当前步骤、生成中 / 聚焦光晕、选中行 |
+| `success` / `warn` / `danger` | `#2F7D4F` / `#B4761D` / `#B3392F` | 语义色；浅底为语义色加透明度 |
+
+间距用 4 的倍数；字号只用 11 / 12 / 13 / 16 / 19；控件高 32px；圆角 4px（卡片 6px）。界面字体 `Noto Sans SC`，标题与正文稿 `Source Serif 4`。强调色一屏不超过 3 处。图标用描边式 SVG，不用 emoji。
+
+**主窗与状态栏**
+
+- 小说左侧步骤栏固定 248px，短视频不显示；内容区为 64px 页头 + 主体 + 44px 状态栏；最小窗口 1200 × 760。
+- 状态栏：空闲显示输出目录和上次保存时间；运行中显示动作、进度条、已用时和红色「停止」；参数未保存显示提醒；失败显示错误摘要和「查看日志」。
+- 「停止」点击后变为「正在停止…」并禁用，直到任务真正退出。
+
+**后台任务**
+
+`TaskRunner` 用 `QThread` + 信号：`succeeded` / `failed` / `cancelled` / `finished` 都在主线程发出，进度走 `progress(str, float)`。运行时用 `disable=[...]` 禁用控件，按钮进入忙碌态（禁用、换文案、加转圈）。后台线程不得触碰任何控件。
+
+**通用控件**
+
+| 控件 | 默认 | 悬停 | 聚焦 | 禁用 |
+|---|---|---|---|---|
+| 主按钮 | accent 底、白字 | `#22406F` | 加 3px accent.tint 光晕 | `#B9C3D6`，文案换为忙碌文案 |
+| 次按钮 | 白底、line.strong 边 | surface 底 | 同上 | ink.400 字、line 边 |
+| 输入框 / 下拉框 | 白底、line 边 | line.strong 边 | accent 边 + 光晕 | surface 底、ink.400 字 |
+
+数值框、下拉框和滑块不响应鼠标滚轮，滚轮只用于滚动页面和列表。
+
 ## 测试和守护
 
 - 测试按功能分在 `tests/common/`、`tests/novel/`、`tests/short_video/`，可以只跑一个功能的测试，例如 `pytest tests/short_video -q`。

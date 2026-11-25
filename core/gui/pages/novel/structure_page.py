@@ -3,7 +3,7 @@
 
 每一幕一张卡片，未通过评审的幕把意见原文挂在卡片上，而不是塞进对话框。
 主按钮文案随状态变化——界面只呈现当前唯一有意义的动作。
-规格见 docs/UI_CONTRACT.md 第 7 节。
+规格见 docs/novel/interaction.md 第 5 节。
 """
 from __future__ import annotations
 

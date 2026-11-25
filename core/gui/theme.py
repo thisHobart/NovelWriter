@@ -2,7 +2,7 @@
 """设计 token 与全局样式表。
 
 唯一的样式来源：任何颜色、字号、间距都从这里取，不在控件里写字面值。
-token 表与 docs/UI_CONTRACT.md 第 0 节一一对应。
+token 表与 docs/feature_boundaries.md「共用界面」一一对应。
 """
 from __future__ import annotations
 

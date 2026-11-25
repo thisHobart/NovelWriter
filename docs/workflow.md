@@ -4,12 +4,7 @@
 
 ## 小说创作
 
-作品参数 → 世界设定 → 故事结构 → 场景规划 → 章节撰写。
-
-- 工作区和页面位于 `core/gui/pages/novel/`，通过 `core/gui/pages/novel/services/step_runner.py` 调用 `core/generation/stage_pipeline.py`。
-- 阶段生成使用任务启动时的参数快照。完整工作流及继续操作依据作品目录、依赖和契约判断下一步，不依赖已删除的多智能体总编排器或 checkpoint 服务。
-- 世界设定生成、直接编辑与恢复见[参数一致性](parameter_consistency.md)和[编辑说明](lore_editing.md)。
-- 章节写作使用现有章节循环、质量闸门及待复审处理，小说功能与短视频工作流分别执行。
+作品参数 → 世界设定 → 故事结构 → 场景规划 → 章节撰写。详见[小说架构设计](novel/architecture.md)。
 
 ## 短视频脚本
 

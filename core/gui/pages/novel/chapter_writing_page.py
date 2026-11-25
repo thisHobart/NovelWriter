@@ -3,7 +3,7 @@
 
 正文区衬线体、64px 内边距、1.95 行高（已与用户确认）。生成中时主按钮自身变禁用，
 取消交给底部状态栏。「重写本章」按先确认再覆盖处理。
-规格见 docs/UI_CONTRACT.md 第 5 节。
+规格见 docs/novel/interaction.md 第 7 节。
 
 未过质量闸门的章节在这里也有位置：列表里单列一档「待复审」，选中后正文区显示
 被拦下的那一稿并把问题句标出来，右栏列出按严重程度排好的问题与三个出口。
@@ -213,7 +213,7 @@ class ChapterWritingPage(StagePage):
         self.add_card(self.quality_card)
 
         # 「撰写下一章」只保留页头主按钮这一个入口；右栏只放页头没有的批量动作，
-        # 避免同一动作出现两次（规格见 docs/UI_CONTRACT.md 第 5 节）。
+        # 避免同一动作出现两次（规格见 docs/novel/interaction.md 第 7 节）。
         actions = Card("操作")
         self.step_buttons = {
             "all": StepButton("all", "撰写全部剩余章节"),

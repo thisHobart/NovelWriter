@@ -36,7 +36,7 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 首页提供「切换到短视频脚本」：进入 v2 网文视频推广工作台，支持文章导入、两阶段改写、可编辑分镜、资产提示词、左侧 LLM 对话及 Markdown 导出。在“提示词 → 镜头”可手动导图，粘贴 API JSON 配置并选择工作流，经内置 MCP 调用本地 ComfyUI 生成并播放参考图或首尾帧视频；资产生图暂未接入。功能、验证与设计入口见[短视频模块文档](docs/short_video/README.md)，维护约定见[编码 Prompt](docs/short_video/coding_prompt.md)。
 
-世界设定支持[手动编辑](docs/lore_editing.md)，生成入口统一处理未保存作品参数并检查结果是否偏离要求，详见[生成参数一致性](docs/parameter_consistency.md)。
+小说创作的结构、接口、界面行为和开发验证见 [docs/novel/](docs/novel/architecture.md) 下的四份文档。
 
 - **多题材支持**：支持 8 种主要题材，并针对不同题材提供相应的世界观构建逻辑
 - **智能人物生成**：生成包含详细背景、关系和家族关系的人物，并支持性别比例配置
@@ -55,70 +55,7 @@ NovelWriter 是一个基于 Python 的综合性创作应用，借助大语言模
 
 ### 独立质量闸与真人盲测
 
-章节总评现在由三个互不替代的判断组成：章节契约合规、只看正文与上一章结尾的中文读者盲读、
-以及不把“符合大纲”当作现实依据的程序/证据/技术合理性审阅。结构诊断还会记录主题说破、
-因果解释、身体化情绪套语、时间切换、价值冲突、支线和旧信息重释等信号；这些信号用于发现
-整本书的重复习惯，不会单独把某一章判为失败。
-
-改进前后稿件可以用配对盲测验证。下面的命令会为 30 名读者生成 A/B 位置均衡的匿名材料、
-私有映射表和 CSV 录入模板：
-
-```powershell
-python -m core.evaluation.reader_blind_test create `
-  --baseline-dir <旧版章节目录> `
-  --candidate-dir <改进版章节目录> `
-  --output-dir <盲测目录> `
-  --participants 30
-```
-
-收齐 `responses.csv` 后汇总：
-
-```powershell
-python -m core.evaluation.reader_blind_test summarize --test-dir <盲测目录>
-```
-
-仓库还提供固定随机种子、固定参数和固定三章案件骨架的低成本离线质量回归。它使用
-明确标记为 `scripted_offline` 的脚本模型，不会冒充真实模型测试：
-
-```powershell
-python -m core.evaluation.fixed_story_quality --output-dir quality_runs\fixed_mystery_3ch
-```
-
-输出包括逐调用 prompt/响应/耗时追踪、14 个阶段的输入与解析结果、改造前后章节、
-故事账本、独立质量闸和 30 人 A/B 材料。真实后端必须先通过单阶段成本闸：
-
-```powershell
-python -m core.evaluation.live_quality_probe --output-dir quality_runs\fixed_mystery_3ch
-```
-
-探针会先检查当前配置端点；不可达时不发起模型调用，并保存阻塞原因与恢复命令。
-只有探针确实识别“销毁唯一证物后仍依赖它推理”的硬伤时，才应继续单章和三章真实测试。
-
-真实模型按成本递增运行；每一步失败都会停止后续调用：
-
-```powershell
-python -m core.evaluation.live_chapter_probe --output-dir quality_runs\live_single_chapter
-python -m core.evaluation.live_story_quality --output-dir quality_runs\live_fixed_mystery_3ch
-```
-
-三章运行器不设置总调用次数上限；中断后可重复同一命令，从已验收 ledger 和真实 trace
-继续，只补缺失审阅，不重生成已存在的场景。若最终正文
-触发身体反应套语饱和，可在不改变事实、时间、人物知识或证据状态的前提下做语言收敛：
-
-```powershell
-python -m core.evaluation.live_style_polish --output-dir quality_runs\live_fixed_mystery_3ch --chapter 3
-```
-
-最后可同时核验离线 14 阶段记录和真实三章产物：
-
-```powershell
-python -m core.evaluation.completion_audit `
-  --real-dir quality_runs\live_fixed_mystery_3ch `
-  --offline-dir quality_runs\fixed_mystery_3ch
-```
-
-主要指标是续读意愿；可信度、人物真实感和中文舒适度是护栏，AI 感是诊断指标。不要把
-`manifest.private.json` 发给读者，也不要在收齐预注册样本前根据中途结果停止试验。
+章节总评由三份互不替代的判断组成：章节契约合规、只看正文与上一章结尾的读者盲读、现实合理性审阅。改进前后的稿件可以用配对盲测比较，主要指标是续读意愿。离线固定样例、真实模型探针和盲测的命令见[小说开发文档](docs/novel/development.md#3-质量评估)。
 
 ## 快速开始
 

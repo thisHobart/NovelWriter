@@ -2,7 +2,7 @@
 """阶段 4 · 场景规划。
 
 两个形态：被阻塞时显示「为什么空、怎么解开」的空态；解锁后显示章节大纲与
-逐章场景规划。规格见 docs/UI_CONTRACT.md 第 8 节。
+逐章场景规划。规格见 docs/novel/interaction.md 第 6 节。
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """内联 SVG 图标。
 
-约定（docs/UI_CONTRACT.md）：不用 emoji，全部描边式 SVG，16px 网格，
+约定（docs/feature_boundaries.md「共用界面」）：不用 emoji，全部描边式 SVG，16px 网格，
 统一 1.4~1.6 描边宽度，颜色由调用方传入 token。
 """
 from __future__ import annotations

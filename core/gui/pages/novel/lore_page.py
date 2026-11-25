@@ -3,7 +3,7 @@
 
 左侧浏览生成结果，并通过独立编辑窗口修改已有设定。
 生成参数与分步按钮收进右栏检查器。
-规格见 docs/UI_CONTRACT.md 第 6 节。
+规格见 docs/novel/interaction.md 第 4 节。
 """
 from __future__ import annotations
 

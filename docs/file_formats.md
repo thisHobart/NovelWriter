@@ -4,18 +4,7 @@
 
 ## 小说作品
 
-| 路径 | 用途 |
-|---|---|
-| `system/parameters.txt` | 作品参数，按键值行保存，由参数页面读写 |
-| `story/lore/characters.json`、`factions.json` | 当前人物与势力资料 |
-| `story/lore/generated_lore.md`、`lore_contract.json` | 世界观正文及实体契约 |
-| `system/lore_edits.json` | 世界设定编辑与恢复元数据 |
-| `story/structure/` | 人物／势力故事弧、分段结构与结构契约 |
-| `story/planning/chapter_outlines/` | 章节大纲 |
-| `story/planning/detailed_scene_plans/` | 逐章场景规划 |
-| `story/content/chapters/` | 章节正文 Markdown |
-
-结构和规划文件随所选篇幅与故事结构命名，不依赖旧 Tk 模块或旧随机生成器。读取与展示入口可查 `core/gui/pages/novel/services/artifacts.py`；生成入口见[工作流程](workflow.md)。小说章节的账本、质量状态及恢复记录继续由现有生成模块维护。
+见[小说接口设计 · 作品文件](novel/interfaces.md#3-作品文件)。
 
 ## 短视频项目
 

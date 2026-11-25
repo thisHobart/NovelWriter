@@ -3,7 +3,7 @@
 
 同一时刻只显示一个任务：状态、子进度、已用时、停止按钮。
 「停止」只在任务运行时出现，点击后立刻变为「正在停止…」并禁用，
-直到 worker 抛出 GenerationCancelled。规格见 docs/UI_CONTRACT.md 第 1.2 节。
+直到 worker 抛出 GenerationCancelled。规格见 docs/feature_boundaries.md「共用界面」。
 """
 
 from __future__ import annotations

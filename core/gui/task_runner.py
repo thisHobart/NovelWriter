@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """把耗时生成任务挪出 Qt 主线程。
 
-调用方约定见 docs/UI_CONTRACT.md 第 2 节：
+调用方约定见 docs/feature_boundaries.md「共用界面」：
 
     task = runner.run(
         work,                        # 后台线程执行，禁止触碰任何 QWidget

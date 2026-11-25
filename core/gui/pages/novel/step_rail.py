@@ -4,7 +4,7 @@
 取代旧版的 ttk.Notebook：五个阶段有依赖顺序，Tab 的「平级并列」语义是错的。
 每行直接呈现 workflow_status 的 COMPLETE / PARTIAL / BLOCKED，被阻塞的阶段
 带锁形图标并把阻塞原因常驻显示（旧版只在弹窗里出现）。
-规格见 docs/UI_CONTRACT.md 第 1.1 节。
+规格见 docs/novel/interaction.md 第 1 节。
 """
 from __future__ import annotations
 
