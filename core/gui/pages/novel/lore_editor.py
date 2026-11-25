@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from core.generation.lore_repository import LoreRepository, MappingRequired, encode
+from core.generation.lore_repository import LoreRepository, MappingRequired, encode, rename_impact
 from core.lore_localization import field_label, display_value, file_label, describe_value, display_message
 
 ROLE_LABELS = {"protagonist": "主角", "deuteragonist": "第二主角", "antagonist": "反派", "supporting": "配角"}
@@ -201,10 +201,14 @@ class LoreEditor(QDialog):
             preview = self.repository.preview(self.snapshot, self.edits(), self.mappings)
             value = self.value()
             review = "\n\n".join(display_message(item) for item in preview.review_items) or "当前没有待核对事项。"
+            # 改名时先说清：世界设定里换掉几处，后面阶段哪些文件不会改。
+            impact = "\n\n".join(rename_impact(preview))
             if isinstance(value, str):
-                self.preview_view.setMarkdown(value + "\n\n---\n### 待核对\n" + review)
+                self.preview_view.setMarkdown(value + ("\n\n---\n### 影响范围\n" + impact if impact else "")
+                                              + "\n\n---\n### 待核对\n" + review)
             else:
-                self.preview_view.setPlainText(describe_value(value) + "\n\n待核对\n" + review)
+                self.preview_view.setPlainText(describe_value(value) + ("\n\n影响范围\n" + impact if impact else "")
+                                               + "\n\n待核对\n" + review)
         except Exception as exc:
             self.preview_view.setPlainText(display_message(exc))
 

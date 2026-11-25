@@ -533,3 +533,30 @@ def test_step_rail_counts_results_waiting_for_the_author(app, tmp_path):
     novel = window.novel
     novel.parameters_page.output_dir_edit.setText(str(tmp_path))
     assert novel._stage_states()["lore"].detail.endswith("· 1 份待处理")
+
+
+def test_review_tab_groups_by_stage_jumps_there_and_can_be_cleared_and_undone(app, tmp_path):
+    from core.generation.lore_repository import CHARACTERS, LoreRepository, encode
+    _lore_project(tmp_path)
+    for rel in ("story/structure/act.md", "story/planning/scenes_1.md"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("张明出场", encoding="utf-8")
+    repo = LoreRepository(tmp_path)
+    repo.save(repo.load_snapshot(), {CHARACTERS: encode({"characters": [{"name": "张远", "role": "protagonist"}]})})
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    review = page.tabs.widget(_tab_names(page).index("待核对"))
+    lines = [label.text() for label in review.findChildren(QLabel)]
+    assert "故事结构：1 个文件是按旧设定写的，其中 1 个仍写着旧名「张明」（现名「张远」）。" in lines
+    went = []
+    page.navigate_requested.connect(went.append)
+    next(b for b in review.findChildren(QPushButton) if b.text() == "去故事结构").click()
+    assert went == ["structure"]
+
+    next(b for b in review.findChildren(QPushButton) if b.text() == "全部标为已看过").click()
+    assert "待核对" not in _tab_names(page)
+    assert "全部标为已看过" in page.change_label.text()
+    page.undo_button.click()
+    assert "待核对" in _tab_names(page)

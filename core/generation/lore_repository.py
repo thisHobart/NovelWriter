@@ -97,6 +97,126 @@ class LorePreview:
     changed_files: list[str]
     review_items: list[str] = field(default_factory=list)
     renames: list[tuple[str, str, str]] = field(default_factory=list)
+    #: 改名时世界设定自由文本里自动换掉的旧名：(旧名, 新名, 处数)
+    replaced: list[tuple[str, str, int]] = field(default_factory=list)
+    #: 没有自动换的旧名：(旧名, 新名, 原因)，留在待核对里
+    kept: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+OLD_NAME_ITEM = re.compile(r"(.*?)：仍含旧名「(.*?)」（现名「(.*?)」），请核对。")
+STAGE_TITLES = {"lore": "世界设定", "structure": "故事结构", "scenes": "场景规划", "chapters": "章节撰写"}
+
+
+def stage_of(relative):
+    """文件属于哪个阶段：story/lore 世界设定，story/structure 故事结构，story/planning 场景规划，story/content 章节撰写。"""
+    for prefix, stage in ((LORE, "lore"), ("story/structure/", "structure"), ("story/planning/", "scenes"),
+                          ("story/content/", "chapters")):
+        if relative.startswith(prefix):
+            return stage
+    return "lore"
+
+
+def rename_plan(renames, names):
+    """哪些旧名可以在自由文本里自动换：只换完整的旧名；只有一个字、或是别的名字一部分的不换。
+
+    返回 ({旧名: 新名}, [(旧名, 新名, 不换的原因)])。
+    """
+    safe, kept = {}, []
+    for _kind, old, new in renames:
+        if len(old) < 2:
+            kept.append((old, new, "名字只有一个字"))
+            continue
+        container = next((other for other in names if old in other and other not in {old, new}), None)
+        if container:
+            kept.append((old, new, f"是「{container}」的一部分"))
+            continue
+        safe[old] = new
+    return safe, kept
+
+
+def swap_names(text, mapping, counts):
+    """一遍里同时换掉几个旧名（不会连环替换）；已经写成新名、且新名包含旧名的地方原样保留。"""
+    if not mapping or not any(old in text for old in mapping):
+        return text
+    table = dict(mapping)
+    for new in mapping.values():
+        if new not in table and any(old in new for old in mapping):
+            table[new] = new
+    pattern = re.compile("|".join(re.escape(key) for key in sorted(table, key=len, reverse=True)))
+
+    def replace(match):
+        key = match.group(0)
+        if key in mapping:
+            counts[key] = counts.get(key, 0) + 1
+        return table[key]
+    return pattern.sub(replace, text)
+
+
+def still_named(text, old, new):
+    """文本里还有没有旧名；新名包含旧名时（张明 → 张明远），新名本身不算。"""
+    return old in (text.replace(new, "") if old in new else text)
+
+
+def swap_in_value(value, mapping, counts):
+    if isinstance(value, str):
+        return swap_names(value, mapping, counts)
+    if isinstance(value, list):
+        return [swap_in_value(item, mapping, counts) for item in value]
+    if isinstance(value, dict):
+        return {key: swap_in_value(item, mapping, counts) for key, item in value.items()}
+    return value
+
+
+def rename_impact(preview):
+    """编辑窗口「预览 / 影响范围」里的说明：世界设定里换了几处、后面阶段几个文件不会改。"""
+    lines = [f"保存后会把世界设定里 {count} 处「{old}」改成「{new}」。" for old, new, count in preview.replaced if count]
+    lines += [f"世界设定里的「{old}」不会自动改（{reason}），请自己核对。" for old, _new, reason in preview.kept]
+    for _kind, old, _new in preview.renames:
+        stages = {}
+        for item in preview.review_items:
+            found = OLD_NAME_ITEM.fullmatch(item)
+            if found and found.group(2) == old and stage_of(found.group(1)) != "lore":
+                stages[stage_of(found.group(1))] = stages.get(stage_of(found.group(1)), 0) + 1
+        if stages:
+            parts = "、".join(f"{STAGE_TITLES[stage]} {count} 个文件"
+                             for stage, count in sorted(stages.items(), key=lambda pair: list(STAGE_TITLES).index(pair[0])))
+            lines.append(f"{parts}里的旧名「{old}」不会改，保存后列在「待核对」里。")
+    return lines
+
+
+def review_summary(root):
+    """待核对按阶段汇总成几行，每行带它的文件，供页面展开查看。"""
+    status = LoreRepository(root).review_status()
+    general, findings = [], {}
+    for item in status.get("review_items", []):
+        found = OLD_NAME_ITEM.fullmatch(item)
+        if found:
+            relative, old, new = found.groups()
+            findings.setdefault(relative, []).append((old, new))
+        else:
+            general.append(item)
+    by_stage = {}
+    for relative, item in status.get("pending", {}).items():
+        by_stage.setdefault(item.get("stage") or stage_of(relative), set()).add(relative)
+    for relative in findings:
+        by_stage.setdefault(stage_of(relative), set()).add(relative)
+    groups = []
+    for stage, title in STAGE_TITLES.items():
+        files = sorted(by_stage.get(stage, ()))
+        if not files:
+            continue
+        olds = {}
+        for relative in files:
+            for old, new in findings.get(relative, []):
+                olds.setdefault((old, new), []).append(relative)
+        named = "，".join(f"{len(paths)} 个仍写着旧名「{old}」（现名「{new}」）" for (old, new), paths in olds.items())
+        if stage == "lore":
+            line = f"{title}：{named}，没有自动替换。" if named else f"{title}：{len(files)} 个文件待核对。"
+        else:
+            line = f"{title}：{len(files)} 个文件是按旧设定写的" + (f"，其中 {named}" if named else "") + "。"
+        groups.append({"stage": stage, "title": title, "line": line,
+                       "files": [(relative, [old for old, _new in findings.get(relative, [])]) for relative in files]})
+    return {"version": status.get("version"), "general": general, "groups": groups}
 
 
 FILE_TITLES = {CHARACTERS: "人物", FACTIONS: "势力", CONTRACT: "名称与规则", BODY: "世界观"}
@@ -346,6 +466,23 @@ class LoreRepository:
                 faction["territory"] = location_map[territory]
             elif isinstance(territory, dict) and territory.get("name") in location_map:
                 territory["name"] = location_map[territory["name"]]
+        # 改名时世界设定里的自由文本（正文、人物背景、人物和势力描述、登记表）一起换成新名。
+        names = {name_of(row) for rows in groups.values() for row in rows}
+        for registry in ("canonical_characters", "canonical_factions", "canonical_locations"):
+            for row in contract.get(registry, []) if isinstance(contract, dict) else []:
+                names.add(str(row.get("name", "")))
+                names.update(str(alias) for alias in row.get("aliases") or [])
+        safe, kept = rename_plan(renames, names - {""})
+        counts = {}
+        if safe:
+            for key in list(payloads):
+                payloads[key] = swap_in_value(payloads[key], safe, counts)
+            groups = {key: records(payloads[key], kind) if key in payloads else []
+                      for key, kind in ((CHARACTERS, "characters"), (FACTIONS, "factions"))}
+            for rel in list(files):
+                if rel.startswith(LORE) and rel.endswith(".md"):
+                    files[rel] = swap_names(files[rel], safe, counts)
+        replaced = [(old, new, counts.get(old, 0)) for old, new in safe.items()]
         self._validate(original, payloads, groups)
         for key, value in payloads.items():
             if value != original[key]:
@@ -364,12 +501,12 @@ class LoreRepository:
                 prior_findings.append((item, *found.groups()))
         if renames or prior_findings:
             texts.update({rel: self.path(rel).read_text(encoding="utf-8") for rel in self.downstream(stamps=False)})
-        review.extend(item for item, rel, old, new in prior_findings if old in texts.get(rel, ""))
+        review.extend(item for item, rel, old, new in prior_findings if still_named(texts.get(rel, ""), old, new))
         for _, old, new in renames:
             for rel, text in texts.items():
-                if old in text:
+                if still_named(text, old, new):
                     review.append(f"{rel}：仍含旧名「{old}」（现名「{new}」），请核对。")
-        return LorePreview(files, changed, list(dict.fromkeys(review)), renames)
+        return LorePreview(files, changed, list(dict.fromkeys(review)), renames, replaced, kept)
 
     @staticmethod
     def _validate(original, payloads, groups):

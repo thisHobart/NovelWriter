@@ -69,9 +69,12 @@ def test_rename_character_updates_all_structured_references_and_background(proje
     canonical = edit_payload(after, CONTRACT)["canonical_characters"][0]
     assert canonical == {"id": "CH1", "name": "张远", "aliases": []}
     assert LORE + "background_protagonist_张明.md" not in after.files
-    assert after.files[LORE + "background_protagonist_张远.md"] == "张明的详细背景"
-    assert after.files[BODY] == snapshot.files[BODY]
-    assert any("仍含旧名" in item for item in preview.review_items)
+    # 世界设定里的自由文本跟着换名；后面阶段的文件不动，列进待核对。
+    assert after.files[LORE + "background_protagonist_张远.md"] == "张远的详细背景"
+    assert after.files[BODY] == "# 世界\n张远在调查局工作。"
+    assert preview.replaced == [("张明", "张远", 2)]
+    assert sorted(item.split("：")[0] for item in preview.review_items if "仍含旧名" in item) == [
+        "story/planning/detailed_scene_plans/scenes_ch1.md", "story/structure/act.md"]
     assert (project / "story/content/chapters/chapter_1.md").read_text(encoding="utf-8") == "已有正文"
     assert len(after.metadata["pending"]) == 3
     assert list((project / "system/lore_history").glob("*/transaction.json"))
@@ -510,3 +513,57 @@ def test_later_items_written_before_a_newer_upstream_item_are_stale(tmp_path):
     _generated(tmp_path, "characters", 5)
     assert stale_lore(tmp_path)["source"] == "人物"
     assert stale_lore(tmp_path)["steps"] == ["lore", "enhance"]
+
+
+def test_name_swaps_happen_in_one_pass_and_keep_names_that_contain_the_old_one():
+    from core.generation.lore_repository import rename_plan, swap_names
+    counts = {}
+    assert swap_names("张明见王柳", {"张明": "王柳", "王柳": "张明"}, counts) == "王柳见张明"
+    assert counts == {"张明": 1, "王柳": 1}
+    assert swap_names("张明远和张明", {"张明": "张明远"}, {}) == "张明远和张明远"
+    safe, kept = rename_plan([("characters", "苏", "苏桐"), ("characters", "张明", "张远"),
+                              ("characters", "李华", "李华生")], {"苏桐", "张远", "张明亮", "李华生"})
+    assert safe == {"李华": "李华生"}
+    assert kept == [("苏", "苏桐", "名字只有一个字"), ("张明", "张远", "是「张明亮」的一部分")]
+
+
+def test_rename_preview_says_what_changes_inside_and_what_stays_outside(project):
+    from core.generation.lore_repository import rename_impact
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][0]["name"] = "张远"
+    preview = repo.preview(snapshot, {CHARACTERS: encode(cast)})
+    assert rename_impact(preview) == [
+        "保存后会把世界设定里 2 处「张明」改成「张远」。",
+        "故事结构 1 个文件、场景规划 1 个文件里的旧名「张明」不会改，保存后列在「待核对」里。",
+    ]
+
+
+def test_rename_that_cannot_be_replaced_safely_stays_in_review(project):
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][1]["name"] = "张明亮"              # 王柳改成包含「张明」的名字
+    cast["characters"][0]["name"] = "张远"
+    preview = repo.save(snapshot, {CHARACTERS: encode(cast)})
+    assert preview.kept == [("张明", "张远", "是「张明亮」的一部分")]
+    after = LoreRepository(project).load_snapshot()
+    assert after.files[BODY] == snapshot.files[BODY]       # 不安全就不换
+    assert any(item.startswith(BODY + "：仍含旧名「张明」") for item in preview.review_items)
+
+
+def test_review_is_summarised_per_stage(project):
+    from core.generation.lore_repository import review_summary
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][0]["name"] = "张远"
+    repo.save(snapshot, {CHARACTERS: encode(cast)})
+    summary = review_summary(project)
+    assert [group["line"] for group in summary["groups"]] == [
+        "故事结构：1 个文件是按旧设定写的，其中 1 个仍写着旧名「张明」（现名「张远」）。",
+        "场景规划：1 个文件是按旧设定写的，其中 1 个仍写着旧名「张明」（现名「张远」）。",
+        "章节撰写：1 个文件是按旧设定写的。",
+    ]
+    assert summary["groups"][0]["files"] == [("story/structure/act.md", ["张明"])]

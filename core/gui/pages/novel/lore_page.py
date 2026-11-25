@@ -37,7 +37,7 @@ from core.gui.widgets import (
 )
 from core.gui.pages.novel.inspector import StepButton
 from core.generation.lore_repository import (
-    LoreRepository, LORE, BODY, CHARACTERS, FACTIONS, CONTRACT, background_name, current_backgrounds,
+    LoreRepository, LORE, BODY, CHARACTERS, FACTIONS, CONTRACT, background_name, current_backgrounds, review_summary,
 )
 from core.gui.pages.novel.lore_editor import LoreEditor, ROLE_LABELS
 from core.lore_localization import FIELD_LABELS, display_value, file_label, display_message
@@ -443,26 +443,61 @@ class LorePage(StagePage):
             self.refresh()
 
     def _review_tab(self):
+        """待核对按阶段汇总成几行，每行可展开看文件、可跳到那个阶段。没有事项返回 None（页签不出现）。"""
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
         try:
-            repo = LoreRepository(self.output_dir)
-            status = repo.review_status()
-            items = status.get("review_items", [])
-            pending = status.get("pending", {})
-            lines = [display_message(item) for item in items] + [f"{file_label(path)}：设定已修改，待核对" for path in pending]
-            if not lines:
-                return None  # 没有事项，页签不出现
-            view = QTextBrowser()
-            view.setPlainText("\n\n".join(lines))
-            layout.addWidget(view)
-            acknowledge = secondary_button("已核对当前版本")
-            acknowledge.setEnabled(not self.generation_busy)
-            acknowledge.clicked.connect(lambda: self._acknowledge(status["version"]))
-            layout.addWidget(acknowledge)
+            summary = review_summary(self.output_dir)
         except Exception as exc:
             layout.addWidget(hint_label(f"读取核对状态失败：{exc}"))
-        return page
+            return page
+        if not summary["general"] and not summary["groups"]:
+            return None
+        for item in summary["general"]:
+            label = QLabel(display_message(item))
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        for group in summary["groups"]:
+            layout.addWidget(self._review_group(group))
+        acknowledge = secondary_button("全部标为已看过")
+        acknowledge.setToolTip("清空待核对；之后可以在页面顶部撤回")
+        acknowledge.setEnabled(not self.generation_busy)
+        acknowledge.clicked.connect(lambda: self._acknowledge(summary["version"]))
+        layout.addWidget(acknowledge, 0, Qt.AlignLeft)
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _review_group(self, group) -> QWidget:
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        row = QHBoxLayout()
+        line = QLabel(group["line"])
+        line.setWordWrap(True)
+        row.addWidget(line, 1)
+        toggle = secondary_button("查看文件")
+        toggle.setCheckable(True)
+        row.addWidget(toggle)
+        if group["stage"] != "lore":
+            go = secondary_button("去" + group["title"])
+            go.clicked.connect(lambda checked=False, stage=group["stage"]: self.navigate_requested.emit(stage))
+            row.addWidget(go)
+        layout.addLayout(row)
+        files = QLabel("\n".join(file_label(relative) + (f" · 旧名「{'、'.join(olds)}」" if olds else "")
+                                 for relative, olds in group["files"]))
+        files.setObjectName("Tertiary")
+        files.setWordWrap(True)
+        files.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        files.hide()
+        toggle.toggled.connect(files.setVisible)
+        layout.addWidget(files)
+        return box
 
     def _acknowledge(self, version):
         try:
