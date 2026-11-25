@@ -7,10 +7,10 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
 import json
 import os
 import re
+from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QTextCursor, QTextDocument
@@ -25,27 +25,42 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.generation.lore_repository import (
+    BODY,
+    CHARACTERS,
+    CONTRACT,
+    FACTIONS,
+    LORE,
+    LoreRepository,
+    background_name,
+    current_backgrounds,
+    review_summary,
+)
+from core.generation.lore_run import (
+    LABELS,
+    attention_receipts,
+    edited_after_save,
+    latest_by_product,
+    list_receipts,
+    load_receipt,
+    needs_attention,
+    recover_interrupted,
+    stale_lore,
+)
 from core.gui import theme
-from core.gui.pages.novel.stage_base import StagePage
+from core.gui.pages.novel.inspector import StepButton
+from core.gui.pages.novel.lore_editor import ROLE_LABELS, LoreEditor
+from core.gui.pages.novel.lore_results import GenerationDraftEditor, result_details, result_status
 from core.gui.pages.novel.services import artifacts
 from core.gui.pages.novel.services.step_runner import action_work, step_work
+from core.gui.pages.novel.stage_base import StagePage
 from core.gui.widgets import (
     Card,
     hint_label,
     primary_button,
     secondary_button,
 )
-from core.gui.pages.novel.inspector import StepButton
-from core.generation.lore_repository import (
-    LoreRepository, LORE, BODY, CHARACTERS, FACTIONS, CONTRACT, background_name, current_backgrounds, review_summary,
-)
-from core.gui.pages.novel.lore_editor import LoreEditor, ROLE_LABELS
-from core.lore_localization import FIELD_LABELS, display_value, file_label, display_message
-from core.generation.lore_run import (
-    LABELS, attention_receipts, edited_after_save, latest_by_product, list_receipts, load_receipt, needs_attention,
-    recover_interrupted, stale_lore,
-)
-from core.gui.pages.novel.lore_results import GenerationDraftEditor, result_details, result_status
+from core.lore_localization import FIELD_LABELS, display_message, display_value, file_label
 
 
 class MarkdownView(QTextBrowser):
@@ -536,14 +551,18 @@ class LorePage(StagePage):
             card = Card(self._result_title(receipt) + " · " + result_status(receipt, edited))
             card.setToolTip(result_details(receipt))
             if needs_attention(self.output_dir, receipt):
-                issues = QLabel("\n".join(display_message(issue) for issue in receipt.get("issues", [])))
-                issues.setWordWrap(True)
-                card.body.addWidget(issues)
+                problems = "\n".join(display_message(issue) for issue in receipt.get("issues", []))
                 if receipt.get("disposition") != "current":
+                    # 没采用的那份：标题已说明原因，读取报错原文只放在悬停提示里。
                     kept = QLabel("当前设定没有被替换；返回的原文保留着，可以让 AI 再修一次，或自己改成能读的内容后采用。")
                     kept.setWordWrap(True)
-                    kept.setObjectName("Tertiary")
                     card.body.addWidget(kept)
+                    if problems:
+                        card.setToolTip(result_details(receipt) + "\n" + problems)
+                elif problems:
+                    issues = QLabel(problems)
+                    issues.setWordWrap(True)
+                    card.body.addWidget(issues)
                 card.body.addLayout(self._result_actions(receipt))
             if receipt.get("notes") and not receipt.get("reverted"):
                 notes = QLabel("检查备注（不影响交付）：\n" + "\n".join(receipt["notes"]))

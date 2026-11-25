@@ -381,6 +381,7 @@ def test_refresh_is_not_reentrant(app):
 def _result(root, kind, status, disposition="current", **extra):
     import time
     from uuid import uuid4
+
     from core.generation.lore_run import save_receipt
     record = {"id": uuid4().hex, "kind": kind, "status": status, "disposition": disposition, "candidate": "x",
               "issues": [], "files": [], "calls": 2, "created_at": extra.pop("created_at", time.time()), **extra}
@@ -422,6 +423,12 @@ def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tm
     world, cast, faction = _result_cards(page)
     assert _buttons(world) == []
     assert _buttons(cast) == ["再修一次并继续生成", "编辑原文"]
+    cast_text = [label.text() for label in cast.findChildren(QLabel)]
+    assert not any("尚不能读取" in text for text in cast_text)       # 读取报错只在悬停提示里
+    assert any(text.startswith("当前设定没有被替换") for text in cast_text)
+    assert "尚不能读取" in cast.toolTip()
+    faction_text = [label.text() for label in faction.findChildren(QLabel)]
+    assert "势力数量不对" in faction_text                              # 已保存的问题照旧列在卡上
     assert _buttons(faction) == ["让 AI 再修一次", "编辑", "更早的记录（1）"]
     assert page.step_buttons["factions"]._meta.text() == "待处理"
     assert page.step_buttons["lore"]._meta.text() != "待处理"
