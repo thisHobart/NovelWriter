@@ -196,7 +196,6 @@ class LorePipeline:
         params = ui.parameters
         selected_model = ui.model
         output_dir = ui.output_dir
-        female_percentage = params.get("female_percentage", 50)
 
         lore_dir = self.dir_manager.get_path('lore_dir')
         lore_full_path = os.path.join(output_dir, lore_dir)
@@ -213,8 +212,7 @@ class LorePipeline:
                 self.app.logger.warning("Could not read factions for character context: %s", error)
 
         self.app.logger.info(
-            "Generating %s characters (female %s%%) for %s",
-            num_chars, female_percentage, params.get("genre", ""),
+            "Generating %s characters for %s", num_chars, params.get("genre", ""),
         )
 
         def _log_retry(attempt, error):
@@ -230,7 +228,6 @@ class LorePipeline:
                 reviewer.generate,
                 params,
                 num_chars,
-                female_percentage=female_percentage,
                 factions=factions,
                 on_retry=_log_retry,
                 review=reviewer,
@@ -256,13 +253,9 @@ class LorePipeline:
             },
         }
 
-        women = sum(1 for c in characters if str(c.get("gender", "")).strip() == "女")
         self.app.logger.info(
-            "Generated %s characters (%s female, %.0f%%; asked for %s%%): %s",
-            len(characters), women,
-            (women / len(characters) * 100) if characters else 0.0,
-            female_percentage,
-            "、".join(str(c.get("name", "")) for c in characters),
+            "Generated %s characters: %s",
+            len(characters), "、".join(str(c.get("name", "")) for c in characters),
         )
 
         characters_filepath = os.path.join(lore_full_path, "characters.json")

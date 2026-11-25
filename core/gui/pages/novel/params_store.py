@@ -12,9 +12,8 @@ from typing import Any, Dict, Tuple
 
 # 稳定顺序即文件里的行序
 CORE_ORDER = [
-    "Output Directory", "Genre", "Subgenre", "Story Length", "Story Structure",
-    "Novel Title", "Author Name", "Theme", "Tone", "Gender Generation Bias String",
-    "Quality Loop", "Backend", "Model",
+    "Output Directory", "Novel Title", "Genre", "Story Length", "Story Structure",
+    "Theme", "Tone", "Quality Loop", "Backend", "Model",
 ]
 
 CORE_KEYS = {key.lower().replace(" ", "_") for key in CORE_ORDER}

@@ -14,9 +14,10 @@ from html import escape
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -38,6 +39,17 @@ from core.gui.widgets import (
     secondary_button,
 )
 from core.gui.pages.novel.inspector import ArtifactList, IssueRow, StepButton
+from core.generation.domain_profiles import (
+    DEFAULT_QUALITY_LOOP_MODE,
+    QUALITY_LOOP_LABELS,
+    QUALITY_LOOP_MODES,
+)
+
+QUALITY_LOOP_HINTS = {
+    "off": "只生成正文，不做题材评审。调用量约为标准档的四成。",
+    "standard": "按题材做规划 / 场景 / 整章评审。",
+    "strict": "提高门槛并拉满重试次数，耗时最长。",
+}
 
 #: 短于这个长度的引用不拿去正文里匹配：几个字的片段会在全章命中一堆无关位置。
 MIN_QUOTE_FRAGMENT = 6
@@ -119,6 +131,8 @@ class ProseView(QTextEdit):
 
 class ChapterWritingPage(StagePage):
     stage_key = "chapters"
+    #: 作者改了质量闭环档位；工作区把它交给作品参数，与其他参数一起保存。
+    quality_mode_changed = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("章节撰写", "最终故事正文")
@@ -206,11 +220,26 @@ class ChapterWritingPage(StagePage):
         self.review_card.hide()
 
         self.quality_card = Card("质量闭环")
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_label = QLabel("档位")
+        mode_label.setObjectName("FieldLabel")
+        self.quality_combo = QComboBox()
+        self.quality_combo.setCursor(Qt.PointingHandCursor)
+        for mode in QUALITY_LOOP_MODES:
+            self.quality_combo.addItem(QUALITY_LOOP_LABELS[mode], mode)
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.quality_combo, 1)
+        self.quality_card.body.addLayout(mode_row)
+        self.quality_hint = hint_label("")
+        self.quality_card.body.addWidget(self.quality_hint)
         self.quality_summary = QLabel("")
         self.quality_summary.setWordWrap(True)
         self.quality_summary.setObjectName("Secondary")
         self.quality_card.body.addWidget(self.quality_summary)
         self.add_card(self.quality_card)
+        self.quality_combo.currentIndexChanged.connect(self._on_quality_selected)
+        self.set_quality_mode(DEFAULT_QUALITY_LOOP_MODE)
 
         # 「撰写下一章」只保留页头主按钮这一个入口；右栏只放页头没有的批量动作，
         # 避免同一动作出现两次（规格见 docs/novel/interaction.md 第 7 节）。
@@ -421,6 +450,20 @@ class ChapterWritingPage(StagePage):
             self._show_empty(number)
         self.rewrite_button.setEnabled(
             kind in ("chapter", "review") and not self._generation_active)
+
+    # ---------------------------------------------------------------- 质量闭环
+    def set_quality_mode(self, mode: str) -> None:
+        """显示作品参数里保存的档位，不触发修改信号。"""
+        index = self.quality_combo.findData(mode)
+        blocked = self.quality_combo.blockSignals(True)
+        self.quality_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.quality_combo.blockSignals(blocked)
+        self.quality_hint.setText(QUALITY_LOOP_HINTS.get(self.quality_combo.currentData(), ""))
+
+    def _on_quality_selected(self, _index: int) -> None:
+        mode = self.quality_combo.currentData()
+        self.quality_hint.setText(QUALITY_LOOP_HINTS.get(mode, ""))
+        self.quality_mode_changed.emit(mode)
 
     def _show_chapter(self, number: int) -> None:
         chapter = self._chapter(number)

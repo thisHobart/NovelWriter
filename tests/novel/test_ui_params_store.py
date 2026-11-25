@@ -11,33 +11,31 @@ from core.gui.pages.novel import params_store, story_options
 def _sample(output_dir):
     return {
         "output_directory": output_dir,
-        "genre": "Sci-Fi",
-        "subgenre": "Space Opera",
-        "story_length": "Novel (Epic)",
+        "genre": "近未来科幻",
+        "story_length": "Novel (Standard)",
         "story_structure": "Hero's Journey",
         "novel_title": "静默星环",
-        "author_name": "kl",
         "theme": "记忆的代价",
         "tone": "冷峻、克制",
         "quality_loop": "standard",
         "backend": "api",
         "model": "claude-sonnet-4-6",
-        "gender_generation_bias_string": "Balanced (50F/50M)",
-        "protagonist_type": "Explorer",
-        "hard_science": True,
+        "num_factions": 6,
+        "scene_dialogue": "off",
     }
 
 
-def test_round_trip_preserves_core_and_dynamic(tmp_path):
+def test_round_trip_preserves_core_and_extra_keys(tmp_path):
     output_dir = str(tmp_path)
     path = params_store.save(output_dir, _sample(output_dir))
 
     assert path == os.path.join(output_dir, "system", "parameters.txt")
     loaded = params_store.load(output_dir)
     assert loaded["Novel Title"] == "静默星环"
+    assert loaded["Genre"] == "近未来科幻"
     assert loaded["Story Structure"] == "Hero's Journey"
-    assert loaded["Protagonist Type"] == "Explorer"
-    assert loaded["Hard Science"] == "True"
+    assert loaded["Num Factions"] == "6"
+    assert loaded["Scene Dialogue"] == "off"
 
 
 def test_core_keys_keep_legacy_order(tmp_path):
@@ -63,17 +61,17 @@ def test_missing_file_returns_empty(tmp_path):
     assert params_store.load(str(tmp_path / "nope")) == {}
 
 
-def test_structure_options_follow_length():
-    assert "Hero's Journey" in story_options.structures_for("Novel (Epic)")
+def test_length_decides_structure():
+    assert story_options.LENGTH_OPTIONS == ["Short Story", "Novella", "Novel (Standard)"]
     assert story_options.default_structure_for("Short Story") == "3-Act Structure"
-    assert story_options.subgenres_for("Sci-Fi")[0] == "Space Opera"
-    assert story_options.subgenres_for("不存在的题材") == ()
+    assert story_options.default_structure_for("Novella") == "3-Act Structure"
+    assert story_options.default_structure_for("Novel (Standard)") == "6-Act Structure"
 
 
 def test_zero_false_and_aliases_are_saved_once(tmp_path):
-    params_store.save(str(tmp_path), {"Theme": "历史值", "theme": "中文新值", "space_combat": False, "custom_zero": 0})
+    params_store.save(str(tmp_path), {"Theme": "历史值", "theme": "中文新值", "custom_flag": False, "custom_zero": 0})
     loaded = params_store.load(str(tmp_path))
-    assert loaded["Theme"] == "中文新值" and loaded["Space Combat"] == "False" and loaded["Custom Zero"] == "0"
+    assert loaded["Theme"] == "中文新值" and loaded["Custom Flag"] == "False" and loaded["Custom Zero"] == "0"
     assert (tmp_path / "system/parameters.txt").read_text(encoding="utf-8").count("Theme:") == 1
 
 

@@ -14,7 +14,9 @@ import pytest
 from core.generation import stage_pipeline
 from core.generation.errors import GenerationPipelineError
 from core.generation import lore_pipeline
+from core.generation.lore_cast import validate_characters
 from core.generation.lore_pipeline import LorePipeline
+from core.generation.parameters import CREATION_KEYS, creation_parameters, requirements_block
 from core.generation.scene_pipeline import ScenePipeline
 from core.generation.short_story_pipeline import ShortStoryPipeline
 from core.generation.stage_context import make_context
@@ -46,7 +48,6 @@ def test_saved_parameters_are_normalized_for_generation(tmp_path):
         "Genre: Mystery\n"
         "Story Length: Novel (Standard)\n"
         "Story Structure: 6-Act Structure\n"
-        "Gender Generation Bias String: Mostly Female (75F/25M)\n"
         "Backend: api\nModel: hosted-model\n",
         encoding="utf-8",
     )
@@ -56,7 +57,36 @@ def test_saved_parameters_are_normalized_for_generation(tmp_path):
     assert params["Genre"] == "Mystery"
     assert params["genre"] == "Mystery"
     assert params["story_structure"] == "6-Act Structure"
-    assert (params["female_percentage"], params["male_percentage"]) == (75, 25)
+
+
+def test_old_page_fields_never_reach_the_model(tmp_path):
+    """以前页面写过的作者、性别比例、子题材附加设置留在旧文件里也不进作品要求。"""
+    system = tmp_path / "system"
+    system.mkdir()
+    (system / "parameters.txt").write_text(
+        "Genre: 都市悬疑\nNovel Title: 镜中囚徒\nAuthor Name: 小林\n"
+        "Gender Generation Bias String: Mostly Male (25F/75M)\nFemale Percentage: 25\n"
+        "Happy Ending: True\nProtagonist Type: Career Professional\nBackend: api\n",
+        encoding="utf-8",
+    )
+    params = stage_pipeline.load_stage_parameters(str(tmp_path))
+
+    assert set(creation_parameters(params)) <= set(CREATION_KEYS)
+    block = requirements_block(params)
+    assert "题材：都市悬疑" in block and "作品标题：镜中囚徒" in block
+    for leaked in ("小林", "性别", "女性", "必须体现", "不得引入", "Career", "主角类型"):
+        assert leaked not in block
+
+
+def test_character_cards_have_no_gender_quota():
+    cards = [
+        {"name": name, "role": role, "gender": "男", "age": 30, "occupation": "检察官",
+         "goal": "查清旧案", "flaw": "固执", "background": "在本地长大", "description": "瘦高"}
+        for name, role in (("梁浩", "protagonist"), ("郑伟川", "antagonist"))
+    ]
+    assert not any("占比" in defect for defect in validate_characters(cards))
+    cards[0]["gender"] = "未知"
+    assert any("gender" in defect for defect in validate_characters(cards))
 
 
 def test_all_pipeline_objects_construct_without_a_ui(tmp_path):

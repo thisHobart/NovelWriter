@@ -14,7 +14,6 @@ datas += [(str(Path(SPECPATH) / "core/short_video/v2/workflows/scail2_dual_scene
            "core/short_video/v2/workflows")]
 hiddenimports += collect_submodules("mcp")
 datas += copy_metadata("mcp") + copy_metadata("mcp-types")
-hiddenimports += collect_submodules("core.config.genre_configs")
 
 a = Analysis(
     [str(Path(SPECPATH) / "main.py")],

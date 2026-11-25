@@ -6,9 +6,6 @@
 
 from __future__ import annotations
 
-from core.config.genre_labels import GENRE_ZH_LABELS
-
-
 ZH_LABELS = {
     # 人物卡里的 role 是英文枚举，界面上曾经原样显示成 protagonist。
     "protagonist": "主角",
@@ -27,13 +24,11 @@ ZH_LABELS = {
     # 篇幅
     "Short Story": "短篇小说",
     "Novella": "中篇小说",
-    "Novel (Standard)": "长篇小说（标准）",
-    "Novel (Epic)": "长篇小说（史诗）",
+    "Novel (Standard)": "长篇小说",
     # 结构
     "3-Act Structure": "三幕式结构",
     "6-Act Structure": "六幕式结构",
     "Fichtean Curve": "菲希特曲线",
-    "Freytag's Pyramid": "弗莱塔格金字塔",
     "Seven-Point Structure": "七点故事结构",
     "Hero's Journey": "英雄之旅",
     "Hero's Journey (Simplified)": "英雄之旅（简化版）",
@@ -100,9 +95,6 @@ ZH_LABELS = {
     "Antagonist": "反派",
     "Unknown Character": "未知人物",
     "Unknown Role": "未知角色",
-    # 动态参数名称
-    "Protagonist Type": "主角类型",
-    "Conflict Scale": "冲突规模",
 }
 
 
@@ -157,20 +149,6 @@ SUBGENRE_ZH_LABELS = {
 }
 
 ZH_LABELS.update(SUBGENRE_ZH_LABELS)
-ZH_LABELS.update(GENRE_ZH_LABELS)
-
-
-GENDER_BIAS_ZH_LABELS = {
-    "Balanced (50F/50M)": "均衡（女性50% / 男性50%）",
-    "Slightly Female (60F/40M)": "略偏女性（女性60% / 男性40%）",
-    "Mostly Female (75F/25M)": "多数女性（女性75% / 男性25%）",
-    "Primarily Female (90F/10M)": "主要为女性（女性90% / 男性10%）",
-    "Slightly Male (40F/60M)": "略偏男性（女性40% / 男性60%）",
-    "Mostly Male (25F/75M)": "多数男性（女性25% / 男性75%）",
-    "Primarily Male (10F/90M)": "主要为男性（女性10% / 男性90%）",
-    "Exclusively Female (100F/0M)": "全部女性（女性100%）",
-    "Exclusively Male (0F/100M)": "全部男性（男性100%）",
-}
 
 
 FIELD_ZH_LABELS = {

@@ -37,10 +37,9 @@ def main():
     app = QApplication.instance() or QApplication([])
     app.setFont(_pick_ui_font())
     app.setStyleSheet(theme.build_qss())
-    params_store.save(str(root), {"novel_title": "静城谈判", "genre": "Sci-Fi", "subgenre": "Space Opera",
+    params_store.save(str(root), {"novel_title": "静城谈判", "genre": "近未来科幻",
                                  "theme": "一个未来封闭城市的外交官以协商化解供水危机，讨论互信与权力的代价。",
-                                 "tone": "克制而有张力", "protagonist_type": "Diplomat", "conflict_scale": "Personal",
-                                 "space_combat": False, "interstellar_travel": False, "multiple_species": False,
+                                 "tone": "克制而有张力",
                                  "num_characters": 2, "num_factions": 1, "quality_loop": "off"})
     if args.action == "characters":
         LoreRepository(root)._transaction({FACTIONS: encode([{"name": "静城议事会", "nature": "公权力机关",

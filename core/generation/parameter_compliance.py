@@ -51,10 +51,7 @@ class ComplianceReview:
                         "status": "running", "issues": [], "files": [], "disposition": "draft",
                         "diagnostics": str(self.folder), "created_at": time.time()}
         params = creation_parameters(context.parameters)
-        excluded = {"novel_title", "author_name", "story_structure", "story_length", "num_factions", "num_characters",
-                    "female_percentage", "male_percentage", "gender_generation_bias_string"}
-        if kind in {"factions", "upstream_factions"} or (subject and str(subject.get("role", "")).lower() != "protagonist"):
-            excluded.add("protagonist_type")
+        excluded = {"novel_title", "story_structure", "story_length", "num_factions", "num_characters"}
         self.parameters = {k: v for k, v in params.items() if k not in excluded and v is not None and v != ""}
 
     def _write(self, name, content):
@@ -190,7 +187,6 @@ class ComplianceReview:
             self._write(f"attempt_{self.attempt}_candidate.txt", candidate)
         prompt = """你是作品参数符合性检查员。仅检查下面给出的参数是否被候选内容明确违背。
 对每个给出的参数逐项检查，并返回一条 checks 记录，parameter_key 必须保持原样。
-取消勾选表示不得引入，勾选表示必须体现。不要要求无关配角也具有主角职业。
 人物背景只检查该人物的相关要求及全局禁令，不要求单份背景承载整个世界或全部冲突。
 主题与基调允许多种表达，不要把个人风格偏好当作违背。信息不足时标记 uncertain。
 fail 必须有候选中的原文短句作为 evidence，以及具体 expected、actual、reason。

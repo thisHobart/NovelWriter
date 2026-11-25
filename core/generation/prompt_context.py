@@ -41,16 +41,12 @@ def format_genre_label(parameters: Dict[str, Any] | None) -> str:
 
 
 def is_scifi_story(parameters: Dict[str, Any] | None) -> bool:
-    genre = str(normalize_story_parameters(parameters).get("Genre", "")).lower()
-    return genre in {"sci-fi", "science fiction", "scifi"}
+    """题材里出现科幻类关键词即算科幻；题材是作者自由填写的，不能按固定取值判断。"""
+    from core.generation.domain_profiles import KEYWORD_RULES
 
-
-def is_legal_suspense(parameters: Dict[str, Any] | None) -> bool:
     params = normalize_story_parameters(parameters)
-    genre = str(params.get("Genre", "")).lower()
-    subgenre = str(params.get("Subgenre", "")).lower()
-    mystery_genres = {"mystery", "悬疑", "悬疑推理", "推理"}
-    return genre in mystery_genres and ("legal" in subgenre or "法律" in subgenre)
+    text = f"{params.get('Genre', '')} {params.get('Subgenre', '')}".lower()
+    return any(keyword in text for keyword in dict(KEYWORD_RULES)["scifi"])
 
 
 def build_story_parameter_lines(parameters: Dict[str, Any] | None) -> List[str]:

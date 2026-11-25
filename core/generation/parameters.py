@@ -9,13 +9,16 @@ import hashlib
 from pathlib import Path
 from uuid import uuid4
 
-from core.config.story_options import GENDER_BIAS_MAP
 from core.localization import zh_label
 from core.lore_localization import FIELD_LABELS
 
 ALIASES = {"num_chars": "num_characters", "title": "novel_title"}
 RUNTIME_KEYS = {"output_directory", "backend", "model", "quality_loop", "scene_dialogue",
                 "temperature", "max_tokens", "api_key", "base_url"}
+#: 作品参数：写进「作品要求」、参与参数检查和快照指纹的只有这些。参数文件里的其他键
+#: （例如以前的作者姓名、性别比例、子题材附加设置）不再发给模型。
+CREATION_KEYS = ("novel_title", "genre", "story_length", "story_structure", "theme", "tone",
+                 "num_factions", "num_characters")
 _ACTIVE_RUN = ContextVar("novelwriter_parameter_run", default=None)
 
 
@@ -49,22 +52,6 @@ def normalize_parameters(source, overrides=None):
             raise ValueError(f"{'势力' if key == 'num_factions' else '人物'}数量必须是整数") from exc
         if not lower <= result[key] <= upper:
             raise ValueError(f"{'势力' if key == 'num_factions' else '人物'}数量必须在 {lower}–{upper} 之间")
-    bias = result.get("gender_generation_bias_string", "Balanced (50F/50M)")
-    female, male = GENDER_BIAS_MAP.get(str(bias), (50, 50))
-    if "gender_generation_bias_string" in incoming:
-        result.update(female_percentage=incoming.get("female_percentage", female),
-                      male_percentage=incoming.get("male_percentage", male))
-    else:
-        result.setdefault("female_percentage", female)
-        result.setdefault("male_percentage", male)
-    for key in ("female_percentage", "male_percentage"):
-        try:
-            value = float(result[key])
-            if not 0 <= value <= 100:
-                raise ValueError()
-            result[key] = int(value) if value.is_integer() else value
-        except (ValueError, TypeError) as exc:
-            raise ValueError("性别比例必须是 0–100 之间的数字") from exc
     # 兼容旧消费者，同时保证两个拼写永远指向同一值。
     for key, value in list(result.items()):
         result[key.replace("_", " ").title()] = deepcopy(value)
@@ -76,15 +63,15 @@ def freeze_parameters(source):
 
 
 def creation_parameters(source):
-    return {key: value for key, value in internal_parameters(source).items()
-            if key not in RUNTIME_KEYS and not key.startswith("_") and value is not None and value != ""}
+    params = internal_parameters(source)
+    return {key: params[key] for key in CREATION_KEYS
+            if params.get(key) is not None and params.get(key) != ""}
 
 
 def parameter_label(key):
-    known = {"novel_title": "作品标题", "author_name": "作者姓名", "story_length": "故事篇幅",
+    known = {"novel_title": "作品标题", "genre": "题材", "story_length": "故事篇幅",
              "story_structure": "故事结构", "theme": "主题", "tone": "基调", "num_factions": "势力数量",
-             "num_characters": "人物数量", "gender_generation_bias_string": "性别比例",
-             "female_percentage": "女性比例", "male_percentage": "男性比例"}
+             "num_characters": "人物数量"}
     return known.get(key, FIELD_LABELS.get(key, zh_label(key.replace("_", " ").title())))
 
 
@@ -93,11 +80,7 @@ def requirements_block(parameters):
     for key, value in creation_parameters(parameters).items():
         if value is None or value == "":
             continue
-        label = parameter_label(key)
-        if isinstance(value, bool):
-            lines.append(f"- {label}：{'必须体现' if value else '不得引入'}。")
-        else:
-            lines.append(f"- {label}：{zh_label(value)}")
+        lines.append(f"- {parameter_label(key)}：{zh_label(value)}")
     return "\n".join(lines)
 
 

@@ -161,6 +161,7 @@ class NovelWorkspace(QWidget):
         for stepper in (self.lore_page.faction_stepper, self.lore_page.character_stepper):
             stepper.valueChanged.connect(lambda _: page.set_generation_counts(
                 self.lore_page.faction_stepper.value(), self.lore_page.character_stepper.value()))
+        self.chapter_page.quality_mode_changed.connect(page.set_quality_mode)
 
         for stage in self.stage_pages:
             stage.task_requested.connect(self._on_task_requested)
@@ -381,6 +382,8 @@ class NovelWorkspace(QWidget):
         page = self.pages[key]
         if isinstance(page, StagePage):
             page.set_output_dir(self.output_dir())
+        if page is self.chapter_page:
+            page.set_quality_mode(self.parameters_page.quality_mode())
 
     def _on_step_selected(self, key: str) -> None:
         if key.startswith("blocked:"):
@@ -473,6 +476,7 @@ class NovelWorkspace(QWidget):
                 pass
             finally:
                 stepper.blockSignals(blocked)
+        self.chapter_page.set_quality_mode(self.parameters_page.quality_mode())
         self.workflow_page.set_states(states)
 
         current = self.stack.currentWidget()
@@ -492,7 +496,7 @@ class NovelWorkspace(QWidget):
         if dirty:
             self.status.set_dirty(
                 "参数已修改，尚未保存",
-                "改动题材 / 篇幅 / 结构会使已生成的下游产物与当前参数不一致",
+                "改动题材 / 篇幅会使已生成的下游产物与当前参数不一致",
             )
         elif not self.runner.busy:
             self.status.set_idle(f"输出目录 {self.output_dir()}")

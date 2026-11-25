@@ -9,7 +9,7 @@
 |---|---|
 | 工作区、步骤栏 | `core/gui/pages/novel/workspace.py`、`step_rail.py` |
 | 各阶段页面 | `core/gui/pages/novel/*_page.py`，设定编辑窗口 `lore_editor.py`、`lore_results.py` |
-| 参数读写、选项 | `core/gui/pages/novel/params_store.py`、`core/config/story_options.py`、`core/config/genre_configs/` |
+| 参数读写、选项 | `core/gui/pages/novel/params_store.py`、`core/config/story_options.py` |
 | 界面读产物 | `core/gui/pages/novel/services/artifacts.py` |
 | 阶段入口、阶段状态 | `core/generation/stage_pipeline.py`、`workflow_status.py` |
 | 参数规范化与作品要求 | `core/generation/parameters.py`、`parameter_compliance.py` |

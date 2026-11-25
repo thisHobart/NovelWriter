@@ -5,32 +5,6 @@
 """
 from __future__ import annotations
 
-from core.config.story_options import (
-    DEFAULT_STRUCTURE,
-    GENDER_BIAS_MAP,
-    LENGTH_OPTIONS,
-    STRUCTURE_MAP,
-    SUBGENRES,
-    supported_genres,
-)
+from core.config.story_options import LENGTH_OPTIONS, default_structure_for
 
-__all__ = [
-    "default_structure_for",
-    "structures_for",
-    "subgenres_for",
-    "supported_genres",
-]
-
-
-def subgenres_for(genre: str) -> tuple[str, ...]:
-    return SUBGENRES.get(genre, ())
-
-
-def structures_for(length: str) -> list[str]:
-    return list(STRUCTURE_MAP.get(length, []))
-
-
-def default_structure_for(length: str) -> str:
-    options = structures_for(length)
-    fallback = options[0] if options else ""
-    return DEFAULT_STRUCTURE.get(length, fallback)
+__all__ = ["LENGTH_OPTIONS", "default_structure_for"]
