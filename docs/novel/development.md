@@ -18,7 +18,7 @@
 | 章节循环 | `agents/writing/chapter_writing_agent.py`、`core/generation/chapter_generation_loop.py`、`chapter_acceptance.py`、`chapter_continuity.py` |
 | 评审与题材档案 | `agents/review/domain_review_agent.py`、`core/generation/domain_profiles.py` |
 | 账本、叙事图、待复审 | `story_ledger.py`、`narrative_graph.py`、`pending_review.py`、`plan_fault.py` |
-| 提示词公用片段 | `prompt_context.py`、`scene_prompt.py` |
+| 提示词公用片段 | `prompt_context.py`、`scene_prompt.py`、`scene_material.py`（写一场戏的设定材料）、`prompt_material.py`（材料按块取舍） |
 | 模型调用 | `core/generation/ai_helper.py`、`llm_interface/` |
 
 ## 2. 运行与测试

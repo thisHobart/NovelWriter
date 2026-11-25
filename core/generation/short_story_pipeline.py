@@ -33,6 +33,7 @@ from core.generation.chapter_generation_loop import ChapterGenerationLoop, Quali
 from core.generation.chapter_acceptance import ChapterAcceptanceError, ValidationIssue
 from core.generation.story_ledger import StoryLedgerManager
 from core.generation.domain_profiles import resolve_domain_profile
+from core.generation.scene_material import build_scene_material
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.common.cancellation import CancelToken, GenerationCancelled
 from dataclasses import dataclass, field
@@ -180,6 +181,10 @@ class ShortStoryPipeline:
                 previous_scene_tail=previous_scene_tail,
                 next_scene_plan=next_scene_plan,
                 continuity_rules=continuity_rules,
+                # 按本场挑的设定；旧目录结构的作品挑不出来，照旧用上面整份的三样。
+                material=build_scene_material(
+                    output_dir, scene_plan, contract=contract, scene_number=scene_number
+                ),
             )
             prompt_filepath = save_prompt_to_file(
                 output_dir, scene_prompt_filename(scene_number), prompt

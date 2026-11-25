@@ -16,6 +16,7 @@ from core.common.locks import project_lock
 from core.generation.domain_profiles import DomainProfile, get_domain_profile, resolve_domain_profile
 from core.generation.helper_fns import read_json
 from core.generation.prompt_context import normalize_story_parameters
+from core.generation.prompt_material import MaterialBlock, fit_blocks
 from core.config.story_options import act_for_file
 from core.localization import structure_file_label
 from core.lore_localization import describe_value
@@ -436,22 +437,21 @@ class StoryLedgerManager:
         key = self.load_case_bible().get("domain_profile")
         return get_domain_profile(key) if key else None
 
-    def _design_blocks(self) -> List[Dict[str, Any]]:
+    def _design_blocks(self) -> List[MaterialBlock]:
         """整理全书设定要用的材料，按重要性从高到低排。
 
-        每块是 {key, label, text, source, required, lore}：text 是给模型看的写法，
-        source 是原始内容（算指纹用），required 的两张登记表篇幅再紧也带。
+        required 的两张登记表篇幅再紧也带，标题后面写「必须遵守」。
         """
         from core.generation.lore_repository import BODY, CHARACTERS, CONTRACT, FACTIONS, lore_files
         from core.generation.prompt_context import sanitize_lore_content
         from core.lore_localization import file_label
 
-        blocks: List[Dict[str, Any]] = []
+        blocks: List[MaterialBlock] = []
 
         def add(key, label, text, source, required=False, lore=False):
             if str(text or "").strip():
-                blocks.append({"key": key, "label": label, "text": str(text).strip(), "source": source,
-                               "required": required, "lore": lore})
+                blocks.append(MaterialBlock(key, label, str(text).strip(), source, required=required,
+                                            authority="必须遵守" if required else "", lore=lore))
 
         lore = dict(lore_files(self.output_dir))
         contract = self.load_structure_contract()
@@ -495,30 +495,12 @@ class StoryLedgerManager:
         它只跟原始内容有关，跟这里的写法和取舍无关。
         """
         blocks = self._design_blocks()
-
-        def render(kept, omitted):
-            # 每块的标题是二级；块里原有的标题降两级，免得和块标题混在一起。
-            parts = [f"## {block['label']}{'（必须遵守）' if block['required'] else ''}\n"
-                     + re.sub(r"^(#{1,4})(?=\s)", r"##\1", block["text"], flags=re.M)
-                     for block in kept]
-            if omitted:
-                parts.append("## 篇幅放不下、这次没带的材料\n" + "\n".join(
-                    f"- {block['label']}（{len(block['text'])} 字）" for block in omitted))
-            return "\n\n".join(parts)
-
-        kept, omitted = list(blocks), []
-        droppable = [block for block in reversed(blocks) if not block["required"]]
-        text = render(kept, omitted)
-        while len(text) > max_chars and droppable:
-            block = droppable.pop(0)
-            kept = [item for item in kept if item is not block]
-            omitted.insert(0, block)
-            text = render(kept, omitted)
+        text, kept, omitted = fit_blocks(blocks, max_chars)
         material = DesignMaterial(text)
         material.source_hash = source_hash(json.dumps(
-            [[block["key"], block["source"]] for block in blocks], ensure_ascii=False))
-        material.omitted = tuple(block["label"] for block in omitted)
-        material.includes_lore = any(block["lore"] for block in kept)
+            [[block.key, block.source] for block in blocks], ensure_ascii=False))
+        material.omitted = tuple(block.label for block in omitted)
+        material.includes_lore = any(block.lore for block in kept)
         return material
 
     def load_structure_contract(self) -> Dict[str, Any]:

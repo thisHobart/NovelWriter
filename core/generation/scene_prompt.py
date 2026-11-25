@@ -26,7 +26,7 @@ from core.localization import zh_label
 # 与题材无关的场景写作要求。领域专属要求来自 profile.scene_writing_rules。
 BASE_SCENE_REQUIREMENTS = (
     "写出有吸引力、富有描写性的场景正文。",
-    "根据人物名单中的设定，写出人物行动、对白（如适合本场景）、思想和情绪。",
+    "根据所提供的人物资料，写出人物行动、对白（如适合本场景）、思想和情绪。",
     "清楚交代场景环境。",
     "场景应衔接合理，并按描述推动情节或人物发展。",
     "所有世界构建细节必须严格遵守所提供的世界观。",
@@ -62,10 +62,15 @@ def build_scene_prompt(
     previous_scene_tail: str = "",
     next_scene_plan: str = "",
     continuity_rules: Sequence[str] = (),
+    material: str = "",
 ) -> str:
     """构造一个场景的写作 prompt。
 
     `chapter_number` 为 None 表示短篇小说（整篇作为单章处理）。
+
+    `material` 是按本场挑好的设定材料（`scene_material.build_scene_material`）。给了它，
+    就不再带 `lore`、`character_roster`、`faction_summary` 这三份整份的设定；没给（旧
+    目录结构的作品、评测脚本）照旧用那三份。
 
     `continuity_rules` 只在本章第一场传入：它说的是「从上一章的什么状态接过来」，
     第二场往后接的是上一场，把同一批要求再发一遍只会让模型在半途又写一次开场。
@@ -82,16 +87,24 @@ def build_scene_prompt(
             "- 类型、主题和基调不得被世界观资料中的其他类型元素覆盖。",
             "- 事实冲突时依次以作品参数、整体世界观、当前场景规划为准；场景规划中的冲突内容必须静默纠正。",
             "- 不要混合互相冲突的地点、时代或机构，也不要把名称相近的设定擅自视为同一对象。",
-            "\n## 整体故事背景（高于场景规划）：",
         ]
     )
-    if novel_title:
-        lines.append(f"标题：{novel_title}")
+    if material:
+        # 按本场挑好的设定（scene_material.build_scene_material）：每块自带小标题和用法。
+        lines.append(f"\n{material}")
+    else:
+        lines.append("\n## 整体故事背景（高于场景规划）：")
+        if novel_title:
+            lines.append(f"标题：{novel_title}")
+        lines.extend(
+            [
+                f"完整世界观：{lore or '无可用内容'}",
+                f"\n{character_roster or '没有可用的人物信息'}",
+                f"\n{faction_summary or '没有可用的势力信息'}",
+            ]
+        )
     lines.extend(
         [
-            f"完整世界观：{lore or '无可用内容'}",
-            f"\n{character_roster or '没有可用的人物信息'}",
-            f"\n{faction_summary or '没有可用的势力信息'}",
             f"\n## 当前场景描述（{_scene_locator(chapter_number, scene_number)}）：",
             scene_plan,
         ]

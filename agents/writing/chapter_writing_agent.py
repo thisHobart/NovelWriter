@@ -60,6 +60,7 @@ from core.generation.semantic_identity import (
     has_domain_id_collision,
     resolve_domain_identities,
 )
+from core.generation.scene_material import build_scene_material
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.generation.story_ledger import StoryLedgerManager
 from core.config.directory_config import get_directory_manager
@@ -1406,6 +1407,10 @@ class ChapterWritingAgent(BaseAgent):
             previous_scene_tail=previous_scene_tail,
             next_scene_plan=next_scene_plan,
             continuity_rules=continuity_rules,
+            # 按本场挑的设定；旧目录结构的作品挑不出来，照旧用上面整份的三样。
+            material=build_scene_material(
+                self.output_dir, scene_plan, contract=chapter_contract, scene_number=scene_num
+            ),
         )
 
         # Use genuine NovelWriter AI helper functions
