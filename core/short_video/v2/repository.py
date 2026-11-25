@@ -10,7 +10,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from copy import deepcopy
 from pathlib import Path
 
@@ -83,6 +83,18 @@ class ProjectRepository:
         }
 
     def load(self) -> JsonObject:
+        # Reads wait for the lock saves hold: while a read has the file open, Windows refuses a
+        # save on another thread (the interface, another task) that swaps the file in.
+        with self._read_lock():
+            return self._load()
+
+    def _read_lock(self) -> AbstractContextManager[object]:
+        """The project lock; before the project folder exists there is nothing to wait for."""
+        if not self.root.exists():
+            return nullcontext()
+        return project_lock(str(self.root / ".v2-project.lock"), timeout=5)
+
+    def _load(self) -> JsonObject:
         states = getattr(_shared, "states", None)
         if states is None:
             return self._read()

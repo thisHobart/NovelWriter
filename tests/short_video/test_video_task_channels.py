@@ -2,6 +2,7 @@
 
 import os
 import threading
+from contextlib import nullcontext
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -55,6 +56,7 @@ def workspace_for(channels):
     return SimpleNamespace(
         tasks=channels, host=SimpleNamespace(status=AppStatusBar()), refresh_all=lambda: None,
         refresh_task_controls=lambda: None, chat=SimpleNamespace(refresh=lambda: None),
+        project_reads=nullcontext,
     )
 
 

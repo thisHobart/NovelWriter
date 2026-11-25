@@ -284,6 +284,20 @@ def test_shared_reads_see_writes_and_stay_on_their_own_thread(project):  # noqa:
     assert project.load() is not project.load()
 
 
+def test_a_read_waits_while_another_thread_saves(project):  # noqa: F811
+    """An open read makes Windows refuse the save's file swap, so reads wait for the save."""
+    from core.common.locks import project_lock
+
+    done = []
+    with project_lock(str(project.root / ".v2-project.lock"), timeout=5):
+        reader = threading.Thread(target=lambda: done.append(project.load()["revision"]))
+        reader.start()
+        reader.join(0.3)
+        assert done == []
+    reader.join()
+    assert done == [project.load()["revision"]]
+
+
 # -- chat is redrawn only when its content changes ---------------------------------------------
 
 
@@ -317,3 +331,35 @@ def test_chat_is_not_redrawn_when_nothing_it_shows_has_changed(ui):
     talk(repository, conversation_id, "再短一点")
     chat.refresh()
     assert len(chat.messages.items) == 4 and chat.messages.items[0] is not on_storyboard[0]
+
+
+# -- the refresh right after a send --------------------------------------------------------------
+
+
+def test_the_refresh_after_a_send_reads_the_project_once_under_the_lock(ui, monkeypatch):
+    """The task may already be saving: an open read makes Windows refuse the save's file swap."""
+    from core.common.locks import project_lock
+    from core.short_video.v2.conversation import ChatWork
+
+    workbench, repository = ui.workbench, ui.repository
+    workbench.specs.tabs.setCurrentIndex(3)  # The shot tab also refreshes the video status.
+    workbench.navigate("video_prompts")
+    conversation_id = conversation.ConversationService(repository).store.create()["id"]
+    talk(repository, conversation_id, "镜头太长了吗")
+    workbench.chat.conversation_id = conversation_id
+    command = conversation.ConversationService(repository).prepare(conversation_id, "再短一点")
+    lock = project_lock(str(workbench.repository.root / ".v2-project.lock"), timeout=5)
+    held = []
+    original = ProjectRepository._read
+
+    def recording(self):
+        held.append(lock.is_locked)
+        return original(self)
+
+    monkeypatch.setattr(ProjectRepository, "_read", recording)
+    started = SimpleNamespace(signals=SimpleNamespace(progress=Mock()))
+    monkeypatch.setattr(workbench.tasks.runners["text"], "run", lambda *_, **__: started)
+    work = ChatWork(repository, command)
+    workbench.submit(work)
+    workbench.tasks.finish("text", work)
+    assert held == [True]

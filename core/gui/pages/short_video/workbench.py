@@ -418,8 +418,12 @@ class Workbench(QWidget):
                 lambda _text, fraction: status.update_task(channel, work, fraction),
                 Qt.QueuedConnection,
             )
-            self.refresh_task_controls()
-        self.chat.refresh()
+        # The task may already be saving the project: an open read would make Windows refuse
+        # the save's file swap, so this refresh waits for the lock like every other one.
+        with self.project_reads():
+            if task is not None:
+                self.refresh_task_controls()
+            self.chat.refresh()
 
     def refresh_task_controls(self) -> None:
         self.refresh_buttons()

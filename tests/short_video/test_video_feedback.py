@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -104,6 +105,7 @@ def test_window_uses_worker_context_and_refresh_keeps_final_notice(
         tasks=channels, refresh_task_controls=lambda: None,
         chat=SimpleNamespace(refresh=lambda: None),
         refresh_all=lambda: refreshes.append(True), host=SimpleNamespace(status=status),
+        project_reads=nullcontext,
     )
 
     class Work:
