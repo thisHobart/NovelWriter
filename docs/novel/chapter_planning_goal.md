@@ -80,6 +80,7 @@
 | 带截断或内部字段的提示词份数 | 30 份（截断 22 份，都是「既有事实、时间事件与已了结线索」；内部字段 30 份） | 0（截断 0，内部字段 0；材料去掉块的 0 份，大纲点名却没带卡片的人物 0） |
 | 大纲和规划里点到、登记表里没有的人名 / 地名 | 大纲 1 / 0，规划 1 / 0（都是「陆巡」） | 1 / 0，1 / 0（量的是已有文件，重新生成后才会变） |
 | 大纲提示词带名称与规则登记表 / 人物和势力名单 / 上一幕最后一章的份数（共 6 幕） | 0 / 0 / 0（基线时检查还不量这一项，按当时的提示词数） | 6 / 6 / 5（第一幕前面没有幕） |
+| 样例里第一次被世界观冲突打回的 3 稿（第 8、10、16 章），用现在的检查重查 | 3 稿打回（「全息」1、「跃迁」2） | 0 稿（3 处都是误报，见第 7 轮） |
 | 场景数不在建议范围里的章（长篇 2–4 场） | 基线时还不量；按当时的场景数是 0 | 0 |
 | 跨章检查问题数 | 0 | 0 |
 
@@ -147,7 +148,7 @@
 - 规划里出现、登记表里没有的人名和地名：先只计数、写进日志，不打回。误报看清楚以后，再把要不要打回写进第八节。
 - 完成标准：检查脚本和正式流程用的是同一套判断；有单元测试。
 
-**6. 世界观冲突检查的说法和误报。**
+**6. 世界观冲突检查的说法和误报。**——**完成**（第 7 轮）
 
 - 打回的话写着「科幻内容」，不管作品是什么题材。改成按题材说。
 - 回头看那 3 稿里的「跃迁」「全息」是真违背还是误报。误报就修，同时补测试。
@@ -238,6 +239,7 @@
 - 第 3 条（材料重排）：还是和第 1 条同一次实跑，不另加次数。另看新规划有没有用到前后两章才发生的事、有没有因为材料里少了没点名的人物和人物背景而写错身份，运行记录里「第 12 章规划材料带了：…」那一行是不是九块都在。
 - 第 4 条（大纲带设定）：另做一次，和上面那次分开。先把工作副本再复制一份（重新生成一幕大纲后，这一幕已有的场景规划和契约就对不上了，只在这份复制件上看大纲，不接着规划场景），删掉第二幕「情节上升」的大纲文件 `chapter_outlines_6-act_structure_rising_action.md`，点「生成章节大纲」，只会补这一幕（其他几幕已有大纲会跳过）。次数：大纲 1 次，被代码检查打回最多再 2 次，每份过了代码检查的稿子再加 1 次大纲评审，合计 2–6 次（质量闭环关掉时没有评审，1–3 次）。看：运行记录里「“情节上升”大纲材料带了：…」是不是三块都在；跑规划检查，新的第二幕大纲里登记表外的人名是不是从 1（陆巡）降到 0，或者新人物在“涉及人物”里写明了身份；第 6 章开头接不接得上第一幕最后一章（第 5 章）的结尾。
 - 第 5 条（场景数和登记表外的名字）：不用单独跑。第 1 条和第 4 条那两次实跑时看运行记录里有没有句末是「只记录，不打回」的行，报出来的名字是不是都像陆巡这样在设定里有出处、还是模型新编的人，用来定第八节那两个决定。
+- 第 6 条（世界观冲突的说法）：不用实跑。误报的结论是用存下的 3 稿原文重查得出的，打回的话有假模型回复的测试。
 
 ## 九、进度记录
 
@@ -249,6 +251,7 @@
 | 4 | 3. 「规划场景」的材料按原则重排 | 「规划场景」每章的材料按九块排：本章那一段大纲、名称与规则登记表、本章大纲点名人物的卡、相关势力、上一章结束时的状态、仍未了结的悬念和后续章节依赖、既有事实和时间事件（按编号和名字挑，中文条目）、前后相邻两章的大纲、世界观正文；超出篇幅整块去掉并列出，带了、没带的块写进运行记录；叙事图写成中文条目；不再带整份世界设定、整幕大纲和人物背景。修了检查脚本关掉日志不恢复。代码：`planning_prompt.py`（`planning_material`、`PlanningMaterial`、`_picked_records`、`book_outlines`、`chapter_parts`、`scene_plan_prompt` 改排、`PLANNING_BUDGET`）、`planning_contract.py`（`established_records_text`、`graph_context_text`、`previous_state_text`、`MATERIAL_LABELS`，衔接规则和上一章结尾分块）、`scene_material.py`（`setting_records`、`setting_terms`）、`scene_pipeline.py`（读全书大纲、写运行记录）、`tools/check_planning.py`（去掉的块、缺卡片的人物）；测试 `tests/novel/test_planning_material.py` | 提示词中位 44760 → 17350（基线 44292）；截断 22 份 → 0；内部字段 30 份 → 0；缺卡片 0；去掉块 0 份；契约文件逐字节不变 | `fix(novel): rebuild the scene-planning material from ranked blocks with nothing cut` |
 | 5 | 4. 「生成章节大纲」补上该有的设定 | 先量了基线：大纲点到、登记表里没有的人名 1 个（陆巡，六幕里五幕都有），不是 0，所以做。「生成章节大纲」每一幕在故事结构后面接上名称与规则登记表、人物和势力名单（角色定位、职业、所属势力；势力的类型和活动地点；人物卡的称号常和职业对不上，不带）、上一幕最后一章的大纲（标题挪到三级，第一幕没有）；写法要求加一句用登记表里的名字、新人物写明身份；超出篇幅整块去掉，带了、没带的块写进运行记录。检查脚本的块名按提示词先后排，新增每一幕带了哪几块设定材料。代码：`planning_prompt.py`（`outline_material`、`cast_roster`、`previous_act_ending`、`_headings_from_third`、`_fitted`、`OUTLINE_BUDGET`、`outline_prompt` 新参数）、`scene_pipeline.py`（`_generate_chapter_outline` 传作品目录和上一幕最后一章、写运行记录）、`tools/check_planning.py`（`outline_texts`、设定材料那一行、`_labels`）；测试 `tests/novel/test_outline_material.py` | 大纲提示词中位 4334 → 5874；带登记表 / 名单 / 上一幕最后一章 0 / 0 / 0 → 6 / 6 / 5；去掉块 0 份；登记表外人名 1 → 1（已有大纲文件不变，要实跑才看得到）；契约文件逐字节不变 | `fix(novel): give the outline prompt the registry, the cast and the previous act's last chapter` |
 | 6 | 5. 补齐规划阶段不花调用的检查 | 「规划场景」收下一章规划（含跨章修复重写的那一章）、「生成章节大纲」收下一幕大纲之后，把两项写进运行记录，只记录、不打回：场景数在不在建议范围里（长篇 2–4 场，短篇 3–6 场），有没有登记表里没有的人名和地名。检查脚本「【场景数】」加一行建议范围和范围外的章数，和运行记录同一套判断。看了唯一报出的「陆巡」：写在顾阳波的人物背景里、没进登记表，不是模型编的；范围和要不要打回写进第八节。代码：`planning_checks.py`（`LONG_FORM_SCENE_RANGE`、`scene_count_note`、`name_note`）、`scene_pipeline.py`（`_note_accepted_plan`、`_generate_valid_scene_response` 的 `scene_range`、三处调用、大纲收下后记录）、`tools/check_planning.py`（场景数范围那一行）；测试 `tests/novel/test_planning_notes.py` | 范围外的章 0（30 章都在 2–4 场）；登记表外人名 大纲 1、规划 1（陆巡，都不变）；其余数字和第 5 轮一样；契约文件逐字节不变 | `fix(novel): log scene counts outside the range and names missing from the registry` |
+| 7 | 6. 世界观冲突检查的说法和误报 | 「生成章节大纲」打回、「规划场景」长篇打回和短篇报错的话按作品题材说（「写了这部悬疑小说的世界观里没有的设定：行星」，大纲比的是这一幕的故事结构），不再写死「科幻内容」；题材名没有中文对照时说「这部小说」。**结论**：样例那 3 稿都是误报——第 8 章「全息级高精度显微投影」是法庭上法医显微投影的夸张说法，第 10 章「弧光跃迁」在写作批注里，第 16 章「关键跃迁」说的是人物转变。代码里这两个词早已移出词表、批注行不查，用现在的检查对着样例设定重查 3 稿都不报；补了回归测试。作品参数里「不得加入全息设备」那句要求照旧在，靠提示词约束而不是打回。范围外没改：「章节撰写」页写之前复查规划（`agents/writing/chapter_writing_agent.py`）、短篇写正文（`short_story_pipeline.py`）还各有一句「世界观未定义的科幻设定」，可以交给章节撰写那边换成 `world_conflict_message`。代码：`prompt_context.py`（`world_conflict_message`）、`scene_pipeline.py`（三处打回的话）；测试 `tests/novel/test_world_conflict_wording.py` | 3 稿误报重查 3 → 0；规划检查输出和第 6 轮一字不差；契约文件逐字节不变 | `fix(novel): word world-conflict rejections by the work's own genre` |
 
 ## 代码位置
 
@@ -258,6 +261,7 @@
 | 两个按钮的提示词（只拼文字、只读） | `core/generation/planning_prompt.py`（`outline_prompt`、`scene_plan_prompt`、`short_story_prompt`、`contract_instructions`、`planning_lore`） |
 | 「生成章节大纲」每一幕的设定材料 | `core/generation/planning_prompt.py`（`outline_material`、`cast_roster`、`previous_act_ending`、`OUTLINE_BUDGET`、`outline_prompt` 的 `output_dir` / `previous_ending`） |
 | 「规划场景」每章的材料 | `core/generation/planning_prompt.py`（`planning_material`、`_picked_records`、`book_outlines`、`chapter_parts`）；挑人物、读卡片用 `scene_material.py`（`pick_characters`、`pick_factions`、`setting_records`、`setting_terms`）；契约说明里的中文条目在 `planning_contract.py`（`established_records_text`、`graph_context_text`、`previous_state_text`） |
+| 世界观冲突的检查和打回说法 | `core/generation/prompt_context.py`（`find_scene_world_conflicts`、`NON_SCIFI_MARKERS`、`strip_planning_annotations`、`world_conflict_message`）；用在 `scene_pipeline.py`（`_validate_planning_draft`、`_generate_valid_outline_response`、短篇规划） |
 | 不花调用的规划检查 | `tools/check_planning.py`；认名字、场景数范围 `core/generation/planning_checks.py`（`unregistered_names`、`name_note`、`scene_count_note`、`LONG_FORM_SCENE_RANGE`），正式流程收下规划、大纲后写运行记录在 `scene_pipeline.py`（`_note_accepted_plan`、`_generate_chapter_outline`） |
 | 契约格式说明、跨章检查、后续章节依赖 | `core/generation/planning_contract.py`（`contract_output_instructions`、`contract_instruction_blocks` 里按出处分组的「后续章节依赖本章」、`downstream_obligations`（出处章和补名字）、`iter_history_defects`（含 `thread_closed_before_payoff`）、`validate_contract_sequence`） |
 | 写场景时读边界、新规划的边界检查 | `core/generation/planning_contract.py`（`contract_for_scene`、`later_scene_boundaries`、`boundary_scenes`、`scene_boundary_defects`） |

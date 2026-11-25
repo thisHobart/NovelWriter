@@ -24,6 +24,7 @@ from core.generation.prompt_context import (
     find_scene_world_conflicts,
     format_genre_label,
     normalize_story_parameters,
+    world_conflict_message,
 )
 from core.generation.planning_contract import (
     CONTRACT_SCHEMA_VERSION,
@@ -296,7 +297,7 @@ class ScenePipeline:
         if conflicts:
             defects.append(
                 PlanningContractError(
-                    "包含世界观未定义的内容：" + "、".join(conflicts),
+                    "场景规划" + world_conflict_message(conflicts, story_params),
                     chapters=(chapter_number,),
                     code="world_conflict",
                 )
@@ -791,7 +792,8 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                 )
                 if conflicts:
                     problems.append(
-                        "包含上游设定未定义的科幻内容：" + "、".join(conflicts)
+                        "大纲"
+                        + world_conflict_message(conflicts, story_params, source="故事结构")
                     )
                 elif not parse_chapter_numbers(response):
                     problems.append(
@@ -1390,8 +1392,8 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
         if conflicts:
             show_error(
                 "场景规划与世界观冲突",
-                "生成结果包含世界观未定义的科幻内容："
-                + "、".join(conflicts)
+                "场景规划"
+                + world_conflict_message(conflicts, story_params)
                 + "。结果未保存，请重新生成。",
             )
             return

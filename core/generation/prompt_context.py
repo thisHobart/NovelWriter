@@ -445,6 +445,26 @@ def find_scene_world_conflicts(
     return conflicts
 
 
+def world_conflict_message(
+    conflicts: Iterable[str],
+    parameters: Dict[str, Any] | None,
+    *,
+    source: str = "世界观",
+) -> str:
+    """世界观冲突的说法，按作品自己的题材说：「写了这部悬疑小说的世界观里没有的设定：行星、星际」。
+
+    以前写死成「科幻内容」，不管作品是什么题材。这项检查只对非科幻作品做，该说的是
+    本作的设定里没有这些东西。题材名还是英文（没有中文对照）时说「这部小说」。
+    source 是拿来比对的那份设定：场景规划比世界观，章节大纲比这一幕的故事结构。
+    """
+    label = format_genre_label(parameters).strip()
+    if not label or re.search(r"[A-Za-z]", label):
+        work = "这部小说"
+    else:
+        work = f"这部{label}" + ("" if label.endswith("小说") else "小说")
+    return f"写了{work}的{source}里没有的设定：" + "、".join(conflicts)
+
+
 def style_repair_instruction(warnings: List[str]) -> str:
     """Turn the checker's findings into a rewrite order the model can follow."""
     return (
