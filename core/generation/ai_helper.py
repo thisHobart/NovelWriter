@@ -48,24 +48,9 @@ _current_model: str = DEFAULT_API_MODEL
 
 # NovelWriter's system prompt for API generations (A5: system prompts are
 # app-owned; the package default would otherwise apply).
-#: 只写中文：模型以前会在中文后面加括号补英文或拼音（「梁浩（Liang Hao）」），
-#: 小标题夹英文术语，缩写原样照搬。字段名和编号要留英文，程序靠它们读回结果。
-LANGUAGE_RULE = (
-    "所有内容一律用简体中文写：正文、标题、小标题、人名、地名、机构名都用中文；"
-    "不要夹英文单词或英文句子，不要在中文后面用括号补英文或拼音，"
-    "英文缩写也要换成中文说法（例如“创伤后应激障碍”“基因比对”“卫星定位”）。"
-    "要求输出 JSON 或机器可读契约时，字段名、编号、固定取值和标记照题目给的模板原样写，"
-    "只有其中的文字内容用中文。"
-)
-
 ROLE_DESCRIPTION = (
-    "你是一名乐于助人的小说写作助手。你只创作原创文本。" + LANGUAGE_RULE
+    "你是一名乐于助人的小说写作助手。你只创作原创文本。"
 )
-
-
-def _with_language_rule(prompt: str) -> str:
-    """没有系统消息的通道（命令行后端、注册表外的模型），把中文要求放在提问开头。"""
-    return f"{LANGUAGE_RULE}\n\n{prompt}"
 
 # max_tokens for API generations (the CLI backends use their own defaults).
 DEFAULT_MAX_TOKENS = 16384
@@ -195,7 +180,6 @@ def send_prompt(prompt, model=None):
         if not is_initialized():
             initialize_llm(backend=current_backend)
         print(f"Using CLI backend: {current_backend}")
-        prompt = _with_language_rule(prompt)
         return trace_model_call(
             prompt=prompt,
             backend=current_backend,
@@ -228,7 +212,7 @@ def send_prompt(prompt, model=None):
                      {"role": "user", "content": prompt}],
                     DEFAULT_MAX_TOKENS,
                 ) if model in api_providers.PROVIDER_LABELS else
-                _mp.send_prompt(_with_language_rule(prompt), model=model, max_tokens=DEFAULT_MAX_TOKENS)
+                _mp.send_prompt(prompt, model=model, max_tokens=DEFAULT_MAX_TOKENS)
             ),
         ),
     )

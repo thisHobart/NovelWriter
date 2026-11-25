@@ -1,38 +1,14 @@
 # -*- coding: utf-8 -*-
-"""发给模型的内容只用中文：要求写中文，小标题不用英文文件名，人物和势力的取值先换成中文。
+"""提示词里不出现英文：小标题不用英文文件名，人物和势力的取值先换成中文。
 
 字段名、编号和固定取值（role、protagonist、open 这类）是给程序读回结果用的，仍是英文。
 """
 import re
 
 from core.config.story_options import act_file_stem, act_for_file
-from core.generation import ai_helper
 from core.generation.lore_repository import BODY, CHARACTERS, CONTRACT, FACTIONS, encode, lore_context
 from core.generation.prompt_context import format_faction_summary
 from core.localization import structure_file_label
-
-
-def test_every_api_call_asks_for_chinese_only(monkeypatch):
-    sent = []
-    monkeypatch.setattr(ai_helper, "get_backend", lambda: "api")
-    monkeypatch.setattr(ai_helper.api_providers, "send_messages",
-                        lambda model, messages, tokens: sent.append(messages) or "好")
-    assert ai_helper.send_prompt("写一段开场。", model=ai_helper.DEFAULT_API_MODEL) == "好"
-    system = sent[0][0]
-    assert system["role"] == "system"
-    assert "一律用简体中文写" in system["content"]
-    assert "不要在中文后面用括号补英文或拼音" in system["content"]
-    assert "字段名、编号、固定取值和标记照题目给的模板原样写" in system["content"]
-    assert sent[0][1] == {"role": "user", "content": "写一段开场。"}
-
-
-def test_channels_without_a_system_message_put_the_rule_in_front(monkeypatch):
-    sent = []
-    monkeypatch.setattr(ai_helper, "get_backend", lambda: "codex")
-    monkeypatch.setattr(ai_helper, "is_initialized", lambda: True)
-    monkeypatch.setattr(ai_helper, "llm_send_prompt", lambda prompt: sent.append(prompt) or "好")
-    ai_helper.send_prompt("写一段开场。")
-    assert sent == [ai_helper.LANGUAGE_RULE + "\n\n写一段开场。"]
 
 
 def test_world_setting_headings_are_chinese_names_not_file_paths(tmp_path):
