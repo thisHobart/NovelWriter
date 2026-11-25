@@ -288,9 +288,12 @@ def test_old_backgrounds_are_not_listed_or_sent_to_later_stages(app, tmp_path):
     (tmp_path / LORE / "background_protagonist_张明.md").write_text("张明的背景", encoding="utf-8")
     (tmp_path / LORE / "background_protagonist_王五.md").write_text("早已不在名单里的王五", encoding="utf-8")
     assert current_backgrounds(tmp_path) == ["background_protagonist_张明.md"]
+    (tmp_path / LORE / "name_mapping.json").write_text('{"names": {"Kenneth Hernandez": "梁浩"}}', encoding="utf-8")
     context = lore_context(tmp_path)
     assert "张明的背景" in context and "王五" not in context
+    assert "梁浩" not in context                                            # 旧版本的名字对照表也不发
     assert (tmp_path / LORE / "background_protagonist_王五.md").exists()   # 文件不删
+    assert (tmp_path / LORE / "name_mapping.json").exists()
 
     page = LorePage()
     page.output_dir = str(tmp_path)

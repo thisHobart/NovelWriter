@@ -739,6 +739,11 @@ class LoreRepository:
             return entry
 
 
+#: 旧版本（英文词表生成人物、再换成中文名）留下的对照表。现在的生成不读也不写它，
+#: 整段重生成后它仍是旧人物名，所以不再写进后面阶段的提示词；文件留在磁盘上，改名时照常替换。
+LEGACY_TABLES = {LORE + "name_mapping.json"}
+
+
 def is_background(relative):
     """世界设定里的人物背景文件：story/lore/background_*.md 或 story/lore/backgrounds/*.md。"""
     if not relative.startswith(LORE) or not relative.endswith(".md"):
@@ -774,9 +779,10 @@ def lore_context(output_dir):
     files = repo._files()
     if not files:
         return ""
-    # 已经不属于现有人物的旧背景不写进提示词（文件仍在磁盘上）。
+    # 已经不属于现有人物的旧背景、旧版本留下的表不写进提示词（文件仍在磁盘上）。
     keep = {LORE + relative for relative in current_backgrounds(output_dir)}
-    files = {key: value for key, value in files.items() if not is_background(key) or key in keep}
+    files = {key: value for key, value in files.items()
+             if key not in LEGACY_TABLES and (not is_background(key) or key in keep)}
     ordered = [CONTRACT, BODY, CHARACTERS, FACTIONS]
     ordered += sorted(set(files) - set(ordered))
     from core.generation.prompt_context import sanitize_lore_content
