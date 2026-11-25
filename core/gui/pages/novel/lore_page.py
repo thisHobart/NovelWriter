@@ -13,7 +13,7 @@ import os
 import re
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QTextDocument
+from PySide6.QtGui import QAction, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -87,6 +87,12 @@ class MarkdownView(QTextBrowser):
 
 def read_only_text(text: str, serif: bool = False) -> MarkdownView:
     return MarkdownView(text, serif)
+
+
+def _from_top(view: MarkdownView) -> MarkdownView:
+    # 光标留在文末时，第一次显示会滚到末尾；设定页打开时应从第一行读起。
+    view.moveCursor(QTextCursor.Start)
+    return view
 
 
 def _clock(timestamp) -> str:
@@ -370,7 +376,7 @@ class LorePage(StagePage):
             edit.setEnabled(not self.generation_busy)
             edit.clicked.connect(lambda: self.edit_file(relative_path, object_path))
             layout.addWidget(edit, 0, Qt.AlignLeft)
-        layout.addWidget(read_only_text(text, serif=serif))
+        layout.addWidget(_from_top(read_only_text(text, serif=serif)))
         return page
 
     def _titles_tab(self, titles_text: str) -> QWidget:
@@ -381,7 +387,7 @@ class LorePage(StagePage):
         layout.setSpacing(8)
         titles = parse_titles(titles_text)
         if not titles:
-            layout.addWidget(read_only_text(titles_text, serif=True))
+            layout.addWidget(_from_top(read_only_text(titles_text, serif=True)))
         for title in titles:
             row = QHBoxLayout()
             label = QLabel(title)

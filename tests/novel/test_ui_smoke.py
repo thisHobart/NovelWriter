@@ -488,6 +488,23 @@ def test_status_line_says_what_is_missing_and_offers_to_continue(app, tmp_path, 
     assert asked == ["正在接着生成…"]
 
 
+def test_lore_text_tabs_open_at_the_first_line(app, tmp_path):
+    from core.generation.lore_repository import BODY
+    _lore_project(tmp_path)
+    (tmp_path / BODY).write_text(
+        "\n\n".join(f"### 第 {i} 节\n\n" + "设定内容。" * 40 for i in range(30)), encoding="utf-8")
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.resize(1200, 700)
+    page.refresh()
+    page.show()
+    QApplication.processEvents()
+    view = page.tabs.currentWidget().findChildren(QTextBrowser)[0]
+    assert view.verticalScrollBar().maximum() > 0
+    assert view.verticalScrollBar().value() == 0
+    page.close()
+
+
 def test_status_line_sends_problems_to_results_and_flags_stale_items(app, tmp_path, monkeypatch):
     _lore_project(tmp_path)
     page = LorePage()
