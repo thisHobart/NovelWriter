@@ -82,10 +82,7 @@ def build_scene_material(
     files = dict(lore_files(output_dir))
     if not files:
         return SceneMaterial("")
-    registry = _json(files.get(CONTRACT))
-    registry = registry if isinstance(registry, dict) else {}
-    cast = _cards(files.get(CHARACTERS), "characters")
-    faction_cards = _cards(files.get(FACTIONS), "factions")
+    registry, cast, faction_cards = setting_records(files)
 
     chosen, fallback = pick_characters(scene_plan, cast, registry, contract, scene_number)
     factions = pick_factions(scene_plan, chosen, faction_cards, registry)
@@ -122,6 +119,29 @@ def build_scene_material(
     material.factions = tuple(name_of(card) for card in factions)
     material.omitted = tuple(block.label for block in omitted)
     return material
+
+
+def setting_records(
+    files: Dict[str, str],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """从设定文件原文读出（登记表，人物卡，势力卡）；读不出的是空的。"""
+    registry = _json(files.get(CONTRACT))
+    registry = registry if isinstance(registry, dict) else {}
+    return registry, _cards(files.get(CHARACTERS), "characters"), _cards(files.get(FACTIONS), "factions")
+
+
+def setting_terms(
+    registry: Dict[str, Any],
+    cast: Sequence[Dict[str, Any]],
+    faction_cards: Sequence[Dict[str, Any]],
+) -> Dict[str, str]:
+    """登记过的人物、势力、地点的名字和别名 → 规范名，拿来在一段文字里认名字。"""
+    terms: Dict[str, str] = {}
+    for cards, key in ((cast, "canonical_characters"), (faction_cards, "canonical_factions"), ((), "canonical_locations")):
+        entries = _entries(registry, key)
+        for term, name in name_terms(cards if cards else (), entries).items():
+            terms.setdefault(term, name)
+    return terms
 
 
 def pick_characters(

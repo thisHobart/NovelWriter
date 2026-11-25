@@ -15,21 +15,41 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
 from core.generation.chapter_continuity import established_context, neglected_threads
 from core.generation.domain_profiles import resolve_domain_profile
+from core.generation.helper_fns import (
+    CHAPTER_HEADING_PATTERN,
+    open_file,
+    parse_chapter_numbers,
+    resolve_section_chapter_numbers,
+)
+from core.generation.lore_repository import BODY, lore_context, lore_files, name_of
 from core.generation.narrative_graph import NarrativeGraphManager
+from core.generation.planning_checks import listed_names
 from core.generation.planning_contract import (
+    MATERIAL_LABELS,
+    _source_chapter_from_id,
     build_existing_planning_index,
     contract_instruction_blocks,
     downstream_obligations,
+    established_records_text,
     load_planning_contracts,
 )
-from core.generation.helper_fns import open_file
-from core.generation.lore_repository import lore_context
 from core.generation.prompt_context import build_story_parameter_lines, sanitize_lore_content
+from core.generation.prompt_material import MaterialBlock, fit_blocks, render_blocks
+from core.generation.scene_material import (
+    card_text,
+    mentioned,
+    pick_characters,
+    pick_factions,
+    registry_text,
+    setting_records,
+    setting_terms,
+)
 from core.generation.story_ledger import StoryLedgerManager
 from core.localization import zh_label
 
@@ -43,13 +63,23 @@ SHORT_STORY_MAX_SCENES = 6
 #: 作品没有世界观时，「规划场景」里世界观那一块写这句。
 MISSING_LORE = "缺少整体世界观背景。"
 
+#: 「规划场景」每章材料的总字数上限（不含要求和契约格式）。和写一场戏的设定材料一样。
+PLANNING_BUDGET = 30000
+
 Block = Tuple[str, str]
 
 
 class PlanningPrompt(str):
-    """一份提示词（就是一段文字），另带按先后排的（中文名，原文）。"""
+    """一份提示词（就是一段文字），另带按先后排的（中文名，原文）。
+
+    「规划场景」长篇每章的提示词另带材料的取舍：kept、omitted 是带上和去掉的块名，
+    characters 是带了卡片的人物。
+    """
 
     blocks: Tuple[Block, ...] = ()
+    kept: Tuple[str, ...] = ()
+    omitted: Tuple[str, ...] = ()
+    characters: Tuple[str, ...] = ()
 
 
 def _prompt(blocks: Sequence[Block]) -> PlanningPrompt:
@@ -157,6 +187,54 @@ def planning_lore(output_dir: str, *, short_story: bool = False) -> str | None:
         return lore_context(output_dir) or sanitize_lore_content(open_file(path))
     except FileNotFoundError:
         return None
+
+
+def chapter_parts(outline: str) -> List[Tuple[int, str]]:
+    """一幕大纲按章切开：[(大纲里写的章号, 这一章那一段)]，按先后；同一章写了两次的合在一起。
+
+    章标题的认法和 ``parse_chapter_numbers`` 一样，所以切出来的段数和它认出的章数一样。
+    """
+    text = outline or ""
+    matches = list(CHAPTER_HEADING_PATTERN.finditer(text))
+    parts: Dict[int, List[str]] = {}
+    for index, match in enumerate(matches):
+        number = int(match.group("en") or match.group("zh"))
+        if number <= 0:
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        parts.setdefault(number, []).append(text[match.start():end].strip())
+    return [(number, "\n\n".join(chunks)) for number, chunks in parts.items()]
+
+
+def book_outlines(
+    output_dir: str, structure_name: str, sections: Sequence[str], chapter_outlines_dir: str
+) -> Dict[int, str]:
+    """全书每章那一段大纲：{章号: 文字}。章号的认法和「规划场景」逐幕认的一样。
+
+    大纲里的章号和前面几幕撞了、或者不是递增的，「规划场景」会按顺序改号；这里按同样
+    的先后把第几段配给第几章。
+    """
+    outlines: Dict[int, str] = {}
+    next_expected, claimed = 1, set()
+    for section in sections:
+        files = act_files(output_dir, structure_name, section, chapter_outlines_dir, "")
+        try:
+            with open(files.outline_file, "r", encoding="utf-8") as handle:
+                outline = handle.read().strip()
+        except (OSError, UnicodeError):
+            continue
+        if not outline:
+            continue
+        numbers, _warning = resolve_section_chapter_numbers(
+            parse_chapter_numbers(outline), next_expected, claimed
+        )
+        if not numbers:
+            continue
+        claimed.update(numbers)
+        next_expected = max(next_expected, max(numbers) + 1)
+        for number, (_written, text) in zip(numbers, chapter_parts(outline)):
+            outlines[number] = text
+    return outlines
 
 
 # ---------------------------------------------------------------- 生成章节大纲
@@ -272,6 +350,153 @@ def contract_instructions(
     return _prompt(_stripped(blocks))
 
 
+class PlanningMaterial(str):
+    """「规划场景」一章的材料（就是一段文字），另带 blocks（按先后排的（块名，原文），
+    首尾相接就是整段）、kept / omitted（带上、去掉的块名）和 characters（带了卡片的人物）。"""
+
+    blocks: Tuple[Block, ...] = ()
+    kept: Tuple[str, ...] = ()
+    omitted: Tuple[str, ...] = ()
+    characters: Tuple[str, ...] = ()
+
+
+def planning_material(
+    output_dir: str,
+    chapter_number: int,
+    chapter_outlines: Dict[int, str],
+    contract_text: Any,
+    *,
+    lore_content: str = MISSING_LORE,
+    section_outline: str = "",
+    max_chars: int = PLANNING_BUDGET,
+) -> PlanningMaterial:
+    """「规划场景」一章的材料，按重要性排成九块，超出篇幅时从最后一块起整块去掉：
+
+    1. 本章大纲；2. 名称与规则登记表；3. 本章人物（本章大纲点名的，挑法和写场景材料一样）；
+    4. 相关势力；5. 上一章结束时的状态；6. 仍未了结的悬念和后续章节依赖；7. 既有事实和时间
+    事件（按编号和本章大纲点到的名字挑）；8. 前后相邻两章的大纲（参考）；9. 世界观正文（参考）。
+
+    1、2、3、6 篇幅再紧也带：前三块是本章必须照着写的，第 6 块是契约必须照抄的编号，
+    少了它新规划一定过不了检查。第 5、6 块取自契约格式说明里的同名几块（``contract_text``
+    的 blocks）。作品没有设定文件时没有 2–4 块，世界观正文用 ``lore_content``。
+    """
+    chapter_number = int(chapter_number)
+    outline = str(chapter_outlines.get(chapter_number) or "").strip()
+    if not outline and str(section_outline or "").strip():
+        outline = (
+            f"没能从这一幕的大纲里单独切出第 {chapter_number} 章，下面是这一幕的全部大纲，"
+            f"只规划其中第 {chapter_number} 章。\n\n{section_outline.strip()}"
+        )
+    files = dict(lore_files(output_dir))
+    registry, cast, faction_cards = setting_records(files)
+    contract_parts = dict(getattr(contract_text, "blocks", ()) or ())
+    blocks: List[MaterialBlock] = []
+
+    def add(key, label, text, authority, *, required=False, demote=True):
+        if str(text or "").strip():
+            blocks.append(MaterialBlock(key, label, str(text).strip(), required=required,
+                                        authority=authority, demote=demote))
+
+    add("outline", "本章大纲", outline, "必须遵守", required=True)
+    if files:
+        add("registry", "名称与规则登记表", registry_text(registry), "必须遵守", required=True)
+    chosen, fallback = pick_characters(outline, cast, registry)
+    if chosen:
+        note = "本章大纲里没有认出登记过的人物，先带主角的资料。\n\n" if fallback else ""
+        add("characters", "本章人物", note + "\n\n".join(card_text(card) for card in chosen),
+            "必须遵守", required=True, demote=False)
+    factions = pick_factions(outline, chosen, faction_cards, registry)
+    if factions:
+        add("factions", "相关势力", "\n\n".join(card_text(card) for card in factions),
+            "必须遵守", demote=False)
+    add("previous", "上一章结束时的状态", contract_parts.get("上一章结束时的状态"), "必须遵守")
+    threads = "\n\n".join(
+        str(contract_parts.get(label) or "").strip()
+        for label in ("仍未了结的悬念", "后续章节依赖本章")
+        if str(contract_parts.get(label) or "").strip()
+    )
+    add("threads", "仍未了结的悬念和后续章节依赖", threads, "必须遵守", required=True)
+    add("records", "既有事实和时间事件",
+        _picked_records(output_dir, chapter_number, outline, registry, cast, faction_cards),
+        "必须遵守")
+    neighbours = "\n\n".join(
+        chapter_outlines[number]
+        for number in (chapter_number - 1, chapter_number + 1)
+        if str(chapter_outlines.get(number) or "").strip()
+    )
+    add("neighbours", "前后相邻两章的大纲", neighbours, "参考")
+    if BODY in files:
+        add("body", "世界观正文", sanitize_lore_content(files[BODY]), "参考")
+    elif not files:
+        add("body", "世界观正文", lore_content or MISSING_LORE, "参考")
+
+    text, kept, omitted = fit_blocks(blocks, max_chars)
+    parts = [(block.label, render_blocks([block])) for block in kept]
+    if omitted:
+        parts.append(("篇幅放不下、这次没带的材料", render_blocks([], omitted)))
+    material = PlanningMaterial(text)
+    material.blocks = tuple(
+        (label, part + ("\n\n" if index < len(parts) - 1 else ""))
+        for index, (label, part) in enumerate(parts)
+    )
+    material.kept = tuple(block.label for block in kept)
+    material.omitted = tuple(block.label for block in omitted)
+    material.characters = tuple(name_of(card) for card in chosen)
+    return material
+
+
+def _picked_records(
+    output_dir: str,
+    chapter_number: int,
+    outline: str,
+    registry: Dict[str, Any],
+    cast: Sequence[Dict[str, Any]],
+    faction_cards: Sequence[Dict[str, Any]],
+) -> str:
+    """既有事实和时间事件里和本章有关的：后面章节要用到的、上一章记下的（按编号），
+    以及点到本章大纲里的人物、势力、地点的（按名字）。已了结的悬念都列。"""
+    index = build_existing_planning_index(output_dir, chapter_number)
+    wanted = set(downstream_obligations(output_dir, chapter_number).get("facts_used_later", {}))
+    terms = setting_terms(registry, cast, faction_cards)
+    # 大纲里写了、登记表里没有的名字也拿来认：作品没有设定文件时就只剩这些。
+    people, places = listed_names(outline)
+    for item in [*people, *(part for place in places for part in re.split(r"[·・]", place))]:
+        name = re.sub(r"[（(].*$", "", item).strip()
+        if 2 <= len(name) <= 8:
+            terms.setdefault(name, name)
+    named = set(mentioned(outline, terms))
+    previous = chapter_number - 1
+
+    def related(record: Dict[str, Any], *fields: str) -> bool:
+        record_id = str(record.get("id", ""))
+        if record_id in wanted or _source_chapter_from_id(record_id) == previous:
+            return True
+        text = "\n".join(str(record.get(name) or "") for name in fields)
+        return bool(named & set(mentioned(text, terms)))
+
+    facts = [record for record in index.get("facts", []) if related(record, "fact", "value")]
+    events = [
+        record for record in index.get("timeline_events", [])
+        if related(record, "event", "location_id")
+    ]
+    skipped = [
+        f"{count} 条{kind}"
+        for count, kind in (
+            (len(index.get("facts", [])) - len(facts), "事实"),
+            (len(index.get("timeline_events", [])) - len(events), "时间事件"),
+        )
+        if count
+    ]
+    note = (
+        f"另有 {'、'.join(skipped)}没有列出：它们和本章大纲点到的人物、地点无关，"
+        "也不是上一章记下的或后面章节要用到的。"
+        if skipped else ""
+    )
+    return established_records_text(
+        facts, events, index.get("closed_plot_threads", []), note=note
+    )
+
+
 def scene_plan_prompt(
     *,
     genre_label: str,
@@ -285,33 +510,60 @@ def scene_plan_prompt(
     location_guidance: Sequence[str],
     lore_content: str,
     contract_text: str,
+    output_dir: str,
+    chapter_outlines: Dict[int, str],
+    material_budget: int = PLANNING_BUDGET,
 ) -> PlanningPrompt:
-    """「规划场景」给长篇一章的提示词。"""
+    """「规划场景」给长篇一章的提示词：任务和作品参数，材料（``planning_material``），
+    写法要求，最后是契约格式与规则。契约格式说明里属于材料的几块排进材料，不在后面重复。"""
     section = zh_label(section_name)
-    requirements = [f"\n请重点把上述大纲中的第 {chapter_number} 章扩展为详细场景。"]
+    material = planning_material(
+        output_dir, chapter_number, chapter_outlines, contract_text,
+        lore_content=lore_content, section_outline=section_outline, max_chars=material_budget,
+    )
+    requirements = ["请把「本章大纲」扩展为详细场景。"]
     if story_length == "Novella":
         requirements.append("本故事是中篇小说，本章场景应紧凑而有冲击力，聚焦必要的情节推进和人物时刻。")
     requirements += [
         "每个场景需说明：环境与具体地点、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。",
-        f"请保持人物弧光、势力和地点与第 {chapter_number} 章大纲中的建议一致。",
+        "请保持人物弧光、势力和地点与本章大纲中的建议一致；前后相邻两章的大纲只用来划清本章写到哪里为止，不要把那两章的事写进本章。",
         *[f"- {line}" for line in location_guidance],
     ]
-    blocks = _joined([
+    head = _joined([
         ("任务说明", [
             f"请为{genre_label}故事第 {chapter_number} 章规划场景（篇幅：{zh_label(story_length)}）。",
             f"故事采用“{zh_label(structure_name)}”框架，包含：{', '.join(zh_label(item) for item in sections)}。",
             f"当前正在设计 **{section}** 的场景。",
         ]),
         ("作品参数", build_story_parameter_lines(story_params)),
-        ("本幕逐章大纲", [f"\n以下是包含第 {chapter_number} 章的“{section}”逐章大纲：\n{section_outline}"]),
-        ("场景要求", requirements),
-        ("世界观", [f"整体世界观如下，供参考：\n{lore_content}"]),
-        ("场景标题格式", [
-            "\n请使用结构清晰的 Markdown。每个场景必须使用阿拉伯数字编号，并以独立标题开始，例如“### 场景 1：场景标题”或“## 场景 2 - 场景标题”。不要使用“场景一”之类的中文数字编号，也不要只使用加粗文本充当场景标题。",
-        ]),
-        ("契约格式说明", [contract_text]),
     ])
-    return _prompt(_with_contract(blocks, contract_text))
+    asks = _joined([
+        ("场景要求", requirements),
+        ("场景标题格式", [
+            "请使用结构清晰的 Markdown。每个场景必须使用阿拉伯数字编号，并以独立标题开始，例如“### 场景 1：场景标题”或“## 场景 2 - 场景标题”。不要使用“场景一”之类的中文数字编号，也不要只使用加粗文本充当场景标题。",
+        ]),
+    ])
+    rules = [
+        (label, text.strip())
+        for label, text in (getattr(contract_text, "blocks", ()) or (("契约格式说明", str(contract_text)),))
+        if label not in MATERIAL_LABELS and text.strip()
+    ]
+    rules = [
+        (label, text + ("\n\n" if index < len(rules) - 1 else ""))
+        for index, (label, text) in enumerate(rules)
+    ]
+    # 四组之间空一行：任务和作品参数、材料、写法要求、契约格式与规则。
+    blocks: List[Block] = []
+    for group in (head, material.blocks, asks, rules):
+        if not group:
+            continue
+        if blocks:
+            label, text = blocks[-1]
+            blocks[-1] = (label, text.rstrip("\n") + "\n\n")
+        blocks.extend(group)
+    prompt = _prompt(blocks)
+    prompt.kept, prompt.omitted, prompt.characters = material.kept, material.omitted, material.characters
+    return prompt
 
 
 def short_story_prompt(
@@ -381,15 +633,20 @@ def block_sizes(prompt: Any) -> Dict[str, int]:
 __all__ = [
     "ActFiles",
     "MISSING_LORE",
+    "PLANNING_BUDGET",
+    "PlanningMaterial",
     "PlanningPrompt",
     "SHORT_STORY_MAX_SCENES",
     "SHORT_STORY_MIN_SCENES",
     "act_files",
     "block_sizes",
+    "book_outlines",
+    "chapter_parts",
     "continuity_context",
     "contract_instructions",
     "outline_prompt",
     "planning_lore",
+    "planning_material",
     "scene_plan_prompt",
     "short_story_prompt",
     "slug",

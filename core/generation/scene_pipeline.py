@@ -49,6 +49,7 @@ from core.generation.planning_prompt import (
     SHORT_STORY_MAX_SCENES,
     SHORT_STORY_MIN_SCENES,
     act_files,
+    book_outlines,
     continuity_context,
     contract_instructions,
     outline_prompt,
@@ -1042,6 +1043,11 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             self.app.logger.warning(f"Lore file {lore_content_path} not found for scene planning.")
             lore_content = MISSING_LORE
         
+        # 每章的材料只带本章那一段大纲和前后相邻两章的；相邻的可能在别的幕里。
+        chapter_outlines = book_outlines(
+            output_dir, selected_structure_name, sections_to_process, chapter_outlines_dir
+        )
+
         # 章号以章节大纲写明的为准。此前这里用的是「按出现顺序累加」的计数器，
         # 任何被跳过的部分都会让后续所有章号整体前移，规划内容和文件名随之错位。
         next_expected_chapter = 1
@@ -1150,6 +1156,14 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                     contract_text=self._contract_instructions(
                         output_dir, current_chapter_for_prompt, story_params
                     ),
+                    output_dir=output_dir,
+                    chapter_outlines=chapter_outlines,
+                )
+                self.app.logger.info(
+                    "第 %s 章规划材料带了：%s；篇幅放不下没带：%s",
+                    current_chapter_for_prompt,
+                    "、".join(prompt.kept) or "无",
+                    "、".join(prompt.omitted) or "无",
                 )
 
                 self.app.logger.info(f"--- Scene Plan Prompt for Chapter {current_chapter_for_prompt} (Section: {current_section_name}, Length: {story_length}) ---")

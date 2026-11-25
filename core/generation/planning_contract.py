@@ -19,7 +19,7 @@ from core.generation.chapter_continuity import (
     timeline_mesh_findings,
 )
 from core.generation.helper_fns import parse_scene_sections
-from core.generation.story_ledger import StoryLedgerManager, compact_json
+from core.generation.story_ledger import StoryLedgerManager
 
 
 CONTRACT_START = "<!-- CHAPTER_CONTRACT_START -->"
@@ -180,15 +180,14 @@ def contract_instruction_blocks(
         if groups:
             obligation_block = "\n" + "\n\n".join(groups) + "\n"
 
-    index_text = compact_json(
-        {
-            "facts": index.get("facts", []),
-            "timeline_events": index.get("timeline_events", []),
-            "closed_plot_threads": index.get("closed_plot_threads", []),
-        },
-        5000,
+    # 既有事实、时间事件写成「编号｜…」的中文条目，一条不截：以前按字数截掉一部分
+    # 原始数据，还带着 _context_meta、truncated 这类只对程序有用的字段。
+    records_text = established_records_text(
+        index.get("facts", []),
+        index.get("timeline_events", []),
+        index.get("closed_plot_threads", []),
     )
-    narrative_text = compact_json(narrative_context or {}, 8000)
+    graph_text = graph_context_text(narrative_context or {})
 
     # 叙事图上一个可选节点都没有时，必须明说这几个字段留空。
     #
@@ -290,7 +289,7 @@ def contract_instruction_blocks(
         # 同理：图上的 fact 节点是设计层的真相，不等于前面章节已经建立过的事实。
         lines.append(
             "- facts_confirmed 只能沿用**前面章节 facts_added 建立过**的事实 id"
-            "（见下方「既有事实」）。叙事图上的 fact 节点是全书设计，还没有被任何一章"
+            "（见「既有事实」）。叙事图上的 fact 节点是全书设计，还没有被任何一章"
             "写进正文，不能拿来 confirm；本章要第一次确立它，用 facts_added。"
         )
         graph_usage_block = "\n".join(lines) + "\n"
@@ -329,9 +328,8 @@ def contract_instruction_blocks(
         transition_values = "introduce_to_reader|make_inferable|reveal|execute|deprecate"
     if graph_is_empty:
         empty_graph_block = """
-**本作目前没有叙事图节点**（上面的 active_threads、available_threads、
-available_clues、available_facts 都是空的）。因此下面这几个字段必须留空，
-不要自己编造节点 ID：
+**本作目前没有叙事图节点**（叙事图上没有情节线、线索和事实节点）。
+因此下面这几个字段必须留空，不要自己编造节点 ID：
 - "primary_thread"、"secondary_thread"、"primary_action"、"secondary_action"、
   "crossover" 一律填空字符串 ""；
 - "plot_thread_updates"、"narrative_transitions"、"allowed_reveals"、
@@ -361,8 +359,13 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
         if int(chapter_number) > 1
         else ""
     )
-    continuity_block = continuity_instructions(
-        chapter_number, **(continuity_context or {})
+    # 衔接规则留在契约说明里；上一章的结尾原文是材料，单独成块，「规划场景」把它
+    # 排进材料里，跨章修复的提示词照旧接在规则后面。
+    continuity = dict(continuity_context or {})
+    previous_tail = str(continuity.pop("previous_tail", "") or "")
+    continuity_block = continuity_instructions(chapter_number, **continuity)
+    previous_block = previous_state_text(
+        chapter_number, continuity.get("previous_last_event"), previous_tail
     )
     schema_text = f"""
 
@@ -381,7 +384,7 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
   "irreversible_change": "确有不可逆变化时填写；过渡、余波、关系或沉淀章可留空",
   "ending_effect": "推进、代价、认知变化、关系位移或有意留白中的实际收束效果",
   "narrative_graph_revision": {(narrative_context or {}).get("graph_revision", 0)},
-  "primary_thread": "从 active_threads 选择；首次开启时可从 available_threads 选择",
+  "primary_thread": "从叙事图上已经打开的情节线里选；第一次开启时也可以选还没打开的情节线",
   "secondary_thread": "允许为空",
   "primary_action": "open|touch|advance|complicate|cross|close",
   "secondary_action": "允许为空",
@@ -414,9 +417,9 @@ timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene
 
 关于 plot_thread_updates：status 填 "open" 表示**本章埋下**这条悬念（读者开始好奇），填 "closed" 表示**本章了结**它（读者得到答案）。
 - 埋下：必须给出不早于本章的 deadline_chapter，说明最晚第几章揭晓；id 不能与任何既有悬念重复。
-- 了结：必须沿用下方“仍未了结的悬念”中的 id。不要了结已经了结过的，也不要凭章号规律推测一个不在列表里的 id——那会让本章为一个读者从未见过的谜面写揭晓戏。
+- 了结：必须沿用“仍未了结的悬念”中的 id。不要了结已经了结过的，也不要凭章号规律推测一个不在列表里的 id——那会让本章为一个读者从未见过的谜面写揭晓戏。
 - 本章自己埋下又自己了结的悬念：只写一条 closed 记录，并加上 "opened_in_chapter": true。
-- 下方标注“本章必须了结”的悬念，本章必须处理：要么了结它，要么写一条 {{"id":"该悬念id","status":"open","extend":true,"deadline_chapter":新的章号}} 把揭晓明确推迟到后面某一章。不处理就等于让读者一直悬着却没人记账。
+- 标注了“本章必须了结”的悬念，本章必须处理：要么了结它，要么写一条 {{"id":"该悬念id","status":"open","extend":true,"deadline_chapter":新的章号}} 把揭晓明确推迟到后面某一章。不处理就等于让读者一直悬着却没人记账。
 
 关于 character_updates 的 stable：填 true 表示这项属性一经确立、此后各章都必须复述同一取值。只有工龄、年龄、籍贯、亲属关系、血型这类一旦定下就不该再变的属性才填 true。
 - 心理状态、认知立场、行动目标、所在位置、伤势、掌握的情报等会随剧情推进变化的，一律填 false——人物弧光本来就要变，填 true 会让后面章节的正常成长被判成前后矛盾。
@@ -427,20 +430,148 @@ timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene
         ("契约格式与填写规则", schema_text),
         ("仍未了结的悬念", thread_block + "\n"),
         ("后续章节依赖本章", obligation_block + "\n"),
-        (
-            "叙事图上下文",
-            "本章规划前叙事图上下文如下。blocked_reveals 和 forbidden_nodes 绝对不能选择；\n"
-            "plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进节点：\n"
-            f"{narrative_text}\n",
-        ),
+        ("叙事图上下文", f"{graph_text}\n" if graph_text else ""),
         ("叙事图规则", f"{empty_graph_block}{graph_usage_block}\n\n"),
-        (
-            "既有事实、时间事件与已了结线索",
-            "既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：\n"
-            f"{index_text}\n",
-        ),
-        ("上一章结束时的状态", f"{continuity_block}\n"),
+        ("既有事实、时间事件与已了结线索", f"{records_text}\n"),
+        ("衔接规则", f"{continuity_block}\n"),
+        ("上一章结束时的状态", f"\n{previous_block}\n" if previous_block else ""),
     ]
+
+
+#: 契约说明里哪几块是材料（「规划场景」把它们排进材料，按原则取舍），其余是规则。
+MATERIAL_LABELS = (
+    "仍未了结的悬念",
+    "后续章节依赖本章",
+    "既有事实、时间事件与已了结线索",
+    "上一章结束时的状态",
+)
+
+
+def _cell(value: Any, missing: str = "未记") -> str:
+    """一格：去掉换行和多余空白，别让一条记录断成几行；空着写「未记」。"""
+    text = " ".join(str(value if value is not None else "").split())
+    return text.replace("｜", "/") or missing
+
+
+def fact_line(record: Dict[str, Any]) -> str:
+    return f"- {_cell(record.get('id'))}｜{_cell(record.get('fact'))}｜{_cell(record.get('value'))}"
+
+
+def event_line(record: Dict[str, Any]) -> str:
+    return (
+        f"- {_cell(record.get('id'))}｜{_cell(record.get('time'))}"
+        f"｜{_cell(record.get('location_id'))}｜{_cell(record.get('event'))}"
+    )
+
+
+def closed_thread_line(state: Dict[str, Any]) -> str:
+    return (
+        f"- {_cell(state.get('id'))}｜{_cell(state.get('thread'), '没写名字')}"
+        f"｜第 {_cell(state.get('closed_at'), '?')} 章了结"
+    )
+
+
+def established_records_text(
+    facts: Iterable[Dict[str, Any]],
+    events: Iterable[Dict[str, Any]],
+    closed: Iterable[Dict[str, Any]] = (),
+    *,
+    note: str = "",
+) -> str:
+    """既有事实、时间事件和已了结的悬念，写成一条一行的中文条目。"""
+    facts, events, closed = list(facts), list(events), list(closed)
+    parts = []
+    if facts:
+        parts.append("事实（编号｜事实｜取值）：\n" + "\n".join(fact_line(item) for item in facts))
+    if events:
+        parts.append(
+            "时间事件（编号｜时间｜地点｜事件）：\n" + "\n".join(event_line(item) for item in events)
+        )
+    if closed:
+        parts.append(
+            "已了结的悬念（不能再了结，也不能再推进）：\n"
+            + "\n".join(closed_thread_line(item) for item in closed)
+        )
+    if not parts:
+        text = "既有事实、时间事件与已了结的悬念：前面的章节还没有记下。"
+    else:
+        text = "既有事实、时间事件与已了结的悬念如下，重复出现的必须沿用其中的 id。\n\n" + "\n\n".join(parts)
+    return text + (f"\n\n{note}" if note else "")
+
+
+def previous_state_text(
+    chapter_number: int, last_event: Dict[str, Any] | None, tail: str
+) -> str:
+    """上一章结束时的状态：最后一个时间事件和结尾原文。第一章没有。"""
+    if int(chapter_number) <= 1:
+        return ""
+    previous = int(chapter_number) - 1
+    parts = []
+    if isinstance(last_event, dict) and last_event:
+        parts.append(f"第 {previous} 章最后一个时间事件：\n" + event_line(last_event))
+    if str(tail or "").strip():
+        parts.append(
+            f"第 {previous} 章的结尾原文（只用来决定本章从哪里接起）：\n" + str(tail)[-2000:]
+        )
+    return "\n\n".join(parts)
+
+
+#: 叙事图上下文里的几组节点，按这个先后列。
+_GRAPH_GROUPS = (
+    ("active_threads", "已经打开的情节线"),
+    ("available_threads", "可以选择的情节线（还没打开的要先 open）"),
+    ("threads_due_soon", "快到计划了结章的情节线"),
+    ("starved_threads", "很久没有推进的情节线"),
+    ("ready_reveals", "现在可以揭示的"),
+    ("blocked_reveals", "还不能揭示的（绝对不能选）"),
+    ("available_clues", "可以用的线索"),
+    ("available_facts", "叙事图上的事实节点（全书设计，还没有写进正文）"),
+    ("forbidden_nodes", "不能选的节点"),
+)
+
+
+def _node_label(node: Dict[str, Any]) -> str:
+    node_id = str(node.get("id", "")).strip()
+    if not node_id:
+        return ""
+    name = next(
+        (str(node.get(key)).strip() for key in ("label", "title", "name", "summary")
+         if str(node.get(key) or "").strip()),
+        "",
+    )
+    notes = []
+    for key, text in (("planned_resolve_chapter", "计划第 {} 章了结"),
+                      ("planned_reveal_chapter", "计划第 {} 章揭示")):
+        if node.get(key):
+            notes.append(text.format(node[key]))
+    if node.get("available_action") == "reuse":
+        notes.append("读者已经见过")
+    elif node.get("available_action") == "introduce_to_reader":
+        notes.append("第一次出现")
+    detail = "，".join([name, *notes] if name else notes)
+    return f"{node_id}（{detail}）" if detail else node_id
+
+
+def graph_context_text(context: Dict[str, Any]) -> str:
+    """本章规划前的叙事图，写成中文条目；一个节点都没有时返回空文字。
+
+    以前原样发 JSON，带着 graph_revision、ledger_revision 这类只对程序有用的字段。
+    """
+    lines = []
+    for key, label in _GRAPH_GROUPS:
+        items = [_node_label(item) for item in context.get(key) or [] if isinstance(item, dict)]
+        items = [item for item in items if item]
+        if items:
+            lines.append(f"- {label}：" + "；".join(items))
+    # warnings 不另列：它说的是哪些线太久没推进，上面「很久没有推进的情节线」已经列了，
+    # 原文还夹着程序里的设置名。
+    if not lines:
+        return ""
+    return (
+        "本章规划前的叙事图（节点 id 只能从这里取；还不能揭示的和不能选的节点绝对不能选；"
+        "plot_thread_updates 写 advance 时，必须用 via_node_ids 指出实际推进的节点）：\n"
+        + "\n".join(lines)
+    )
 
 
 def extract_scene_plan_contract(response: str, chapter_number: int) -> Tuple[str, Dict[str, Any]]:

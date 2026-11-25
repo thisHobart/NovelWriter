@@ -10,7 +10,7 @@
 - 场景边界：条数、代码认得出场次的条数、写了「停在哪里」（end_state）的条数、写第 N 场时
   应拦和实际拦的后面场次边界；
 - 规划提示词：每章字数、每块字数、被截断的块、内部字段、「本章必须埋下 / 引入」里其实早已
-  存在的条目、名字为空的条目；
+  存在的条目、名字为空的条目、材料篇幅放不下去掉的块、本章大纲点名却没带卡片的人物；
 - 章节大纲提示词的字数；
 - 大纲和场景规划里点到、名称与规则登记表里却没有的人名和地名；
 - 跨章检查的结果。
@@ -40,8 +40,10 @@ from core.generation.helper_fns import (  # noqa: E402
     parse_scene_sections,
     resolve_section_chapter_numbers,
 )
+from core.generation.lore_repository import lore_files  # noqa: E402
 from core.generation.planning_checks import (  # noqa: E402
     NameFindings,
+    listed_names,
     load_registry,
     unregistered_names,
 )
@@ -56,6 +58,7 @@ from core.generation.planning_contract import (  # noqa: E402
 from core.generation.planning_prompt import (  # noqa: E402
     MISSING_LORE,
     act_files,
+    book_outlines,
     contract_instructions,
     outline_prompt,
     planning_lore,
@@ -68,6 +71,7 @@ from core.generation.prompt_context import (  # noqa: E402
     format_genre_label,
     normalize_story_parameters,
 )
+from core.generation.scene_material import mentioned, name_terms, setting_records  # noqa: E402
 from core.generation.stage_pipeline import load_stage_parameters  # noqa: E402
 from core.generation.story_ledger import StoryLedgerManager  # noqa: E402
 from core.generation.workflow_status import expected_chapter_count  # noqa: E402
@@ -110,6 +114,10 @@ class ChapterReport:
     internal_fields: List[str] = field(default_factory=list)
     stale_obligations: List[str] = field(default_factory=list)
     empty_names: List[str] = field(default_factory=list)
+    #: 材料篇幅放不下、这次没带的块。
+    material_omitted: List[str] = field(default_factory=list)
+    #: 本章大纲点名、人物资料里有卡片，提示词里却没带卡片的人物。
+    missing_cards: List[str] = field(default_factory=list)
     #: 拼出来的提示词原文（不打印，测试拿它和正式流程比对）。
     prompt: str = ""
 
@@ -200,6 +208,8 @@ def _collect_long_form(report, output_dir, structure, story_length, story_params
             report.outline_names.merge(unregistered_names(outline, registry))
 
     # 规划场景：章号的认法和正式流程一样。
+    chapter_outlines = book_outlines(output_dir, structure, sections, outlines_dir)
+    cards = _card_terms(output_dir)
     next_expected, claimed = 1, set()
     for section in sections:
         files = act_files(output_dir, structure, section, outlines_dir, plans_dir)
@@ -223,10 +233,12 @@ def _collect_long_form(report, output_dir, structure, story_length, story_params
                 story_params=story_params, section_outline=outline,
                 location_guidance=location_guidance, lore_content=lore,
                 contract_text=contract_instructions(output_dir, number, story_params),
+                output_dir=output_dir, chapter_outlines=chapter_outlines,
             )
-            report.chapters.append(
-                _chapter(output_dir, number, section, plan, prompt, origins)
-            )
+            item = _chapter(output_dir, number, section, plan, prompt, origins)
+            item.material_omitted = list(getattr(prompt, "omitted", ()))
+            item.missing_cards = _missing_cards(chapter_outlines.get(number, ""), prompt, cards)
+            report.chapters.append(item)
             if plan:
                 report.plan_names.merge(unregistered_names(plan, registry))
 
@@ -295,6 +307,22 @@ def _chapter(output_dir, number, section, plan, prompt, origins) -> ChapterRepor
             item.stale_obligations.append(record_id)
     item.empty_names = list(dict.fromkeys(_EMPTY_NAME.findall(str(prompt))))
     return item
+
+
+def _card_terms(output_dir: str) -> Dict[str, str]:
+    """人物资料里有卡片的人物：名字和别名（登记表里的别名也算） → 规范名。"""
+    registry, cast, _factions = setting_records(dict(lore_files(output_dir)))
+    entries = [entry for entry in registry.get("canonical_characters") or [] if isinstance(entry, dict)]
+    return name_terms(cast, entries) if cast else {}
+
+
+def _missing_cards(outline: str, prompt: Any, cards: Dict[str, str]) -> List[str]:
+    """本章大纲「涉及人物」里点名、有卡片的人物，提示词「本章人物」一块里却没有他的卡片。"""
+    people, _places = listed_names(outline)
+    named = mentioned("\n".join(people), cards)
+    block = re.search(r"^## 本章人物[^\n]*\n(.*?)(?=^## |\Z)", str(prompt), flags=re.M | re.S)
+    carded = set(re.findall(r"^### (.+)$", block.group(1), flags=re.M)) if block else set()
+    return [name for name in named if name not in carded]
 
 
 def _true_scene(entry: Any, position: int) -> int:
@@ -432,6 +460,16 @@ def render(report: PlanningReport, *, chapters: bool = False) -> str:
             f"  名字为空的条目：{len(empty)} 条"
             + (f"（{_preview(f'第 {c} 章 {r}' for c, r in empty)}）" if empty else "")
         )
+        dropped = Counter(label for item in prompts for label in item.material_omitted)
+        lines.append(
+            f"  材料篇幅放不下、去掉了块的提示词：{sum(1 for item in prompts if item.material_omitted)} 份"
+            + (f"（{'、'.join(f'{label} × {count}' for label, count in dropped.items())}）" if dropped else "")
+        )
+        missing = [(item.chapter, name) for item in prompts for name in item.missing_cards]
+        lines.append(
+            f"  本章大纲点名、却没带卡片的人物：{len(missing)} 个"
+            + (f"（{_preview(f'第 {c} 章 {n}' for c, n in missing)}）" if missing else "")
+        )
     else:
         lines.append("【规划提示词】一份都拼不出来")
 
@@ -472,6 +510,10 @@ def render(report: PlanningReport, *, chapters: bool = False) -> str:
                 issues.append(f"早已存在 {len(item.stale_obligations)} 条")
             if item.empty_names:
                 issues.append("空名字：" + "、".join(item.empty_names))
+            if item.material_omitted:
+                issues.append("没带：" + "、".join(item.material_omitted))
+            if item.missing_cards:
+                issues.append("缺卡片：" + "、".join(item.missing_cards))
             lines.append(
                 f"  第 {item.chapter} 章｜{item.scenes if item.scenes is not None else '无规划'}｜"
                 f"{item.boundaries}/{item.recognised}/{item.with_end_state}｜"
@@ -524,10 +566,15 @@ def main(argv: Sequence[str]) -> int:
     if not os.path.isdir(output_dir):
         print(f"找不到目录：{output_dir}")
         return 2
+    # 读文件的工具函数会往标准输出打「Opening file: …」，收起来，只留报告；日志也先关掉，
+    # 跑完恢复原样（同一进程里别的代码还要记日志）。
+    previous = logging.root.manager.disable
     logging.disable(logging.WARNING)
-    # 读文件的工具函数会往标准输出打「Opening file: …」，收起来，只留报告。
-    with contextlib.redirect_stdout(io.StringIO()):
-        report = collect(output_dir)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = collect(output_dir)
+    finally:
+        logging.disable(previous)
     print(render(report, chapters="--chapters" in argv))
     return 0
 

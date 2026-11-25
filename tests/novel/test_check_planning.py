@@ -105,8 +105,8 @@ def test_the_check_reports_what_planning_left_behind(tmp_path):
     # 第 2 章引用事实时没写名字，重规划第 1 章的提示词取第 1 章引入时写的名字。
     assert by_chapter[1].empty_names == []
     assert "事实 F-001-01（钥匙）：第 2 章要引用它，本章必须引入" in by_chapter[1].prompt
-    # 规划提示词按块量过；契约那一块里没有截断。
-    assert by_chapter[2].blocks["本幕逐章大纲"] > 0 and by_chapter[2].truncated_blocks == []
+    # 规划提示词按块量过；材料里没有截断。
+    assert by_chapter[2].blocks["本章大纲"] > 0 and by_chapter[2].truncated_blocks == []
     assert set(report.outline_prompts) == {"Beginning"}
     # 身份称呼不算人名；「白螺里·七号楼」的城市登记过，「海港市」没有。
     assert report.outline_names.people == ["陆巡"]
