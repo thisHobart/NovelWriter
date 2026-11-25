@@ -78,7 +78,6 @@ class ParametersPage(QWidget):
         self._structure = story_options.default_structure_for(story_options.LENGTH_OPTIONS[0])
         self._quality_mode = DEFAULT_QUALITY_LOOP_MODE
         self._preset_genre = ""      # 主题、基调下拉框当前用的是哪个预设题材的选项
-        self.generation_counts = {"num_factions": 6, "num_characters": 8}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -243,14 +242,10 @@ class ParametersPage(QWidget):
             "backend": self._get_backend(),
             "model": self._get_model(),
         })
-        params.update(self.generation_counts)
+        # 势力、人物数量按篇幅由系统定，照旧写进参数文件，文件格式不变。
+        factions, characters = story_options.counts_for(params["story_length"]) or (6, 8)
+        params.update(num_factions=factions, num_characters=characters)
         return params
-
-    def set_generation_counts(self, factions, characters):
-        counts = {"num_factions": factions, "num_characters": characters}
-        if counts != self.generation_counts:
-            self.generation_counts = counts
-            self._mark_dirty()
 
     def validate(self) -> Dict[str, str]:
         """返回 {字段名: 错误文案}；空字典表示通过。逐字段标红由 save() 施加。"""
@@ -301,14 +296,6 @@ class ParametersPage(QWidget):
         source = internal_parameters(loaded)
         self._saved_source = source
         self.output_dir_edit.setText(str(source.get("output_directory", target)))
-        self.generation_counts = {"num_factions": source.get("num_factions", 6),
-                                  "num_characters": source.get("num_characters", 8)}
-        for key, value in self.generation_counts.items():
-            try:
-                if str(int(value)) == str(value).strip():
-                    self.generation_counts[key] = int(value)
-            except (ValueError, TypeError):
-                pass  # 保留无效原值，生成前明确校验，不静默修正。
 
         # 以前的参数文件分题材、子题材两项，且存英文标识；这里合成一句中文显示，保存后即为新格式。
         genre = str(source.get("genre", "")).strip()

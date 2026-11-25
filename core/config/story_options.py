@@ -76,5 +76,18 @@ def default_structure_for(length: str) -> str:
     return DEFAULT_STRUCTURE.get(length, DEFAULT_STRUCTURE["Novel (Standard)"])
 
 
+# 势力、人物数量不再由作者填写：按篇幅定（势力数, 人物数）。
+COUNTS_BY_LENGTH = {
+    "Short Story": (3, 5),
+    "Novella": (4, 6),
+    "Novel (Standard)": (6, 8),
+}
+
+
+def counts_for(length: str) -> tuple[int, int] | None:
+    """篇幅对应的（势力数, 人物数）；不认识的篇幅返回 None，由调用方沿用已有值。"""
+    return COUNTS_BY_LENGTH.get(str(length or "").strip())
+
+
 def sections_for(structure: str) -> tuple[str, ...]:
     return STRUCTURE_SECTIONS_MAP.get(structure, ())

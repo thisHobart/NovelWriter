@@ -169,9 +169,6 @@ class NovelWorkspace(QWidget):
         page.work_title_changed.connect(self.rail.set_work_title)
         page.operation_failed.connect(self.status.set_error)
         page.model_loaded.connect(self._restore_model)
-        for stepper in (self.lore_page.faction_stepper, self.lore_page.character_stepper):
-            stepper.valueChanged.connect(lambda _: page.set_generation_counts(
-                self.lore_page.faction_stepper.value(), self.lore_page.character_stepper.value()))
         self.chapter_page.quality_mode_changed.connect(page.set_quality_mode)
 
         for stage in self.stage_pages:
@@ -237,7 +234,9 @@ class NovelWorkspace(QWidget):
         stored = load_stage_parameters(self.output_dir())
         current = normalize_parameters(stored, self.parameters_page.parameters())
         use_saved = False
-        if self.parameters_page.dirty or not stored or creation_parameters(current) != creation_parameters(stored):
+        # 只在作品参数（标题、题材、篇幅、主题、基调）真的和已保存的不同时才问；
+        # 只改了质量闭环、模型这类运行设置，直接用当前填写。
+        if not stored or creation_parameters(current) != creation_parameters(stored):
             box = QMessageBox(self)
             box.setWindowTitle("作品参数尚未保存")
             box.setText("当前填写与已保存参数不同，请选择本次生成使用的版本。")
@@ -450,15 +449,6 @@ class NovelWorkspace(QWidget):
             needs_review = state and "设定已修改，待核对" in state.detail
             page.lore_review_notice.setText("设定已修改，待核对。已有内容保留，可继续生成；请到「世界设定 → 待核对」查看影响范围。" if needs_review else "")
             page.lore_review_notice.setVisible(bool(needs_review))
-        for key, stepper in (("num_factions", self.lore_page.faction_stepper),
-                             ("num_characters", self.lore_page.character_stepper)):
-            blocked = stepper.blockSignals(True)
-            try:
-                stepper.set_value(int(self.parameters_page.generation_counts[key]))
-            except (ValueError, TypeError):
-                pass
-            finally:
-                stepper.blockSignals(blocked)
         self.chapter_page.set_quality_mode(self.parameters_page.quality_mode())
         self.workflow_page.set_states(states)
 

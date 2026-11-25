@@ -100,7 +100,8 @@ def test_parameters_page_converts_old_file_and_drops_removed_fields(app, tmp_pat
     assert saved["Story Length"] == "Novel (Standard)"
     assert saved["Story Structure"] == "Save the Cat!"     # 已有作品沿用原来的结构
     assert saved["Quality Loop"] == "strict"
-    assert saved["Scene Dialogue"] == "off" and saved["Num Factions"] == "3"
+    assert saved["Scene Dialogue"] == "off"
+    assert saved["Num Factions"] == "6"        # 数量按篇幅定：长篇 6 个势力，旧文件里的 3 不再生效
     for removed in ("Subgenre", "Author Name", "Gender Generation Bias String",
                     "Female Percentage", "Happy Ending", "Protagonist Type"):
         assert removed not in saved
@@ -231,6 +232,59 @@ def test_lore_page_offers_undo_and_redo_after_a_change(app, tmp_path):
     assert not page.redo_button.isHidden()
     page.redo_button.click()
     assert repo.load_snapshot().files[BODY] == "改过的世界观"
+
+
+def test_counts_follow_story_length_and_are_not_asked(app, tmp_path):
+    from core.generation.stage_pipeline import load_stage_parameters
+    page = ParametersPage()
+    page.output_dir_edit.setText(str(tmp_path))
+    page.title_edit.setText("雾港来信")
+    page.genre_combo.setEditText("悬疑推理")
+    page.length_combo.setCurrentIndex(LENGTH_OPTIONS.index("Short Story"))
+    assert page.save() is True
+    saved = load_stage_parameters(str(tmp_path))
+    assert (saved["num_factions"], saved["num_characters"]) == (3, 5)
+
+    lore = LorePage()
+    lore.output_dir = str(tmp_path)
+    lore.refresh()
+    assert not hasattr(lore, "faction_stepper")
+    assert "3 个势力 · 5 个人物" in lore.counts_hint.text()
+
+
+def test_old_counts_in_parameter_file_no_longer_override_length(app, tmp_path):
+    from core.generation.stage_pipeline import load_stage_parameters
+    system = tmp_path / "system"
+    system.mkdir()
+    (system / "parameters.txt").write_text(
+        "Genre: 科幻\nStory Length: Novella\nNovel Title: 静默星环\nNum Factions: 12\nNum Characters: 1\n",
+        encoding="utf-8")
+    saved = load_stage_parameters(str(tmp_path))      # 旧文件里超出范围的数量也不报错
+    assert (saved["num_factions"], saved["num_characters"]) == (4, 6)
+
+
+def test_runtime_only_change_does_not_ask_which_parameters_to_use(app, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+    system = tmp_path / "system"
+    system.mkdir()
+    (system / "parameters.txt").write_text(
+        f"Output Directory: {tmp_path}\nGenre: 科幻\nStory Length: Novella\nStory Structure: 3-Act Structure\n"
+        "Novel Title: 静默星环\nTheme: 记忆的代价\nTone: 冷峻理性\nQuality Loop: standard\n",
+        encoding="utf-8")
+    window = MainWindow()
+    novel = window.novel
+    novel.parameters_page.load(str(tmp_path))
+    asked = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: asked.append(self.windowTitle()) or 0)
+    novel.parameters_page.set_quality_mode("strict")   # 只改运行设置
+    assert novel.parameters_page.dirty is True
+    snapshot, use_saved = novel._choose_generation_parameters()
+    assert asked == [] and use_saved is False
+    assert snapshot["quality_loop"] == "strict"
+
+    novel.parameters_page.title_edit.setText("另一个标题")   # 改了作品参数，仍要问
+    assert novel._choose_generation_parameters() is None
+    assert asked == ["作品参数尚未保存"]
 
 
 def test_refresh_is_not_reentrant(app):

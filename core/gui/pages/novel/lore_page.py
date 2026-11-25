@@ -13,7 +13,6 @@ import json
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -29,7 +28,6 @@ from core.gui.pages.novel.services import artifacts
 from core.gui.pages.novel.services.step_runner import action_work, step_work
 from core.gui.widgets import (
     Card,
-    Stepper,
     hint_label,
     primary_button,
     secondary_button,
@@ -437,30 +435,12 @@ class LorePage(StagePage):
 
     # ---------------------------------------------------------------- 右侧
     def _build_inspector(self) -> None:
-        params = Card("生成参数")
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(theme.SP[3])
-        grid.setVerticalSpacing(theme.SP[3])
-
-        self.faction_stepper = Stepper(6, 1, 10)
-        self.character_stepper = Stepper(8, 2, 10)
-        for row, (label, widget) in enumerate([
-            ("势力数量", self.faction_stepper),
-            ("人物数量", self.character_stepper),
-        ]):
-            caption = QLabel(label)
-            caption.setObjectName("FieldLabel")
-            grid.addWidget(caption, row, 0)
-            grid.addWidget(widget, row, 1, Qt.AlignRight)
-        grid.setColumnStretch(0, 1)
-        params.body.addLayout(grid)
-        params.body.addWidget(hint_label("题材附加参数随子题材变化，上限 10。"))
-        self.add_card(params)
-
         self.steps_meta = QLabel("")
         self.steps_meta.setObjectName("Tertiary")
         steps = Card("分步生成", self.steps_meta)
+        # 势力、人物数量按篇幅由系统定，这里只说明，不让作者填。
+        self.counts_hint = hint_label("")
+        steps.body.addWidget(self.counts_hint)
         self.step_buttons = {
             "factions": StepButton("factions", "生成势力"),
             "characters": StepButton("characters", "生成人物"),
@@ -497,29 +477,26 @@ class LorePage(StagePage):
             "titles": "正在推荐标题…",
             "full": "正在生成设定…",
         }
-        work = (
-            step_work("lore", self.output_dir, self.model, parameters={
-                "num_factions": self.faction_stepper.value(),
-                "num_characters": self.character_stepper.value(),
-            })
-            if key == "full"
-            else action_work(
-                "lore",
-                key,
-                self.output_dir,
-                self.model,
-                parameters={
-                    "num_factions": self.faction_stepper.value(),
-                    "num_characters": self.character_stepper.value(),
-                },
-            )
-        )
+        work = (step_work("lore", self.output_dir, self.model) if key == "full"
+                else action_work("lore", key, self.output_dir, self.model))
         self.run_task(
             work,
             busy_button=busy_button or self.step_buttons.get(key, self.generate_button),
             busy_text=labels[key],
             on_success=self._show_generation_result,
         )
+
+    def _counts_text(self) -> str:
+        from core.generation.stage_pipeline import load_stage_parameters
+        from core.localization import zh_label
+        try:
+            params = load_stage_parameters(self.output_dir)
+        except (OSError, ValueError):
+            params = {}
+        if not params:
+            return "势力、人物数量按作品篇幅决定。"
+        length = zh_label(str(params.get("story_length", "")))
+        return f"按篇幅（{length}）：{params.get('num_factions', 6)} 个势力 · {params.get('num_characters', 8)} 个人物"
 
     def _open_folder(self, subdirectory=None) -> None:
         import os
@@ -635,6 +612,7 @@ class LorePage(StagePage):
         done = sum(1 for key in ("factions", "characters", "lore")
                    if self.step_buttons[key].state == "done")
         self.steps_meta.setText(f"{done} / 3 已完成")
+        self.counts_hint.setText(self._counts_text())
         self.files_meta.setText(f"{total} 个文件")
         self.header.set_subtitle(
             f"{len(factions)} 个势力 · {len(characters)} 个人物 · {total} 个产物文件"

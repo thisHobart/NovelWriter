@@ -42,6 +42,11 @@ def normalize_parameters(source, overrides=None):
     result = internal_parameters(source)
     incoming = internal_parameters(overrides)
     result.update(incoming)
+    from core.config.story_options import counts_for
+    counts = counts_for(result.get("story_length"))
+    if counts:
+        # 数量按篇幅由系统定；参数文件里旧的数量照常保留在文件中，但不再生效。
+        result["num_factions"], result["num_characters"] = counts
     for key, default, lower, upper in (("num_factions", 6, 1, 10), ("num_characters", 8, 2, 10)):
         value = result.get(key, default)
         try:

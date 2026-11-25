@@ -12,12 +12,13 @@ from core.config.story_options import (
     PRESET_GENRE_BY_PROFILE,
     THEME_OPTIONS,
     TONE_OPTIONS,
+    counts_for,
     default_structure_for,
 )
 from core.generation.domain_profiles import match_profile_key
 
 __all__ = [
-    "GENRE_OPTIONS", "LENGTH_OPTIONS", "default_structure_for", "is_preset_theme", "is_preset_tone",
+    "GENRE_OPTIONS", "LENGTH_OPTIONS", "counts_for", "default_structure_for", "is_preset_theme", "is_preset_tone",
     "preset_genre_for", "theme_options_for", "tone_options_for",
 ]
 
