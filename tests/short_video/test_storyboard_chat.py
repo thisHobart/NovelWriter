@@ -79,8 +79,7 @@ def test_material_writes_every_shot_with_form_fields_and_assets_by_name(scenario
     )
     assert text.startswith("【附带资料】分镜页的当前内容（含未保存修改）。")
     assert section(text, "分镜").splitlines()[:2] == [
-        "共 3 镜，合计 21 秒；全片须少于 60 秒，项目没有设目标时长。常规单镜 5–8 秒，"
-        "插入和短反应镜头可以更短；视频模型一次能生成 4–15 秒。",
+        "共 3 镜，合计 21 秒；全片须少于 60 秒，项目没有设目标时长。",
         "当前选中第 2 镜；你的消息提到第 3 镜。",
     ]
     assert shot_block(text, 2).splitlines() == [

@@ -94,14 +94,8 @@ class ArtifactPage(QWidget):
                 if record
                 else None
             )
-            config = (
-                self.workbench.repository.record(deps["config"], state=state)
-                if deps.get("config") in state["records"]
-                else None
-            )
             self.editor.catalog = (catalog or {}).get("content", {}).get("entities", [])
             self.editor.names = {e["asset_id"]: e["name"] for e in self.editor.catalog}
-            self.editor.target_ms = (config or {}).get("content", {}).get("target_duration_ms")
         changed = not self.record or not record or self.record["id"] != record["id"]
         self.record = record
         if changed:

@@ -28,9 +28,6 @@ PLACEHOLDER = re.compile(
 UNRESOLVED = re.compile(r"^(?:原文)?(?:未明确|未描述|待填写|待确定|待确认|待定)[。；，\s]*$|不设定")
 # The finished video must be shorter than this.
 TOTAL_LIMIT_MS = 60000
-# A usual shot under the storyboard skill, and what one MiniMax H3 run can output (model card).
-USUAL_SHOT_MS = (5000, 8000)
-MODEL_SHOT_MS = (4000, 15000)
 SPEC_FIELDS = {
     "character_spec": (
         "age",
@@ -502,64 +499,8 @@ def issue(
     }
 
 
-def local_issues(
-    kind: str, content: JsonObject, config: JsonObject | None = None
-) -> list[JsonObject]:
+def local_issues(kind: str, content: JsonObject) -> list[JsonObject]:
     result = []
-    if kind == "storyboard":
-        total = sum(shot["duration_ms"] for shot in content["shots"])
-        if total >= TOTAL_LIMIT_MS:
-            result.append(
-                issue(
-                    "SHOT-TOTAL-001",
-                    "shots",
-                    f"镜头合计{total / 1000:g}秒，未满足少于{TOTAL_LIMIT_MS // 1000}秒的成片目标",
-                    "核对实际动作和声音容量；消除重复表达或反馈上游压缩，不仅修改汇总标签",
-                )
-            )
-        target = (config or {}).get("target_duration_ms")
-        if target is not None:
-            if target >= 60000:
-                result.append(
-                    issue(
-                        "SHOT-TARGET-001",
-                        "shots",
-                        f"配置目标{target / 1000:g}秒与少于60秒的任务范围冲突",
-                        "明确报告输入冲突，不静默改配置或声称同时满足两种目标",
-                    )
-                )
-            elif total != target:
-                result.append(
-                    issue(
-                        "SHOT-TARGET-002",
-                        "shots",
-                        f"镜头合计{total / 1000:g}秒，与目标{target / 1000:g}秒不一致",
-                        "结合动作、声音和停顿重新编排，不能等比例缩放或添加无效空镜凑时长",
-                    )
-                )
-        lower, upper = (config or {}).get("shot_duration_range_ms", [5000, 15000])
-        for index, shot in enumerate(content["shots"]):
-            if not lower <= shot["duration_ms"] <= upper and not shot.get(
-                "duration_exception_reason"
-            ):
-                result.append(
-                    issue(
-                        "SHOT-003",
-                        f"shots.{index}.duration_ms",
-                        f"镜头超出项目参考区间 {lower / 1000:g}–{upper / 1000:g} 秒，需结合内容判断",
-                        "核对动作和声音是否匹配；合理短镜头或长镜头可以保留，不为满足区间拉伸时长",
-                    )
-                )
-        shots = content["shots"]
-        if len(shots) >= 4 and len({shot["duration_ms"] for shot in shots}) == 1:
-            result.append(
-                issue(
-                    "SHOT-004",
-                    "shots",
-                    "所有镜头时长相同，需核对是否按不同动作和声音需求机械均分",
-                    "逐镜核对内容所需时间；合理同长可以保留，不通过随机改数字制造差异",
-                )
-            )
     if kind in SPEC_FIELDS:
         for field in SPEC_FIELDS[kind]:
             value = content.get(field, "")

@@ -361,10 +361,9 @@ def test_affected_list_keeps_suggested_lengths_and_the_edit_request_passes_them_
         "第 2 镜 · 改法：跟上",
         "第 3 镜 · 改法：收尾 · 建议时长 6.5 秒",
     ]
-    # The model compares lengths against these instead of adding them up itself.
+    # The attachment already carries the total and project requirements.
     assert section(value["material"], "分镜").startswith(
-        "共 3 镜，合计 21 秒；全片须少于 60 秒，项目没有设目标时长。常规单镜 5–8 秒，"
-        "插入和短反应镜头可以更短；视频模型一次能生成 4–15 秒。"
+        "共 3 镜，合计 21 秒；全片须少于 60 秒，项目没有设目标时长。"
     )
 
 

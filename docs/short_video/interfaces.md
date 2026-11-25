@@ -74,7 +74,7 @@ TaskContext 包含 `resumable` 与当前请求的 `network_retries`；其余 `ac
 - 修改镜头：`storyboard_edit={shots: 编辑稿中所选镜头, entities: 本版资产目录}`，须与附带资料的 `edit_shot_ids` 一致；命令另带 `edit_check`（含发送时的镜头顺序）供回复检查。`execute` 收到回复后用 `reply_problems` 检查 revised_shots，有问题时作为同一对话的下一轮再请求 1 次（原请求 + 上次回复 + `repair_request` 列出的问题），修正后通过的镜头更多（或一样多而问题更少）才采用，否则保存第一次回复。
 - [storyboard_edits](../../core/short_video/v2/storyboard_edits.py)：`reply_blocks`／`display_text` 读取并隐藏回复末尾的 ```affected_shots``` 与 ```revised_shots``` JSON 代码块；`history_text` 在之后的请求里把代码块换成一句说明（如“〔列出了受影响的镜头：第 2–4 镜〕”）。`affected_shots(content, shots, order=None)` 按“镜号”对应编辑稿（order 为发送时的镜头顺序），丢弃不存在与重复的镜头，每项 `{shot_id, order, fields, change}`，“建议时长”（秒）转成 `duration_ms`（取整后至少 100 的毫秒数，其他值忽略）；`revised_shots(content, base, entities, order=None)` 读取镜号、取景范围、镜头运动、场景、人物、道具、动作、对白、旁白、音效、时长，场景／人物／道具和说话人按“名称（状态）”对应资产目录（名称按 `asset_names`，同名对象写“寻井人·2”，也认别名），对不上时给出原因。`merge_shot` 保留 shot_id、原文与视频块引用，丢弃编辑中的自由文字，再用 `validation.validate_shot` 与正整数时长检查；`shot_changes` 给出（列名，原来，改成）；`shot_fingerprint` 忽略 order／start_ms／end_ms。`StoryboardEditor.apply_shots(shots)` 按 shot_id 替换并标记底色。`restore(content, marked)` 用于撤销。
 - `build_conversation_context(history, current_message_id, *, system_rules=DEFAULT_SYSTEM_RULES, max_context_chars=48000, attachment=None)` 是纯函数，返回 `ConversationContext(request, messages, omitted_message_ids, shortened_reply_ids, omitted_reply_ids)`：system 消息按通用要求、本页要求（`PAGE_RULES[page]`）、输出格式（只有分镜）分节，之后是交替的历史轮次，最后的 user 消息为附带资料 + “【我的问题】” + 问题；历史里的用户消息前加“〔当时附带……〕”。48,000 字符默认上限包含规则、历史和本轮附带资料；超出时按较早回复缩成开头（`reply_opening`）、省略较早回复、最近一轮回复、丢弃最早整轮的顺序裁剪副本，用户消息不删。仍超限返回 CONTEXT_TOO_LARGE，不截断附带资料或问题，不删除磁盘历史。
-- 分镜：`StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_material(repository, draft, shot_id, storyboard, *, unsaved=False, question="", edit_items=None)` 只读取本版分镜绑定的资料（不用更新的草稿），再调用纯函数 `storyboard_material(draft, shot_id, storyboard, records, *, unsaved=False, question="", edit_items=None, budget=STORYBOARD_CHARS)`：整份分镜按表单字段写成文字（`shot_text`），附全片合计与时长约束（`TOTAL_LIMIT_MS`=60000、`USUAL_SHOT_MS`=[5000, 8000]、`MODEL_SHOT_MS`=[4000, 15000]，常量在 `validation.py`）、当前选中与消息提到的镜号（`mentioned_shots`）、资产目录（名称、状态、别名、仅出声标记，不含设定）、焦点镜头用到的资产基础设定（`SPEC_CHARS` 8,000 字内）、引用的原文和项目要求（`requirement_rows`）；传入 `edit_items=[{shot_id, fields, change, duration_ms?}]` 时另加“本轮要修改的镜头”。超出 budget（20,000 字）时 `fit_shots` 保持焦点镜头及其前后镜完整，其余按 `LEVEL_NOTES` 从最远处逐级缩短并写入 notes。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由分镜和原文覆盖。
+- 分镜：`StoryboardEditor.draft_snapshot()` 返回界面编辑稿副本，不保存、不调用整份分镜的严格校验。`read_storyboard_material(repository, draft, shot_id, storyboard, *, unsaved=False, question="", edit_items=None)` 只读取本版分镜绑定的资料（不用更新的草稿），再调用纯函数 `storyboard_material(draft, shot_id, storyboard, records, *, unsaved=False, question="", edit_items=None, budget=STORYBOARD_CHARS)`：整份分镜按表单字段写成文字（`shot_text`），附实际合计时长、成片上限和项目目标、当前选中与消息提到的镜号（`mentioned_shots`）、资产目录（名称、状态、别名、仅出声标记，不含设定）、焦点镜头用到的资产基础设定（`SPEC_CHARS` 8,000 字内）、引用的原文和项目要求（`requirement_rows`）；传入 `edit_items=[{shot_id, fields, change, duration_ms?}]` 时另加“本轮要修改的镜头”。超出 budget（20,000 字）时 `fit_shots` 保持焦点镜头及其前后镜完整，其余按 `LEVEL_NOTES` 从最远处逐级缩短并写入 notes。视频推广文案块不附带：旁白已在镜头中，动作概述跨多个镜头，由分镜和原文覆盖。
 - 其他页面（[page_material](../../core/short_video/v2/page_material.py)，页面读出纯值后调用）：`source_material(article, ranges, config, *, unsaved)` 为改编范围内的原文（`PAGE_SOURCE_CHARS` 20,000 字封顶）加全部项目要求；`copy_material(stage, rows, config, *, unsaved)` 的 rows 来自 `CopyEditor.form_rows()`，即（名称, 文字）或（块标题, None），项目要求只取 `request_config(stage, …)` 的字段；`asset_prompt_material(spec, entities, current_view, *, unsaved)` 的 spec 为 `PromptEditor.value()`（含正在显示视图的修改）；`shot_video_material(shots, index, entities, video)` 的 video 来自 `MediaPreview.chat_inputs()`：`{prompt, pictures: [{reference, name}], frames: [{label, name}], settings: [{label, value, role}]}`，提示词里没有对应图片的 <Picture N> 写进 notes。界面入口在 [chat_attachments](../../core/gui/pages/short_video/chat_attachments.py)：`chat_offer(page) -> ChatOffer | None` 只读控件，给出标签、按钮写法和不能附带的原因；`chat_attachment(workbench, page, question="")` 组装上述资料。
 - 原文区间限制在绑定选区。镜头的原文坐标由模型写出，常差几个字，`sentence_range(value, start, end, lo, hi)` 将首尾各移到最近的句子边界（句号、问号、叹号、省略号或换行之后，句末右引号／括号归上一句）：向内最多10字，向外最多150字，不越出选区；片段落在一句之内时取整句，150字内无标点时保留原坐标。之后合并重叠或只隔空白的片段，`source_segments` 只含文字，不带原文编号和起止坐标；按完整片段纳入最多6,000字符的原文补充预算。未提供或无法解析的资料显式说明；正在编辑的人物、对白使用原始文本，旧解析值不重复发送。同名角色不猜身份，当前编辑稿优先于历史建议。
 - 停止期间完整返回的回复以 cancelled 保存；失败、取消、中断及无完整回复的轮次不进入后续模型历史。聊天只调用生成模型，不进入质量检查或自动写回。
@@ -135,7 +135,6 @@ schema最多反馈10项、预览最多200字符；syntax沿用行列、偏移及
 | narrative_person | first / third / source，默认 source | 保持或改为第一／第三人称，不暗改人物身份 |
 | target_words | int 或 null | 可选文案字数目标，正数 |
 | target_duration_ms | int 或 null | 可选总时长目标，正数；不限制为 30–90 秒 |
-| shot_duration_range_ms | 默认 [5000,15000] | 参考区间；按动作与声音决定时长，允许合理短镜头和长镜头，不强制等长 |
 | required / forbidden | string[] | 必需、禁止内容，默认空 |
 | permitted_adaptations | string[] | 用户明确允许的改编，例如压缩时间或合并次要人物；默认空 |
 | text_provider | 配置引用 | 阶段生成和聊天共用现有文字服务；提交时冻结实际选择，不保存明文密钥 |
@@ -207,7 +206,7 @@ Storyboard 内容为 `shots[]`；视频文案和资产目录绑定在记录外�
 | 字段 | 类型与规则 | 界面显示 |
 |---|---|---|
 | shot_id / order | 稳定 ID；order 连续正整数 | 镜号：按当前顺序显示，改顺序不改 ID |
-| duration_ms | 正整数 | 时长列（如“8 秒”），短于 4 秒或超过 15 秒标红、不在 5–8 秒内标黄；表单 0.5 秒一档，可设 1–15 秒 |
+| duration_ms | 正整数 | 显示实际时长和时间段，表单每档 0.5 秒，初始输入范围 1–15 秒 |
 | start_ms / end_ms | 由代码按 order 累计，不让模型随意填写 | 时长格提示与表单标题里的时间段 `[起点,终点)` |
 | shot_size | 远景／全景／中景／近景／特写／主观视角／自定义 | 取景范围列与表单 |
 | camera_movement | string | 表单“镜头运动” |
@@ -218,13 +217,12 @@ Storyboard 内容为 `shots[]`；视频文案和资产目录绑定在记录外�
 | dialogue / narration | 对白数组及 string；允许空 | 表单“对白（含旁白）”每行一条，以“人物：”“旁白：”区分 |
 | sound | string，允许空 | 表单“音效” |
 | video_block_refs / source_refs | 视频块引用与原文引用 | 元数据，可展开来源 |
-| duration_exception_reason | string 或 null | 超出建议区间时可空，不作为继续操作的门槛，作为 warning 处置 |
 
 第一镜 start_ms=0，end_ms=start_ms+duration_ms，下一镜 start_ms=前镜 end_ms。没有重叠、负值和缝隙；镜头拆分、合并、排序后全部重新计算。时间轴由 validate_content／recalculate_timeline 根据时长重算，不信任模型提供的 start_ms／end_ms；当前没有单独的时间轴解析报告。
 
-storyboard 的 prepare 根据当前配置 storyboard_skill_id 明确选择性加载[短视频内容分镜 Skill](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)，将ID和完整文本冻结到 command.requirements.skill_id／instruction，检查与重试使用该快照，不重新读取文件或选择 Skill。缺失／null 时不加载，基础提示和审阅也不隐性包含 H3／5–8秒规则。其他阶段 requirements.skill_id=null，即使项目已选 Skill 也不注入其正文；普通聊天亦不使用。
+storyboard 的 prepare 根据当前配置 storyboard_skill_id 明确选择性加载[短视频内容分镜 Skill](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)，将ID和完整文本冻结到 command.requirements.skill_id／instruction，检查与重试使用该快照，不重新读取文件或选择 Skill。缺失或为 null 时使用基础分镜和审阅规则。其他阶段 requirements.skill_id=null，即使项目已选 Skill 也不注入其正文；普通聊天亦不使用。
 
-选中该 Skill 后，H3 常规镜头按5–8秒设计，必要短镜可低于5秒，超过8秒优先拆镜，旧区间仅供参考。duration_ms 仍是计划时长，低于工作流范围需后续裁切，当前未自动裁切。结构字段、模型参数和人工检查入口不变。
+选中该 Skill 后，按动作、声音及前后镜衔接安排时长。duration_ms 表示分镜计划时长，视频生成参数由所选工作流决定。
 
 分镜需覆盖已保存视频文案的有效内容；镜头中无人、静物特写是合法情况。人物对白说话者必须在本镜出场或标记 voice_over；旁白不创建虚构出镜人物。
 
@@ -245,25 +243,25 @@ PromptPage 的镜头页只将 storyboard_version_id 与当前分镜匹配的 Pro
 
 分镜页复制包含未保存编辑；导出仍先处理编辑保存，再建立不可变快照。Markdown 导出复用同一编排函数，按 storyboard 的 asset_catalog 依赖读取精确目录，避免错误使用当前另一版目录。文件导出仅支持 .md，继续生成 .manifest.json 来源清单；项目 schema_version 仍为 2。
 
-模板库以阶段区分 instruction；自定义模板保存为当前 prompt_template 内容（content: stage,instruction），替换后清理旧记录，并继续优先，默认模板引用为阶段 default-v3，小说推文与视频推广文案改写后为 default-v4；版本号随默认任务文字更新，旧版本运行中的任务恢复时提示重新生成。任务冻结完整Prompt、输入、模型与所选Skill；旧运行快照与稿件不改。Prompt由共享事实／格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例组成。演示与当前素材隔离，不能混入实际人物与事件。
+模板库按阶段存储 `instruction`。自定义模板保存为当前 `prompt_template` 内容，包含 `stage` 和 `instruction`，替换后清理旧记录。自定义模板优先。小说推文、视频推广文案和分镜使用 `default-v5`，资产设定使用 `default-v4`，其余阶段默认使用 `default-v3`。版本号随默认任务文字更新，新启动的生成任务使用当前模板。任务冻结生成提示词、输入、模型与所选 Skill，可继续的任务沿用已冻结的生成指令。提示词包含共享事实与格式规则、阶段任务、专属约束、只读资料、独立演示和结构样例。独立演示只示范写法，生成稿件中的人物与事件以当前素材为依据。
 
 ### 9.1 第一阶段：小说推文
 
-默认任务：把原文改写成观众不看原书也能听懂的一条推文。先定一句话能说清的主事件，只留必要人物、动机、行动、因果与已有结果；开头一两句直接交代处境、异常、冲突或关键动作，不用空泛口播套话；正文一段一个推进，背景首次需要时一句带过，称呼统一；口语短句；结尾交代结果或落点，不加评论、说教或预告，不强制悬念、反转或笑点。未指定 target_words 时一般3–6段、约300字以内；人称、语气、必须与禁止内容按配置。
+默认任务是把原文改写成观众可以独立听懂的一条推文。先定一句话能说清的主事件，开头一两句直接给出有张力的具体处境、异常、冲突或动作。正文每段聚焦一次事件推进，保留必要人物、动机、行动、因果、已有结果及影响理解的具体细节。按原文的揭示顺序处理会改变观众理解的信息。需要背景时一句带过，统一人物称呼，用口语短句讲述。结尾落在已有结果或实际停点，省略评论、说教和预告。悬念、反转和笑点由素材和配置决定。未指定 `target_words` 时一般 3–6 段、约 300 字以内。人称、语气及必需和禁止内容按配置。
 
 输入为原文选区与配置，输出 NovelCopy。请求和 AI 审阅只带配置中的 audience、tone、narrative_person、target_words、required、forbidden、permitted_adaptations；保存的配置保持完整。允许合理外化，不新增关键事实；changes 使用原枚举说明删改依据。素材无结果时保留实际停点并说明缺失，不能编造收束。
 
 ### 9.2 第二阶段：视频推广文案
 
-默认任务：把当前小说推文改成看画面、听声音就能懂的视频文案。一块一个视频节拍（一个地点里的一个主要动作或一次信息变化），一般4–8块，推文各段都有承接或删改说明；可见动作写具体可拍的画面，不写镜头术语；旁白只补画面拍不出的时间、前因、心理、关系和数字，提到的人和物在同块画面中出现；对白只留关键短句。开头块直接进入事件，结尾块落在结果画面，不加预告或引导语。未指定目标时长时旁白和对白合计一般不超过约200字，不继续文学润色。
+默认任务是把当前小说推文改成看画面、听声音就能懂的视频文案。按事件推进分块，一块呈现一次主要变化，推文各段都有承接或删改说明。持续连接、接触或牵引造成的连贯动作在同一块写清起始状态、触发、联动和结果。`visible_action` 写具体可见的动作，以及会影响动作或事件理解的环境信息。景别和运镜由分镜决定。对白保留关键短句，旁白补充必要的时间、前因、心理、关系和数字。观众能从当前画面、声音或已交代的线索理解时，相关对象可以有意留在画外。开头块直接进入事件，结尾块落在结果画面，预告或引导语按明确配置添加。未指定目标时长时，旁白和对白合计一般不超过约 200 字。
 
 输入为当前小说推文和原文依据，输出 VideoCopy。配置只带 audience、tone、target_duration_ms、required、forbidden、permitted_adaptations。请求资料先放小说推文正文（opening、paragraphs、cliffhanger、unresolved_facts，不带其 changes 和记录外壳字段），再放原文与配置；AI 审阅看到同样精简的资料。各文字阶段发给模型的原文只含 source_id、ranges 和 text，不再重复 source_refs 与 selection_id，程序侧任务仍保留完整记录。少于一分钟；有效 target_duration_ms 按目标规划，未指定时自然结束，超范围目标如实报告。清晰中文声音可从每秒3–4字估算，另考虑停顿、换人和情绪；顺序累计、并行取覆盖时长，不假称已测配音。
 
 ### 9.3 第三阶段：分镜
 
-默认任务：按视觉与声音节拍拆镜，写清主体、起始状态、主要动作、结束状态、景别、运镜与声音，保持空间及动作连续，不机械按段落切镜或均分时长。输入为 VideoCopy、实际资产目录及用户明确选择的可选 Skill，返回 Storyboard，绝对时间由代码累加。
+默认任务是按视觉与声音节拍为每镜安排一个主要事件，写清主体、起始状态、动作过程、结束状态、景别、运镜与声音。先规划整场的空间关系和连续性，每镜呈现看懂动作所需的可见线索。主动作镜能交代必要的位置关系时直接进入动作，需要补足方位、距离或牵引来源时再放宽构图或加一镜。观众需要亲眼看清持续连接、接触或牵引时，用同一镜头呈现连接点和随动过程，牵引来源按文案顺序揭示。按实际动作和声音安排镜头边界与时长。输入为 VideoCopy、实际资产目录及用户明确选择的可选 Skill，返回 Storyboard，绝对时间由代码累加。
 
-目录只提取当前视频实际出镜、发声或使用的对象与必要状态，原文只用于核对。分镜结构样例不再把全目录人物、道具和全部视频块放进第一镜；实际输出仍须真实覆盖全部视频块。代码给出 SHOT-TOTAL-001（合计达到或超过60秒）、SHOT-TARGET-001（目标超范围）、SHOT-TARGET-002（有效目标不闭合）提醒，手动保存不新增时长门槛。
+目录只提取当前视频实际出镜、发声或使用的对象与必要状态，原文只用于核对。分镜结构样例不再把全目录人物、道具和全部视频块放进第一镜；实际输出仍须真实覆盖全部视频块。审阅结合动作、声音和项目目标核对时长。手动保存按正整数毫秒校验，并重算时间轴。
 
 ### 9.4 人物定妆照
 

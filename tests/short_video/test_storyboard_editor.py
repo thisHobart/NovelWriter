@@ -130,33 +130,30 @@ def test_merge_keeps_unsaved_lines_and_joins_the_text(editor):
     assert shots(editor)[0]["character_text"] == "寻井人、画外音"
 
 
-def test_lengths_are_hinted_and_the_total_is_compared_with_the_limit(editor, scenario):
-    from core.gui import theme
+def test_durations_and_timeline_update_without_warnings(editor, scenario):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
 
     box = editor.duration_input
     assert (box.decimals(), box.singleStep(), box.minimum(), box.maximum()) == (1, 0.5, 1, 15)
     editor.table.selectRow(0)
-    assert editor.duration_hint.text() == "常规 5–8 秒" and not editor.duration_hint.property("level")
-    assert editor.summary.text() == "共 3 镜 · 21 秒 · 少于 60 秒"
+    assert editor.findChild(QLabel, "durationHint") is None
+    assert editor.summary.text() == "共 3 镜 · 21 秒"
     editor.duration_input.setValue(3.5)
     assert shots(editor)[0]["duration_ms"] == 3500 and shots(editor)[1]["start_ms"] == 3500
-    assert editor.duration_hint.property("level") == "danger" and "最短生成 4 秒" in editor.duration_hint.text()
     length = editor.table.item(0, 1)
-    assert length.foreground().color().name().upper() == theme.DANGER and not length.icon().isNull()
+    assert length.toolTip() == "00:00.0–00:03.5"
+    assert length.data(Qt.ForegroundRole) is None and length.icon().isNull()
     editor.duration_input.setValue(9)
-    assert editor.duration_hint.property("level") == "warn" and editor.summary.text() == "共 3 镜 · 23 秒 · 少于 60 秒"
-    editor.target_ms = 20000
-    editor.update_summary()
-    assert editor.summary.text() == "共 3 镜 · 23 秒 · 比目标 20 秒多 3 秒" and editor.summary.property("warn")
-    # Longer than one video run: the box still shows the real length, and the total warns.
+    assert editor.summary.text() == "共 3 镜 · 23 秒"
+    # Saved lengths outside the initial input range still display and are included in the total.
     content = deepcopy(scenario.current("storyboard")["content"])
     for shot, duration in zip(content["shots"], (30000, 20000, 15500)):
         shot["duration_ms"] = duration
-    editor.target_ms = None
     editor.set_content(content)
     editor.table.selectRow(0)
-    assert box.value() == 30 and "超过 15 秒" in editor.duration_hint.text()
-    assert editor.summary.text() == "共 3 镜 · 65.5 秒 · 比 60 秒上限多 5.5 秒" and editor.summary.property("warn")
+    assert box.value() == 30 and editor.table.item(0, 1).icon().isNull()
+    assert editor.summary.text() == "共 3 镜 · 65.5 秒" and editor.summary.property("warn") is None
     # Typing elsewhere never rounds a length the box shows with one decimal.
     content["shots"][1]["duration_ms"] = 2750
     editor.set_content(content)

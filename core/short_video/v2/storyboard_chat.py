@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from .contracts import ArtifactRecord, JsonObject
 from .models import WorkspaceError, require
 from .source import sentence_range, validate_source_ref
-from .validation import MODEL_SHOT_MS, SPEC_FIELDS, TOTAL_LIMIT_MS, USUAL_SHOT_MS
+from .validation import SPEC_FIELDS, TOTAL_LIMIT_MS
 
 if TYPE_CHECKING:
     from .repository import ProjectRepository
@@ -592,9 +592,7 @@ def storyboard_material(
     target = (config or {}).get("content", {}).get("target_duration_ms")
     lines = [
         f"共 {len(shots)} 镜，合计 {seconds(total)} 秒；全片须少于 {TOTAL_LIMIT_MS // 1000} 秒，"
-        + (f"项目目标 {seconds(target)} 秒。" if target else "项目没有设目标时长。")
-        + f"常规单镜 {USUAL_SHOT_MS[0] // 1000}–{USUAL_SHOT_MS[1] // 1000} 秒，插入和短反应镜头可以更短；"
-        f"视频模型一次能生成 {MODEL_SHOT_MS[0] // 1000}–{MODEL_SHOT_MS[1] // 1000} 秒。",
+        + (f"项目目标 {seconds(target)} 秒。" if target else "项目没有设目标时长。"),
         f"当前选中第 {selected + 1} 镜"
         + (f"；你的消息提到{shot_span(i + 1 for i in mentioned)}" if mentioned else "")
         + (f"；本轮要修改{shot_span(i + 1 for i in edits)}" if edits else "")

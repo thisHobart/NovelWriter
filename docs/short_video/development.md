@@ -44,7 +44,7 @@
 
 视频面板的 VIDEO_PROMPT_RULES 在 stage_prompt 的 video_prompt 分支统一加入，保留自定义任务目标。WorkflowService.prepare_video_prompt 冻结本镜分镜、实际使用的资产及视频输入；video_prompt.py依据真实工作流接线生成 Picture 顺序并验证图片哈希，WorkflowParameter.role="duration"标识时长。完整 H3 中文正文位于 video_motion_prompt，video_prompt_binding由代码维护，resolved_prompt／negative_prompt保持原状。沿用 AgentExecution、独立审阅和检查点，模型每次请求及提交前核对媒体来源。UI按镜头与工作流缓存临时编辑，只有选图及时间匹配时回填保存结果，保持手动编辑；文字生成和ComfyUI提交各自独立。回归见 tests/short_video/test_video_prompt.py。
 
-分镜 Skill 资源为 [short-video-content-storyboard/SKILL.md](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)。仅显式选择时注入分镜，其他阶段及聊天不注入。当前 Skill 除短片总时长、常规5–8秒镜头、动作复杂度与衔接外，还规定镜头顺序与景别、对话正反打与轴线视线、旁白与画面分工、开头结尾，并附一镜写法正反例；具体规则以文件为准。Skill 正文只保留模型可执行的规则；H3 时长依据见 [MiniMax H3 官方模型卡](https://huggingface.co/MiniMaxAI/MiniMax-H3) 和 [官方镜头与首尾帧提示词指南](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)，官方输出范围为4–15秒，5–8秒是本项目制作策略。
+分镜 Skill 资源为 [short-video-content-storyboard/SKILL.md](../../core/short_video/v2/skills/short-video-content-storyboard/SKILL.md)。仅显式选择时注入分镜，其他阶段及聊天不注入。该 Skill 按动作、声音和停顿安排单镜时长，并规定镜头顺序与景别、对话正反打与轴线视线、旁白与画面分工、开头结尾。具体规则见正文。
 
 ## 3. 检查点、依赖与提交
 
@@ -60,7 +60,7 @@
 
 镜头资产查询只从当前分镜与准确设定读取，UI 不从正文猜测资产身份。独立 `ShotAssetsPanel` 展示只读列表和可收起详情，与 PromptEditor 编辑状态分离；空提示词不得用其他资产或状态填补。视图选择仅控制查看，不写视频图片选择、业务内容或任务状态，不触发生成。对应回归见 `tests/short_video/test_shot_assets.py`，覆盖同名／不同状态、去重／画外音、缺失／部分视图、准确来源、复制及未保存编辑隔离、视频选择不变、新增／重排和无分镜。
 
-分镜编辑器在 [v2_editor.py](../../core/gui/pages/short_video/v2_editor.py)：`ShotTable` 只读（镜号、时长、取景范围、人物、动作），只管选择、拖动排序和右键菜单；选中镜头的字段由下方表单编辑，表格与表单放在竖向 QSplitter 里。长文字框 `GrowingText` 按 documentLayout 逐块累加当前宽度下的高度，加上边框与文档边距，限制在最少／最多行之间，内容或宽度变化时重算。表单改动直接写回编辑稿并只重填这一行；改时长时重算时间轴，刷新全部行、摘要和标题。时长常量在 `validation.py`：`TOTAL_LIMIT_MS`（成片上限）、`USUAL_SHOT_MS`（分镜 Skill 的常规单镜）、`MODEL_SHOT_MS`（H3 一次能生成的长度），表格着色、摘要和聊天上下文的 `timing` 共用；配置里的 `shot_duration_range_ms` 仍只给审阅 SHOT-003 用。拆分清空后一镜的对白、旁白和音效；新增镜头沿用场景、原文引用与视频块引用（保存校验要求每镜有视频块引用并覆盖全部视频块），其余留空；`value()` 遇到空的必填文字时选中该镜、给表单控件设 `missing` 属性再报错。回归见 `tests/short_video/test_storyboard_editor.py`：只读表格与表单编辑、打开旧分镜时忽略退役字段、拆分、新增与标红、合并（保留输入的对白和人物、旁白多行往返）、时长提示与合计。
+分镜编辑器在 [v2_editor.py](../../core/gui/pages/short_video/v2_editor.py)：`ShotTable` 只读（镜号、时长、取景范围、人物、动作），只管选择、拖动排序和右键菜单；选中镜头的字段由下方表单编辑，表格与表单放在竖向 QSplitter 里。长文字框 `GrowingText` 按 documentLayout 逐块累加当前宽度下的高度，加上边框与文档边距，限制在最少／最多行之间，内容或宽度变化时重算。表单改动直接写回编辑稿并只重填这一行；改时长时重算时间轴，刷新全部行、摘要和标题。时长摘要显示镜数和合计时长。分镜聊天另带项目目标与 `validation.py` 中的成片上限。拆分清空后一镜的对白、旁白和音效；新增镜头沿用场景、原文引用与视频块引用（保存校验要求每镜有视频块引用并覆盖全部视频块），其余留空；`value()` 遇到空的必填文字时选中该镜、给表单控件设 `missing` 属性再报错。回归见 `tests/short_video/test_storyboard_editor.py`：只读表格与表单编辑、打开旧分镜时忽略退役字段、拆分、新增、合并（保留输入的对白和人物、旁白多行往返）、时间段与合计。
 
 ## 4. 会话与媒体边界
 

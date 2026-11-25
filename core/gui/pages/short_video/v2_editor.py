@@ -24,22 +24,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.gui import icons, theme
+from core.gui import theme
 from core.short_video.v2.contracts import JsonObject
 from core.short_video.v2.models import identity, require
 from core.short_video.v2.storyboard_chat import asset_label
-from core.short_video.v2.validation import (
-    MODEL_SHOT_MS,
-    SHOT_TEXT_FIELDS,
-    TOTAL_LIMIT_MS,
-    USUAL_SHOT_MS,
-    recalculate_timeline,
-)
+from core.short_video.v2.validation import SHOT_TEXT_FIELDS, recalculate_timeline
 
 STORYBOARD_COLUMNS = ["镜号", "时长", "取景范围", "人物", "动作"]
 # Widths of every column but the last, which takes the rest.
 COLUMN_WIDTHS = [48, 84, 96, 120]
 SHOT_SIZES = ["远景", "全景", "中景", "近景", "特写", "主观视角"]
+DURATION_INPUT_RANGE_SECONDS = (1, 15)
 # Trimmed on save: a pasted value often brings a line break along.
 TRIMMED_FIELDS = (
     "shot_size",
@@ -61,13 +56,10 @@ QPlainTextEdit[missing="true"], QLineEdit[missing="true"] {{ border:1px solid {t
 QSplitter::handle:vertical {{ height:8px; }}
 QSplitter::handle:vertical:hover {{ background:{theme.LINE}; }}
 QLabel#summary {{ font-size:{theme.FS_SM}px; color:{theme.INK_600}; }}
-QLabel#summary[warn="true"] {{ color:{theme.WARN}; font-weight:600; }}
 QLabel#notice {{ background:{theme.tint(theme.WARN)}; color:{theme.WARN}; font-size:{theme.FS_SM}px;
     border-radius:{theme.RADIUS}px; padding:6px {theme.SP[2]}px; }}
 QLabel#formHeading {{ font-size:{theme.FS_MD}px; font-weight:600; }}
-QLabel#durationHint, QLabel#readOnly {{ font-size:{theme.FS_SM}px; color:{theme.INK_600}; }}
-QLabel#durationHint[level="warn"] {{ color:{theme.WARN}; }}
-QLabel#durationHint[level="danger"] {{ color:{theme.DANGER}; }}
+QLabel#readOnly {{ font-size:{theme.FS_SM}px; color:{theme.INK_600}; }}
 """
 
 
@@ -98,21 +90,6 @@ def join_text(first: str, second: str) -> str:
 def split_names(value: str) -> list[str]:
     names = value.replace(",", "、").replace("，", "、").split("、")
     return [name.strip() for name in names if name.strip() and name.strip() != "无"]
-
-
-def duration_level(milliseconds: int) -> tuple[str, str]:
-    """("danger" | "warn" | "", why): against one video run, then against the usual shot length."""
-    low, high = (value // 1000 for value in MODEL_SHOT_MS)
-    if milliseconds < MODEL_SHOT_MS[0]:
-        return "danger", f"短于 {low} 秒：视频模型一次最短生成 {low} 秒，成片要裁切"
-    if milliseconds > MODEL_SHOT_MS[1]:
-        return "danger", f"超过 {high} 秒：视频模型一次最多生成 {high} 秒，建议拆成两镜"
-    low, high = (value // 1000 for value in USUAL_SHOT_MS)
-    if milliseconds < USUAL_SHOT_MS[0]:
-        return "warn", f"短于常规 {low}–{high} 秒；短反应、插入镜头可以这么短"
-    if milliseconds > USUAL_SHOT_MS[1]:
-        return "warn", f"超过常规 {low}–{high} 秒；动作多时考虑拆镜"
-    return "", f"常规 {low}–{high} 秒"
 
 
 def repolish(widget: QWidget) -> None:
@@ -334,8 +311,6 @@ class StoryboardEditor(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.content, self.loading, self.names, self.catalog = None, False, {}, []
-        # The project's target length for the summary line; None when the project sets none.
-        self.target_ms: int | None = None
         # Shots written in from chat, tinted until the storyboard is saved or reloaded.
         self.marked: set[str] = set()
         self.setStyleSheet(EDITOR_STYLE)
@@ -391,18 +366,11 @@ class StoryboardEditor(QWidget):
         self.duration_input = QDoubleSpinBox()
         self.duration_input.setDecimals(1)
         self.duration_input.setSingleStep(0.5)
-        self.duration_input.setRange(1, MODEL_SHOT_MS[1] / 1000)
+        self.duration_input.setRange(*DURATION_INPUT_RANGE_SECONDS)
         self.duration_input.setSuffix(" 秒")
         self.duration_input.setFixedWidth(110)
         self.duration_input.valueChanged.connect(self.edit_duration)
-        self.duration_hint = QLabel()
-        self.duration_hint.setObjectName("durationHint")
-        self.duration_hint.setWordWrap(True)
-        duration = QHBoxLayout()
-        duration.setSpacing(theme.SP[3])
-        duration.addWidget(self.duration_input)
-        duration.addWidget(self.duration_hint, 1)
-        form.addRow(self.field_label("时长"), duration)
+        form.addRow(self.field_label("时长"), self.duration_input)
         self.size_input = QLineEdit()
         self.size_input.setPlaceholderText("必填，例如中景，也可从右边的菜单选择")
         self.size_input.textChanged.connect(self.edit_size)
@@ -594,11 +562,10 @@ class StoryboardEditor(QWidget):
     def fill_row(self, row: int) -> None:
         shot = self.content["shots"][row]
         timeline = format_shot_timeline(shot)
-        level, why = duration_level(shot["duration_ms"])
         cast, action = self.cast_text(shot), one_line(shot["action"])
         cells = [
             (str(row + 1), timeline),
-            (seconds_text(shot["duration_ms"]), f"{timeline}\n{why}"),
+            (seconds_text(shot["duration_ms"]), timeline),
             (one_line(shot["shot_size"]), shot["shot_size"].strip()),
             (one_line(cast), cast.strip()),
             (action or "（未填写动作）", shot["action"].strip()),
@@ -614,36 +581,13 @@ class StoryboardEditor(QWidget):
             item.setToolTip("\n".join(filter(None, [tip, MARKED_NOTE if marked else ""])))
             item.setData(Qt.BackgroundRole, QColor(theme.ACCENT_TINT) if marked else None)
             item.setData(Qt.ForegroundRole, None)
-        color = {"danger": theme.DANGER, "warn": theme.WARN}.get(level)
-        length = self.table.item(row, 1)
-        length.setData(Qt.ForegroundRole, QColor(color) if color else None)
-        length.setData(Qt.DecorationRole, icons.icon("warn", color, 14) if color else None)
         if not action:
             self.table.item(row, 4).setData(Qt.ForegroundRole, QColor(theme.DANGER))
 
     def update_summary(self) -> None:
         shots = (self.content or {}).get("shots", [])
         total = sum(shot["duration_ms"] for shot in shots)
-        limit, target = TOTAL_LIMIT_MS, self.target_ms
-        parts, warn = [f"共 {len(shots)} 镜", seconds_text(total)], False
-        if total > limit:
-            parts.append(f"比 {limit // 1000} 秒上限多 {seconds_text(total - limit)}")
-        elif total == limit:
-            parts.append(f"成片要少于 {limit // 1000} 秒")
-        warn = total >= limit
-        if target and target < limit:
-            gap = total - target
-            if gap:
-                more = "多" if gap > 0 else "少"
-                parts.append(f"比目标 {seconds_text(target)}{more} {seconds_text(abs(gap))}")
-                warn = True
-            else:
-                parts.append(f"与目标 {seconds_text(target)}一致")
-        elif total < limit:
-            parts.append(f"少于 {limit // 1000} 秒")
-        self.summary.setText(" · ".join(parts) if shots else "")
-        self.summary.setProperty("warn", warn)
-        repolish(self.summary)
+        self.summary.setText(f"共 {len(shots)} 镜 · {seconds_text(total)}" if shots else "")
 
     def show_notice(self, text: str) -> None:
         self.notice.setText(text)
@@ -683,7 +627,6 @@ class StoryboardEditor(QWidget):
         else:
             shots = (self.content or {}).get("shots", [])
             self.heading.setText("在上面的列表里选一镜" if shots else "")
-            self.duration_hint.clear()
             self.size_input.clear()
             self.scene_label.clear()
             self.props_label.clear()
@@ -708,16 +651,9 @@ class StoryboardEditor(QWidget):
 
     def show_duration(self, milliseconds: int) -> None:
         seconds = milliseconds / 1000
-        # A length outside the box's usual range still shows as it is.
-        self.duration_input.setRange(min(1, seconds), max(MODEL_SHOT_MS[1] / 1000, seconds))
+        low, high = DURATION_INPUT_RANGE_SECONDS
+        self.duration_input.setRange(min(low, seconds), max(high, seconds))
         self.duration_input.setValue(seconds)
-        self.update_duration_hint(milliseconds)
-
-    def update_duration_hint(self, milliseconds: int) -> None:
-        level, why = duration_level(milliseconds)
-        self.duration_hint.setText(why)
-        self.duration_hint.setProperty("level", level)
-        repolish(self.duration_hint)
 
     def set_missing(self, widget: QWidget, missing: bool) -> None:
         if bool(widget.property("missing")) != missing:
@@ -738,13 +674,12 @@ class StoryboardEditor(QWidget):
             return
         picked[1]["duration_ms"] = max(1, round(value * 1000))
         self.content = recalculate_timeline(self.content)
-        # Every later shot moves: refresh all rows, the total and this shot's heading and hint.
+        # Every later shot moves: refresh all rows, the total and this shot's heading.
         for row in range(self.table.rowCount()):
             self.fill_row(row)
         self.update_summary()
         row, shot = self.current()
         self.update_heading(row, shot)
-        self.update_duration_hint(shot["duration_ms"])
         self.changed.emit()
 
     def edit_size(self, text: str) -> None:
@@ -806,7 +741,7 @@ class StoryboardEditor(QWidget):
             "order": row + 2,
             "start_ms": 0,
             "end_ms": 0,
-            "duration_ms": USUAL_SHOT_MS[0],
+            "duration_ms": 5000,
             "scene_ref": deepcopy(base["scene_ref"]),
             "characters": [],
             "props": [],

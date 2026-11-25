@@ -247,7 +247,6 @@ def default_config() -> JsonObject:
         "narrative_person": "source",
         "target_words": None,
         "target_duration_ms": None,
-        "shot_duration_range_ms": [5000, 15000],
         "required": [],
         "forbidden": [],
         "permitted_adaptations": [],
@@ -279,13 +278,6 @@ def validate_config(content: JsonObject) -> JsonObject:
     for name in ("target_words", "target_duration_ms"):
         if config[name] is not None:
             positive_int(config[name], name)
-    duration = config["shot_duration_range_ms"]
-    require(
-        isinstance(duration, list) and len(duration) == 2, "INVALID_INPUT", "请设置镜头建议区间"
-    )
-    for value in duration:
-        positive_int(value, "镜头时长")
-    require(duration[0] <= duration[1], "INVALID_INPUT", "镜头时长区间顺序错误")
     require(
         isinstance(config["tracks"], dict) and set(config["tracks"]) == set(TRACKS),
         "INVALID_INPUT",

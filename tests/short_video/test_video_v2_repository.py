@@ -554,7 +554,7 @@ def test_storyboard_skill_is_frozen_and_timing_feedback_reaches_retry(prompt_pro
         if len(calls) == 2:
             task = json.loads(prompt[prompt.index("\n{") + 1:])
             assert task["task"]["requirements"]["instruction"] == command["requirements"]["instruction"]
-            assert any(i["rule_id"] == "SHOT-004" for i in task["code_issues"])
+            assert task["code_issues"] == []
             return encode({"issues": [{"rule_id": "SHOT-TIMING-001", "severity": "warning",
                 "target_path": "shots.0.duration_ms", "explanation": "短动作被拉长",
                 "suggestion": feedback, "quote": None, "source_refs": []}]})
@@ -597,21 +597,25 @@ def test_storyboard_equal_short_shots_can_pass_without_forced_retiming(prompt_pr
     assert result["review_status"] == "passed" and result["retries_used"] == 0
     record = repository.current("storyboard")
     assert [s["duration_ms"] for s in record["content"]["shots"]] == [1500] * 4
-    # A manual save also accepts short shots without a mandatory exception reason.
+    # A manual save keeps the chosen lengths.
     saved = repository.save("storyboard", record["content"], record["dependency_refs"],
                             expected_revision=repository.load()["revision"])
     assert saved["content"]["shots"][-1]["end_ms"] == 6000
 
 
-def test_storyboard_review_uses_project_duration_range(prompt_project):
+def test_storyboard_review_ignores_legacy_duration_range(prompt_project):
+    from core.short_video.v2.models import validate_config
     from core.short_video.v2.review import build_review_prompt
 
-    record = prompt_project.current("storyboard")  # 7 seconds, inside the old default range.
+    record = prompt_project.current("storyboard")
+    config = deepcopy(prompt_project.current("config")["content"])
+    config["shot_duration_range_ms"] = [1000, 4000]
+    assert validate_config(config) == config
     prompt = build_review_prompt(ProjectService(prompt_project).context(), record,
-                                task={"context": {"config": {"shot_duration_range_ms": [1000, 4000]}}})
+                                task={"context": {"config": config}})
     data = json.loads(prompt[prompt.index("\n{") + 1:])
-    assert [i["rule_id"] for i in data["code_issues"]] == ["SHOT-003"]
-    assert data["code_issues"][0]["target_path"] == "shots.0.duration_ms"
+    assert data["code_issues"] == []
+    assert "shot_duration_range_ms" not in data["task"]["context"]["config"]
 
 
 def test_storyboard_skill_requires_an_explicit_choice(prompt_project, monkeypatch):
@@ -905,7 +909,7 @@ def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, m
     service = WorkflowService(project, transport=send)
     for stage in ("novel_copy", "video_copy", "asset_catalog", "storyboard"):
         command = service.prepare(stage)
-        assert command["prompt_ref"] == f"{stage}-default-v{4 if stage.endswith('_copy') else 3}"
+        assert command["prompt_ref"] == f"{stage}-default-v{3 if stage == 'asset_catalog' else 5}"
         result = service.execute(command)
         assert result["review_status"] == "passed"
     assert len(calls) == 8
@@ -920,21 +924,23 @@ def test_closed_event_pipeline_preserves_ending_voice_only_and_export(project, m
     assert "他拿起钥匙离开。" in destination.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("duration,target,rules", [
-    (59999, None, []), (60000, None, ["SHOT-TOTAL-001"]),
-    (75000, 45000, ["SHOT-TOTAL-001", "SHOT-TARGET-002"]),
-    (45000, 60000, ["SHOT-TARGET-001"]), (45000, 45000, []),
+@pytest.mark.parametrize("duration,target", [
+    (59999, None), (60000, None), (75000, 45000), (45000, 60000), (45000, 45000),
 ])
-def test_total_duration_is_a_review_clue_not_a_save_gate(prompt_project, duration, target, rules):
-    from core.short_video.v2.validation import local_issues
+def test_total_duration_stays_available_without_automatic_issues(prompt_project, duration, target):
+    from core.short_video.v2.review import build_review_prompt
 
     board = prompt_project.current("storyboard")
     content = deepcopy(board["content"])
     content["shots"][0]["duration_ms"] = duration
-    issues = local_issues("storyboard", content,
-                          {"target_duration_ms": target, "shot_duration_range_ms": [1, 100000]})
-    assert [i["rule_id"] for i in issues] == rules
-    assert all(i["severity"] == "warning" for i in issues)
+    prompt = build_review_prompt(
+        ProjectService(prompt_project).context(),
+        {**board, "content": content},
+        task={"context": {"config": {"target_duration_ms": target}}},
+    )
+    data = json.loads(prompt[prompt.index("\n{") + 1:])
+    assert data["code_issues"] == []
+    assert data["task"]["context"]["config"]["target_duration_ms"] == target
     saved = prompt_project.save("storyboard", content, board["dependency_refs"],
                                 expected_revision=prompt_project.load()["revision"])
     assert saved["content"]["shots"][-1]["end_ms"] == duration

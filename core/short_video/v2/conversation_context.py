@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from .contracts import JsonObject
 from .models import WorkspaceError, require, text
 from .page_material import validate_attached
+from .prompts import ASSET_CONTENT_RULES
 from .storyboard_chat import validate_storyboard_reference
 from .storyboard_edits import history_notes, history_text, reply_prose
 from .validation import TOTAL_LIMIT_MS
@@ -106,19 +107,19 @@ ASSET_PROMPT_PAGE_RULES = bullets(
 
 ASSET_KIND_PAGE_RULES = {
     "character": bullets(
-        "人物：保持同一人物的辨识特征、体型、服装和指定状态。正面头部特写重点写脸、发型、表情和入画的衣领。"
+        "人物：" + ASSET_CONTENT_RULES["character_spec"],
+        "保持同一人物的辨识特征、体型、服装和指定状态。正面头部特写写脸、发型、表情和入画的衣领。"
         "全身正、侧、背面描述各角度可见的服装轮廓、站姿和鞋靴。配饰和发缝的左右以人物自身为准。",
-        "把受寒、疲惫等状态写成当前视图中能看到的特征，例如鼻尖冻红、眼下淡青。",
     ),
     "scene": bullets(
-        "场景：用门、窗、壁炉等固定物确定空间布局。写清摄影机站在哪里、朝哪里看、哪些区域可见。"
+        "场景：" + ASSET_CONTENT_RULES["scene_spec"],
         "空间全景交代主要区域的关系，反向全景沿用同一布局，按新观察方向描述画面中的左右和遮挡。",
         "保持关键物件和光源在空间中的位置。设定尚未交代关键物件的位置时，将其列为待确认项。",
     ),
     "prop": bullets(
-        "道具：各视图保持道具的轮廓、材质、比例、部件位置和当前状态。正面写正面特征，微侧面补充厚度与侧边结构，"
+        "道具：" + ASSET_CONTENT_RULES["prop_spec"],
+        "各视图保持道具的部件位置和指定状态。正面写正面特征，微侧面补充厚度与侧边结构，"
         "微俯视写从斜上方能看到的表面、开口或内部。",
-        "默认独立展示道具。涉及空白或已写、打开或关闭等差别时，以当前选中的状态为准。",
     ),
 }
 
