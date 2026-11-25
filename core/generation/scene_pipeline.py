@@ -8,7 +8,6 @@ compatible with existing NovelWriter workspaces.
 from __future__ import annotations
 
 from core.generation.errors import fail
-from core.generation.lore_repository import lore_context
 from core.generation.ai_helper import send_prompt, get_backend
 import json
 from glob import glob
@@ -22,18 +21,14 @@ from core.generation.helper_fns import (
 )
 from core.generation.prompt_context import (
     build_location_guidance,
-    build_story_parameter_lines,
     find_scene_world_conflicts,
     format_genre_label,
     normalize_story_parameters,
-    sanitize_lore_content,
 )
 from core.generation.planning_contract import (
     CONTRACT_SCHEMA_VERSION,
     PlanningContractError,
-    build_existing_planning_index,
     collect_history_defects,
-    contract_output_instructions,
     downstream_obligations,
     extract_scene_plan_contract,
     load_planning_contracts,
@@ -47,8 +42,18 @@ from core.generation.chapter_continuity import (
     continuity_defects,
     continuity_instructions,
     continuity_schema_block,
-    established_context,
-    neglected_threads,
+)
+from core.generation.planning_prompt import (
+    MISSING_LORE,
+    SHORT_STORY_MAX_SCENES,
+    SHORT_STORY_MIN_SCENES,
+    act_files,
+    continuity_context,
+    contract_instructions,
+    outline_prompt,
+    planning_lore,
+    scene_plan_prompt,
+    short_story_prompt,
 )
 from core.generation.narrative_graph import NarrativeGraphManager
 from core.generation.story_ledger import StoryLedgerManager
@@ -93,12 +98,8 @@ def show_error(title: str, message: str, *args, **kwargs) -> None:
     fail(title, message)
 
 
-#: 短篇的场景数上下限。短篇整篇是作为**一个章节**送进质量闸门的，而那套闸门的
-#: 重修预算与分数门槛都是在 2-3 场的章节上实测定下来的。实测一篇 10 场的短篇在
-#: 三轮评审里分数一路走低（2.52 → 2.43 → 1.91），30 分钟后判不通过、整篇作废。
-#: 这个上限让短篇的形状落回闸门能处理的范围。
-SHORT_STORY_MIN_SCENES = 3
-SHORT_STORY_MAX_SCENES = 6
+#: 短篇的场景数上下限，定义和理由见 planning_prompt；这里保留名字，旧代码照旧能引用。
+__all__ = ["ScenePipeline", "SHORT_STORY_MIN_SCENES", "SHORT_STORY_MAX_SCENES"]
 
 
 class ScenePipeline:
@@ -154,68 +155,16 @@ class ScenePipeline:
 
     @staticmethod
     def _continuity_context(output_dir, chapter_number):
-        """第 N 章规划时，关于「从第 N-1 章什么状态接过来」的全部已知事实。
-
-        全部来自已经落盘的契约与正文，不发起任何调用。
-        """
-        chapter_number = int(chapter_number)
-        if chapter_number <= 1:
-            return {}
-        contracts = load_planning_contracts(output_dir)
-        prior = [item for item in contracts if int(item["chapter"]) < chapter_number]
-        previous = next(
-            (item for item in prior if int(item["chapter"]) == chapter_number - 1), None
-        )
-        events = (previous or {}).get("timeline_events", []) or []
-        tail = ""
-        for folder in ("story/content/chapters", "chapters"):
-            candidate = os.path.join(
-                output_dir, *folder.split("/"), f"chapter_{chapter_number - 1}.md"
-            )
-            if os.path.isfile(candidate):
-                try:
-                    with open(candidate, "r", encoding="utf-8") as handle:
-                        tail = handle.read()[-2000:]
-                except (OSError, UnicodeError):
-                    tail = ""
-                break
-        # 「连着三章同一个功能」是硬规则，模型必须先知道前两章填了什么。
-        recent_functions = {
-            int(item["chapter"]): str(item.get("chapter_function", "") or "")
-            for item in prior
-            if int(item["chapter"]) in (chapter_number - 1, chapter_number - 2)
-        }
-        return {
-            "previous_tail": tail,
-            "established": established_context(prior, chapter_number),
-            "previous_last_event": events[-1] if events else None,
-            "neglected": neglected_threads(prior, chapter_number),
-            "recent_functions": recent_functions,
-        }
+        """第 N 章规划时，关于「从第 N-1 章什么状态接过来」的全部已知事实（只读）。"""
+        return continuity_context(output_dir, chapter_number)
 
     @staticmethod
     def _contract_instructions(output_dir, chapter_number, story_params):
-        index = build_existing_planning_index(output_dir, chapter_number)
-        graph_manager = NarrativeGraphManager(output_dir)
-        ledger_manager = StoryLedgerManager(output_dir)
-        ledger_manager.initialize(story_params)
-        narrative_context = graph_manager.planning_context(
-            chapter_number, ledger_manager.load_suspense_ledger()
-        )
-        profile = resolve_domain_profile(story_params)
-        domain_fields = {
-            field.name: field.schema_hint for field in profile.contract_fields
-        }
-        return contract_output_instructions(
-            chapter_number,
-            index,
-            domain_fields=domain_fields,
-            obligations=downstream_obligations(output_dir, chapter_number),
-            narrative_context=narrative_context,
-            continuity_context=ScenePipeline._continuity_context(
-                output_dir, chapter_number
-            ),
-        )
+        # 先把账本和叙事图文件建好、旧字段迁走，再按只读的办法拼：检查脚本拼的和这里
+        # 是同一个函数，只是不做这一步。
+        StoryLedgerManager(output_dir).initialize(story_params)
+        NarrativeGraphManager(output_dir)
+        return contract_instructions(output_dir, chapter_number, story_params)
 
     @staticmethod
     def _save_scene_plan_and_contract(
@@ -914,13 +863,18 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                 claimed_chapters.setdefault(number, section)
 
         for current_section_name in sections_to_process:
-            safe_selected_structure_name = selected_structure_name.lower().replace(' ', '_')
-            safe_section_name = current_section_name.lower().replace(' ', '_').replace(':','').replace('/','_')
-
-            input_filename_base = f"{safe_selected_structure_name}_{safe_section_name}.md"
-            input_filepath = os.path.join(output_dir, "story", "structure", input_filename_base)
-            output_filename_base = f"chapter_outlines_{safe_selected_structure_name}_{safe_section_name}.md"
-            output_filepath = os.path.join(chapter_outlines_dir, output_filename_base)
+            files = act_files(
+                output_dir,
+                selected_structure_name,
+                current_section_name,
+                chapter_outlines_dir,
+                dir_manager.get_full_path("scene_plans_dir"),
+            )
+            safe_selected_structure_name = files.structure_slug
+            safe_section_name = files.section_slug
+            input_filename_base = os.path.basename(files.structure_file)
+            input_filepath = files.structure_file
+            output_filepath = files.outline_file
 
             # 已有可用大纲就跳过。整批重写会让下游 23 份场景规划和契约
             # 对着一份已经变了的大纲，而它们并不会因此失效——错位是静默的。
@@ -951,20 +905,15 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                 missing_structure.append(current_section_name)
                 continue
 
-            prompt = (
-                f"请为一部{genre_label}小说生成章节大纲。"
-                f"小说采用“{zh_label(selected_structure_name)}”框架。"
-                f"该结构包含：{', '.join(zh_label(section) for section in sections_to_process)}。\n"
-                f"当前重点是 **{zh_label(current_section_name)}**。以下是这一部分的详细规划：\n\n{detailed_section_content}\n\n"
-                f"请根据“{zh_label(current_section_name)}”的详细规划，逐章生成大纲。"
-                "每一章都应有明确目的，并推动这一结构部分的故事。"
-                "为每章建议所含场景，并列出本章涉及的人物、势力和具体地点。"
-                f"“{zh_label(current_section_name)}”从第 {chapter_number_offset} 章开始，请依次分配章号。\n"
-                "每一章必须单独起一行标题，写成“### 第 N 章：标题”，使用阿拉伯数字，"
-                "不要用“第一章”这样的中文数字，也不要把章标题混进正文段落。\n"
-                + "\n".join(build_story_parameter_lines(story_params)) + "\n"
-                + "\n".join(f"- {line}" for line in location_guidance) + "\n"
-                "请以 Markdown 格式输出，不要使用代码围栏，也不要在响应中写出“Markdown”一词。"
+            prompt = outline_prompt(
+                genre_label=genre_label,
+                structure_name=selected_structure_name,
+                sections=sections_to_process,
+                section_name=current_section_name,
+                section_content=detailed_section_content,
+                start_chapter=chapter_number_offset,
+                story_params=story_params,
+                location_guidance=location_guidance,
             )
             save_prompt_to_file(
                 output_dir,
@@ -1075,12 +1024,11 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             return
 
         lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
-        try:
-            lore_content = lore_context(output_dir) or sanitize_lore_content(open_file(lore_content_path))
-        except FileNotFoundError:
+        lore_content = planning_lore(output_dir)
+        if lore_content is None:
             show_warning("文件缺失", f"找不到世界观文件 {lore_content_path}，场景规划可能缺少背景。")
             self.app.logger.warning(f"Lore file {lore_content_path} not found for scene planning.")
-            lore_content = "缺少整体世界观背景。"
+            lore_content = MISSING_LORE
         
         # 章号以章节大纲写明的为准。此前这里用的是「按出现顺序累加」的计数器，
         # 任何被跳过的部分都会让后续所有章号整体前移，规划内容和文件名随之错位。
@@ -1092,11 +1040,17 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
         incomplete_sections = []
 
         for current_section_name in sections_to_process:
-            safe_selected_structure_name = selected_structure_name.lower().replace(' ', '_')
-            safe_section_name = current_section_name.lower().replace(' ', '_').replace(':','').replace('/','_')
-            
-            chapter_outline_input_base = f"chapter_outlines_{safe_selected_structure_name}_{safe_section_name}.md"
-            chapter_outline_input_filepath = os.path.join(chapter_outlines_dir, chapter_outline_input_base)
+            files = act_files(
+                output_dir,
+                selected_structure_name,
+                current_section_name,
+                chapter_outlines_dir,
+                scene_plans_dir,
+            )
+            safe_selected_structure_name = files.structure_slug
+            safe_section_name = files.section_slug
+            chapter_outline_input_filepath = files.outline_file
+            chapter_outline_input_base = os.path.basename(chapter_outline_input_filepath)
 
             self.app.logger.info(f"Scene Planning for section: {current_section_name} using chapter outline: {chapter_outline_input_filepath}")
 
@@ -1143,15 +1097,8 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             )
 
             for current_chapter_for_prompt in section_chapter_numbers:
-                output_scene_plan_base = (
-                    f"scenes_{safe_selected_structure_name}_{safe_section_name}"
-                    f"_ch{current_chapter_for_prompt}.md"
-                )
                 os.makedirs(scene_plans_dir, exist_ok=True)
-                output_scene_plan_filepath = os.path.join(
-                    scene_plans_dir,
-                    output_scene_plan_base,
-                )
+                output_scene_plan_filepath = files.scene_plan_file(current_chapter_for_prompt)
 
                 if self._has_usable_scene_plan(
                     output_scene_plan_filepath,
@@ -1177,29 +1124,21 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                     )
                     continue
                 
-                prompt_lines = [
-                    f"请为{genre_label}故事第 {current_chapter_for_prompt} 章规划场景（篇幅：{zh_label(story_length)}）。",
-                    f"故事采用“{zh_label(selected_structure_name)}”框架，包含：{', '.join(zh_label(section) for section in sections_to_process)}。",
-                    f"当前正在设计 **{zh_label(current_section_name)}** 的场景。",
-                    *build_story_parameter_lines(story_params),
-                    f"\n以下是包含第 {current_chapter_for_prompt} 章的“{zh_label(current_section_name)}”逐章大纲：\n{section_chapter_outline_content}",
-                    f"\n请重点把上述大纲中的第 {current_chapter_for_prompt} 章扩展为详细场景。"
-                ]
-                
-                if story_length == "Novella":
-                    prompt_lines.append("本故事是中篇小说，本章场景应紧凑而有冲击力，聚焦必要的情节推进和人物时刻。")
-                
-                prompt_lines.extend([
-                    "每个场景需说明：环境与具体地点、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。",
-                    f"请保持人物弧光、势力和地点与第 {current_chapter_for_prompt} 章大纲中的建议一致。",
-                    *[f"- {line}" for line in location_guidance],
-                    f"整体世界观如下，供参考：\n{lore_content}",
-                    "\n请使用结构清晰的 Markdown。每个场景必须使用阿拉伯数字编号，并以独立标题开始，例如“### 场景 1：场景标题”或“## 场景 2 - 场景标题”。不要使用“场景一”之类的中文数字编号，也不要只使用加粗文本充当场景标题。",
-                    self._contract_instructions(
+                prompt = scene_plan_prompt(
+                    genre_label=genre_label,
+                    chapter_number=current_chapter_for_prompt,
+                    story_length=story_length,
+                    structure_name=selected_structure_name,
+                    sections=sections_to_process,
+                    section_name=current_section_name,
+                    story_params=story_params,
+                    section_outline=section_chapter_outline_content,
+                    location_guidance=location_guidance,
+                    lore_content=lore_content,
+                    contract_text=self._contract_instructions(
                         output_dir, current_chapter_for_prompt, story_params
                     ),
-                ])
-                prompt = "\n".join(prompt_lines)
+                )
 
                 self.app.logger.info(f"--- Scene Plan Prompt for Chapter {current_chapter_for_prompt} (Section: {current_section_name}, Length: {story_length}) ---")
                 # Log prompt saving here (using save_prompt_to_file from helper_fns)
@@ -1324,46 +1263,23 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             return
 
         # --- Load Lore Context (Optional but good) ---
-        lore_content = "缺少整体世界观背景。"
-        lore_content_path = os.path.join(output_dir, "story", "lore", "generated_lore.md")
-        if os.path.exists(lore_content_path):
-            lore_content = lore_context(output_dir) or sanitize_lore_content(open_file(lore_content_path))
-            self.app.logger.info(f"Loaded lore context from {lore_content_path}")
+        lore_content = planning_lore(output_dir, short_story=True)
+        if lore_content is None:
+            lore_content = MISSING_LORE
+        else:
+            self.app.logger.info("Loaded lore context for short story planning")
 
         # --- Construct the Prompt ---
-        prompt_lines = [
-            f"请为{genre_label}短篇小说《{novel_title}》规划场景。",
-            f"故事采用“{zh_label(selected_structure_name)}”框架。",
-            *build_story_parameter_lines(story_params),
-            "以下是完整短篇小说的详细总体情节：\n\n",
-            "--- 短篇小说详细情节 ---",
-            short_story_plot_content,
-            "\n\n--- 短篇小说详细情节结束 ---",
-            # 场景数必须给上限。这里以前只说「拆分成一系列场景」，实测模型给了 10 个，
-            # 而下游把整篇短篇当作**一个章节**送进质量闸门——那套闸门的重修预算（2 轮）
-            # 与分数门槛都是在 2-3 场的章节上实测定下来的。10 场进去的结果是三轮评审
-            # 分数一路走低（2.52 → 2.43 → 1.91），30 分钟后判不通过、整篇作废。
-            f"\n请根据详细情节，把故事拆分成 {SHORT_STORY_MIN_SCENES}-{SHORT_STORY_MAX_SCENES} "
-            f"个清晰、独立的场景。这是短篇，不要按长篇那样一场一场铺开；"
-            f"宁可让单场承载更多内容，也不要超过 {SHORT_STORY_MAX_SCENES} 个场景。",
-            "每个场景需说明：\n",
-            "  - 建议的场景编号（如场景 1、场景 2）。\n",
-            "  - 环境与具体地点。\n",
-            "  - 出场人物。\n",
-            "  - 场景中的关键行动和事件。\n",
-            "  - 关键对白片段或对白概要。\n",
-            "  - 该场景如何依据详细情节推动整体故事，或发展人物/主题。\n",
-            "确保场景之间衔接自然，并覆盖详细情节中的完整叙事弧。\n",
-            *[f"- {line}" for line in location_guidance],
-            "\n重要格式要求：",
-            "每个场景必须以 Markdown 标题开始，并使用阿拉伯数字编号，例如“### 场景 1：<场景标题>”或“## 场景 2 - <场景标题>”。不要使用中文数字编号或只加粗的标题。",
-            "标题下方再列出该场景的环境、人物、关键行动等要点。",
-            "\n如有需要，可参考以下整体世界观：",
-            lore_content,
-            "\n现在请按场景输出完整的短篇规划，合并为一份结构清晰的 Markdown 文档，不要使用代码围栏。",
-            self._contract_instructions(output_dir, 1, story_params),
-        ]
-        prompt = "\n".join(prompt_lines)
+        prompt = short_story_prompt(
+            genre_label=genre_label,
+            novel_title=novel_title,
+            structure_name=selected_structure_name,
+            story_params=story_params,
+            plot=short_story_plot_content,
+            location_guidance=location_guidance,
+            lore_content=lore_content,
+            contract_text=self._contract_instructions(output_dir, 1, story_params),
+        )
 
         prompt_base_name = f"plan_scenes_short_story_{safe_structure_name_for_file}_prompt"
         prompt_filepath = save_prompt_to_file(output_dir, prompt_base_name, prompt)

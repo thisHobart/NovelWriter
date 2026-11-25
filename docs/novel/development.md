@@ -14,7 +14,7 @@
 | 阶段入口、阶段状态 | `core/generation/stage_pipeline.py`、`workflow_status.py` |
 | 参数规范化与作品要求 | `core/generation/parameters.py`、`parameter_compliance.py` |
 | 世界设定 | `core/generation/lore_pipeline.py`、`lore_cast.py`、`lore_repository.py`、`lore_run.py` |
-| 故事结构 / 场景规划 | `structure_pipeline.py`、`scene_pipeline.py`、`design_contract.py`、`planning_contract.py` |
+| 故事结构 / 场景规划 | `structure_pipeline.py`、`scene_pipeline.py`、`design_contract.py`、`planning_contract.py`；「场景规划」两个按钮的提示词 `planning_prompt.py`，大纲和规划里认名字 `planning_checks.py` |
 | 章节循环 | `agents/writing/chapter_writing_agent.py`、`core/generation/chapter_generation_loop.py`、`chapter_acceptance.py`、`chapter_continuity.py` |
 | 评审与题材档案 | `agents/review/domain_review_agent.py`、`core/generation/domain_profiles.py` |
 | 账本、叙事图、待复审 | `story_ledger.py`、`narrative_graph.py`、`pending_review.py`、`plan_fault.py` |
@@ -32,7 +32,12 @@
 
 # 全量回归（含两个功能的边界检查）
 .\venv\Scripts\python.exe -m pytest tests -q --tb=short
+
+# 不花调用的规划检查：只读，不调用模型；加 --chapters 逐章列一行
+.\venv\Scripts\python.exe tools\check_planning.py <作品目录> --chapters
 ```
+
+规划检查用「场景规划」页正式流程同一套函数拼出每一幕、每一章会收到的提示词（不发送），报告每章场景数、场景边界（写第 N 场时应拦和实际拦的后面场次边界）、提示词每块字数和截断、内部字段、「本章必须埋下 / 引入」里其实早已存在的条目、名字为空的条目、登记表里没有的人名和地名，以及跨章检查的结果。想看一份作品的规划现在是什么样，或者改了规划流程想对比前后，就在作品副本上跑它。
 
 测试不调用真实模型。`tests/common/test_feature_boundaries.py` 会拦下小说与短视频之间的互相引用。
 

@@ -288,7 +288,26 @@ def _requires_edge(source_id: str, target_id: str) -> Dict[str, Any]:
 class NarrativeGraphManager:
     """Own and query the current story's versioned narrative design graph."""
 
+    #: 只读模式：不建图文件、不迁移旧字段，图文件不存在时按空图算。
+    _read_only = False
+
     def __init__(self, output_dir: str):
+        self._set_paths(output_dir)
+        self._ensure_initialised()
+        self._migrate_legacy_dynamic_fields()
+
+    @classmethod
+    def reader(cls, output_dir: str) -> "NarrativeGraphManager":
+        """只读的叙事图：拼提示词、做不花调用的检查时用，作品目录里一个文件都不动。
+
+        正式流程照旧用构造函数，它会先把图文件建好、旧字段迁走，再读。
+        """
+        manager = cls.__new__(cls)
+        manager._set_paths(output_dir)
+        manager._read_only = True
+        return manager
+
+    def _set_paths(self, output_dir: str) -> None:
         self.output_dir = output_dir
         self.ledger_dir = os.path.join(output_dir, "system", "story_ledgers")
         self.graph_path = os.path.join(self.ledger_dir, "narrative_graph.json")
@@ -296,8 +315,6 @@ class NarrativeGraphManager:
             self.ledger_dir, "narrative_graph_changes.jsonl"
         )
         self.lock_path = os.path.join(self.ledger_dir, ".narrative_graph.lock")
-        self._ensure_initialised()
-        self._migrate_legacy_dynamic_fields()
 
     @staticmethod
     def empty_graph() -> Dict[str, Any]:
@@ -318,6 +335,8 @@ class NarrativeGraphManager:
                 _atomic_write_json(self.graph_path, self.empty_graph())
 
     def _read_graph(self) -> Dict[str, Any]:
+        if self._read_only and not os.path.exists(self.graph_path):
+            return self.empty_graph()
         try:
             with open(self.graph_path, "r", encoding="utf-8") as handle:
                 graph = json.load(handle)

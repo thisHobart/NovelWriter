@@ -71,6 +71,29 @@ def contract_output_instructions(
     This deliberately uses the same LLM response as the Markdown plan; it does
     not introduce another generation call.
     """
+    blocks = contract_instruction_blocks(
+        chapter_number,
+        existing_index,
+        domain_fields=domain_fields,
+        obligations=obligations,
+        narrative_context=narrative_context,
+        continuity_context=continuity_context,
+    )
+    return "".join(text for _label, text in blocks).strip()
+
+
+def contract_instruction_blocks(
+    chapter_number: int,
+    existing_index: Dict[str, Any] | None = None,
+    domain_fields: Dict[str, str] | None = None,
+    obligations: Dict[str, Any] | None = None,
+    narrative_context: Dict[str, Any] | None = None,
+    continuity_context: Dict[str, Any] | None = None,
+) -> List[Tuple[str, str]]:
+    """契约格式说明按块拆开：（中文名，原文）。原文首尾相接再去掉首尾空白，就是整段说明。
+
+    不花调用的规划检查按块量字数、找截断，所以要知道每块从哪到哪。
+    """
     index = existing_index or {}
     # The open-thread list is the part the model gets wrong most often, so it is
     # spelled out rather than left to be inferred from a truncated index dump.
@@ -303,7 +326,7 @@ available_clues、available_facts 都是空的）。因此下面这几个字段�
     continuity_block = continuity_instructions(
         chapter_number, **(continuity_context or {})
     )
-    return f"""
+    schema_text = f"""
 
 完成场景规划后，在文档末尾追加以下机器可读契约。标记必须原样保留，标记之间只能放一个合法 JSON 对象，不要使用代码围栏。
 {CONTRACT_START}
@@ -354,17 +377,25 @@ timeline_events 的 scene 填这件事发生在本章第几场（scene_1、scene
 - 心理状态、认知立场、行动目标、所在位置、伤势、掌握的情报等会随剧情推进变化的，一律填 false——人物弧光本来就要变，填 true 会让后面章节的正常成长被判成前后矛盾。
 - 拿不准就填 false。
 
-{thread_block}
-{obligation_block}
-本章规划前叙事图上下文如下。blocked_reveals 和 forbidden_nodes 绝对不能选择；
-plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进节点：
-{narrative_text}
-{empty_graph_block}{graph_usage_block}
-
-既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：
-{index_text}
-{continuity_block}
-""".strip()
+"""
+    return [
+        ("契约格式与填写规则", schema_text),
+        ("仍未了结的悬念", thread_block + "\n"),
+        ("后续章节依赖本章", obligation_block + "\n"),
+        (
+            "叙事图上下文",
+            "本章规划前叙事图上下文如下。blocked_reveals 和 forbidden_nodes 绝对不能选择；\n"
+            "plot_thread_updates 声明 advance 时必须用 via_node_ids 指出实际推进节点：\n"
+            f"{narrative_text}\n",
+        ),
+        ("叙事图规则", f"{empty_graph_block}{graph_usage_block}\n\n"),
+        (
+            "既有事实、时间事件与已了结线索",
+            "既有事实、时间事件与已了结线索如下，重复出现的必须沿用其中的 id：\n"
+            f"{index_text}\n",
+        ),
+        ("上一章结束时的状态", f"{continuity_block}\n"),
+    ]
 
 
 def extract_scene_plan_contract(response: str, chapter_number: int) -> Tuple[str, Dict[str, Any]]:
@@ -602,26 +633,30 @@ def later_scene_boundaries(
         return []
     later: List[str] = []
     for item in boundaries:
-        if isinstance(item, dict):
-            marked = _marked_scene(item.get("scene_number"))
-            if marked is None and str(item.get("scene_number", "")).strip().isdigit():
-                marked = int(item["scene_number"])
-            if marked is None:
-                marked = next(
-                    (
-                        _marked_scene(item.get(key))
-                        for key in _SCENE_MARKER_KEYS
-                        if _marked_scene(item.get(key)) is not None
-                    ),
-                    None,
-                )
-            text = json.dumps(item, ensure_ascii=False)
-        else:
-            marked = _marked_scene(item)
-            text = str(item)
+        marked = boundary_scene(item)
+        text = json.dumps(item, ensure_ascii=False) if isinstance(item, dict) else str(item)
         if marked is not None and marked > scene_number:
             later.append(text)
     return later
+
+
+def boundary_scene(item: Any) -> int | None:
+    """一条场景边界属于第几场；认不出时返回 None。"""
+    if isinstance(item, dict):
+        marked = _marked_scene(item.get("scene_number"))
+        if marked is None and str(item.get("scene_number", "")).strip().isdigit():
+            marked = int(item["scene_number"])
+        if marked is None:
+            marked = next(
+                (
+                    _marked_scene(item.get(key))
+                    for key in _SCENE_MARKER_KEYS
+                    if _marked_scene(item.get(key)) is not None
+                ),
+                None,
+            )
+        return marked
+    return _marked_scene(item)
 
 
 def load_planning_contracts(output_dir: str) -> List[Dict[str, Any]]:
