@@ -127,20 +127,58 @@ def contract_instruction_blocks(
 
     obligation_block = ""
     if obligations:
-        lines = [
-            f"- 悬念 {info['id']}（{info.get('thread', '')}）：第 {info['closed_at']} 章要了结它，"
-            f"本章必须埋下，且 deadline_chapter 不得早于第 {info['closed_at']} 章"
-            for info in obligations.get("threads_closed_later", {}).values()
-        ] + [
-            f"- 事实 {info['id']}（{info.get('fact', '')}）：第 {info['used_at']} 章要引用它，本章必须引入"
-            for info in obligations.get("facts_used_later", {}).values()
-        ]
-        if lines:
-            obligation_block = (
-                "\n后续章节已经规划完毕，并依赖本章提供以下内容，必须原样保留：\n"
-                + "\n".join(lines)
-                + "\n"
+        # 按出处分开说：本章自己埋下、引入的才写「本章必须埋下 / 引入」；更早的章节已经
+        # 埋下的，再这样写就和「id 不能与既有悬念重复」打架，模型只能二选一。
+        deadlines = {
+            str(state.get("id", "")): _chapter_or_none(state.get("deadline_chapter"))
+            for state in open_threads
+        }
+        own: List[str] = []
+        earlier: List[str] = []
+        for info in obligations.get("threads_closed_later", {}).values():
+            label = _named(info["id"], info.get("thread"))
+            closed_at = info["closed_at"]
+            origin = _chapter_or_none(info.get("opened_at"))
+            if origin is None or origin >= chapter_number:
+                own.append(
+                    f"- 悬念 {label}：第 {closed_at} 章要了结它，"
+                    f"本章必须埋下，且 deadline_chapter 不得早于第 {closed_at} 章"
+                )
+                continue
+            line = (
+                f"- 悬念 {label}：第 {origin} 章已埋下，第 {closed_at} 章要了结，"
+                "本章不能了结它，也不能把它写没"
             )
+            deadline = deadlines.get(str(info["id"]))
+            if deadline is not None and deadline <= chapter_number:
+                line += (
+                    f"；它原定第 {deadline} 章了结，本章要写一条 extend 记录，"
+                    f"把 deadline_chapter 推迟到第 {closed_at} 章或更晚"
+                )
+            earlier.append(line)
+        for info in obligations.get("facts_used_later", {}).values():
+            label = _named(info["id"], info.get("fact"))
+            used_at = info["used_at"]
+            origin = _chapter_or_none(info.get("introduced_at"))
+            if origin is None or origin >= chapter_number:
+                own.append(f"- 事实 {label}：第 {used_at} 章要引用它，本章必须引入")
+            else:
+                earlier.append(
+                    f"- 事实 {label}：第 {origin} 章已引入，第 {used_at} 章要引用，"
+                    "本章不能推翻它，也不能把它写没"
+                )
+        groups = []
+        if own:
+            groups.append(
+                "后续章节已经规划完毕，并依赖本章提供以下内容，必须原样保留：\n" + "\n".join(own)
+            )
+        if earlier:
+            groups.append(
+                "下面这些更早的章节已经埋下或引入，后续章节还要用到；"
+                "本章不要再埋下或引入一次：\n" + "\n".join(earlier)
+            )
+        if groups:
+            obligation_block = "\n" + "\n\n".join(groups) + "\n"
 
     index_text = compact_json(
         {
@@ -756,6 +794,19 @@ def _thread_label(thread_id: str, *sources: Dict[str, Any]) -> str:
     return str(thread_id)
 
 
+def _named(record_id: Any, name: Any) -> str:
+    """「PT-001-01（谁寄的信）」；谁都没写名字时只写编号，不留一对空括号。"""
+    name = str(name or "").strip()
+    return f"{record_id}（{name}）" if name else str(record_id)
+
+
+def _chapter_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fact_definition_conflict(
     fact_id: str,
     existing: Dict[str, Any],
@@ -899,8 +950,12 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
     # 只有「本章或更早引入」的东西才是本章的义务。少了这一层过滤，一本已经规划到
     # 第 23 章的书在补第 6 章时，会被要求埋下第 14 章才提出的悬念——一个永远无法
     # 满足的条件，于是中间的空洞再也补不回来。
+    # 同时记下引入那一章写的名字：后面章节引用时常常不写名字，提示词里就成了
+    # 「事实 F-003-02（）」，模型不知道指的是什么。
     opened_at: Dict[str, int] = {}
     introduced_at: Dict[str, int] = {}
+    opened_name: Dict[str, str] = {}
+    introduced_name: Dict[str, str] = {}
     for contract in contracts:
         chapter = int(contract["chapter"])
         for record in contract.get("plot_thread_updates", []):
@@ -909,9 +964,15 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
                 or record.get("extend")
             ):
                 continue
-            opened_at.setdefault(str(record.get("id", "")), chapter)
+            thread_id = str(record.get("id", ""))
+            if thread_id not in opened_at:
+                opened_at[thread_id] = chapter
+                opened_name[thread_id] = str(record.get("thread") or "").strip()
         for record in contract.get("facts_added", []):
-            introduced_at.setdefault(str(record.get("id", "")), chapter)
+            fact_id = str(record.get("id", ""))
+            if fact_id not in introduced_at:
+                introduced_at[fact_id] = chapter
+                introduced_name[fact_id] = str(record.get("fact") or "").strip()
 
     def belongs_to_a_later_chapter(record_id: str, known: Dict[str, int]) -> bool:
         # 落盘的契约最准确；没有落盘时退回 ID 里编码的来源章（PT-014-01 → 14）。
@@ -934,12 +995,16 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
             thread_id = str(record.get("id", ""))
             if belongs_to_a_later_chapter(thread_id, opened_at):
                 continue
+            # opened_at 只取落盘契约里真正埋下它的那一章；问不出来时是 None，提示词
+            # 照旧要求本章埋下。
             threads.setdefault(
                 thread_id,
                 {
                     "id": thread_id,
-                    "thread": record.get("thread", ""),
+                    "thread": str(record.get("thread") or "").strip()
+                    or opened_name.get(thread_id, ""),
                     "closed_at": int(contract["chapter"]),
+                    "opened_at": opened_at.get(thread_id),
                 },
             )
     facts: Dict[str, Dict[str, Any]] = {}
@@ -953,8 +1018,10 @@ def downstream_obligations(output_dir: str, chapter_number: int) -> Dict[str, An
                     fact_id,
                     {
                         "id": fact_id,
-                        "fact": record.get("fact", ""),
+                        "fact": str(record.get("fact") or "").strip()
+                        or introduced_name.get(fact_id, ""),
                         "used_at": int(contract["chapter"]),
+                        "introduced_at": introduced_at.get(fact_id),
                     },
                 )
     return {"threads_closed_later": threads, "facts_used_later": facts}
@@ -1121,15 +1188,29 @@ def iter_history_defects(
 
     if not obligations:
         return
-    declared_threads = {
-        str(record.get("id", "")) for record in contract.get("plot_thread_updates", [])
-    }
     declared_by_id = {
         str(record.get("id", "")): record
         for record in contract.get("plot_thread_updates", [])
     }
+    closing_now = {
+        str(record.get("id", ""))
+        for record in contract.get("plot_thread_updates", [])
+        if str(record.get("action") or record.get("status") or "").lower() in {"close", "closed"}
+    }
     for thread_id, info in obligations.get("threads_closed_later", {}).items():
         declared = declared_by_id.get(thread_id)
+        # 后面的章已经安排了了结，本章先了结掉，那一章的了结就落空了；跨章检查到最后
+        # 才会点名那一章，不如在本章重试时就说清楚。
+        if thread_id in closing_now:
+            yield PlanningContractError(
+                f"第 {info['closed_at']} 章要了结悬念 {_thread_label(thread_id, info, declared)}，"
+                "本章不能先了结它。请删掉本章这条了结记录；如果它的截止章已到，改写成 "
+                '{"id":"%s","status":"open","extend":true,"deadline_chapter":%s}'
+                % (thread_id, info["closed_at"]),
+                chapters=(chapter_number,),
+                code="thread_closed_before_payoff",
+            )
+            continue
         if declared is None and thread_id not in states:
             yield PlanningContractError(
                 f"第 {info['closed_at']} 章要了结悬念 {_thread_label(thread_id, info)}，"
@@ -1161,8 +1242,8 @@ def iter_history_defects(
         if fact_id in declared_facts or fact_id in known_facts:
             continue
         yield PlanningContractError(
-            f"第 {info['used_at']} 章要引用事实 {fact_id}（{info.get('fact', '')}），"
-            f"本章必须保留它的引入记录",
+            f"第 {info['used_at']} 章要引用事实 {_named(fact_id, info.get('fact'))}，"
+            "本章必须保留它的引入记录",
             chapters=(chapter_number,),
             code="fact_introduction_dropped",
         )

@@ -99,11 +99,12 @@ def test_the_check_reports_what_planning_left_behind(tmp_path):
     assert (by_chapter[2].should_block_first, by_chapter[2].blocked_first) == (2, 2)
     assert by_chapter[2].recognised == 3
     assert by_chapter[3].with_end_state == 2
-    # 重规划第 2 章时，第 1 章就埋下的悬念被写成「本章必须埋下」。
-    assert by_chapter[2].stale_obligations == ["PT-001-01"]
-    assert by_chapter[1].stale_obligations == []
-    # 第 2 章引用事实时没写名字，重规划第 1 章的提示词里就成了「事实 F-001-01（）」。
-    assert by_chapter[1].empty_names == ["F-001-01"]
+    # 重规划第 2 章时，第 1 章就埋下的悬念写成「第 1 章已埋下」，不再是「本章必须埋下」。
+    assert by_chapter[2].stale_obligations == []
+    assert "悬念 PT-001-01（谁寄的信）：第 1 章已埋下，第 3 章要了结" in by_chapter[2].prompt
+    # 第 2 章引用事实时没写名字，重规划第 1 章的提示词取第 1 章引入时写的名字。
+    assert by_chapter[1].empty_names == []
+    assert "事实 F-001-01（钥匙）：第 2 章要引用它，本章必须引入" in by_chapter[1].prompt
     # 规划提示词按块量过；契约那一块里没有截断。
     assert by_chapter[2].blocks["本幕逐章大纲"] > 0 and by_chapter[2].truncated_blocks == []
     assert set(report.outline_prompts) == {"Beginning"}
@@ -203,3 +204,12 @@ def test_names_are_read_from_the_people_and_place_lines():
     found = unregistered_names(plan, registry)
     assert (found.people, found.places) == (["陆巡"], ["海港市"])
     assert unregistered_names(plan, {}).people == []
+
+
+def test_the_check_counts_obligations_with_or_without_a_name():
+    prompt = ("- 悬念 PT-003-01：第 9 章要了结它，本章必须埋下\n"
+              "- 事实 F-001-01（钥匙）：第 9 章要引用它，本章必须引入\n"
+              "- 事实 F-002-01（）：第 9 章要引用它，本章必须引入\n")
+    assert [record for _kind, record, _verb in check_planning._OBLIGATION.findall(prompt)] == [
+        "PT-003-01", "F-001-01", "F-002-01"]
+    assert check_planning._EMPTY_NAME.findall(prompt) == ["PT-003-01", "F-002-01"]

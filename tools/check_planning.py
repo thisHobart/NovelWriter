@@ -81,8 +81,9 @@ INTERNAL_FIELDS = (
     "continuation", "stale",
 )
 _INTERNAL = re.compile(r'"(_[A-Za-z_]+|' + "|".join(INTERNAL_FIELDS) + r')"\s*:')
-_OBLIGATION = re.compile(r"^- (悬念|事实) ([A-Za-z]+-\d+-\d+)（.*本章必须(埋下|引入)", re.M)
-_EMPTY_NAME = re.compile(r"(?:悬念|事实) ([A-Za-z]+-\d+-\d+)（）")
+_OBLIGATION = re.compile(r"^- (悬念|事实) ([A-Za-z]+-\d+-\d+).*本章必须(埋下|引入)", re.M)
+# 名字为空：写成一对空括号，或者编号后面直接跟冒号、一个名字都没有。
+_EMPTY_NAME = re.compile(r"(?:悬念|事实) ([A-Za-z]+-\d+-\d+)(?:（）|：)")
 #: 旧契约里写「这一场到哪为止」的几种字段。
 LEGACY_END_KEYS = ("end", "end_action", "end_line", "end_cut")
 #: 认场次的标准答案：比正式代码宽，认不出时按在列表里的位置算。
