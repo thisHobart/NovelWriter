@@ -94,6 +94,6 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 - 改名：`preview` 同步结构化引用，并把世界设定内自由文本（正文、背景、卡片描述、登记表）里的完整旧名换成新名（`rename_plan`、`swap_names`）。旧名只有一个字或是别的名字的一部分时不换，记在 `LorePreview.kept`；换掉的处数在 `LorePreview.replaced`，编辑窗口用 `rename_impact(preview)` 写成说明。后面阶段的文件不改，列进待核对。
 - 撤回：`change_log()` 返回 `{"undo": 最近一次改动, "redo": 最近一次撤回}`；`undo(id)`、`redo(id)` 拿同一把锁，写入前先把当前磁盘状态记下来。每次保存、生成（经 `tracked_generation`）、采用草稿和 `acknowledge` 都记一条改动；新改动之后不能再恢复更早撤回的那条。
 - 待核对：`review_summary(output_dir)` 把待核对项按阶段汇总成几行，每行带文件列表。
-- 后面阶段的提示词：`lore_context(output_dir)` 只带还属于现有人物的背景文件（`current_backgrounds`，按 `background_<身份>_<姓名>.md` 认人）。
+- 后面阶段的提示词：`lore_context(output_dir)` 只带还属于现有人物的背景文件（`current_backgrounds`，按 `background_<身份>_<姓名>.md` 认人）；旧版本留下的 `story/lore/name_mapping.json`（`LEGACY_TABLES`）也不带。两类文件都留在磁盘上。
 
 `core/generation/lore_run.py` 从生成记录推算页面状态：`latest_by_product` 每份产物最新一次，`needs_attention` / `attention_receipts` 还要作者处理的几份，`edited_after_save` 保存后是否手动改过，`stale_lore` 按生成先后找出过期的几项。
