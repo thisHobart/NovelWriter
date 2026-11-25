@@ -278,6 +278,7 @@ class LorePage(StagePage):
         self.status_action.clicked.connect(self._status_action_clicked)
         strip.addWidget(self.status_label, 1)
         strip.addWidget(self.status_action, 0, Qt.AlignTop)
+        strip.setAlignment(Qt.AlignTop)   # 没有页签时说明贴在顶部，不浮在中间
         self._status_task = None
         container.body.addWidget(self.status_strip)
 
