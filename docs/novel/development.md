@@ -9,7 +9,7 @@
 |---|---|
 | 工作区、步骤栏 | `core/gui/pages/novel/workspace.py`、`step_rail.py` |
 | 各阶段页面 | `core/gui/pages/novel/*_page.py`，设定编辑窗口 `lore_editor.py`、`lore_results.py` |
-| 参数读写、选项 | `core/gui/pages/novel/params_store.py`、`core/config/story_options.py` |
+| 参数读写、选项 | `core/gui/pages/novel/params_store.py`、`core/config/story_options.py`（含篇幅档案 `LENGTH_PROFILES`：每档全篇字数、章数、每章场数、每场字数、势力和人物数、写法特点） |
 | 界面读产物 | `core/gui/pages/novel/services/artifacts.py` |
 | 阶段入口、阶段状态 | `core/generation/stage_pipeline.py`、`workflow_status.py` |
 | 参数规范化与作品要求 | `core/generation/parameters.py`、`parameter_compliance.py` |
@@ -37,7 +37,7 @@
 .\venv\Scripts\python.exe tools\check_planning.py <作品目录> --chapters
 ```
 
-规划检查用「场景规划」页正式流程同一套函数拼出每一幕、每一章会收到的提示词（不发送），报告每章场景数（和建议范围比，长篇每章 2–4 场、短篇 3–6 场）、场景边界（写第 N 场时应拦和实际拦的后面场次边界）、提示词每块字数和截断、内部字段、「本章必须埋下 / 引入」里其实早已存在的条目、名字为空的条目、材料篇幅放不下去掉了块的提示词、本章大纲点名却没带卡片的人物、每一幕大纲提示词带了哪几块设定材料、登记表里没有的人名和地名，以及跨章检查的结果。想看一份作品的规划现在是什么样，或者改了规划流程想对比前后，就在作品副本上跑它。
+规划检查用「场景规划」页正式流程同一套函数拼出每一幕、每一章会收到的提示词（不发送），报告每章场景数（和篇幅档案的建议范围比，长篇、中篇每章 2–4 场，短篇 3–6 场，短视频脚本 2–3 场）、每幕大纲写了几章（和档案的每幕章数比）、场景边界（写第 N 场时应拦和实际拦的后面场次边界）、提示词每块字数和截断、内部字段、「本章必须埋下 / 引入」里其实早已存在的条目、名字为空的条目、材料篇幅放不下去掉了块的提示词、本章大纲点名却没带卡片的人物、每一幕大纲提示词带了哪几块设定材料、登记表里没有的人名和地名，以及跨章检查的结果。想看一份作品的规划现在是什么样，或者改了规划流程想对比前后，就在作品副本上跑它。
 
 测试不调用真实模型。`tests/common/test_feature_boundaries.py` 会拦下小说与短视频之间的互相引用。
 

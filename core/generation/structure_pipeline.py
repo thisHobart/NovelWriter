@@ -31,7 +31,7 @@ from core.generation.domain_profiles import resolve_domain_profile
 import os
 import traceback
 import json
-from core.config.story_options import STRUCTURE_SECTIONS_MAP, act_file_stem
+from core.config.story_options import STRUCTURE_SECTIONS_MAP, act_file_stem, length_profile
 from core.localization import zh_label
 from core.lore_localization import display_value
 import logging
@@ -577,9 +577,15 @@ class StructurePipeline:
                 prompt_lines.append(f"\n\n## 紧邻的上一部分“{zh_label(previous_section_name_for_prompt)}”详细内容：\n{previous_section_content}")
                 prompt_lines.append(f"\n请确保当前部分“{zh_label(current_section_name_for_prompt)}”既承接上述前文，也符合整体故事结构。")
 
-            # Add novella-specific instruction if applicable
-            if story_length == "Novella":
-                prompt_lines.append("\n本故事是中篇小说，请控制本部分规模，保持紧凑和聚焦，同时保证本部分的信息完整。")
+            # 篇幅档案：全书多长、这一部分大约写几章、这一档的写法特点。
+            profile = length_profile(story_length)
+            if profile:
+                per_act = profile.chapters_per_act(selected_structure_name)
+                prompt_lines.append(
+                    f"\n本作是{zh_label(story_length)}：{profile.summary(selected_structure_name)}。"
+                    + (f"这一部分大约写 {per_act} 章，" if per_act else "")
+                    + f"请按这个规模安排本部分的事件。写法特点：{profile.traits}"
+                )
 
             prompt_lines.extend([
                 f"\n\n请为 **{zh_label(current_section_name_for_prompt)}** 详细说明：\n",
@@ -702,6 +708,10 @@ class StructurePipeline:
         parameters = ui.parameters
         selected_structure_name = parameters.get("story_structure")
         novel_title = parameters.get("novel_title", "未命名短篇小说")
+        story_length = parameters.get("story_length", parameters.get("Story Length", "Short Story"))
+        profile = length_profile(story_length)
+        if not (profile and profile.single_chapter):
+            story_length, profile = "Short Story", length_profile("Short Story")
 
         if not selected_structure_name:
             self.app.logger.error("No story structure selected in parameters. Cannot outline short story.")
@@ -760,8 +770,9 @@ class StructurePipeline:
 
         # --- Construct the Prompt ---
         prompt_lines = [
-            f"请为短篇小说《{novel_title}》规划详细情节。",
+            f"请为{zh_label(story_length)}《{novel_title}》规划详细情节。",
             f"故事采用“{zh_label(selected_structure_name)}”框架，各阶段为：{', '.join(zh_label(stage) for stage in structure_stages)}。",
+            f"篇幅：{profile.summary()}。请按这个规模安排情节。写法特点：{profile.traits}",
             "请生成一份从开端到结局、覆盖所有阶段的连贯详细情节。\n",
             "每个阶段都要详细说明：\n",
             "  - 关键事件和情节发展。\n",

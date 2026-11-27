@@ -3,6 +3,7 @@
 import re
 from typing import Any, Dict, Iterable, List
 
+from core.config.story_options import length_profile
 from core.localization import zh_label
 from core.lore_localization import display_value
 
@@ -56,6 +57,9 @@ def build_story_parameter_lines(parameters: Dict[str, Any] | None) -> List[str]:
         "## 作品参数（最高优先级）：",
         f"- 类型：{format_genre_label(params)}",
     ]
+    # 篇幅后面括注这一档多长（全篇字数、幕数章数、每章几场、每场多少字），另起一行写篇幅特点；
+    # 不认识的篇幅（以前的取值）照旧只写名字。
+    profile = length_profile(params.get("Story Length"))
     for key, label in (
         ("Story Length", "篇幅"),
         ("Story Structure", "结构"),
@@ -64,7 +68,10 @@ def build_story_parameter_lines(parameters: Dict[str, Any] | None) -> List[str]:
     ):
         value = params.get(key)
         if value:
-            lines.append(f"- {label}：{zh_label(value)}")
+            detail = f"（{profile.summary(params.get('Story Structure'))}）" if key == "Story Length" and profile else ""
+            lines.append(f"- {label}：{zh_label(value)}{detail}")
+    if profile:
+        lines.append(f"- 篇幅特点：{profile.traits}")
     return lines
 
 

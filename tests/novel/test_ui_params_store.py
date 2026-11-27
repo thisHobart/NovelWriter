@@ -62,7 +62,7 @@ def test_missing_file_returns_empty(tmp_path):
 
 
 def test_length_decides_structure():
-    assert story_options.LENGTH_OPTIONS == ["Short Story", "Novella", "Novel (Standard)"]
+    assert story_options.LENGTH_OPTIONS == ["Short Story", "Novella", "Novel (Standard)", "Short Video Script"]
     assert story_options.default_structure_for("Short Story") == "3-Act Structure"
     assert story_options.default_structure_for("Novella") == "3-Act Structure"
     assert story_options.default_structure_for("Novel (Standard)") == "6-Act Structure"

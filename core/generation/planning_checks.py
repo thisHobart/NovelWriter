@@ -28,12 +28,26 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Tuple
 
+from core.config.story_options import LENGTH_PROFILES, length_profile
 from core.generation.lore_repository import CONTRACT, lore_files
 from core.generation.scene_material import mentioned, name_terms
 
 #: 长篇每章场景数的建议范围。样例作品 30 章是 2–4 场（前 10 章 2 场，后面 3 场，一章 4 场）；
-#: 作者确认前只记进运行记录，不打回。
-LONG_FORM_SCENE_RANGE: Tuple[int, int] = (2, 4)
+#: 作者确认前只记进运行记录，不打回。数字在篇幅档案里（``story_options.LENGTH_PROFILES``）。
+LONG_FORM_SCENE_RANGE: Tuple[int, int] = LENGTH_PROFILES["Novel (Standard)"].scenes
+
+
+def scene_range_for(story_length: Any) -> Tuple[int, int]:
+    """这一档篇幅每章几场；不认识的篇幅（以前的取值，走长篇流程）按长篇算。"""
+    profile = length_profile(story_length)
+    return profile.scenes if profile else LONG_FORM_SCENE_RANGE
+
+
+def chapter_count_note(count: int, expected: int | None) -> str:
+    """一幕大纲的章数和篇幅档案建议的不一样时写成一句（“写了 7 章，建议 5 章”）；一样或没有建议时是空文字。"""
+    if not expected or int(count) == int(expected):
+        return ""
+    return f"写了 {int(count)} 章，建议 {int(expected)} 章"
 
 PEOPLE_FIELDS = ("涉及人物", "出场人物")
 PLACE_FIELDS = ("环境与具体地点", "具体地点")

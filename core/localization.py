@@ -28,6 +28,7 @@ ZH_LABELS = {
     "Short Story": "短篇小说",
     "Novella": "中篇小说",
     "Novel (Standard)": "长篇小说",
+    "Short Video Script": "短视频脚本",
     # 结构
     "3-Act Structure": "三幕式结构",
     "6-Act Structure": "六幕式结构",

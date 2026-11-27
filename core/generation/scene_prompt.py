@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence
 
+from core.config.story_options import is_single_chapter
 from core.generation.domain_profiles import DomainProfile
 from core.generation.helper_fns import scene_heading
 from core.generation.planning_contract import contract_for_scene, later_scene_boundaries
@@ -145,10 +146,11 @@ def _header_lines(
 ):
     if chapter_number is None:
         titled = f"《{novel_title}》" if novel_title else ""
-        yield f"请撰写{genre_label}短篇小说{titled}中的一个场景。"
+        kind = zh_label(story_length) if is_single_chapter(story_length) else "短篇小说"
+        yield f"请撰写{genre_label}{kind}{titled}中的一个场景。"
         if structure_name:
             yield f"故事采用“{zh_label(structure_name)}”框架。"
-        yield "下面会提供短篇小说中单个场景的详细规划，请只写这个场景的完整正文。"
+        yield f"下面会提供{kind}中单个场景的详细规划，请只写这个场景的完整正文。"
         yield "不要写其他场景，也不要概括整个故事。"
         return
 

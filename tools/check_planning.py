@@ -34,7 +34,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config.directory_config import get_directory_manager  # noqa: E402
-from core.config.story_options import STRUCTURE_SECTIONS_MAP  # noqa: E402
+from core.config.story_options import STRUCTURE_SECTIONS_MAP, is_single_chapter, length_profile  # noqa: E402
 from core.generation.helper_fns import (  # noqa: E402
     parse_chapter_numbers,
     parse_scene_sections,
@@ -44,9 +44,11 @@ from core.generation.lore_repository import lore_files  # noqa: E402
 from core.generation.planning_checks import (  # noqa: E402
     LONG_FORM_SCENE_RANGE,
     NameFindings,
+    chapter_count_note,
     listed_names,
     load_registry,
     scene_count_note,
+    scene_range_for,
     unregistered_names,
 )
 from core.generation.planning_contract import (  # noqa: E402
@@ -59,8 +61,6 @@ from core.generation.planning_contract import (  # noqa: E402
 )
 from core.generation.planning_prompt import (  # noqa: E402
     MISSING_LORE,
-    SHORT_STORY_MAX_SCENES,
-    SHORT_STORY_MIN_SCENES,
     act_files,
     book_outlines,
     contract_instructions,
@@ -81,6 +81,7 @@ from core.generation.scene_material import mentioned, name_terms, setting_record
 from core.generation.stage_pipeline import load_stage_parameters  # noqa: E402
 from core.generation.story_ledger import StoryLedgerManager  # noqa: E402
 from core.generation.workflow_status import expected_chapter_count  # noqa: E402
+from core.localization import zh_label  # noqa: E402
 
 #: 契约格式里本来就要模型照抄的英文字段在这一块，不算内部字段。
 SCHEMA_BLOCK = "契约格式与填写规则"
@@ -139,6 +140,10 @@ class PlanningReport:
     #: 每一幕大纲提示词的原文（不打印，测试拿它和正式流程比对）。
     outline_texts: Dict[str, str] = field(default_factory=dict)
     outline_names: NameFindings = field(default_factory=NameFindings)
+    #: 篇幅档案建议的每章场景数、每幕章数（没有建议时是 None），和每一幕大纲实际写了几章。
+    scene_range: Tuple[int, int] = LONG_FORM_SCENE_RANGE
+    chapters_per_act: Optional[int] = None
+    act_chapters: Dict[str, int] = field(default_factory=dict)
     plan_names: NameFindings = field(default_factory=NameFindings)
     registry_found: bool = False
     defects: List[Tuple[str, str]] = field(default_factory=list)
@@ -156,7 +161,10 @@ def collect(output_dir: str) -> PlanningReport:
     structure = params.get("story_structure", params.get("Story Structure", "6-Act Structure"))
     story_length = params.get("story_length", params.get("Story Length", "Novel (Standard)"))
     report = PlanningReport(output_dir=output_dir, structure=structure,
-                            expected_chapters=expected_chapter_count(output_dir))
+                            expected_chapters=expected_chapter_count(output_dir),
+                            scene_range=scene_range_for(story_length))
+    profile = length_profile(story_length)
+    report.chapters_per_act = profile.chapters_per_act(structure) if profile else None
     registry = load_registry(output_dir)
     report.registry_found = bool(registry)
     try:
@@ -167,12 +175,12 @@ def collect(output_dir: str) -> PlanningReport:
     origins = _origins(contracts)
     genre_label = format_genre_label(story_params)
     location_guidance = build_location_guidance(story_params)
-    lore = planning_lore(output_dir, short_story=story_length == "Short Story")
+    lore = planning_lore(output_dir, short_story=is_single_chapter(story_length))
     if lore is None:
         report.notes.append("作品没有世界观，提示词里世界观一块写的是“缺少整体世界观背景。”")
         lore = MISSING_LORE
 
-    if story_length == "Short Story":
+    if is_single_chapter(story_length):
         report.short_story = True
         _collect_short_story(report, output_dir, structure, story_params, genre_label,
                              location_guidance, lore, registry, origins)
@@ -215,6 +223,7 @@ def _collect_long_form(report, output_dir, structure, story_length, story_params
             report.outline_prompts[section] = {"全文": len(prompt), **_sizes(prompt)}
             report.outline_texts[section] = str(prompt)
         if outline and parse_chapter_numbers(outline):
+            report.act_chapters[section] = len(parse_chapter_numbers(outline))
             offset = max(offset, max(parse_chapter_numbers(outline)) + 1)
             report.outline_names.merge(unregistered_names(outline, registry))
 
@@ -421,13 +430,23 @@ def render(report: PlanningReport, *, chapters: bool = False) -> str:
     )
     if planned:
         # 和「规划场景」收下规划时写运行记录用的是同一个判断（只计数，不打回）。
-        scene_range = (
-            (SHORT_STORY_MIN_SCENES, SHORT_STORY_MAX_SCENES) if report.short_story else LONG_FORM_SCENE_RANGE
-        )
+        scene_range = report.scene_range
         outside = [item for item in planned if scene_count_note(item.scenes, scene_range)]
         lines.append(
             f"  建议每章 {scene_range[0]}–{scene_range[1]} 场；不在范围里的 {len(outside)} 章"
             + (f"（{_preview(f'第 {i.chapter} 章 {i.scenes} 场' for i in outside)}）" if outside else "")
+        )
+
+    if report.act_chapters:
+        # 和「生成章节大纲」收下大纲时写运行记录用的是同一个判断（只计数，不打回）。
+        expected = report.chapters_per_act
+        off = [f"{zh_label(act)} {count} 章" for act, count in report.act_chapters.items()
+               if chapter_count_note(count, expected)]
+        lines.append("【每幕章数】" + "、".join(
+            f"{zh_label(act)} {count}" for act, count in report.act_chapters.items()))
+        lines.append(
+            f"  建议每幕 {expected} 章；章数不同的幕 {len(off)} 个" + (f"（{_preview(off)}）" if off else "")
+            if expected else "  篇幅档案对这个结构没有每幕章数的建议"
         )
 
     total = sum(item.boundaries for item in report.chapters)

@@ -8,14 +8,116 @@
 """
 from __future__ import annotations
 
-LENGTH_OPTIONS = ["Short Story", "Novella", "Novel (Standard)"]
+from dataclasses import dataclass
+
+LENGTH_OPTIONS = ["Short Story", "Novella", "Novel (Standard)", "Short Video Script"]
+
+
+@dataclass(frozen=True)
+class LengthProfile:
+    """一档篇幅的具体要求。以前模型只收到「篇幅：长篇小说」几个字，写几章、每场多长全靠它猜：
+    样例长篇已写的 22 章从 1744 字到 4925 字，差了近三倍。
+
+    total        全篇大约多少字，写给模型和作者看
+    structure    新作品用的故事结构（已有作品沿用参数文件里保存的结构）
+    chapters     全篇几章；1 表示整篇一章写完，走短篇那条流程
+    scenes       每章几场（上下限）
+    scene_chars  每场正文大约多少字（上下限）
+    counts       写几个势力、几个人物
+    traits       这一档篇幅的写法特点
+    """
+
+    total: str
+    structure: str
+    chapters: int
+    scenes: tuple[int, int]
+    scene_chars: tuple[int, int]
+    counts: tuple[int, int]
+    traits: str
+
+    @property
+    def single_chapter(self) -> bool:
+        return self.chapters == 1
+
+    def chapters_per_act(self, structure: str) -> int | None:
+        """作品用的就是这一档的结构、章数又能按幕平分时，每一幕写几章；否则 None。"""
+        sections = sections_for(structure)
+        if self.single_chapter or structure != self.structure or not sections or self.chapters % len(sections):
+            return None
+        return self.chapters // len(sections)
+
+    def summary(self, structure: str | None = None) -> str:
+        """一句话说清这一档多长，例如「全书约 10 万字，6 幕、约 30 章，每章 2–4 场，每场约 1000–1500 字」。
+
+        给了 structure 而它不是这一档的结构时（以前选过别的结构的作品），不提幕数和章数，
+        免得和作品自己的结构对不上。
+        """
+        scenes = f"{self.scenes[0]}–{self.scenes[1]} 场"
+        chars = f"每场约 {self.scene_chars[0]}–{self.scene_chars[1]} 字"
+        if self.single_chapter:
+            return f"全篇{self.total}，一章写完，分 {scenes}，{chars}"
+        if structure and structure != self.structure:
+            return f"全书{self.total}，每章 {scenes}，{chars}"
+        acts = len(sections_for(self.structure))
+        return f"全书{self.total}，{acts} 幕、约 {self.chapters} 章，每章 {scenes}，{chars}"
+
+
+# 每档篇幅的数字。长篇照样例作品实际写出来的量定：30 章，每章 2–3 场，每章约 3000 字。
+# 短篇整篇作为一个章节送进质量闸门，场数上限见 planning_prompt 里的说明。
+LENGTH_PROFILES: dict[str, LengthProfile] = {
+    "Short Story": LengthProfile(
+        total="约 1 万字",
+        structure="3-Act Structure",
+        chapters=1,
+        scenes=(3, 6),
+        scene_chars=(1500, 2500),
+        counts=(3, 5),
+        traits="一个核心事件，一条主线，不开支线；时间跨度短，结尾落在一次揭示或转折上。",
+    ),
+    "Novella": LengthProfile(
+        total="约 4 万字",
+        structure="3-Act Structure",
+        chapters=12,
+        scenes=(2, 4),
+        scene_chars=(1000, 1500),
+        counts=(4, 6),
+        traits="一条主线加一条支线；主角的弧光完整，中段有一次大转折。",
+    ),
+    "Novel (Standard)": LengthProfile(
+        total="约 10 万字",
+        structure="6-Act Structure",
+        chapters=30,
+        scenes=(2, 4),
+        scene_chars=(1000, 1500),
+        counts=(6, 8),
+        traits="主线加两三条支线交替推进；两次高潮各有收获和代价；每幕结尾留下推动下一幕的问题。",
+    ),
+    "Short Video Script": LengthProfile(
+        total="约 2000 字以内",
+        structure="3-Act Structure",
+        chapters=1,
+        scenes=(2, 3),
+        scene_chars=(500, 800),
+        counts=(2, 3),
+        traits="一个核心事件，两三个人物，地点集中在一两处；用看得见的动作和对白推进，少写心理和背景；"
+               "第一段就进入冲突，结尾落在一个看得见的结果或反转上，方便改编成一分钟以内的短视频。",
+    ),
+}
+
+
+def length_profile(length: str | None) -> LengthProfile | None:
+    """篇幅对应的档案；不认识的篇幅（以前的取值）返回 None，调用方照旧只写篇幅名。"""
+    return LENGTH_PROFILES.get(str(length or "").strip())
+
+
+def is_single_chapter(length: str | None) -> bool:
+    """整篇一章写完、走短篇那条流程的篇幅（短篇小说、短视频脚本）。"""
+    profile = length_profile(length)
+    return bool(profile and profile.single_chapter)
+
 
 # 故事结构不再由作者选择：新作品按篇幅固定结构。已有作品沿用参数文件里保存的结构。
-DEFAULT_STRUCTURE = {
-    "Short Story": "3-Act Structure",
-    "Novella": "3-Act Structure",
-    "Novel (Standard)": "6-Act Structure",
-}
+DEFAULT_STRUCTURE = {length: profile.structure for length, profile in LENGTH_PROFILES.items()}
 
 # 题材、主题、基调都是可改写的下拉框：下面只是预设选项，作者可以直接写成别的。
 GENRE_OPTIONS = ["悬疑推理", "恐怖", "科幻", "爱情"]
@@ -77,11 +179,7 @@ def default_structure_for(length: str) -> str:
 
 
 # 势力、人物数量不再由作者填写：按篇幅定（势力数, 人物数）。
-COUNTS_BY_LENGTH = {
-    "Short Story": (3, 5),
-    "Novella": (4, 6),
-    "Novel (Standard)": (6, 8),
-}
+COUNTS_BY_LENGTH = {length: profile.counts for length, profile in LENGTH_PROFILES.items()}
 
 
 def counts_for(length: str) -> tuple[int, int] | None:

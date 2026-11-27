@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
+from core.config.story_options import LENGTH_PROFILES, LengthProfile, length_profile
 from core.generation.chapter_continuity import established_context, neglected_threads
 from core.generation.domain_profiles import resolve_domain_profile
 from core.generation.helper_fns import (
@@ -39,7 +40,11 @@ from core.generation.planning_contract import (
     established_records_text,
     load_planning_contracts,
 )
-from core.generation.prompt_context import build_story_parameter_lines, sanitize_lore_content
+from core.generation.prompt_context import (
+    build_story_parameter_lines,
+    normalize_story_parameters,
+    sanitize_lore_content,
+)
 from core.generation.prompt_material import (
     OMITTED_HEADING,
     MaterialBlock,
@@ -63,8 +68,7 @@ from core.lore_localization import display_value
 #: 重修预算与分数门槛都是在 2-3 场的章节上实测定下来的。实测一篇 10 场的短篇在
 #: 三轮评审里分数一路走低（2.52 → 2.43 → 1.91），30 分钟后判不通过、整篇作废。
 #: 这个上限让短篇的形状落回闸门能处理的范围。
-SHORT_STORY_MIN_SCENES = 3
-SHORT_STORY_MAX_SCENES = 6
+SHORT_STORY_MIN_SCENES, SHORT_STORY_MAX_SCENES = LENGTH_PROFILES["Short Story"].scenes
 
 #: 作品没有世界观时，「规划场景」里世界观那一块写这句。
 MISSING_LORE = "缺少整体世界观背景。"
@@ -385,6 +389,11 @@ def outline_prompt(
         (label, ("\n\n" if index == 0 else "") + text)
         for index, (label, text) in enumerate(material.blocks)
     ]
+    profile = length_profile(normalize_story_parameters(story_params).get("Story Length"))
+    per_act = profile.chapters_per_act(structure_name) if profile else None
+    chapters = (
+        f"，这一幕写 {per_act} 章（第 {start_chapter}–{start_chapter + per_act - 1} 章）" if per_act else ""
+    )
     naming = ""
     if "名称与规则登记表" in material.kept:
         naming += (
@@ -409,7 +418,7 @@ def outline_prompt(
             "每一章都应有明确目的，并推动这一结构部分的故事。"
             "为每章建议所含场景，并列出本章涉及的人物、势力和具体地点。"
             + naming +
-            f"“{section}”从第 {start_chapter} 章开始，请依次分配章号。\n"
+            f"“{section}”从第 {start_chapter} 章开始，请依次分配章号{chapters}。\n"
             "每一章必须单独起一行标题，写成“### 第 N 章：标题”，使用阿拉伯数字，"
             "不要用“第一章”这样的中文数字，也不要把章标题混进正文段落。\n",
         ),
@@ -656,8 +665,9 @@ def scene_plan_prompt(
         lore_content=lore_content, section_outline=section_outline, max_chars=material_budget,
     )
     requirements = ["请把「本章大纲」扩展为详细场景。"]
-    if story_length == "Novella":
-        requirements.append("本故事是中篇小说，本章场景应紧凑而有冲击力，聚焦必要的情节推进和人物时刻。")
+    profile = length_profile(story_length)
+    if profile:
+        requirements.append(_scene_scale(profile))
     requirements += [
         "每个场景需说明：环境与具体地点、出场人物、关键行动/事件、关键对白片段（如有必要），以及它如何推动本章情节或人物发展。",
         "请保持人物弧光、势力和地点与本章大纲中的建议一致；前后相邻两章的大纲只用来划清本章写到哪里为止，不要把那两章的事写进本章。",
@@ -711,27 +721,35 @@ def short_story_prompt(
     lore_content: str,
     contract_text: str,
 ) -> PlanningPrompt:
-    """「规划场景」给短篇整篇的提示词。"""
+    """「规划场景」给短篇整篇的提示词（短篇小说、短视频脚本这类一章写完的篇幅）。"""
+    length = normalize_story_parameters(story_params).get("Story Length")
+    profile = length_profile(length)
+    if not (profile and profile.single_chapter):
+        profile = LENGTH_PROFILES["Short Story"]
+        length = "Short Story"
+    kind = zh_label(length)
+    low, high = profile.scenes
     blocks = _joined([
         ("任务说明", [
-            f"请为{genre_label}短篇小说《{novel_title}》规划场景。",
+            f"请为{genre_label}{kind}《{novel_title}》规划场景。",
             f"故事采用“{zh_label(structure_name)}”框架。",
         ]),
         ("作品参数", build_story_parameter_lines(story_params)),
         ("详细情节", [
-            "以下是完整短篇小说的详细总体情节：\n\n",
-            "--- 短篇小说详细情节 ---",
+            f"以下是完整{kind}的详细总体情节：\n\n",
+            f"--- {kind}详细情节 ---",
             plot,
-            "\n\n--- 短篇小说详细情节结束 ---",
+            f"\n\n--- {kind}详细情节结束 ---",
         ]),
         ("场景要求", [
             # 场景数必须给上限。这里以前只说「拆分成一系列场景」，实测模型给了 10 个，
             # 而下游把整篇短篇当作**一个章节**送进质量闸门——那套闸门的重修预算（2 轮）
             # 与分数门槛都是在 2-3 场的章节上实测定下来的。10 场进去的结果是三轮评审
             # 分数一路走低（2.52 → 2.43 → 1.91），30 分钟后判不通过、整篇作废。
-            f"\n请根据详细情节，把故事拆分成 {SHORT_STORY_MIN_SCENES}-{SHORT_STORY_MAX_SCENES} "
+            f"\n请根据详细情节，把故事拆分成 {low}-{high} "
             f"个清晰、独立的场景。这是短篇，不要按长篇那样一场一场铺开；"
-            f"宁可让单场承载更多内容，也不要超过 {SHORT_STORY_MAX_SCENES} 个场景。",
+            f"宁可让单场承载更多内容，也不要超过 {high} 个场景。"
+            f"每场写成正文约 {profile.scene_chars[0]}–{profile.scene_chars[1]} 字。",
             "每个场景需说明：\n",
             "  - 建议的场景编号（如场景 1、场景 2）。\n",
             "  - 环境与具体地点。\n",
@@ -754,6 +772,16 @@ def short_story_prompt(
         ("契约格式说明", [contract_text]),
     ])
     return _prompt(_with_contract(blocks, contract_text))
+
+
+def _scene_scale(profile: LengthProfile) -> str:
+    """规划一章时说明几场、每场多长，免得一场塞进太多事。"""
+    low, high = profile.scenes
+    chars_low, chars_high = profile.scene_chars
+    return (
+        f"本章安排 {low}–{high} 个场景，每场写成正文约 {chars_low}–{chars_high} 字；"
+        "按这个量安排每场的事件，一场不要塞进太多事。"
+    )
 
 
 def block_sizes(prompt: Any) -> Dict[str, int]:

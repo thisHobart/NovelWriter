@@ -46,11 +46,22 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 | 输出目录 | `output_directory` | 作品目录；不发给模型 |
 | 作品标题 | `novel_title` | 世界设定、场景规划、正文提示词；合并稿标题 |
 | 题材 | `genre` | 下拉预设悬疑推理 / 恐怖 / 科幻 / 爱情，可改写；世界设定、场景规划、正文提示词里的类型；按其中的关键词选题材档案（评审规则） |
-| 故事篇幅 | `story_length` | 短篇 / 中篇 / 长篇三档；短篇走单独管线 |
-| — | `story_structure` | 界面不显示：新作品按篇幅定（短篇、中篇三幕，长篇六幕），已有作品沿用保存的结构；结构和场景规划按幕切分 |
+| 故事篇幅 | `story_length` | `Short Story` / `Novella` / `Novel (Standard)` / `Short Video Script` 四档；一章写完的两档（短篇、短视频脚本，`story_options.is_single_chapter`）走单独管线；每档的具体要求见下文「篇幅档案」 |
+| — | `story_structure` | 界面不显示：新作品按篇幅定（短篇、中篇、短视频脚本三幕，长篇六幕），已有作品沿用保存的结构；结构和场景规划按幕切分 |
 | 主题 / 基调 | `theme` `tone` | 下拉预设按题材给，可改写；世界设定、场景规划、正文提示词；主题记入账本作为全书核心问题；题材档案匹配的最后一级 |
-| — | `num_factions` `num_characters` | 界面不显示：按篇幅定，短篇 3 / 5、中篇 4 / 6、长篇 6 / 8（`story_options.COUNTS_BY_LENGTH`，`normalize_parameters` 里套用）；参数文件里旧的数量原样保留，但不再生效 |
+| — | `num_factions` `num_characters` | 界面不显示：按篇幅定，短篇 3 / 5、中篇 4 / 6、长篇 6 / 8、短视频脚本 2 / 3（`story_options.COUNTS_BY_LENGTH`，由篇幅档案推出，`normalize_parameters` 里套用）；参数文件里旧的数量原样保留，但不再生效 |
 | 质量闭环档位 | `quality_loop` | 在「章节撰写」页选择：`off` / `standard` / `strict`；只影响章节循环，不发给模型 |
+
+**篇幅档案**（`core/config/story_options.py`）：`LENGTH_PROFILES[篇幅]` 是一份 `LengthProfile`，字段 `total`（全篇大约多少字）、`structure`（新作品的结构）、`chapters`（全篇几章，1 表示一章写完）、`scenes`（每章场数上下限）、`scene_chars`（每场字数上下限）、`counts`（势力数, 人物数）、`traits`（写法特点）。`length_profile(篇幅)` 不认识的篇幅返回 `None`；`profile.summary(结构)` 写成一句「全书约 10 万字，6 幕、约 30 章，每章 2–4 场，每场约 1000–1500 字」，结构不是档案里的那个时不提幕数和章数；`profile.chapters_per_act(结构)` 是每幕章数，结构对不上或一章写完时是 `None`。
+
+| 篇幅 | 全篇 | 结构 / 章数 | 每章场数 | 每场字数 | 势力 / 人物 |
+|---|---|---|---|---|---|
+| 短篇小说 | 约 1 万字 | 三幕，一章写完 | 3–6 | 1500–2500 | 3 / 5 |
+| 中篇小说 | 约 4 万字 | 三幕，12 章（每幕 4 章） | 2–4 | 1000–1500 | 4 / 6 |
+| 长篇小说 | 约 10 万字 | 六幕，30 章（每幕 5 章） | 2–4 | 1000–1500 | 6 / 8 |
+| 短视频脚本 | 约 2000 字以内 | 三幕，一章写完 | 2–3 | 500–800 | 2 / 3 |
+
+用到的地方：`prompt_context.build_story_parameter_lines` 在「篇幅」后面括注 `summary`、另起一行「篇幅特点」；`structure_pipeline` 的「生成详细故事结构」写每部分大约几章，短篇详细情节写全篇规模；`planning_prompt.outline_prompt` 写「这一幕写 N 章（第 a–b 章）」，`scene_plan_prompt` 写「本章安排 a–b 个场景，每场写成正文约 x–y 字」，`short_story_prompt` 按档案的场数和每场字数；`planning_checks.scene_range_for(篇幅)` 给「规划场景」收下规划时的场数范围（`LONG_FORM_SCENE_RANGE` 和 `SHORT_STORY_MIN/MAX_SCENES` 现在从档案取），`chapter_count_note(章数, 建议)` 在「生成章节大纲」收下一幕大纲时写运行记录（只记录，不打回）；规划检查脚本的「【每幕章数】」用同一个判断。参数页 `parameters_page.length_hint(篇幅, 结构)` 是下拉框下面那行说明。世界设定各步的 `requirements_block` 和参数检查不带档案。
 
 题材、主题、基调的预设在 `core/config/story_options.py`（`GENRE_OPTIONS`、`THEME_OPTIONS`、`TONE_OPTIONS`），只决定下拉列表里有什么；发给模型的是框里最后的文字。
 

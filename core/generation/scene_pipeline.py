@@ -46,10 +46,11 @@ from core.generation.chapter_continuity import (
     continuity_schema_block,
 )
 from core.generation.planning_checks import (
-    LONG_FORM_SCENE_RANGE,
+    chapter_count_note,
     load_registry,
     name_note,
     scene_count_note,
+    scene_range_for,
     unregistered_names,
 )
 from core.generation.planning_prompt import (
@@ -83,7 +84,7 @@ from core.generation.domain_profiles import (
 import os
 import re
 import logging
-from core.config.story_options import STRUCTURE_SECTIONS_MAP
+from core.config.story_options import STRUCTURE_SECTIONS_MAP, is_single_chapter, length_profile
 from core.localization import zh_label
 from core.config.directory_config import get_directory_manager
 
@@ -715,7 +716,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                     lore_content,
                     story_params,
                     output_dir=output_dir,
-                    scene_range=LONG_FORM_SCENE_RANGE,
+                    scene_range=scene_range_for(story_params.get("Story Length")),
                 )
                 self._save_scene_plan_and_contract(
                     output_dir,
@@ -1023,6 +1024,15 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
             os.makedirs(chapter_outlines_dir, exist_ok=True)
             write_file(output_filepath, response)
             generated_sections.append(current_section_name)
+            profile = length_profile(story_params.get("Story Length"))
+            count_note = chapter_count_note(
+                len(chapters_in_response),
+                profile.chapters_per_act(selected_structure_name) if profile else None,
+            )
+            if count_note:
+                self.app.logger.warning(
+                    "“%s”大纲%s（只记录，不打回）", zh_label(current_section_name), count_note
+                )
             note = name_note(unregistered_names(response, load_registry(output_dir)))
             if note:
                 self.app.logger.warning(
@@ -1240,7 +1250,7 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                         lore_content,
                         story_params,
                         output_dir=output_dir,
-                        scene_range=LONG_FORM_SCENE_RANGE,
+                        scene_range=scene_range_for(story_params.get("Story Length")),
                     )
                 except PlanningContractError as exc:
                     # Keep going so one bad chapter does not abandon the run,
@@ -1381,7 +1391,12 @@ chapter_function 说明本章在全书中承担什么功能，取值只能是
                 story_params,
                 require_complete_sequence=True,
                 output_dir=output_dir,
-                scene_range=(SHORT_STORY_MIN_SCENES, SHORT_STORY_MAX_SCENES),
+                # 一章写完的篇幅按自己的档案；参数里没写篇幅时照旧按短篇。
+                scene_range=(
+                    scene_range_for(story_params.get("Story Length"))
+                    if is_single_chapter(story_params.get("Story Length"))
+                    else (SHORT_STORY_MIN_SCENES, SHORT_STORY_MAX_SCENES)
+                ),
             )
         except PlanningContractError as exc:
             self.app.logger.error("Short story planning contract is invalid: %s", exc)

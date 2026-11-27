@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Sequence
 
+from core.config.story_options import is_single_chapter
 from core.generation.ai_helper import DEFAULT_API_MODEL, set_backend
 from core.common.api_providers import PROVIDER_LABELS
 from core.generation.lore_pipeline import LorePipeline
@@ -220,7 +221,7 @@ def _run_structure(context: StageContext, host: GenerationHost) -> Dict[str, Any
 
     story_length = context.parameters.get("story_length", "Novel (Standard)")
     context.progress("生成详细故事结构", 0.68)
-    if story_length == "Short Story":
+    if is_single_chapter(story_length):
         pipeline._outline_short_story_plot(context)
         plot_patterns = ("story/structure/plot_short_story_*.md",)
     else:
@@ -304,7 +305,7 @@ def _section_last_chapters(output_dir: str) -> Dict[int, int]:
 def _run_scenes(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
     pipeline = ScenePipeline(host)
     story_length = context.parameters.get("story_length", "Novel (Standard)")
-    if story_length == "Short Story":
+    if is_single_chapter(story_length):
         context.progress("规划短篇场景", 0.20)
         pipeline._plan_short_story_scenes(context)
         patterns = ("story/planning/scenes_short_story_*.md",)
@@ -507,7 +508,7 @@ def _review_pending_chapter(
 
 
 def _run_chapters(context: StageContext, host: GenerationHost) -> Dict[str, Any]:
-    if context.parameters.get("story_length", "Novel (Standard)") != "Short Story":
+    if not is_single_chapter(context.parameters.get("story_length", "Novel (Standard)")):
         return _run_long_form_chapters(context)
     pipeline = ShortStoryPipeline(host)
     context.progress("撰写短篇正文", 0.15)
@@ -621,7 +622,7 @@ def run_stage_action(
         }
         if action == "plot":
             context.progress("生成详细故事结构", 0.10)
-            if context.parameters.get("story_length", "Novel (Standard)") == "Short Story":
+            if is_single_chapter(context.parameters.get("story_length", "Novel (Standard)")):
                 pipeline._outline_short_story_plot(context)
                 patterns = ("story/structure/plot_short_story_*.md",)
             else:
@@ -638,7 +639,7 @@ def run_stage_action(
         result = {"step": step, "action": action, "generated_files": files}
     elif step == "scenes":
         pipeline = ScenePipeline(host)
-        short = context.parameters.get("story_length", "Novel (Standard)") == "Short Story"
+        short = is_single_chapter(context.parameters.get("story_length", "Novel (Standard)"))
         if action == "outline" and not short:
             context.progress("生成章节大纲", 0.10)
             pipeline._generate_chapter_outline(context)
@@ -663,7 +664,7 @@ def run_stage_action(
     else:
         if action not in {"next", "all", "rewrite"}:
             raise ValueError(f"章节撰写阶段没有动作：{action}")
-        if context.parameters.get("story_length", "Novel (Standard)") == "Short Story":
+        if is_single_chapter(context.parameters.get("story_length", "Novel (Standard)")):
             result = _run_chapters(context, host)
         else:
             result = _run_long_form_chapters(context, action, chapter_number)

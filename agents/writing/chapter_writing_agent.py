@@ -64,7 +64,7 @@ from core.generation.scene_material import build_scene_material
 from core.generation.scene_prompt import build_scene_prompt, scene_prompt_filename
 from core.generation.story_ledger import StoryLedgerManager
 from core.config.directory_config import get_directory_manager
-from core.config.story_options import STRUCTURE_SECTIONS_MAP
+from core.config.story_options import STRUCTURE_SECTIONS_MAP, is_single_chapter
 from core.lore_localization import display_value
 
 # Import review system (with fallback if not available)
@@ -341,7 +341,7 @@ class ChapterWritingAgent(BaseAgent):
         )
         
         # 2. Handle short stories differently
-        if story_length == "Short Story":
+        if is_single_chapter(story_length):
             return self._analyze_short_story_structure(structure_name, story_params)
         
         # 3. Handle novels - get structure sections

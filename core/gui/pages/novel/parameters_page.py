@@ -51,6 +51,16 @@ TONE_PLACEHOLDER = "选一个，或直接写"
 GENRE_HINT = ("评审规则按题材里的关键词选择：法律、悬疑 / 推理、惊悚、恐怖、科幻、奇幻、"
               "爱情 / 言情、历史、西部；都不含时用通用规则。")
 
+
+def length_hint(length: str, structure: str | None = None) -> str:
+    """故事篇幅下面那行说明：这一档多长、写几个势力和人物、写法特点。不认识的篇幅是空文字。"""
+    profile = story_options.length_profile(length)
+    if not profile:
+        return ""
+    factions, characters = profile.counts
+    return f"{profile.summary(structure)}；写 {factions} 个势力、{characters} 个人物。{profile.traits}"
+
+
 #: 参数文件里没有界面控件、但仍要原样保留的键（例如手写的 Scene Dialogue、Domain Profile）。
 #: 以前页面写过的作者姓名、性别比例、子题材和附加设置不在此列，保存时即从文件中去掉。
 PRESERVED_KEYS = (RUNTIME_KEYS - {"output_directory", "backend", "model", "quality_loop"}) | {"domain_profile"}
@@ -138,6 +148,8 @@ class ParametersPage(QWidget):
         self.length_combo.setCursor(Qt.PointingHandCursor)
         self.length_combo.addItems([zh_label(x) for x in story_options.LENGTH_OPTIONS])
         rows.add("故事篇幅", self.length_combo)
+        self.length_hint = hint_label(length_hint(story_options.LENGTH_OPTIONS[0]))
+        rows.add_full(self.length_hint)
 
         self.theme_combo = _editable_combo(story_options.theme_options_for(""), THEME_PLACEHOLDER)
         rows.add("主题", self.theme_combo)
@@ -187,6 +199,10 @@ class ParametersPage(QWidget):
     def _on_length_changed(self, *_: Any) -> None:
         if not self._loading:
             self._structure = story_options.default_structure_for(self._internal_length())
+        self._refresh_length_hint()
+
+    def _refresh_length_hint(self) -> None:
+        self.length_hint.setText(length_hint(self._internal_length(), self._structure))
 
     def _on_genre_committed(self, *_: Any) -> None:
         """题材换到另一组预设时，主题、基调的下拉选项跟着换。
@@ -316,6 +332,7 @@ class ParametersPage(QWidget):
         self.length_combo.setCurrentIndex(index)
         self._structure = (str(source.get("story_structure", "")).strip()
                            or story_options.default_structure_for(length))
+        self._refresh_length_hint()
 
         self.title_edit.setText(str(source.get("novel_title", "")))
         _fill_combo(self.theme_combo, story_options.theme_options_for(genre), str(source.get("theme", "")))
