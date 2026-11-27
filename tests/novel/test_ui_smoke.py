@@ -249,6 +249,36 @@ def test_empty_lore_shows_one_explanation_and_no_tabs(app, tmp_path):
     assert page.steps_meta.text() == "0 / 4 已完成"
 
 
+def test_step_buttons_say_regenerate_once_done_and_what_that_replaces(app, tmp_path):
+    from core.generation.lore_repository import LORE
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert {key: b.label for key, b in page.step_buttons.items()} == {
+        "factions": "生成势力", "characters": "生成人物", "lore": "生成世界观", "enhance": "生成人物背景"}
+    assert page.step_buttons["enhance"].state == "locked"
+    assert page.step_buttons["factions"].toolTip() == "按作品参数生成势力（约 2 次请求）"
+
+    _lore_project(tmp_path)
+    (tmp_path / LORE / "background_protagonist_张明.md").write_text("张明的背景", encoding="utf-8")
+    page.refresh()
+    assert {key: b.label for key, b in page.step_buttons.items()} == {
+        "factions": "重新生成势力", "characters": "重新生成人物", "lore": "重新生成世界观", "enhance": "重新生成人物背景"}
+    assert page.step_buttons["factions"]._meta.text() == "1 个"
+    assert page.step_buttons["factions"].toolTip() == (
+        "替换现有 1 个势力（约 2 次请求）。之后人物、世界观、人物背景会标为按旧势力写的。可撤回。")
+    assert page.step_buttons["enhance"].toolTip() == (
+        "给主角、第二主角、反派各写一份详细背景，替换现有 1 份人物背景（约 2 次请求）。可撤回。")
+
+
+def test_step_button_frames_only_itself(app):
+    from core.gui.pages.novel.inspector import StepButton
+    button = StepButton("factions", "重新生成势力", "6 个")
+    # 不写选择器时，里面的名称和数量也会各套一层框，数量被截。
+    assert button.objectName() == "StepButton"
+    assert button.styleSheet().startswith("QWidget#StepButton {")
+
+
 def test_lore_tabs_appear_only_with_content(app, tmp_path):
     from core.generation.lore_repository import CHARACTERS, CONTRACT, encode
     _lore_project(tmp_path)
@@ -302,7 +332,7 @@ def test_old_backgrounds_are_not_listed_or_sent_to_later_stages(app, tmp_path):
     assert "人物背景" not in _tab_names(page)
     assert page.step_buttons["enhance"].state == "done"
     labels = [b.text() for b in page.tabs.widget(2).findChildren(QPushButton)]
-    assert labels == ["编辑", "编辑详细背景"]
+    assert labels == ["编辑", "编辑人物背景"]
 
 
 def test_use_as_title_saves_the_parameter_and_names_the_old_one(app, tmp_path):
@@ -434,8 +464,7 @@ def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tm
     faction_text = [label.text() for label in faction.findChildren(QLabel)]
     assert "势力数量不对" in faction_text                              # 已保存的问题照旧列在卡上
     assert _buttons(faction) == ["让 AI 再修一次", "编辑", "更早的记录（1）"]
-    assert page.step_buttons["factions"]._meta.text() == "待处理"
-    assert page.step_buttons["lore"]._meta.text() != "待处理"
+    assert page.step_buttons["factions"]._meta.text() == "1 个"      # 要处理的事不挂在分步按钮上
 
 
 def test_finished_result_cards_are_one_line_and_name_titles_as_on_the_tab(app, tmp_path):
@@ -461,7 +490,7 @@ def test_manual_edit_turns_a_problem_result_into_edited(app, tmp_path):
     page = LorePage()
     page.output_dir = str(tmp_path)
     page.refresh()
-    assert page.step_buttons["factions"]._meta.text() == "待处理"
+    assert _card_title(_result_cards(page)[0]) == "势力 · 有问题，已保存"
 
     repo = LoreRepository(tmp_path)
     repo.save(repo.load_snapshot(), {FACTIONS: encode([{"name": "调查局", "description": "作者改写的描述"}])})
@@ -469,7 +498,6 @@ def test_manual_edit_turns_a_problem_result_into_edited(app, tmp_path):
     (card,) = _result_cards(page)
     assert _card_title(card) == "势力 · 已手动修改"
     assert _buttons(card) == []
-    assert page.step_buttons["factions"]._meta.text() != "待处理"
 
     page.undo_button.click()                       # 撤回手改，问题又回来
     (card,) = _result_cards(page)
@@ -504,7 +532,7 @@ def test_status_line_says_what_is_missing_and_offers_to_continue(app, tmp_path, 
     page.refresh()
     assert page.generate_button.text() == "生成世界设定"
     assert not page.regenerate_action.isVisible()
-    assert page.status_label.text() == "还差世界观、主要人物背景。"
+    assert page.status_label.text() == "还差世界观、人物背景。"
     assert page.status_action.text() == "接着生成后面几项"
     asked = []
     monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))

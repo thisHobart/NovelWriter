@@ -71,7 +71,7 @@ def attention_receipts(root, receipts=None):
 
 #: 世界设定内部的生成先后，后面的按前面的写：(收据种类, 名称, 分步按钮)
 LORE_ORDER = (("factions", "势力", "factions"), ("characters", "人物", "characters"),
-              ("world", "世界观", "lore"), ("background", "主要人物背景", "enhance"))
+              ("world", "世界观", "lore"), ("background", "人物背景", "enhance"))
 
 
 def _generated_at(root, receipts):

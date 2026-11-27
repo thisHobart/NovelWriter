@@ -386,13 +386,13 @@ def test_regeneration_can_be_undone_and_redone(project):
         write(Path(output_dir), BODY, "新生成的世界观")
         write(Path(output_dir), LORE + "background_protagonist_新人.md", "新人背景")
     regenerate("lore", str(project), action="lore")
-    assert repo.change_log()["undo"]["label"] == "生成世界观"
+    assert repo.change_log()["undo"]["label"] == "重新生成世界观"     # 和分步按钮同名
 
     repo.undo()
     files = repo.load_snapshot().files
     assert files[BODY] == "人工改过的世界观"
     assert LORE + "background_protagonist_新人.md" not in files
-    assert repo.change_log()["redo"]["label"] == "生成世界观"
+    assert repo.change_log()["redo"]["label"] == "重新生成世界观"
     assert repo.change_log()["undo"]["label"] == "编辑世界观"
 
     repo.redo()
@@ -474,6 +474,17 @@ def test_undo_reverts_generation_receipts(project):
     assert json.loads((receipts / "abc123.json").read_text(encoding="utf-8"))["reverted"] is True
     repo.redo()
     assert json.loads((receipts / "abc123.json").read_text(encoding="utf-8"))["reverted"] is False
+
+
+def test_generation_is_recorded_under_the_button_name(project, tmp_path_factory):
+    @tracked_generation
+    def generate(step, output_dir, action=""):
+        write(Path(output_dir), FACTIONS, [{"name": "新势力", "description": "新"}])
+    empty = tmp_path_factory.mktemp("empty")
+    generate("lore", str(empty), action="factions")              # 第一次：按钮叫「生成势力」
+    assert LoreRepository(empty).change_log()["undo"]["label"] == "生成势力"
+    generate("lore", str(project), action="factions")            # 已经有势力：按钮叫「重新生成势力」
+    assert LoreRepository(project).change_log()["undo"]["label"] == "重新生成势力"
 
 
 def test_undo_is_rejected_while_generation_holds_the_lock(project):

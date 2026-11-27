@@ -805,12 +805,21 @@ def lore_context(output_dir):
 
 
 STEP_LABELS = {"": "生成世界设定", "full": "生成世界设定", "factions": "生成势力", "characters": "生成人物",
-               "lore": "生成世界观", "enhance": "完善主要人物", "continue": "接着生成后面几项"}
+               "lore": "生成世界观", "enhance": "生成人物背景", "continue": "接着生成后面几项"}
 KIND_TITLES = {"characters": "人物", "factions": "势力", "world": "世界观", "background": "人物背景"}
 
 
-def generation_label(arguments):
-    """改动记录里这次生成叫什么，用界面上的按钮名。"""
+def _already_there(action, files):
+    """这一步要写的东西生成前就有了：界面上那个按钮叫「重新生成…」。"""
+    if action == "enhance":
+        return any(key.startswith(LORE + "background_") for key in files)
+    wanted = {"factions": (FACTIONS,), "characters": (CHARACTERS,), "lore": (BODY,),
+              "": (FACTIONS, CHARACTERS, BODY), "full": (FACTIONS, CHARACTERS, BODY)}.get(action, ())
+    return any(key in files for key in wanted)
+
+
+def generation_label(arguments, before=None):
+    """改动记录里这次生成叫什么，用界面上的按钮名；生成前已经有了的，叫「重新生成…」。"""
     action = arguments.get("action") or ""
     options = arguments.get("options") or {}
     if action == "repair":
@@ -825,7 +834,10 @@ def generation_label(arguments):
         return "重新生成人物背景：" + str(options["subject_name"])
     if action == "continue" and options.get("source"):
         return f"按新{options['source']}重写后面几项"
-    return STEP_LABELS.get(action, "生成世界设定")
+    label = STEP_LABELS.get(action, "生成世界设定")
+    if before and label.startswith("生成") and _already_there(action, before):
+        label = "重新" + label
+    return label
 
 
 def tracked_generation(function):
@@ -873,7 +885,7 @@ def tracked_generation(function):
                     receipts = [item["id"] for item in (result or {}).get("lore_results", []) if item.get("id")]
                     if not receipts:
                         receipts = _receipts_since(repo.root, started)
-                    repo.record_change(generation_label(bound.arguments), before_state, receipts)
+                    repo.record_change(generation_label(bound.arguments, before), before_state, receipts)
     return wrapped
 
 

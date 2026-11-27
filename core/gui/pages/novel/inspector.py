@@ -36,6 +36,8 @@ class StepButton(QWidget):
 
         self.setFixedHeight(34)
         self.setAttribute(Qt.WA_StyledBackground, True)
+        # 样式只给按钮这一层画框；不写选择器时，里面的文字和数量也会各套一层框，数量被截。
+        self.setObjectName("StepButton")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
@@ -65,13 +67,24 @@ class StepButton(QWidget):
         self._icon.setPixmap(icons.pixmap(icon_name, icon_color, 14))
         self._label.setStyleSheet(f"font-size: {theme.FS_MD}px; color: {text_color};")
         self.setStyleSheet(
-            f"background: {background}; border: 1px solid {border};"
-            f"border-radius: {theme.RADIUS}px;"
+            f"QWidget#StepButton {{ background: {background}; border: 1px solid {border};"
+            f" border-radius: {theme.RADIUS}px; }}"
         )
         self.setCursor(Qt.ForbiddenCursor if state in ("locked", "running")
                        else Qt.PointingHandCursor)
         if meta is not None:
             self._meta.setText(meta)
+
+    def set_label(self, label: str) -> None:
+        """换按钮上的名称，如生成过以后改叫「重新生成…」。
+
+        不叫 setText：后台任务会给有 setText 的按钮换上「正在…」，分步按钮不参与。
+        """
+        self._label.setText(label)
+
+    @property
+    def label(self) -> str:
+        return self._label.text()
 
     @property
     def state(self) -> str:

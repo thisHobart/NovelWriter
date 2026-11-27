@@ -119,8 +119,14 @@ def _clock(timestamp) -> str:
     return moment.strftime("%H:%M" if moment.date() == datetime.now().date() else "%m-%d %H:%M")
 
 
-#: 续跑时提示「修好后接着生成：…」用的步骤名
-STEP_TITLES = {"factions": "势力", "characters": "人物", "lore": "世界观", "enhance": "主要人物背景", "titles": "候选标题"}
+#: 续跑时提示「修好后接着生成：…」用的步骤名；分步按钮也按这几个名字叫
+STEP_TITLES = {"factions": "势力", "characters": "人物", "lore": "世界观", "enhance": "人物背景", "titles": "候选标题"}
+
+#: 有详细背景的几种身份；人物身份都不是这几种时，按全部人物写背景
+MAIN_ROLES = ("protagonist", "deuteragonist", "antagonist")
+
+#: 每份产物生成 1 次、检查 1 次
+CALLS_PER_PRODUCT = 2
 
 _TITLE_LINE = re.compile(r"^\s*(?:\d+\s*[.、)）]|[-*•])\s*(.+?)\s*$")
 
@@ -370,7 +376,7 @@ class LorePage(StagePage):
                 expected = background_name(entity.raw)
                 for relative in artifacts.background_files(self.output_dir):
                     if relative.replace("\\", "/").split("/")[-1] == expected:
-                        background = secondary_button("编辑详细背景")
+                        background = secondary_button("编辑人物背景")
                         background.setEnabled(not self.generation_busy)
                         background.clicked.connect(lambda checked=False, p=relative: self.edit_file(LORE + p.replace("\\", "/")))
                         card.layout().addWidget(background)
@@ -686,7 +692,7 @@ class LorePage(StagePage):
         """没有设定 → 要处理 → 过期 → 还差几项 → 已就绪，取第一种成立的。"""
         self._ready = bool(factions and characters and lore_text.strip())
         if not (factions or characters or lore_text.strip()):
-            self._set_status("还没有世界设定。点「生成世界设定」，按作品参数一次写好势力、人物、世界观和主要人物背景；"
+            self._set_status("还没有世界设定。点「生成世界设定」，按作品参数一次写好势力、人物、世界观和人物背景；"
                              "也可以在右侧分步生成。")
             return
         attention = attention_receipts(self.output_dir, receipts)
@@ -699,9 +705,8 @@ class LorePage(StagePage):
             self._set_status(f"{'、'.join(stale['stale'])}是按旧{stale['source']}写的。",
                              f"按新{stale['source']}重写后面几项", stale)
             return
-        main_roles = {"protagonist", "deuteragonist", "antagonist"}
         present = {"factions": bool(factions), "characters": bool(characters), "lore": bool(lore_text.strip()),
-                   "enhance": bool(backgrounds) or not any(c.raw.get("role") in main_roles for c in characters)}
+                   "enhance": bool(backgrounds) or not any(c.raw.get("role") in MAIN_ROLES for c in characters)}
         order = ["factions", "characters", "lore", "enhance"]
         missing = [key for key in order if not present[key]]
         if missing:
@@ -731,7 +736,7 @@ class LorePage(StagePage):
             "factions": StepButton("factions", "生成势力"),
             "characters": StepButton("characters", "生成人物"),
             "lore": StepButton("lore", "生成世界观"),
-            "enhance": StepButton("enhance", "完善主要人物"),
+            "enhance": StepButton("enhance", "生成人物背景"),
         }
         for button in self.step_buttons.values():
             button.clicked.connect(self._run_step)
@@ -748,7 +753,7 @@ class LorePage(StagePage):
             "factions": "正在生成势力…",
             "characters": "正在生成人物…",
             "lore": "正在生成世界观…",
-            "enhance": "正在完善主要人物…",
+            "enhance": "正在生成人物背景…",
             "titles": "正在推荐标题…",
             "full": "正在生成设定…",
         }
@@ -760,6 +765,45 @@ class LorePage(StagePage):
             busy_text=labels[key],
             on_success=self._show_generation_result,
         )
+
+    def _refresh_step_buttons(self, factions, characters, lore_text, backgrounds) -> None:
+        """没生成过的叫「生成…」，生成过的叫「重新生成…」；右侧只写数量。
+
+        悬停说清替换什么、约几次请求、之后哪几项会算作按旧的写的。要处理的事不挂在这里，
+        只在状态说明里说。
+        """
+        has_lore = bool(lore_text.strip())
+        main = [c for c in characters if c.raw.get("role") in MAIN_ROLES]
+        whom = "主角、第二主角、反派" if main else "每个人物"
+        main = main or characters
+        present = {"factions": bool(factions), "characters": bool(characters),
+                   "lore": has_lore, "enhance": bool(backgrounds)}
+        counts = {"factions": f"{len(factions)} 个", "characters": f"{len(characters)} 个",
+                  "lore": "1 篇", "enhance": f"{len(backgrounds)} 份"}
+        existing = {"factions": f"现有 {len(factions)} 个势力", "characters": f"现有 {len(characters)} 个人物",
+                    "lore": "现有世界观", "enhance": f"现有 {len(backgrounds)} 份人物背景"}
+        calls = {key: CALLS_PER_PRODUCT for key in present}
+        calls["enhance"] = CALLS_PER_PRODUCT * max(len(main), 1)
+        order = list(self.step_buttons)
+        for key in order:
+            button, name = self.step_buttons[key], STEP_TITLES[key]
+            if key == "enhance" and not characters:
+                button.set_label("生成人物背景")
+                button.set_state("locked", "需先生成人物")
+                button.setToolTip("需先生成人物")
+                continue
+            done = present[key]
+            button.set_label(("重新生成" if done else "生成") + name)
+            button.set_state("done" if done else "todo", counts[key] if done else "")
+            what = f"给{whom}各写一份详细背景" if key == "enhance" else f"按作品参数生成{name}"
+            if not done:
+                button.setToolTip(f"{what}（约 {calls[key]} 次请求）")
+                continue
+            later = [STEP_TITLES[k] for k in order[order.index(key) + 1:] if present[k]]
+            tip = (f"{what}，替换" if key == "enhance" else "替换") + f"{existing[key]}（约 {calls[key]} 次请求）。"
+            if later:
+                tip += f"之后{'、'.join(later)}会标为按旧{name}写的。"
+            button.setToolTip(tip + "可撤回。")
 
     def _counts_text(self) -> str:
         from core.generation.stage_pipeline import load_stage_parameters
@@ -844,23 +888,7 @@ class LorePage(StagePage):
         self.tabs.setVisible(self.tabs.count() > 0)
         self._refresh_status(factions, characters, lore_text, backgrounds, titles, receipts)
 
-        self.step_buttons["factions"].set_state(
-            "done" if factions else "todo", f"{len(factions)} 个" if factions else "")
-        self.step_buttons["characters"].set_state(
-            "done" if characters else "todo", f"{len(characters)} 个" if characters else "")
-        self.step_buttons["lore"].set_state(
-            "done" if lore_text.strip() else "todo", "1 篇" if lore_text.strip() else "")
-        self.step_buttons["enhance"].set_state(
-            "done" if backgrounds else ("todo" if characters else "locked"),
-            f"{len(backgrounds)} 份" if backgrounds else ("" if characters else "需先生成人物"))
-
-        # 某一步最新那份结果还要处理（没完成、没撤回、也没被手动改过），分步按钮上挂「待处理」。
-        for record, _earlier in latest_by_product(receipts):
-            key = {"world": "lore", "background": "enhance"}.get(record["kind"], record["kind"])
-            if key in self.step_buttons and needs_attention(self.output_dir, record):
-                button = self.step_buttons[key]
-                button.set_state(button.state, "待处理")
-
+        self._refresh_step_buttons(factions, characters, lore_text, backgrounds)
         done = sum(1 for button in self.step_buttons.values() if button.state == "done")
         self.steps_meta.setText(f"{done} / {len(self.step_buttons)} 已完成")
         self.counts_hint.setText(self._counts_text())
@@ -870,7 +898,7 @@ class LorePage(StagePage):
             if total else "世界构建与背景 · 尚未生成"
         )
         self.generate_button.setText("下一步：故事结构" if self._ready else "生成世界设定")
-        self.generate_button.setToolTip("" if self._ready else "按作品参数一次写好势力、人物、世界观和主要人物背景")
+        self.generate_button.setToolTip("" if self._ready else "按作品参数一次写好势力、人物、世界观和人物背景")
         self.regenerate_action.setVisible(self._ready)
         self.regenerate_action.setEnabled(not self.generation_busy)
         self._refresh_change_bar()

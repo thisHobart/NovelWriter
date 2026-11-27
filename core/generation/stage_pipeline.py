@@ -137,7 +137,7 @@ LORE_STEPS = (
     ("factions", 0.08, "生成势力", "_generate_factions"),
     ("characters", 0.28, "生成人物", "_generate_characters"),
     ("lore", 0.50, "生成世界观", "_generate_lore"),
-    ("enhance", 0.72, "完善主要人物", "_main_character_enhancement"),
+    ("enhance", 0.72, "生成人物背景", "_main_character_enhancement"),
     ("titles", 0.88, "推荐标题", "_suggest_titles"),
 )
 
@@ -554,7 +554,7 @@ def run_stage_action(
                            ("story/lore/characters.json",)),
             "lore": ("生成世界观", pipeline._generate_lore,
                      ("story/lore/generated_lore.md", "story/lore/lore_contract.json")),
-            "enhance": ("完善主要人物", pipeline._main_character_enhancement,
+            "enhance": ("生成人物背景", pipeline._main_character_enhancement,
                         ("story/lore/background_*.md",)),
             "titles": ("推荐标题", pipeline._suggest_titles,
                        ("story/planning/suggested_titles.md",)),
