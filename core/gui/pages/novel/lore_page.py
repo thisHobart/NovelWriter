@@ -243,8 +243,8 @@ class LorePage(StagePage):
         self.active_editor = None
         self.generation_busy = False
 
-        # 页头只留跑完整阶段的主按钮；平时用不上的入口收进「更多」。
-        # 推荐标题是整段生成的一部分，不再单独摆在页头。
+        # 页头的蓝色按钮跟着状态走：现在该做的那一件事（见 _refresh_status）。
+        # 平时用不上的入口收进「更多」；推荐标题是整段生成的一部分，不单独摆在页头。
         self.more_button = secondary_button("更多")
         self.more_menu = QMenu(self.more_button)
         self.open_folder_action = self.more_menu.addAction("打开设定文件夹")
@@ -252,18 +252,23 @@ class LorePage(StagePage):
         self.open_records_action = self.more_menu.addAction("打开生成记录")
         self.open_records_action.setToolTip("每次请求的提示词和检查报告原文，排查问题时用")
         self.open_records_action.triggered.connect(lambda: self._open_folder("system/generation_runs"))
-        # 设定齐了以后主按钮变「下一步：故事结构」，重新生成收进这里。
+        # 有了任何设定以后，整段重来只从这里点，不占页头的蓝色按钮。
         self.more_menu.insertSeparator(self.open_folder_action)
         self.regenerate_action = QAction("重新生成世界设定", self.more_menu)
-        self.regenerate_action.setToolTip("按作品参数重写全部设定；之后可以在页面顶部撤回")
         self.regenerate_action.triggered.connect(lambda: self._run_step("full", self.generate_button))
         self.more_menu.insertAction(self.more_menu.actions()[0], self.regenerate_action)
+        self.more_menu.setToolTipsVisible(True)
         self.more_button.setMenu(self.more_menu)
+        # 有事要处理、但设定已经能用时，白色「下一步：故事结构」紧挨在蓝色按钮旁边。
+        self.next_button = secondary_button("下一步：故事结构")
+        self.next_button.clicked.connect(lambda: self.navigate_requested.emit("structure"))
         self.generate_button = primary_button("生成世界设定")
-        for button in (self.more_button, self.generate_button):
+        for button in (self.more_button, self.next_button, self.generate_button):
             self.header.add_action(button)
         self.generate_button.clicked.connect(self._primary_clicked)
         self._ready = False
+        self._primary = None
+        self._next_visible = False
 
         self._build_left()
         self._build_inspector()
@@ -293,7 +298,7 @@ class LorePage(StagePage):
         self.change_bar.hide()
         container.body.addWidget(self.change_bar)
 
-        # 状态说明：一句话说清设定现在怎样、下一步做什么，需要时带一个按钮。
+        # 状态说明：一句话说清设定现在怎样；该做的事在页头蓝色按钮上，这里不另放按钮。
         # 还没有任何设定时左侧只有这一块，不摆空页签。
         self.status_strip = QWidget()
         strip = QHBoxLayout(self.status_strip)
@@ -301,12 +306,8 @@ class LorePage(StagePage):
         strip.setSpacing(10)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        self.status_action = secondary_button("")
-        self.status_action.clicked.connect(self._status_action_clicked)
         strip.addWidget(self.status_label, 1)
-        strip.addWidget(self.status_action, 0, Qt.AlignTop)
         strip.setAlignment(Qt.AlignTop)   # 没有页签时说明贴在顶部，不浮在中间
-        self._status_task = None
         container.body.addWidget(self.status_strip)
 
         self.tabs = QTabWidget()
@@ -586,16 +587,27 @@ class LorePage(StagePage):
         scroll.setWidget(page)
         return scroll
 
+    @staticmethod
+    def _then_continue(receipt) -> bool:
+        """整段生成停在这一份：修好后要接着跑剩下几步。"""
+        return bool(receipt.get("remaining")) and receipt.get("disposition") != "current"
+
+    def _repair_tip(self, receipt, calls) -> str:
+        if self._then_continue(receipt):
+            steps = receipt["remaining"]
+            names = "、".join(STEP_TITLES.get(key, key) for key in steps)
+            total = CALLS_PER_PRODUCT + sum(calls.get(key, CALLS_PER_PRODUCT) for key in steps)
+            return f"修好后接着生成：{names}（约 {total} 次请求）"
+        return f"按检查意见再修一次（约 {CALLS_PER_PRODUCT} 次请求）"
+
     def _result_actions(self, receipt) -> QHBoxLayout:
         """有问题：「让 AI 再修一次」+「编辑」；读不出来：「让 AI 再修一次」+「编辑原文」。
-        整段生成停在这份时，主按钮是「再修一次并继续生成」。"""
+        整段生成停在这份时是「再修一次并继续生成」。都用白色按钮：蓝色只留给页头那一个。"""
         row = QHBoxLayout()
         identity = receipt["id"]
-        then_continue = bool(receipt.get("remaining")) and receipt.get("disposition") != "current"
-        repair = primary_button("再修一次并继续生成" if then_continue else "让 AI 再修一次")
-        if then_continue:
-            names = "、".join(STEP_TITLES.get(key, key) for key in receipt["remaining"])
-            repair.setToolTip(f"修好后接着生成：{names}")
+        then_continue = self._then_continue(receipt)
+        repair = secondary_button("再修一次并继续生成" if then_continue else "让 AI 再修一次")
+        repair.setToolTip(self._repair_tip(receipt, self._step_calls(artifacts.characters(self.output_dir))))
         repair.clicked.connect(lambda checked=False: self._repair_generation_result(identity, then_continue))
         buttons = [repair]
         if receipt.get("status") != "failed":
@@ -638,11 +650,12 @@ class LorePage(StagePage):
         self.artifacts_changed.emit()
         editor.deleteLater()
 
-    def _repair_generation_result(self, identity, then_continue=False):
+    def _repair_generation_result(self, identity, then_continue=False, busy_button=None):
         if self.generation_busy or not self.resolve_draft():
             return
         options = {"receipt_id": identity, **({"continue": True} if then_continue else {})}
         self.run_task(action_work("lore", "repair", self.output_dir, self.model, options=options),
+                      busy_button=busy_button,
                       busy_text="正在修复并接着生成…" if then_continue else "正在修复设定一次…",
                       on_success=self._show_generation_result)
 
@@ -660,50 +673,70 @@ class LorePage(StagePage):
 
     # ---------------------------------------------------------------- 状态说明
     def _primary_clicked(self) -> None:
-        if self._ready:
-            self.navigate_requested.emit("structure")
-        else:
-            self._run_step("full", self.generate_button)
-
-    def _status_action_clicked(self) -> None:
-        task = self._status_task
-        if task == "results":
-            self._open_tab("生成结果")
-        elif isinstance(task, dict):
-            self._continue_steps(task["steps"], task.get("source"))
+        if self._primary is not None:
+            self._primary[1]()
 
     def _continue_steps(self, steps, source=None) -> None:
         if not self.resolve_draft():
             return
         options = {"steps": list(steps), **({"source": source} if source else {})}
         self.run_task(action_work("lore", "continue", self.output_dir, self.model, options=options),
-                      busy_button=self.status_action,
+                      busy_button=self.generate_button,
                       busy_text=f"正在按新{source}重写…" if source else "正在接着生成…",
                       on_success=self._show_generation_result)
 
-    def _set_status(self, text, action="", task=None) -> None:
+    def _step_calls(self, characters) -> dict:
+        """每一步大约几次请求：每份产物生成 1 次、检查 1 次；人物背景按主要人物一人一份。"""
+        main = [c for c in characters if c.raw.get("role") in MAIN_ROLES] or characters
+        calls = {key: CALLS_PER_PRODUCT for key in ("factions", "characters", "lore")}
+        calls["enhance"] = CALLS_PER_PRODUCT * (len(main) or len(MAIN_ROLES))
+        calls["titles"] = 1
+        return calls
+
+    def _set_status(self, text, primary=None, next_step=False) -> None:
+        """状态说明只写一句话；现在该做的那件事放在页头蓝色按钮上。
+
+        primary：(按钮文字, 点下去做什么, 悬停说明)，不给就是「下一步：故事结构」。
+        next_step：蓝色按钮是别的事、但设定已经能用时，旁边放白色「下一步：故事结构」。
+        """
         self.status_label.setText(text)
-        self.status_action.setText(action)
-        self.status_action.setVisible(bool(action))
-        self.status_action.setEnabled(not self.generation_busy)
-        self._status_task = task
+        self._primary = primary or ("下一步：故事结构", lambda: self.navigate_requested.emit("structure"), "")
+        self._next_visible = next_step
 
     def _refresh_status(self, factions, characters, lore_text, backgrounds, titles, receipts) -> None:
         """没有设定 → 要处理 → 过期 → 还差几项 → 已就绪，取第一种成立的。"""
         self._ready = bool(factions and characters and lore_text.strip())
+        calls = self._step_calls(characters)
         if not (factions or characters or lore_text.strip()):
             self._set_status("还没有世界设定。点「生成世界设定」，按作品参数一次写好势力、人物、世界观和人物背景；"
-                             "也可以在右侧分步生成。")
+                             "也可以在右侧分步生成。",
+                             ("生成世界设定", lambda: self._run_step("full", self.generate_button),
+                              f"按作品参数一次写好势力、人物、世界观和人物背景（约 {sum(calls.values())} 次请求）"))
             return
         attention = attention_receipts(self.output_dir, receipts)
         if attention:
             items = "、".join(f"{self._result_title(r)}（{result_status(r)}）" for r in attention)
-            self._set_status(f"{len(attention)} 份需要处理：{items}。", "去处理", "results")
+            text = f"{len(attention)} 份需要处理：{items}。"
+            stopped = any(self._then_continue(r) for r in attention)
+            if len(attention) == 1:
+                receipt = attention[0]
+                label = "再修一次并继续生成" if stopped else "让 AI 再修一次"
+                primary = (label, lambda: self._repair_generation_result(receipt["id"], stopped, self.generate_button),
+                           self._repair_tip(receipt, calls))
+            else:
+                primary = (f"去处理（{len(attention)} 份）", lambda: self._open_tab("生成结果"),
+                           "在「生成结果」里逐份处理")
+            # 整段生成停在半路时，后面几项可能还没有，不给「下一步」。
+            self._set_status(text, primary, next_step=self._ready and not stopped)
             return
         stale = stale_lore(self.output_dir, receipts)
         if stale:
-            self._set_status(f"{'、'.join(stale['stale'])}是按旧{stale['source']}写的。",
-                             f"按新{stale['source']}重写后面几项", stale)
+            steps, source = stale["steps"], stale["source"]
+            total = sum(calls.get(key, CALLS_PER_PRODUCT) for key in steps)
+            self._set_status(f"{'、'.join(stale['stale'])}是按旧{source}写的。",
+                             (f"按新{source}重写后面几项", lambda: self._continue_steps(steps, source),
+                              f"约 {total} 次请求，会重写{'、'.join(stale['stale'])}，可撤回。"),
+                             next_step=self._ready)
             return
         present = {"factions": bool(factions), "characters": bool(characters), "lore": bool(lore_text.strip()),
                    "enhance": bool(backgrounds) or not any(c.raw.get("role") in MAIN_ROLES for c in characters)}
@@ -712,7 +745,10 @@ class LorePage(StagePage):
         if missing:
             steps = order[order.index(missing[0]):] + ([] if titles.strip() else ["titles"])
             names = "、".join(STEP_TITLES[key] for key in missing)
-            self._set_status(f"还差{names}。", "接着生成后面几项", {"steps": steps})
+            total = sum(calls.get(key, CALLS_PER_PRODUCT) for key in steps)
+            self._set_status(f"还差{names}。",
+                             ("接着生成后面几项", lambda: self._continue_steps(steps),
+                              f"依次生成{'、'.join(STEP_TITLES[key] for key in steps)}（约 {total} 次请求）"))
             return
         notes = sum(len(r.get("notes") or []) for r, _earlier in latest_by_product(receipts)
                     if r.get("status") == "complete" and not r.get("reverted"))
@@ -773,17 +809,14 @@ class LorePage(StagePage):
         只在状态说明里说。
         """
         has_lore = bool(lore_text.strip())
-        main = [c for c in characters if c.raw.get("role") in MAIN_ROLES]
-        whom = "主角、第二主角、反派" if main else "每个人物"
-        main = main or characters
+        whom = "主角、第二主角、反派" if any(c.raw.get("role") in MAIN_ROLES for c in characters) else "每个人物"
         present = {"factions": bool(factions), "characters": bool(characters),
                    "lore": has_lore, "enhance": bool(backgrounds)}
         counts = {"factions": f"{len(factions)} 个", "characters": f"{len(characters)} 个",
                   "lore": "1 篇", "enhance": f"{len(backgrounds)} 份"}
         existing = {"factions": f"现有 {len(factions)} 个势力", "characters": f"现有 {len(characters)} 个人物",
                     "lore": "现有世界观", "enhance": f"现有 {len(backgrounds)} 份人物背景"}
-        calls = {key: CALLS_PER_PRODUCT for key in present}
-        calls["enhance"] = CALLS_PER_PRODUCT * max(len(main), 1)
+        calls = self._step_calls(characters)
         order = list(self.step_buttons)
         for key in order:
             button, name = self.step_buttons[key], STEP_TITLES[key]
@@ -897,8 +930,17 @@ class LorePage(StagePage):
             f"{len(factions)} 个势力 · {len(characters)} 个人物"
             if total else "世界构建与背景 · 尚未生成"
         )
-        self.generate_button.setText("下一步：故事结构" if self._ready else "生成世界设定")
-        self.generate_button.setToolTip("" if self._ready else "按作品参数一次写好势力、人物、世界观和人物背景")
-        self.regenerate_action.setVisible(self._ready)
+        # 运行中不换按钮文字：页头按钮正显示「正在…」，跑完会再刷新一次。
+        label, _action, tip = self._primary
+        if not self.generation_busy:
+            self.generate_button.setText(label)
+            self.generate_button.setToolTip(tip)
+        self.generate_button.setEnabled(not self.generation_busy)
+        self.next_button.setVisible(self._next_visible)
+        self.next_button.setEnabled(not self.generation_busy)
+        has_any = bool(factions or characters or lore_text.strip())
+        full = sum(self._step_calls(characters).values())
+        self.regenerate_action.setVisible(has_any)
+        self.regenerate_action.setToolTip(f"按作品参数重写全部设定（约 {full} 次请求）；之后可以在页面顶部撤回")
         self.regenerate_action.setEnabled(not self.generation_busy)
         self._refresh_change_bar()

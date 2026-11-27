@@ -244,8 +244,10 @@ def test_empty_lore_shows_one_explanation_and_no_tabs(app, tmp_path):
     page.refresh()
     assert page.tabs.count() == 0 and page.tabs.isHidden()
     assert page.status_label.text().startswith("还没有世界设定")
-    assert page.status_action.isHidden()
     assert page.generate_button.text() == "生成世界设定"
+    assert page.generate_button.toolTip() == "按作品参数一次写好势力、人物、世界观和人物背景（约 13 次请求）"
+    assert page.next_button.isHidden()
+    assert not page.regenerate_action.isVisible()
     assert page.steps_meta.text() == "0 / 4 已完成"
 
 
@@ -437,6 +439,10 @@ def _buttons(widget):
     return [b.text() for b in widget.findChildren(QPushButton)]
 
 
+def _blue_buttons(widget):
+    return [b.text() for b in widget.findChildren(QPushButton) if b.property("variant") == "primary"]
+
+
 def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tmp_path):
     from core.generation.lore_repository import FACTIONS
     from core.generation.lore_run import file_digests
@@ -465,6 +471,11 @@ def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tm
     assert "势力数量不对" in faction_text                              # 已保存的问题照旧列在卡上
     assert _buttons(faction) == ["让 AI 再修一次", "编辑", "更早的记录（1）"]
     assert page.step_buttons["factions"]._meta.text() == "1 个"      # 要处理的事不挂在分步按钮上
+    assert _blue_buttons(page) == ["去处理（2 份）"]                  # 蓝色只有页头那一个
+    assert page.next_button.isHidden()                                # 整段生成停在人物，不给「下一步」
+    page._open_tab("世界观")
+    page.generate_button.click()
+    assert _tab_names(page)[page.tabs.currentIndex()] == "生成结果"
 
 
 def test_finished_result_cards_are_one_line_and_name_titles_as_on_the_tab(app, tmp_path):
@@ -516,7 +527,7 @@ def test_ready_setting_points_to_the_next_stage_and_hides_regeneration_in_more(a
     assert page.regenerate_action.isVisible()
     assert page.status_label.text() == ("世界设定已就绪：1 个势力 · 1 个人物 · 世界观 · 1 份人物背景。"
                                         "有 2 条检查备注，在「生成结果」里。")
-    assert page.status_action.isHidden()
+    assert page.next_button.isHidden()                                # 蓝色按钮已经是「下一步」
     went = []
     page.navigate_requested.connect(went.append)
     page.generate_button.click()
@@ -530,14 +541,15 @@ def test_status_line_says_what_is_missing_and_offers_to_continue(app, tmp_path, 
     page = LorePage()
     page.output_dir = str(tmp_path)
     page.refresh()
-    assert page.generate_button.text() == "生成世界设定"
-    assert not page.regenerate_action.isVisible()
     assert page.status_label.text() == "还差世界观、人物背景。"
-    assert page.status_action.text() == "接着生成后面几项"
+    assert page.generate_button.text() == "接着生成后面几项"          # 不再是从势力重来的「生成世界设定」
+    assert page.generate_button.toolTip() == "依次生成世界观、人物背景、候选标题（约 5 次请求）"
+    assert page.next_button.isHidden()
+    assert page.regenerate_action.isVisible()                         # 想整段重来，从「更多」点
     asked = []
-    monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
-    page.status_action.click()
-    assert asked == ["正在接着生成…"]
+    monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append((kw["busy_text"], kw["busy_button"])))
+    page.generate_button.click()
+    assert asked == [("正在接着生成…", page.generate_button)]
 
 
 def test_lore_text_tabs_open_at_the_first_line(app, tmp_path):
@@ -564,10 +576,13 @@ def test_status_line_sends_problems_to_results_and_flags_stale_items(app, tmp_pa
     draft = _result(tmp_path, "characters", "draft", "draft", created_at=3, issues=["返回内容尚不能读取"])
     page.refresh()
     assert page.status_label.text() == "1 份需要处理：人物（没有采用：返回内容读不出来）。"
-    assert page.status_action.text() == "去处理"
-    page._open_tab("世界观")
-    page.status_action.click()
-    assert _tab_names(page)[page.tabs.currentIndex()] == "生成结果"
+    assert page.generate_button.text() == "让 AI 再修一次"
+    assert page.generate_button.toolTip() == "按检查意见再修一次（约 2 次请求）"
+    assert not page.next_button.isHidden()                            # 设定能用，旁边给白色「下一步」
+    asked = []
+    monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
+    page.generate_button.click()
+    assert asked == ["正在修复设定一次…"]
 
     draft["reverted"] = True
     from core.generation.lore_run import save_receipt
@@ -577,11 +592,43 @@ def test_status_line_sends_problems_to_results_and_flags_stale_items(app, tmp_pa
     _result(tmp_path, "factions", "complete", created_at=4)
     page.refresh()
     assert page.status_label.text() == "人物、世界观是按旧势力写的。"
-    assert page.status_action.text() == "按新势力重写后面几项"
+    assert page.generate_button.text() == "按新势力重写后面几项"
+    assert page.generate_button.toolTip() == "约 6 次请求，会重写人物、世界观，可撤回。"
+    assert not page.next_button.isHidden()
+    asked.clear()
+    page.generate_button.click()
+    assert asked == ["正在按新势力重写…"]
+
+
+def test_a_stopped_full_run_puts_repair_and_continue_on_the_header(app, tmp_path, monkeypatch):
+    _lore_project(tmp_path)
+    _result(tmp_path, "characters", "draft", "draft", issues=["返回内容尚不能读取"],
+            remaining=["lore", "enhance", "titles"])
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.generate_button.text() == "再修一次并继续生成"
+    assert page.generate_button.toolTip() == "修好后接着生成：世界观、人物背景、候选标题（约 7 次请求）"
+    assert page.next_button.isHidden()
+    assert _blue_buttons(page) == ["再修一次并继续生成"]               # 结果卡上的同名按钮是白色
     asked = []
     monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
-    page.status_action.click()
-    assert asked == ["正在按新势力重写…"]
+    page.generate_button.click()
+    assert asked == ["正在修复并接着生成…"]
+
+
+def test_header_keeps_its_running_text_while_busy(app, tmp_path):
+    _lore_project(tmp_path)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    page.generate_button.setText("正在接着生成…")      # 后台任务先换上「正在…」，再通知页面
+    page.set_generation_busy(True)
+    assert page.generate_button.text() == "正在接着生成…"
+    assert not page.generate_button.isEnabled()
+    page.set_generation_busy(False)
+    assert page.generate_button.text() == "接着生成后面几项"
+    assert page.generate_button.isEnabled()
 
 
 def test_finished_generation_stays_on_the_current_tab(app, tmp_path):
