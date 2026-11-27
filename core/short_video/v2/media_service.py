@@ -78,7 +78,7 @@ class MediaService:
             template = template.prepare_image_inputs(list(selected_images))
         driving_video = None
         if template.driving_video_node is not None:
-            require(bool(driving_video_id), "INVALID_INPUT", "请选择原视频")
+            require(bool(driving_video_id), "INVALID_INPUT", f"请选择{template.driving_video_label}")
             driving_video = self.repository.driving_video(driving_video_id)
         # 在本地确认所有输入完整且参数类型正确，再进行外部上传与提交。
         if tracking_preview:
@@ -211,8 +211,8 @@ class MediaWork(TaskTracker):
                     video_name = None
                     if template.driving_video_node is not None:
                         self.token.raise_if_cancelled()
-                        self.update_context(phase="上传原视频")
-                        report("正在上传原视频…", -1)
+                        self.update_context(phase=f"上传{template.driving_video_label}")
+                        report(f"正在上传{template.driving_video_label}…", -1)
                         uploaded = await client.call(
                             "comfy_upload_driving_video",
                             {"video_id": driving_video["video_id"], "sha256": driving_video["sha256"]},

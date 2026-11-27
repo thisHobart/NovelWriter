@@ -39,6 +39,40 @@ SCAIL_ASPECT_RATIO_CHOICES = (
 # holds; a shot keeps what was set for it.
 SHOT_ASPECT_RATIO = "9:16 (Portrait Widescreen)"
 SHOT_MEGAPIXELS = 1.0
+H3_MOTION_WORKFLOW_ID = "minimax-first-last-motion"
+H3_MOTION_KIND = "reference_first_last_motion"
+
+
+def h3_motion_workflow() -> JsonObject:
+    graph = read_api_workflow(WORKFLOW_DIRECTORY / "minimax_h3_first_last.json")
+    graph["138"]["inputs"]["value"] = (
+        "保持首尾帧中的人物和场景，按照 <Video 1> 的动作顺序、节奏和人物相对移动完成本镜头。"
+    )
+    graph.update({
+        "motion_video": {"class_type": "VHS_LoadVideo", "inputs": {
+            "video": "", "force_rate": 24, "custom_width": 0, "custom_height": 0,
+            "frame_load_cap": 0, "skip_first_frames": 0, "select_every_nth": 1, "format": "None",
+        }},
+        "motion_last": {"class_type": "ImageFromBatch", "inputs": {
+            "image": ["motion_video", 0], "batch_index": -1, "length": 1,
+        }},
+        "motion_hold": {"class_type": "RepeatImageBatch", "inputs": {
+            "image": ["motion_last", 0], "amount": 16,
+        }},
+        "motion_frames": {"class_type": "ImageBatch", "inputs": {
+            "image1": ["motion_video", 0], "image2": ["motion_hold", 0],
+        }},
+        "motion_duration": {"class_type": "ComfyMathExpression", "inputs": {
+            "expression": "max(a, 5 + 17 * ceil((b - 5) / 17))",
+            "values.a": ["131", 1], "values.b": ["motion_video", 1],
+        }},
+    })
+    # H3 rounds video references down and caps them at the output length. Extra
+    # copies of the last frame keep the original frames inside its valid grid.
+    generator = graph["136"]["inputs"]
+    generator["ref_videos.ref_video_0"] = ["motion_frames", 0]
+    generator["length"] = ["motion_duration", 1]
+    return {"workflow_id": H3_MOTION_WORKFLOW_ID, "name": "H3 首尾帧 + 动作驱动", "graph": graph}
 
 
 def default_workflows() -> list[JsonObject]:
@@ -54,7 +88,7 @@ def default_workflows() -> list[JsonObject]:
                 "graph": read_api_workflow(WORKFLOW_DIRECTORY / filename),
             }
         )
-    return workflows
+    return [*workflows, h3_motion_workflow()]
 
 
 @dataclass
@@ -78,6 +112,8 @@ class MediaConfig:
             "INVALID_INPUT",
             "视频工作流配置不是当前格式",
         )
+        if not any(workflow["workflow_id"] == H3_MOTION_WORKFLOW_ID for workflow in values["workflows"]):
+            values["workflows"].append(h3_motion_workflow())
         return cls(**values)
 
     def selected(self, workflow_id: str | None = None) -> JsonObject:
@@ -238,6 +274,10 @@ class VideoWorkflow:
     def reference_count(self) -> int:
         return sum(image.role == "reference" for image in self.image_inputs)
 
+    @property
+    def driving_video_label(self) -> str:
+        return "动作捕获视频" if self.kind == H3_MOTION_KIND else "原视频"
+
     def prepare_reference_inputs(self, node_ids: list[str]) -> VideoWorkflow:
         """只为本轮已选参考图接线，未选节点由依赖裁剪移出执行图。"""
         require(self.kind == "reference", "INVALID_INPUT", "当前工作流不支持动态参考图片")
@@ -264,7 +304,7 @@ class VideoWorkflow:
         """Retain selected image slots and bypass unused frame conditions for this run."""
         if self.kind == "reference":
             return self.prepare_reference_inputs(node_ids)
-        if self.driving_video_node is not None:
+        if self.driving_video_node is not None and self.kind != H3_MOTION_KIND:
             require(
                 node_ids == [self.image_inputs[0].node_id],
                 "INVALID_INPUT",
@@ -279,6 +319,12 @@ class VideoWorkflow:
             "INVALID_INPUT",
             "选择了当前工作流不存在的图片输入",
         )
+        if self.kind == H3_MOTION_KIND:
+            require(
+                all(image.node_id in selected for image in self.image_inputs if image.role != "reference"),
+                "INVALID_INPUT",
+                "请选择首帧和尾帧图片",
+            )
         graph = deepcopy(self.graph)
         inputs = graph[self.generator_node]["inputs"]
         for name in list(inputs):
@@ -326,7 +372,7 @@ class VideoWorkflow:
         require(not parameters.keys() - known, "INVALID_INPUT", "包含当前工作流不支持的参数")
         graph = deepcopy(self.graph)
         if self.driving_video_node is not None:
-            require(bool(driving_video), "INVALID_INPUT", "请选择原视频")
+            require(bool(driving_video), "INVALID_INPUT", f"请选择{self.driving_video_label}")
             graph[self.driving_video_node]["inputs"]["video"] = driving_video
         for image in self.image_inputs:
             graph[image.node_id]["inputs"]["image"] = image_names[image.node_id]
@@ -363,6 +409,8 @@ class VideoWorkflow:
                 inputs[parameter.input_name] = value
                 if parameter.role == "source_aspect" and value == "original":
                     inputs["fit"] = "letterbox"
+        if self.kind == H3_MOTION_KIND and "<video 1>" not in prompt.lower():
+            prompt += "\n跟随 <Video 1> 中的动作顺序、节奏和人物相对移动，角色外观与场景以图片为准。"
         graph[self.prompt_node]["inputs"][self.prompt_input] = prompt
         graph[self.output_node]["inputs"]["filename_prefix"] = f"video/NovelWriter/{job_id}"
         return graph
@@ -514,6 +562,7 @@ def parse_h3_workflow(active: JsonObject, output: str, generator: str) -> VideoW
     inputs = active[generator]["inputs"]
     image_inputs = []
     kind = "reference"
+    driving_video_node = None
     if active[generator]["class_type"] == "MiniMaxH3ImageToVideo":
         kind = "first_last"
         for name, label in (("first_frame", "首帧图片"), ("last_frame", "尾帧图片")):
@@ -559,6 +608,25 @@ def parse_h3_workflow(active: JsonObject, output: str, generator: str) -> VideoW
                 image_inputs.append(ImageInput(guide["image"][0], label, role))
                 previous = guide_id
             kind = "reference_first_last"
+        video_inputs = [name for name in inputs if name.startswith("ref_videos.")]
+        if video_inputs:
+            require(
+                video_inputs == ["ref_videos.ref_video_0"] and guides.keys() == {0, -1},
+                "INVALID_INPUT",
+                "H3 动作驱动工作流需要首尾帧和一路视频参考",
+            )
+            video_link = inputs[video_inputs[0]]
+            require(
+                isinstance(video_link, list) and len(video_link) == 2
+                and isinstance(video_link[0], str) and video_link[1] == 0,
+                "INVALID_INPUT",
+                "H3 动作参考需要连接视频帧",
+            )
+            video_graph = output_dependencies(active, video_link[0])
+            loaders = [node_id for node_id, node in video_graph.items() if node["class_type"] == "VHS_LoadVideo"]
+            require(len(loaders) == 1, "INVALID_INPUT", "H3 动作参考需要一个视频加载节点")
+            driving_video_node = loaders[0]
+            kind = H3_MOTION_KIND
     require(bool(image_inputs), "INVALID_INPUT", "工作流没有连接图片输入")
     for image in image_inputs:
         require(
@@ -640,7 +708,7 @@ def parse_h3_workflow(active: JsonObject, output: str, generator: str) -> VideoW
                     WorkflowParameter(
                         duration_node,
                         "value",
-                        "时长（秒）",
+                        "最短时长（秒）" if kind == H3_MOTION_KIND else "时长（秒）",
                         float(active[duration_node]["inputs"]["value"]),
                         1,
                         150,
@@ -656,4 +724,5 @@ def parse_h3_workflow(active: JsonObject, output: str, generator: str) -> VideoW
         tuple(parameters),
         kind,
         generator,
+        driving_video_node,
     )

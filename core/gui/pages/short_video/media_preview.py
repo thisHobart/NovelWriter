@@ -41,6 +41,7 @@ from core.gui.widgets.controls import VScrollArea, primary_button
 from core.short_video.v2.media_repository import MediaRepository
 from core.short_video.v2.media_service import MediaService, MediaWork
 from core.short_video.v2.media_workflows import (
+    H3_MOTION_KIND,
     MAX_REFERENCE_IMAGES,
     ImageInput,
     MediaConfig,
@@ -276,7 +277,8 @@ class MediaPreview(QWidget):
         self.driving_video_row = QWidget()
         video_row = QHBoxLayout(self.driving_video_row)
         video_row.setContentsMargins(0, 0, 0, 0)
-        video_row.addWidget(field_label("原视频"))
+        self.driving_video_caption = field_label("原视频")
+        video_row.addWidget(self.driving_video_caption)
         self.driving_video_label = muted("未选择")
         self.driving_video_label.setWordWrap(True)
         video_row.addWidget(self.driving_video_label, 1)
@@ -795,7 +797,7 @@ class MediaPreview(QWidget):
     def choose_driving_video(self) -> None:
         self.require_editable_inputs()
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择原视频", self.workbench.output_dir, "视频 (*.mp4 *.mov *.webm *.mkv)"
+            self, f"选择{self.template.driving_video_label}", self.workbench.output_dir, "视频 (*.mp4 *.mov *.webm *.mkv)"
         )
         if path:
             self.driving_video = MediaRepository(self.workbench.output_dir).import_driving_video(path)
@@ -966,7 +968,9 @@ class MediaPreview(QWidget):
         selected = self.catalog.selected(self.workflows.currentData())
         self.template = parse_video_workflow(selected["graph"])
         self.loaded_workflow_id = selected["workflow_id"]
-        draft = self.drafts.get(self.loaded_workflow_id, {})
+        motion = self.template.kind == H3_MOTION_KIND
+        previous = self.drafts.get("minimax-first-last", {}) if motion else {}
+        draft = self.drafts.get(self.loaded_workflow_id, previous)
         self.driving_video = None
         if self.template.driving_video_node is not None and draft.get("driving_video_id"):
             try:
@@ -976,6 +980,8 @@ class MediaPreview(QWidget):
             except (WorkspaceError, OSError, ValueError):
                 logger.warning("无法恢复原视频", exc_info=True)
         self.driving_video_row.setVisible(self.template.driving_video_node is not None)
+        self.driving_video_caption.setText(self.template.driving_video_label)
+        self.driving_video_button.setText(f"选择{self.template.driving_video_label}")
         self.driving_video_label.setText(self.driving_video["name"] if self.driving_video else "未选择")
         dual_scene = self.is_dual_scene
         for widget in (self.tracking_preview_button, self.open_tracking_button, self.tracking_status):
@@ -984,10 +990,13 @@ class MediaPreview(QWidget):
         self.slot_grid.setVisible(not dual_scene)
         self.dual_inputs_section.setVisible(dual_scene)
         self.advanced.note.setText("输出长边、采样步数、随机种子" if dual_scene else "采样步数、随机种子")
-        self.prompt_note.setText(
+        prompt_note = (
             "描述最终画面和动作，角色与场景按上面的素材对应"
             if dual_scene else "用 <Picture N> 指代上面的参考图片"
         )
+        if motion:
+            prompt_note = "<Video 1> 提供动作参考，成片时长至少覆盖所选视频"
+        self.prompt_note.setText(prompt_note)
         self.additional_reference_slots = []
         image_inputs = [image for image in self.template.image_inputs if not dual_scene or image.role != "scene_b"]
         if self.template.kind == "reference":
@@ -1168,6 +1177,8 @@ class MediaPreview(QWidget):
             job_images = {node_id: image["image_id"] for node_id, image in images.items()}
             if (
                 snapshot.get("workflow_id") == self.loaded_workflow_id
+                and (self.template.kind != H3_MOTION_KIND
+                     or (snapshot.get("target") or {}).get("shot_id") == self.target.get("shot_id"))
                 and job_images == selection
                 and (snapshot.get("driving_video") or {}).get("video_id") == video_id
             ):
@@ -1214,6 +1225,15 @@ class MediaPreview(QWidget):
             ready = not missing
             self.prompt_status.setText(missing or self.dual_casting())
             set_tone(self.prompt_status, "warn" if missing else "")
+        elif self.template.kind == H3_MOTION_KIND:
+            missing_inputs = [
+                image.label for image in self.template.image_inputs
+                if image.role != "reference" and not self.image_fields[image.node_id].image_id
+            ]
+            if self.driving_video is None:
+                missing_inputs.append(self.template.driving_video_label)
+            missing = "请选择" + "、".join(missing_inputs) if missing_inputs else ""
+            ready = not missing
         else:
             missing = ""
             ready = any(self.image_selection().values()) and (

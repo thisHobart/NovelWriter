@@ -592,7 +592,7 @@ def test_catalog_add_replace_and_reopen_preserves_workflow_identity(tmp_path):
     loaded.put_workflow("四图参考", json.dumps(reference_graph(4)), workflow_id)
     loaded.save(tmp_path)
     updated = MediaConfig.load(tmp_path)
-    assert len(updated.workflows) == 3
+    assert len(updated.workflows) == 4
     assert len(parse_video_workflow(updated.selected()["graph"]).image_inputs) == 4
     assert updated.selected()["workflow_id"] == workflow_id
     assert (
@@ -783,7 +783,7 @@ def test_ui_switches_roles_and_json_update_changes_input_count(tmp_path):
         app.processEvents()
     app.processEvents()
     assert MediaConfig.load(tmp_path).selected()["name"] == "粘贴工作流"
-    assert len(MediaConfig.load(tmp_path).workflows) == 4
+    assert len(MediaConfig.load(tmp_path).workflows) == 5
     panel.refresh()
     assert len(panel.image_fields) == 4
     panel.close()
