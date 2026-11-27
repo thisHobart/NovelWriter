@@ -142,18 +142,35 @@ LORE_STEPS = (
 )
 
 
+#: 整段生成时，这几项自动修过仍不合格就先停下：后面几项都按它写。人物背景、候选标题后面没有依赖，不停。
+STOP_ON_PROBLEMS = {"factions", "characters", "world"}
+
+
+def _stops_here(outcome) -> bool:
+    """这一份之后不该接着跑：没能采用（只留了草稿）；或势力、人物、世界观自动修到上限仍有问题。"""
+    if outcome.get("disposition") == "draft":
+        return True
+    return (outcome.get("kind") in STOP_ON_PROBLEMS and outcome.get("status") == "needs_changes"
+            and outcome.get("exit_reason") in {"attempt_limit", "no_improvement"})
+
+
 def _run_lore_steps(context: StageContext, pipeline: LorePipeline, keys: Sequence[str]) -> None:
-    """按顺序跑这几步；某一步没能采用（只留了草稿）就停下，并在那张收据上记下还剩哪几步。"""
-    from core.generation.lore_run import save_receipt
+    """按顺序跑这几步；某一步该停（见 _stops_here）就停下，并在那张收据上记下还剩哪几步。"""
+    from core.generation.lore_run import LABELS, save_receipt
     steps = [step for step in LORE_STEPS if step[0] in keys]
     for index, (_key, fraction, label, method) in enumerate(steps):
         context.progress(label, fraction)
         getattr(pipeline, method)(context)
         outcomes = context.extras.get("lore_results", [])
-        if outcomes and outcomes[-1].get("disposition") == "draft":
-            context.extras.setdefault("parameter_warnings", []).append("当前步骤已交付草稿，采用可读取内容后可继续世界设定生成。")
-            outcomes[-1]["remaining"] = [step[0] for step in steps[index + 1:]]
-            save_receipt(context.output_dir, outcomes[-1])
+        if outcomes and _stops_here(outcomes[-1]):
+            stopped = outcomes[-1]
+            context.extras.setdefault("parameter_warnings", []).append(
+                "当前步骤已交付草稿，采用可读取内容后可继续世界设定生成。" if stopped.get("disposition") == "draft"
+                else f"{LABELS.get(stopped.get('kind'), '设定')}自动修过仍有问题，整段生成先停在这里；"
+                     "可以再修一次，或就用现在的接着生成。")
+            stopped["remaining"] = [step[0] for step in steps[index + 1:]]
+            save_receipt(context.output_dir, stopped)
+            context.extras["lore_stopped"] = True
             return
 
 
@@ -182,10 +199,11 @@ def _repair_lore(context: StageContext, pipeline: LorePipeline, identity: str, t
     outcomes = context.extras.get("lore_results", [])
     if not remaining or not outcomes:
         return
-    if outcomes[-1].get("disposition") == "draft":
-        # 还是没能采用：新收据接着记住剩下几步，下次按钮仍是「再修一次并继续生成」。
+    if _stops_here(outcomes[-1]):
+        # 还是没能采用或仍不合格：新收据接着记住剩下几步，下次按钮仍是「再修一次并继续生成」。
         outcomes[-1]["remaining"] = remaining
         save_receipt(context.output_dir, outcomes[-1])
+        context.extras["lore_stopped"] = True
         return
     _run_lore_steps(context, pipeline, remaining)
 
@@ -563,11 +581,17 @@ def run_stage_action(
             _repair_lore(context, pipeline, (options or {}).get("receipt_id"), bool((options or {}).get("continue")))
             result = {"step": step, "action": action, "generated_files": sorted(context.extras.get("generated_lore_files", []))}
         elif action == "continue":
-            # 「接着生成后面几项」「按新势力重写后面几项」：按整段生成的顺序跑给定的几步。
+            # 「接着生成后面几项」「按新势力重写后面几项」「就用现在的，继续生成」：按整段生成的顺序跑给定的几步。
             known = [key for key, *_rest in LORE_STEPS]
             keys = [key for key in (options or {}).get("steps", []) if key in known]
             if not keys:
                 raise ValueError("没有要接着生成的步骤")
+            if (options or {}).get("accept"):
+                # 作者决定就用停下的那份：不再算要处理，剩下几步按它接着写。
+                from core.generation.lore_run import load_receipt, save_receipt
+                accepted = load_receipt(output_dir, options["accept"])
+                accepted.update(accepted=True, remaining=[])
+                save_receipt(output_dir, accepted)
             context.extras.setdefault("num_factions", 6)
             context.extras.setdefault("num_chars", 8)
             _run_lore_steps(context, pipeline, keys)
@@ -690,3 +714,5 @@ def _lore_outcomes(context, result):
     result["status"] = ("draft" if any(item["disposition"] == "draft" for item in outcomes)
                         else "needs_changes" if any(item["status"] == "needs_changes" for item in outcomes)
                         else "unchecked" if any(item["status"] == "unchecked" for item in outcomes) else "complete")
+    # 整段生成停在半路：「运行完整流程」也要在这里停，不能拿缺了的世界设定去写故事结构。
+    result["stopped"] = bool(context.extras.get("lore_stopped"))

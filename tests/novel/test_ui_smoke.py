@@ -246,7 +246,7 @@ def test_empty_lore_shows_one_explanation_and_no_tabs(app, tmp_path):
     assert page.status_label.text().startswith("还没有世界设定")
     assert page.generate_button.text() == "生成世界设定"
     assert page.generate_button.toolTip() == "按作品参数一次写好势力、人物、世界观和人物背景（约 13 次请求）"
-    assert page.next_button.isHidden()
+    assert page.side_button.isHidden()
     assert not page.regenerate_action.isVisible()
     assert page.steps_meta.text() == "0 / 4 已完成"
 
@@ -472,7 +472,7 @@ def test_results_show_latest_card_per_product_with_only_relevant_buttons(app, tm
     assert _buttons(faction) == ["让 AI 再修一次", "编辑", "更早的记录（1）"]
     assert page.step_buttons["factions"]._meta.text() == "1 个"      # 要处理的事不挂在分步按钮上
     assert _blue_buttons(page) == ["去处理（2 份）"]                  # 蓝色只有页头那一个
-    assert page.next_button.isHidden()                                # 整段生成停在人物，不给「下一步」
+    assert page.side_button.isHidden()                                # 整段生成停在人物，不给「下一步」
     page._open_tab("世界观")
     page.generate_button.click()
     assert _tab_names(page)[page.tabs.currentIndex()] == "生成结果"
@@ -527,7 +527,7 @@ def test_ready_setting_points_to_the_next_stage_and_hides_regeneration_in_more(a
     assert page.regenerate_action.isVisible()
     assert page.status_label.text() == ("世界设定已就绪：1 个势力 · 1 个人物 · 世界观 · 1 份人物背景。"
                                         "有 2 条检查备注，在「生成结果」里。")
-    assert page.next_button.isHidden()                                # 蓝色按钮已经是「下一步」
+    assert page.side_button.isHidden()                                # 蓝色按钮已经是「下一步」
     went = []
     page.navigate_requested.connect(went.append)
     page.generate_button.click()
@@ -544,7 +544,7 @@ def test_status_line_says_what_is_missing_and_offers_to_continue(app, tmp_path, 
     assert page.status_label.text() == "还差世界观、人物背景。"
     assert page.generate_button.text() == "接着生成后面几项"          # 不再是从势力重来的「生成世界设定」
     assert page.generate_button.toolTip() == "依次生成世界观、人物背景、候选标题（约 5 次请求）"
-    assert page.next_button.isHidden()
+    assert page.side_button.isHidden()
     assert page.regenerate_action.isVisible()                         # 想整段重来，从「更多」点
     asked = []
     monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append((kw["busy_text"], kw["busy_button"])))
@@ -578,7 +578,7 @@ def test_status_line_sends_problems_to_results_and_flags_stale_items(app, tmp_pa
     assert page.status_label.text() == "1 份需要处理：人物（没有采用：返回内容读不出来）。"
     assert page.generate_button.text() == "让 AI 再修一次"
     assert page.generate_button.toolTip() == "按检查意见再修一次（约 2 次请求）"
-    assert not page.next_button.isHidden()                            # 设定能用，旁边给白色「下一步」
+    assert not page.side_button.isHidden()                            # 设定能用，旁边给白色「下一步」
     asked = []
     monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
     page.generate_button.click()
@@ -594,7 +594,7 @@ def test_status_line_sends_problems_to_results_and_flags_stale_items(app, tmp_pa
     assert page.status_label.text() == "人物、世界观是按旧势力写的。"
     assert page.generate_button.text() == "按新势力重写后面几项"
     assert page.generate_button.toolTip() == "约 6 次请求，会重写人物、世界观，可撤回。"
-    assert not page.next_button.isHidden()
+    assert not page.side_button.isHidden()
     asked.clear()
     page.generate_button.click()
     assert asked == ["正在按新势力重写…"]
@@ -607,14 +607,65 @@ def test_a_stopped_full_run_puts_repair_and_continue_on_the_header(app, tmp_path
     page = LorePage()
     page.output_dir = str(tmp_path)
     page.refresh()
+    assert page.status_label.text() == "整段生成停在人物：没有采用，返回内容读不出来。"
     assert page.generate_button.text() == "再修一次并继续生成"
     assert page.generate_button.toolTip() == "修好后接着生成：世界观、人物背景、候选标题（约 7 次请求）"
-    assert page.next_button.isHidden()
+    assert page.side_button.isHidden()
     assert _blue_buttons(page) == ["再修一次并继续生成"]               # 结果卡上的同名按钮是白色
     asked = []
     monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append(kw["busy_text"]))
     page.generate_button.click()
     assert asked == ["正在修复并接着生成…"]
+
+
+def _stopped_at_factions(root, **extra):
+    from core.generation.lore_repository import BODY, CHARACTERS
+    _lore_project(root)
+    (root / BODY).unlink()
+    (root / CHARACTERS).unlink()
+    return _result(root, "factions", "needs_changes", issues=["势力数量不对"], exit_reason="attempt_limit",
+                   remaining=["characters", "lore", "enhance", "titles"], **extra)
+
+
+def test_a_full_run_stopped_on_a_problem_offers_repair_or_use_as_is(app, tmp_path, monkeypatch):
+    stopped = _stopped_at_factions(tmp_path)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.status_label.text() == "整段生成停在势力：有问题，已保存。"
+    assert page.generate_button.text() == "再修一次并继续生成"
+    assert page.generate_button.toolTip() == "修好后接着生成：人物、世界观、人物背景、候选标题（约 13 次请求）"
+    assert page.side_button.text() == "就用现在的，继续生成"
+    assert page.side_button.toolTip() == "按现在保存的势力接着生成：人物、世界观、人物背景、候选标题（约 11 次请求）"
+    (card,) = _result_cards(page)
+    assert _buttons(card) == ["再修一次并继续生成", "就用现在的，继续生成", "编辑"]
+    asked = []
+    monkeypatch.setattr(page, "run_task", lambda work, **kw: asked.append((work.options, kw["busy_button"])))
+    page.side_button.click()
+    assert asked == [({"steps": ["characters", "lore", "enhance", "titles"], "accept": stopped["id"]},
+                      page.side_button)]
+
+
+def test_second_failed_repair_says_the_check_may_be_too_strict(app, tmp_path):
+    _result(tmp_path, "factions", "needs_changes", created_at=1, issues=["势力数量不对"])
+    _stopped_at_factions(tmp_path, created_at=2)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    assert page.status_label.text() == ("整段生成停在势力：有问题，已保存。"
+                                        "检查可能判严了，内容可以用就点「就用现在的，继续生成」。")
+
+
+def test_a_result_used_as_is_no_longer_needs_handling(app, tmp_path):
+    _stopped_at_factions(tmp_path, accepted=True)
+    page = LorePage()
+    page.output_dir = str(tmp_path)
+    page.refresh()
+    (card,) = _result_cards(page)
+    assert _card_title(card) == "势力 · 有问题，就用现在的"
+    assert _buttons(card) == []
+    assert page.generate_button.text() == "接着生成后面几项"
+    assert page.side_button.isHidden()
 
 
 def test_header_keeps_its_running_text_while_busy(app, tmp_path):

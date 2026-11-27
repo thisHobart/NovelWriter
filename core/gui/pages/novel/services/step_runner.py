@@ -66,8 +66,9 @@ class GenerationWork:
                 def scoped(text, fraction, _base=base, _label=label):
                     report(f"{_label} · {text}", -1.0 if fraction < 0 else _base + fraction * span)
                 results[step] = step_work(step, self.output_dir, self.model, parameters=snapshot)(scoped)
-                if results[step].get("status") == "draft":
-                    report("生成草稿已保留，采用可读取内容后可继续后续阶段", 1.0)
+                if results[step].get("status") == "draft" or results[step].get("stopped"):
+                    # 世界设定整段生成停在半路（读不出来，或势力、人物、世界观修过仍有问题）：后面阶段不跑。
+                    report("世界设定停在半路，处理后可继续后续阶段", 1.0)
                     return results
             report("完整流程已完成", 1.0)
             return results

@@ -452,8 +452,9 @@ def test_full_workflow_runs_all_headless_stages_in_order(monkeypatch, tmp_path):
     assert seen == ["lore", "structure", "scenes", "chapters"]
 
 
-def _fake_lore_steps(monkeypatch, ran, draft_kinds=()):
-    """把世界设定的几步换成只写收据的假步骤；draft_kinds 里的那几步只留草稿。"""
+def _fake_lore_steps(monkeypatch, ran, draft_kinds=(), problem_kinds=(), problem_reason="attempt_limit"):
+    """把世界设定的几步换成只写收据的假步骤；draft_kinds 里的那几步只留草稿，
+    problem_kinds 里的那几步已保存但仍有问题（自动修到 problem_reason 为止）。"""
     import time
     from uuid import uuid4
     from core.generation.lore_pipeline import LorePipeline
@@ -463,9 +464,12 @@ def _fake_lore_steps(monkeypatch, ran, draft_kinds=()):
         def run(self, context, *args):
             ran.append(name)
             draft = name in draft_kinds
-            record = {"id": uuid4().hex, "kind": kind, "status": "draft" if draft else "complete",
-                      "disposition": "draft" if draft else "current", "candidate": "x", "issues": [],
-                      "files": [], "calls": 1, "created_at": time.time()}
+            problem = name in problem_kinds
+            record = {"id": uuid4().hex, "kind": kind,
+                      "status": "draft" if draft else "needs_changes" if problem else "complete",
+                      "disposition": "draft" if draft else "current", "candidate": "x",
+                      "issues": ["势力数量不对"] if problem else [], "files": [], "calls": 1,
+                      "created_at": time.time(), **({"exit_reason": problem_reason} if problem else {})}
             save_receipt(context.output_dir, record)
             context.extras.setdefault("lore_results", []).append(record)
         return run
@@ -512,6 +516,82 @@ def test_repair_that_still_fails_keeps_the_remaining_steps(monkeypatch, tmp_path
     assert ran == ["repair"]
     newest = max(list_receipts(project), key=lambda r: r["created_at"])
     assert newest["remaining"] == ["lore", "enhance", "titles"]
+
+
+def test_full_lore_run_stops_where_factions_still_have_problems(monkeypatch, tmp_path):
+    from core.generation.lore_run import list_receipts
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, problem_kinds={"factions"})
+    project = _project(tmp_path)
+    result = stage_pipeline.run_stage_action("lore", "full", project)
+    assert ran == ["factions"]                               # 人物、世界观不按有问题的势力写
+    assert result["stopped"] is True
+    stopped = next(r for r in list_receipts(project) if r["kind"] == "factions")
+    assert stopped["remaining"] == ["characters", "lore", "enhance", "titles"]
+    assert any("整段生成先停在这里" in warning for warning in result["parameter_warnings"])
+
+
+@pytest.mark.parametrize("kinds, reason", [({"enhance"}, "attempt_limit"),   # 人物背景后面没有依赖
+                                           ({"factions"}, "checked")])        # 检查通过、只留了提示
+def test_other_problems_do_not_stop_the_full_lore_run(monkeypatch, tmp_path, kinds, reason):
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, problem_kinds=kinds, problem_reason=reason)
+    result = stage_pipeline.run_stage_action("lore", "full", _project(tmp_path))
+    assert ran == ["factions", "characters", "lore", "enhance", "titles"]
+    assert result["stopped"] is False
+
+
+def test_repair_that_still_has_problems_keeps_the_remaining_steps(monkeypatch, tmp_path):
+    from core.generation.lore_run import list_receipts
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, problem_kinds={"characters"})
+    project = _project(tmp_path)
+    stage_pipeline.run_stage_action("lore", "full", project)
+    stopped = next(r for r in list_receipts(project) if r["kind"] == "characters")
+
+    ran.clear()
+    _fake_lore_steps(monkeypatch, ran, problem_kinds={"repair"})
+    result = stage_pipeline.run_stage_action("lore", "repair", project,
+                                             options={"receipt_id": stopped["id"], "continue": True})
+    assert ran == ["repair"]
+    assert result["stopped"] is True
+    newest = max(list_receipts(project), key=lambda r: r["created_at"])
+    assert newest["remaining"] == ["lore", "enhance", "titles"]
+
+
+def test_using_the_stopped_result_as_is_runs_the_rest_and_clears_it(monkeypatch, tmp_path):
+    from core.generation.lore_repository import generation_label
+    from core.generation.lore_run import list_receipts, needs_attention
+    ran = []
+    _fake_lore_steps(monkeypatch, ran, problem_kinds={"factions"})
+    project = _project(tmp_path)
+    stage_pipeline.run_stage_action("lore", "full", project)
+    stopped = next(r for r in list_receipts(project) if r["kind"] == "factions")
+
+    ran.clear()
+    _fake_lore_steps(monkeypatch, ran)
+    options = {"steps": stopped["remaining"], "accept": stopped["id"]}
+    stage_pipeline.run_stage_action("lore", "continue", project, options=options)
+    assert ran == ["characters", "lore", "enhance", "titles"]
+    accepted = next(r for r in list_receipts(project) if r["id"] == stopped["id"])
+    assert accepted["accepted"] is True and accepted["remaining"] == []
+    assert accepted["issues"] == ["势力数量不对"]                # 问题照旧记着，只是不再算要处理
+    assert not needs_attention(project, accepted)
+    assert generation_label({"action": "continue", "options": options}) == "就用现在的，继续生成"
+
+
+def test_full_workflow_stops_after_a_world_setting_that_stopped_half_way(monkeypatch, tmp_path):
+    seen = []
+    from core.gui.pages.novel import params_store
+    params_store.save(str(tmp_path), {"genre": "Sci-Fi"})
+
+    def fake_run_stage(step, output_dir, model, parameters=None, report=None):
+        seen.append(step)
+        return {"step": step, "status": "needs_changes", "stopped": step == "lore"}
+
+    monkeypatch.setattr(step_runner, "run_stage", fake_run_stage)
+    step_runner.full_workflow_work(str(tmp_path))(lambda _text, _fraction: None)
+    assert seen == ["lore"]                                  # 故事结构不拿缺了的世界设定开跑
 
 
 def test_plain_repair_does_not_run_later_steps(monkeypatch, tmp_path):

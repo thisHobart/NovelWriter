@@ -56,8 +56,8 @@ def latest_by_product(receipts):
 
 
 def needs_attention(root, receipt):
-    """这份最新结果还要不要作者处理：已完成、已撤回、保存后手动改过的都不用。"""
-    if receipt.get("reverted") or receipt.get("status") == "complete":
+    """这份最新结果还要不要作者处理：已完成、已撤回、保存后手动改过、作者决定就用现在的，都不用。"""
+    if receipt.get("reverted") or receipt.get("status") == "complete" or receipt.get("accepted"):
         return False
     return not edited_after_save(root, receipt)
 

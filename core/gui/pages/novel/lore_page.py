@@ -259,16 +259,17 @@ class LorePage(StagePage):
         self.more_menu.insertAction(self.more_menu.actions()[0], self.regenerate_action)
         self.more_menu.setToolTipsVisible(True)
         self.more_button.setMenu(self.more_menu)
-        # 有事要处理、但设定已经能用时，白色「下一步：故事结构」紧挨在蓝色按钮旁边。
-        self.next_button = secondary_button("下一步：故事结构")
-        self.next_button.clicked.connect(lambda: self.navigate_requested.emit("structure"))
+        # 蓝色按钮旁边的白色按钮：设定已经能用时是「下一步：故事结构」；
+        # 整段生成停在有问题的那份时是「就用现在的，继续生成」。没有就不出现。
+        self.side_button = secondary_button("下一步：故事结构")
+        self.side_button.clicked.connect(self._side_clicked)
         self.generate_button = primary_button("生成世界设定")
-        for button in (self.more_button, self.next_button, self.generate_button):
+        for button in (self.more_button, self.side_button, self.generate_button):
             self.header.add_action(button)
         self.generate_button.clicked.connect(self._primary_clicked)
         self._ready = False
         self._primary = None
-        self._next_visible = False
+        self._side = None
 
         self._build_left()
         self._build_inspector()
@@ -590,7 +591,27 @@ class LorePage(StagePage):
     @staticmethod
     def _then_continue(receipt) -> bool:
         """整段生成停在这一份：修好后要接着跑剩下几步。"""
-        return bool(receipt.get("remaining")) and receipt.get("disposition") != "current"
+        return bool(receipt.get("remaining")) and not receipt.get("accepted")
+
+    @classmethod
+    def _can_use_as_is(cls, receipt) -> bool:
+        """停在一份已保存、只是有问题的结果上：可以就用现在的，把剩下几步跑完。"""
+        return cls._then_continue(receipt) and receipt.get("disposition") == "current"
+
+    def _use_as_is_tip(self, receipt, calls) -> str:
+        steps = receipt["remaining"]
+        names = "、".join(STEP_TITLES.get(key, key) for key in steps)
+        total = sum(calls.get(key, CALLS_PER_PRODUCT) for key in steps)
+        return f"按现在保存的{LABELS.get(receipt['kind'], '设定')}接着生成：{names}（约 {total} 次请求）"
+
+    def _use_as_is(self, receipt, busy_button=None) -> None:
+        """「就用现在的，继续生成」：这份不再算要处理，剩下几步按它接着写。"""
+        if self.generation_busy or not self.resolve_draft():
+            return
+        options = {"steps": list(receipt["remaining"]), "accept": receipt["id"]}
+        self.run_task(action_work("lore", "continue", self.output_dir, self.model, options=options),
+                      busy_button=busy_button, busy_text="正在接着生成…",
+                      on_success=self._show_generation_result)
 
     def _repair_tip(self, receipt, calls) -> str:
         if self._then_continue(receipt):
@@ -610,6 +631,11 @@ class LorePage(StagePage):
         repair.setToolTip(self._repair_tip(receipt, self._step_calls(artifacts.characters(self.output_dir))))
         repair.clicked.connect(lambda checked=False: self._repair_generation_result(identity, then_continue))
         buttons = [repair]
+        if self._can_use_as_is(receipt):
+            use = secondary_button("就用现在的，继续生成")
+            use.setToolTip(self._use_as_is_tip(receipt, self._step_calls(artifacts.characters(self.output_dir))))
+            use.clicked.connect(lambda checked=False: self._use_as_is(receipt))
+            buttons.append(use)
         if receipt.get("status") != "failed":
             edit = secondary_button("编辑" if receipt.get("disposition") == "current" else "编辑原文")
             edit.clicked.connect(lambda checked=False: self._edit_generation_result(identity))
@@ -676,6 +702,10 @@ class LorePage(StagePage):
         if self._primary is not None:
             self._primary[1]()
 
+    def _side_clicked(self) -> None:
+        if self._side is not None:
+            self._side[1]()
+
     def _continue_steps(self, steps, source=None) -> None:
         if not self.resolve_draft():
             return
@@ -693,15 +723,23 @@ class LorePage(StagePage):
         calls["titles"] = 1
         return calls
 
-    def _set_status(self, text, primary=None, next_step=False) -> None:
+    def _set_status(self, text, primary=None, next_step=False, side=None) -> None:
         """状态说明只写一句话；现在该做的那件事放在页头蓝色按钮上。
 
-        primary：(按钮文字, 点下去做什么, 悬停说明)，不给就是「下一步：故事结构」。
-        next_step：蓝色按钮是别的事、但设定已经能用时，旁边放白色「下一步：故事结构」。
+        primary / side：(按钮文字, 点下去做什么, 悬停说明)。primary 不给就是「下一步：故事结构」。
+        next_step：蓝色按钮是别的事、但设定已经能用时，白色按钮是「下一步：故事结构」。
         """
         self.status_label.setText(text)
-        self._primary = primary or ("下一步：故事结构", lambda: self.navigate_requested.emit("structure"), "")
-        self._next_visible = next_step
+        go_on = ("下一步：故事结构", lambda: self.navigate_requested.emit("structure"), "")
+        self._primary = primary or go_on
+        self._side = side or (go_on if next_step else None)
+
+    def _failed_twice(self, receipt, receipts) -> bool:
+        """同一份连续两次修过仍有问题：检查可能判严了。"""
+        for latest, earlier in latest_by_product([r for r in receipts if r.get("kind") in LABELS]):
+            if latest["id"] == receipt["id"]:
+                return bool(earlier) and earlier[0].get("status") == "needs_changes" and not earlier[0].get("reverted")
+        return False
 
     def _refresh_status(self, factions, characters, lore_text, backgrounds, titles, receipts) -> None:
         """没有设定 → 要处理 → 过期 → 还差几项 → 已就绪，取第一种成立的。"""
@@ -718,16 +756,24 @@ class LorePage(StagePage):
             items = "、".join(f"{self._result_title(r)}（{result_status(r)}）" for r in attention)
             text = f"{len(attention)} 份需要处理：{items}。"
             stopped = any(self._then_continue(r) for r in attention)
+            side = None
             if len(attention) == 1:
                 receipt = attention[0]
                 label = "再修一次并继续生成" if stopped else "让 AI 再修一次"
                 primary = (label, lambda: self._repair_generation_result(receipt["id"], stopped, self.generate_button),
                            self._repair_tip(receipt, calls))
+                if stopped:
+                    text = f"整段生成停在{self._result_title(receipt)}：{result_status(receipt).replace('：', '，', 1)}。"
+                if self._can_use_as_is(receipt):
+                    side = ("就用现在的，继续生成", lambda: self._use_as_is(receipt, self.side_button),
+                            self._use_as_is_tip(receipt, calls))
+                    if self._failed_twice(receipt, receipts):
+                        text += "检查可能判严了，内容可以用就点「就用现在的，继续生成」。"
             else:
                 primary = (f"去处理（{len(attention)} 份）", lambda: self._open_tab("生成结果"),
                            "在「生成结果」里逐份处理")
             # 整段生成停在半路时，后面几项可能还没有，不给「下一步」。
-            self._set_status(text, primary, next_step=self._ready and not stopped)
+            self._set_status(text, primary, next_step=self._ready and not stopped, side=side)
             return
         stale = stale_lore(self.output_dir, receipts)
         if stale:
@@ -936,8 +982,11 @@ class LorePage(StagePage):
             self.generate_button.setText(label)
             self.generate_button.setToolTip(tip)
         self.generate_button.setEnabled(not self.generation_busy)
-        self.next_button.setVisible(self._next_visible)
-        self.next_button.setEnabled(not self.generation_busy)
+        self.side_button.setVisible(self._side is not None)
+        if self._side is not None and not self.generation_busy:
+            self.side_button.setText(self._side[0])
+            self.side_button.setToolTip(self._side[2])
+        self.side_button.setEnabled(not self.generation_busy)
         has_any = bool(factions or characters or lore_text.strip())
         full = sum(self._step_calls(characters).values())
         self.regenerate_action.setVisible(has_any)

@@ -31,7 +31,7 @@ def result_status(receipt, edited=False):
     if status == "complete":
         return "已完成 · 有检查备注" if receipt.get("notes") else "已完成"
     if current and status == "needs_changes":
-        return "有问题，已保存"
+        return "有问题，就用现在的" if receipt.get("accepted") else "有问题，已保存"
     if current and status == "unchecked":
         return "已保存，检查没做完"
     if status == "failed":
