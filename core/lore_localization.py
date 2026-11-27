@@ -108,6 +108,31 @@ def display_value(value):
     return VALUE_LABELS.get(text, zh_label(text))
 
 
+_CHAPTER = re.compile(r"(?:^|[_\-\s])(?:chapter|ch)[_\-\s]*(\d+)(?=$|[_\-\s])", re.I)
+
+
+def _later_stage_label(relative, name):
+    """故事结构、场景规划、章节正文的文件名，用各页面上的叫法；认不出的返回 None。"""
+    stem = PurePosixPath(name).stem
+    chapter = _CHAPTER.search(stem)
+    if relative.startswith("story/structure/"):
+        if name == "structure_contract.json":
+            return "故事结构 · 结构登记表"
+        from core.localization import structure_file_label
+        return structure_file_label(relative)
+    if relative.startswith("story/planning/"):
+        if name == "reconciled_locations_arcs.md":
+            return "地点与故事弧"
+        if stem.startswith("chapter_outlines_"):
+            from core.localization import structure_file_label
+            return structure_file_label(relative)
+        if stem.startswith("scenes_") or "/detailed_scene_plans/" in relative:
+            return f"第 {int(chapter.group(1))} 章场景" if chapter else None
+    if relative.startswith("story/content/") and chapter:
+        return f"第 {int(chapter.group(1))} 章正文"
+    return None
+
+
 def file_label(relative):
     relative = str(relative).replace("\\", "/")
     name = PurePosixPath(relative).name
@@ -121,7 +146,7 @@ def file_label(relative):
             if detail.startswith(role + "_"):
                 return f"人物背景 · {display_value(role)} · {detail[len(role) + 1:]}"
         return "人物背景 · " + detail
-    return relative
+    return _later_stage_label(relative, name) or relative
 
 
 def describe_value(value, level=0):
@@ -151,7 +176,8 @@ def describe_value(value, level=0):
 
 def display_message(message):
     text = str(message)
-    text = re.sub(r"story/lore/(?:backgrounds/)?[^\s：，]+\.(?:md|json)", lambda m: file_label(m.group()), text)
+    text = re.sub(r"story/(?:lore|structure|planning|content)/[^\s：，]+\.(?:md|json)",
+                  lambda m: file_label(m.group()), text)
     text = re.sub(r"\b[A-Za-z_]+\b", lambda m: FIELD_LABELS.get(m.group(), VALUE_LABELS.get(m.group(), m.group())), text)
     text = re.sub(r"(?<!\d)\[(\d+)\]", lambda m: f"第 {int(m.group(1)) + 1} 项", text)
     return text.replace("JSON", "数据").replace(" ID ", "标识")

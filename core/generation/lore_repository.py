@@ -101,9 +101,14 @@ class LorePreview:
     replaced: list[tuple[str, str, int]] = field(default_factory=list)
     #: 没有自动换的旧名：(旧名, 新名, 原因)，留在待核对里
     kept: list[tuple[str, str, str]] = field(default_factory=list)
+    #: 这次只改了名字（加上系统跟着做的替换），没改别的内容
+    rename_only: bool = False
+    #: 只改名字时，后面阶段里还写着旧名或别名、要列进待核对的文件
+    touched: list[str] = field(default_factory=list)
 
 
-OLD_NAME_ITEM = re.compile(r"(.*?)：仍含旧名「(.*?)」（现名「(.*?)」），请核对。")
+#: 待核对里一条「某文件还写着某个名字」：(文件, 旧名/别名, 那个名字, 现名)
+NAME_ITEM = re.compile(r"(.*?)：仍含(旧名|别名)「(.*?)」（现名「(.*?)」），请核对。")
 STAGE_TITLES = {"lore": "世界设定", "structure": "故事结构", "scenes": "场景规划", "chapters": "章节撰写"}
 
 
@@ -171,16 +176,23 @@ def rename_impact(preview):
     """编辑窗口「预览 / 影响范围」里的说明：世界设定里换了几处、后面阶段几个文件不会改。"""
     lines = [f"保存后会把世界设定里 {count} 处「{old}」改成「{new}」。" for old, new, count in preview.replaced if count]
     lines += [f"世界设定里的「{old}」不会自动改（{reason}），请自己核对。" for old, _new, reason in preview.kept]
-    for _kind, old, _new in preview.renames:
+    found_any = False
+    for _kind, old, new in preview.renames:
         stages = {}
         for item in preview.review_items:
-            found = OLD_NAME_ITEM.fullmatch(item)
-            if found and found.group(2) == old and stage_of(found.group(1)) != "lore":
-                stages[stage_of(found.group(1))] = stages.get(stage_of(found.group(1)), 0) + 1
+            found = NAME_ITEM.fullmatch(item)
+            if found and found.group(4) == new and stage_of(found.group(1)) != "lore":
+                stages.setdefault(stage_of(found.group(1)), set()).add(found.group(1))
         if stages:
-            parts = "、".join(f"{STAGE_TITLES[stage]} {count} 个文件"
-                             for stage, count in sorted(stages.items(), key=lambda pair: list(STAGE_TITLES).index(pair[0])))
-            lines.append(f"{parts}里的旧名「{old}」不会改，保存后列在「待核对」里。")
+            found_any = True
+            parts = "、".join(f"{STAGE_TITLES[stage]} {len(files)} 个文件"
+                             for stage, files in sorted(stages.items(), key=lambda pair: list(STAGE_TITLES).index(pair[0])))
+            lines.append(f"{parts}里还写着「{old}」或它的别名，不会自动改，保存后列在「待核对」里。")
+    if preview.renames and preview.rename_only:
+        lines.append("后面几个阶段按名字和别名查找；没写到这些名字的文件不用核对。" if found_any
+                     else "后面几个阶段里没有找到旧名或别名，不用核对。")
+    elif preview.renames:
+        lines.append("这次除了名字还改了别的内容，后面几个阶段的文件都会列进「待核对」。")
     return lines
 
 
@@ -189,14 +201,15 @@ def review_summary(root):
     status = LoreRepository(root).review_status()
     general, findings = [], {}
     for item in status.get("review_items", []):
-        found = OLD_NAME_ITEM.fullmatch(item)
+        found = NAME_ITEM.fullmatch(item)
         if found:
-            relative, old, new = found.groups()
-            findings.setdefault(relative, []).append((old, new))
+            relative, kind, old, new = found.groups()
+            findings.setdefault(relative, []).append((kind, old, new))
         else:
             general.append(item)
     by_stage = {}
-    for relative, item in status.get("pending", {}).items():
+    pending = status.get("pending", {})
+    for relative, item in pending.items():
         by_stage.setdefault(item.get("stage") or stage_of(relative), set()).add(relative)
     for relative in findings:
         by_stage.setdefault(stage_of(relative), set()).add(relative)
@@ -207,18 +220,58 @@ def review_summary(root):
             continue
         olds = {}
         for relative in files:
-            for old, new in findings.get(relative, []):
-                olds.setdefault((old, new), []).append(relative)
-        named = "，".join(f"{len(paths)} 个仍写着旧名「{old}」（现名「{new}」）" for (old, new), paths in olds.items())
+            for kind, old, new in findings.get(relative, []):
+                olds.setdefault((kind, old, new), []).append(relative)
+        named = "，".join(f"{len(paths)} 个仍写着{kind}「{old}」（现名「{new}」）" for (kind, old, new), paths in olds.items())
         if stage == "lore":
-            line = (f"{title}：" + "，".join(f"{len(paths)} 个文件仍写着旧名「{old}」（现名「{new}」）"
-                                             for (old, new), paths in olds.items()) + "，没有自动替换。"
+            line = (f"{title}：" + "，".join(f"{len(paths)} 个文件仍写着{kind}「{old}」（现名「{new}」）"
+                                             for (kind, old, new), paths in olds.items()) + "，没有自动替换。"
                     if olds else f"{title}：{len(files)} 个文件待核对。")
+        elif all(relative in findings and pending.get(relative, {"names": True}).get("names") for relative in files):
+            # 只是改了名字：直接说几个文件还写着哪个名字，不笼统说"按旧设定写的"。
+            line = f"{title}：" + "，".join(f"{len(paths)} 个文件仍写着{kind}「{old}」（现名「{new}」）"
+                                           for (kind, old, new), paths in olds.items()) + "。"
         else:
             line = f"{title}：{len(files)} 个文件是按旧设定写的" + (f"，其中 {named}" if named else "") + "。"
         groups.append({"stage": stage, "title": title, "line": line,
-                       "files": [(relative, [old for old, _new in findings.get(relative, [])]) for relative in files]})
+                       "files": [(relative, [f"{kind}「{old}」" for kind, old, _new in findings.get(relative, [])])
+                                 for relative in files]})
     return {"version": status.get("version"), "general": general, "groups": groups}
+
+
+def _names_only(before, edits, mapping):
+    """作者这次只改了名字：把旧名都换成新名以后，改前改后的每个文件一样。"""
+    for rel, text in edits.items():
+        old = before.get(rel)
+        if old is None:
+            return False
+        if rel.endswith(".json"):
+            try:
+                if swap_in_value(json.loads(old), mapping, {}) != swap_in_value(json.loads(text), mapping, {}):
+                    return False
+            except json.JSONDecodeError:
+                return False
+        elif swap_names(old, mapping, {}) != swap_names(text, mapping, {}):
+            return False
+    return True
+
+
+def _aliases(original, kind, old, new):
+    """改名的那一条登记过的别名，在后面阶段按它查找。
+
+    一个字的不找（到处都是）；新名里也有的不找（改名后这个别名照样对得上）。
+    """
+    registry = {"characters": "canonical_characters", "factions": "canonical_factions",
+                "locations": "canonical_locations"}.get(kind)
+    found = []
+    for row in (original.get(CONTRACT) or {}).get(registry, []) if registry else []:
+        if isinstance(row, dict) and (row.get("name") == old or old in (row.get("aliases") or [])):
+            found.extend(row.get("aliases") or [])
+    source = {"characters": CHARACTERS, "factions": FACTIONS}.get(kind)
+    for row in records(original[source], kind) if source in original else []:
+        if name_of(row) == old:
+            found.extend(row.get("aliases") or [])
+    return [alias for alias in dict.fromkeys(str(a) for a in found) if len(alias) >= 2 and alias != old and alias not in new]
 
 
 FILE_TITLES = {CHARACTERS: "人物", FACTIONS: "势力", CONTRACT: "名称与规则", BODY: "世界观"}
@@ -445,6 +498,7 @@ class LoreRepository:
             if old.get("name") != new.get("name"):
                 location_map[old["name"]] = new["name"]
                 renames.append(("locations", old["name"], new["name"]))
+        rename_only = bool(renames) and _names_only(snapshot.files, edits, {old: new for _k, old, new in renames})
         cast = payloads.get(CHARACTERS, {})
         if isinstance(cast, dict):
             for relation in cast.get("relationships", []):
@@ -504,22 +558,41 @@ class LoreRepository:
                 files[key] = snapshot.files[key]  # Formatting-only changes are not revisions.
         changed = sorted(k for k in files.keys() | snapshot.files.keys() if files.get(k) != snapshot.files.get(k))
         review = []
-        if changed:
-            review.append("设定已修改，请核对正文、人物背景与名称及规则登记表是否一致。")
-        texts = dict(files)
-        prior_findings = []
+        prior_findings, prior_general = [], []
         for item in snapshot.metadata.get("review_items", []):
-            found = re.fullmatch(r"(.*?)：仍含旧名「(.*?)」（现名「(.*?)」），请核对。", item)
+            found = NAME_ITEM.fullmatch(item)
             if found:
-                prior_findings.append((item, *found.groups()))
-        if renames or prior_findings:
-            texts.update({rel: self.path(rel).read_text(encoding="utf-8") for rel in self.downstream(stamps=False)})
+                prior_findings.append((item, found.group(1), found.group(3), found.group(4)))
+            else:
+                prior_general.append(item)
+        if changed and not rename_only:
+            review.append("设定已修改，请核对正文、人物背景与名称及规则登记表是否一致。")
+        elif rename_only:
+            # 只改了名字：世界设定里能换的已经换了，没换掉的逐个文件列出来；不再笼统让作者核对全部，
+            # 之前还没核对的事照旧留着。
+            review.extend(prior_general)
+        texts = dict(files)
+        downstream = set(self.downstream(stamps=False)) if renames or prior_findings else set()
+        texts.update({rel: self.path(rel).read_text(encoding="utf-8") for rel in downstream})
         review.extend(item for item, rel, old, new in prior_findings if still_named(texts.get(rel, ""), old, new))
-        for _, old, new in renames:
+        touched = []
+        for kind, old, new in renames:
             for rel, text in texts.items():
                 if still_named(text, old, new):
                     review.append(f"{rel}：仍含旧名「{old}」（现名「{new}」），请核对。")
-        return LorePreview(files, changed, list(dict.fromkeys(review)), renames, replaced, kept)
+                    touched.append(rel)
+            # 后面阶段也按别名找：简称、外号还跟着旧名走的地方，作者要看一眼。
+            aliases = sorted(_aliases(original, kind, old, new), key=len, reverse=True)
+            for rel in sorted(downstream) if aliases else ():
+                # 写着完整旧名、或更长别名的地方已经算过，不再按里面的短别名重复算。
+                text = texts[rel].replace(old, "")
+                for alias in aliases:
+                    if still_named(text, alias, new):
+                        review.append(f"{rel}：仍含别名「{alias}」（现名「{new}」），请核对。")
+                        touched.append(rel)
+                    text = text.replace(alias, "")
+        touched = sorted({rel for rel in touched if rel in downstream})
+        return LorePreview(files, changed, list(dict.fromkeys(review)), renames, replaced, kept, rename_only, touched)
 
     @staticmethod
     def _validate(original, payloads, groups):
@@ -570,13 +643,24 @@ class LoreRepository:
             if len(ids) != len(set(ids)):
                 raise LoreEditError("名称登记表 ID 不能重复")
 
-    def _revision(self, metadata, files, changed, review, manual):
+    def _revision(self, metadata, files, changed, review, manual, pending_only=None):
+        """新的一版设定。pending_only 给了时（只改了名字），后面阶段只把这几个文件标为待核对，
+        之前没核对完的照旧留着；不给时后面阶段的文件全部待核对。"""
         updated = deepcopy(metadata)
         updated["version"] = int(updated.get("version", 0)) + 1
         updated["fingerprint"] = digest(encode(files))
         updated["review_items"] = review
-        updated["pending"] = {rel: {"stage": item["stage"], "version": updated["version"]}
-                              for rel, item in self.downstream(stamps=False).items()}
+        downstream = self.downstream(stamps=False)
+        if pending_only is None:
+            updated["pending"] = {rel: {"stage": item["stage"], "version": updated["version"]}
+                                  for rel, item in downstream.items()}
+        else:
+            # "names" 记下这个文件只因为还写着旧名或别名才待核对；之前因为别的修改待核对的保持原样。
+            pending = {rel: item for rel, item in updated.get("pending", {}).items() if rel in downstream}
+            for rel in pending_only:
+                if rel in downstream and (rel not in pending or pending[rel].get("names")):
+                    pending[rel] = {"stage": downstream[rel]["stage"], "version": updated["version"], "names": True}
+            updated["pending"] = pending
         if manual:
             updated["manual_files"] = sorted(set(updated.get("manual_files", [])) | set(changed))
         return updated
@@ -590,7 +674,8 @@ class LoreRepository:
             if not preview.changed_files:
                 return preview
             before = self._state()
-            metadata = self._revision(snapshot.metadata, preview.files, preview.changed_files, preview.review_items, True)
+            metadata = self._revision(snapshot.metadata, preview.files, preview.changed_files, preview.review_items, True,
+                                      preview.touched if preview.rename_only else None)
             changes = {k: preview.files.get(k) for k in preview.changed_files}
             changes[META] = encode(metadata)
             from core.generation.lore_run import receipt_changes_for_edits

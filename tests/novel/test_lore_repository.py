@@ -76,7 +76,10 @@ def test_rename_character_updates_all_structured_references_and_background(proje
     assert sorted(item.split("：")[0] for item in preview.review_items if "仍含旧名" in item) == [
         "story/planning/detailed_scene_plans/scenes_ch1.md", "story/structure/act.md"]
     assert (project / "story/content/chapters/chapter_1.md").read_text(encoding="utf-8") == "已有正文"
-    assert len(after.metadata["pending"]) == 3
+    # 只改了名字：后面阶段只把还写着旧名的两个文件标为待核对，正文里没有旧名的那章不算。
+    assert sorted(after.metadata["pending"]) == [
+        "story/planning/detailed_scene_plans/scenes_ch1.md", "story/structure/act.md"]
+    assert not any(item.startswith("设定已修改") for item in after.metadata["review_items"])
     assert list((project / "system/lore_history").glob("*/transaction.json"))
 
 
@@ -547,8 +550,72 @@ def test_rename_preview_says_what_changes_inside_and_what_stays_outside(project)
     preview = repo.preview(snapshot, {CHARACTERS: encode(cast)})
     assert rename_impact(preview) == [
         "保存后会把世界设定里 2 处「张明」改成「张远」。",
-        "故事结构 1 个文件、场景规划 1 个文件里的旧名「张明」不会改，保存后列在「待核对」里。",
+        "故事结构 1 个文件、场景规划 1 个文件里还写着「张明」或它的别名，不会自动改，保存后列在「待核对」里。",
+        "后面几个阶段按名字和别名查找；没写到这些名字的文件不用核对。",
     ]
+
+    cast["characters"][0]["goals"] = ["破案"]               # 同一次还改了别的内容
+    assert rename_impact(repo.preview(snapshot, {CHARACTERS: encode(cast)}))[-1] == (
+        "这次除了名字还改了别的内容，后面几个阶段的文件都会列进「待核对」。")
+
+
+def test_rename_with_other_changes_still_asks_to_review_everything(project):
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][0]["name"] = "张远"
+    cast["characters"][0]["goals"] = ["破案"]               # 系统判断不了这一改影响到哪儿
+    preview = repo.save(snapshot, {CHARACTERS: encode(cast)})
+    assert not preview.rename_only
+    status = repo.review_status()
+    assert len(status["pending"]) == 3
+    assert status["review_items"][0] == "设定已修改，请核对正文、人物背景与名称及规则登记表是否一致。"
+
+
+def test_rename_only_save_keeps_what_was_still_waiting_for_review(project):
+    repo = LoreRepository(project)
+    repo.save(repo.load_snapshot(), {BODY: "# 世界\n张明在调查局工作多年。"})   # 普通修改：全部待核对
+    snapshot = repo.load_snapshot()
+    cast = edit_payload(snapshot, CHARACTERS)
+    cast["characters"][0]["name"] = "张远"
+    repo.save(snapshot, {CHARACTERS: encode(cast)})
+    status = repo.review_status()
+    assert len(status["pending"]) == 3                       # 上一次的待核对没有被这次改名清掉
+    assert "设定已修改，请核对正文、人物背景与名称及规则登记表是否一致。" in status["review_items"]
+
+
+def test_rename_also_looks_for_registered_aliases_in_later_stages(project):
+    from core.generation.lore_repository import review_summary
+    contract = json.loads((project / CONTRACT).read_text(encoding="utf-8"))
+    contract["canonical_factions"][0]["aliases"] = ["调查科", "调查"]
+    write(project, CONTRACT, contract)
+    write(project, "story/content/chapters/chapter_2.md", "调查科的人来了")
+    write(project, "story/content/chapters/chapter_3.md", "调查还在继续")   # 「调查」新名里也有，照样对得上
+    repo = LoreRepository(project)
+    snapshot = repo.load_snapshot()
+    factions = edit_payload(snapshot, FACTIONS)
+    factions[0]["name"] = "调查署"
+    preview = repo.save(snapshot, {FACTIONS: encode(factions)})
+    assert preview.rename_only
+    assert "story/content/chapters/chapter_2.md：仍含别名「调查科」（现名「调查署」），请核对。" in preview.review_items
+    status = repo.review_status()
+    assert "story/content/chapters/chapter_2.md" in status["pending"]
+    assert "story/content/chapters/chapter_1.md" not in status["pending"]
+    assert "story/content/chapters/chapter_3.md" not in status["pending"]
+    chapters = next(group for group in review_summary(project)["groups"] if group["stage"] == "chapters")
+    assert chapters["line"] == "章节撰写：1 个文件仍写着别名「调查科」（现名「调查署」）。"
+    assert chapters["files"] == [("story/content/chapters/chapter_2.md", ["别名「调查科」"])]
+
+
+def test_later_stage_files_are_named_as_on_their_pages():
+    from core.lore_localization import display_message, file_label
+    assert file_label("story/structure/6-act_structure_beginning.md") == "故事结构 · 开端"
+    assert file_label("story/planning/chapter_outlines/chapter_outlines_6-act_structure_first_climax.md") == (
+        "章节大纲 · 第一次高潮")
+    assert file_label("story/planning/detailed_scene_plans/scenes_6-act_structure_beginning_ch3.md") == "第 3 章场景"
+    assert file_label("story/content/chapters/chapter_12.md") == "第 12 章正文"
+    assert display_message("story/content/chapters/chapter_12.md：仍含旧名「张明」（现名「张远」），请核对。") == (
+        "第 12 章正文：仍含旧名「张明」（现名「张远」），请核对。")
 
 
 def test_rename_that_cannot_be_replaced_safely_stays_in_review(project):
@@ -573,11 +640,18 @@ def test_review_is_summarised_per_stage(project):
     repo.save(snapshot, {CHARACTERS: encode(cast)})
     summary = review_summary(project)
     assert [group["line"] for group in summary["groups"]] == [
+        "故事结构：1 个文件仍写着旧名「张明」（现名「张远」）。",
+        "场景规划：1 个文件仍写着旧名「张明」（现名「张远」）。",
+    ]                                                          # 正文里没有旧名，章节撰写不出现
+    assert summary["groups"][0]["files"] == [("story/structure/act.md", ["旧名「张明」"])]
+    assert summary["general"] == []                            # 世界设定里能换的都换了，不再笼统让作者核对
+
+    repo.save(repo.load_snapshot(), {BODY: "张远的新世界"})     # 再做一次普通修改：后面阶段全部待核对
+    assert [group["line"] for group in review_summary(project)["groups"]] == [
         "故事结构：1 个文件是按旧设定写的，其中 1 个仍写着旧名「张明」（现名「张远」）。",
         "场景规划：1 个文件是按旧设定写的，其中 1 个仍写着旧名「张明」（现名「张远」）。",
         "章节撰写：1 个文件是按旧设定写的。",
     ]
-    assert summary["groups"][0]["files"] == [("story/structure/act.md", ["张明"])]
 
 
 def test_rename_also_updates_other_lore_tables_but_not_their_keys(project):
@@ -591,4 +665,4 @@ def test_rename_also_updates_other_lore_tables_but_not_their_keys(project):
     mapping = json.loads((project / LORE / "name_mapping.json").read_text(encoding="utf-8"))
     assert mapping == {"names": {"Zhang Ming": "张远", "张明": "keep key"}}
     lore_group = review_summary(project)["groups"][0]          # 键里的旧名不换，留在待核对
-    assert lore_group["stage"] == "lore" and lore_group["files"] == [(LORE + "name_mapping.json", ["张明"])]
+    assert lore_group["stage"] == "lore" and lore_group["files"] == [(LORE + "name_mapping.json", ["旧名「张明」"])]

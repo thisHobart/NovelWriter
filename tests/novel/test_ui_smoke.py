@@ -716,7 +716,7 @@ def test_review_tab_groups_by_stage_jumps_there_and_can_be_cleared_and_undone(ap
     page.refresh()
     review = page.tabs.widget(_tab_names(page).index("待核对"))
     lines = [label.text() for label in review.findChildren(QLabel)]
-    assert "故事结构：1 个文件是按旧设定写的，其中 1 个仍写着旧名「张明」（现名「张远」）。" in lines
+    assert "故事结构：1 个文件仍写着旧名「张明」（现名「张远」）。" in lines
     went = []
     page.navigate_requested.connect(went.append)
     next(b for b in review.findChildren(QPushButton) if b.text() == "去故事结构").click()
