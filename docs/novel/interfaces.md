@@ -20,16 +20,18 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 | step | action | 界面按钮 |
 |---|---|---|
 | `lore` | 空 / `full` | 生成世界设定 |
-| | `factions` `characters` `lore` | 生成势力 / 生成人物 / 生成世界观 |
-| | `enhance` | 完善主要人物（`options.subject_name` 指定单个人物） |
+| | `factions` `characters` `lore` | 生成势力 / 生成人物 / 生成世界观（生成过的叫「重新生成…」） |
+| | `enhance` | 生成人物背景 / 重新生成人物背景（`options.subject_name` 指定单个人物） |
 | | `titles` | 候选标题页的「换一组」 |
 | | `repair` | 让 AI 再修一次（`options.receipt_id` 指定哪条生成结果）；`options.continue` 为真时是「再修一次并继续生成」：修好后接着跑那次整段生成剩下的几步 |
-| | `continue` | 接着生成后面几项 / 按新势力重写后面几项（`options.steps` 为要跑的步骤，按整段生成的顺序跑；`options.source` 只用于改动记录里的名称） |
+| | `continue` | 接着生成后面几项 / 按新势力重写后面几项 / 就用现在的，继续生成（`options.steps` 为要跑的步骤，按整段生成的顺序跑；`options.source` 只用于改动记录里的名称；`options.accept` 是停下的那条生成结果的编号，先把它记为 `accepted` 再跑） |
 | `structure` | 空 / `full` | 生成故事结构 |
 | | `arcs` `faction_arcs` `locations` `plot` | 生成人物弧光 / 生成势力弧光 / 将地点融入故事弧 / 创建详细情节 |
 | `scenes` | 空 / `full` | 规划场景（整阶段） |
 | | `outline` `scenes` | 生成章节大纲 / 规划场景 |
 | `chapters` | `next` `all` `rewrite` | 撰写下一章 / 撰写全部剩余章节 / 重写本章（`chapter_number`） |
+
+世界设定整段生成（`full`、`continue`、带 `continue` 的 `repair`）按 `stage_pipeline._stops_here` 判断要不要停：一份结果只留了草稿，或势力、人物、世界观三项里的一项以 `attempt_limit` / `no_improvement` 结束、仍是 `needs_changes`。停下时那条生成结果写 `remaining`，返回值里 `stopped` 为真；`full_workflow_work` 遇到 `stopped` 或 `status == "draft"` 就不跑后面阶段。
 | | `revise` | 照建议重修（`options.issue_ids` 为勾选条目） |
 | | `waive` | 人工放行（`options.reason` 为放行理由） |
 
@@ -76,8 +78,8 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 | `quality/pending_review/chapter_N.json` | 待复审记录；文件存在即表示该章待复审，验收后删除 |
 | `quality/` 其他目录 | 各轮评审、章节事务、指标 |
 | `system/generation_runs/<编号>/` | 每次阶段运行的生效参数、指纹和实际提示词 |
-| `system/lore_generation/results/<编号>.json` | 世界设定每次生成的结果：状态、问题、候选、请求数；另有 `notes`（检查备注）、`reverted`（已被撤回）、`file_digests`（保存时各文件指纹，用来认出手动修改）、`remaining`（整段生成停在这里时还剩哪几步）。旧记录没有这些字段，照常显示 |
-| `system/lore_edits.json` | 设定的版本号、待核对项、后面阶段待核对的文件 |
+| `system/lore_generation/results/<编号>.json` | 世界设定每次生成的结果：状态、问题、候选、请求数；另有 `notes`（检查备注）、`reverted`（已被撤回）、`file_digests`（保存时各文件指纹，用来认出手动修改）、`remaining`（整段生成停在这里时还剩哪几步）、`accepted`（作者点了「就用现在的，继续生成」，不再算要处理）。旧记录没有这些字段，照常显示 |
+| `system/lore_edits.json` | 设定的版本号、待核对项（`review_items`）、后面阶段待核对的文件（`pending`，每条 `{stage, version}`；只因改名还写着旧名或别名才待核对的另带 `names: true`） |
 | `system/lore_history/changes.json`、`system/lore_history/<编号>/state.json` | 改动记录：每次改动的名称、时间、前后两份完整设定快照的编号；撤回、恢复按它进行 |
 | `system/lore_history/<编号>/transaction.json` | 保存事务的备份，中断后恢复用 |
 
@@ -92,9 +94,10 @@ run_stage_action(step, action, output_dir, model="", parameters=None,
 `edits` 的键是设定文件的项目相对路径，值是完整文本。登记条目无法唯一确定时抛 `MappingRequired`，由界面让用户选择。手动保存与阶段生成共用 `system/.lore.lock`。
 
 - 改名：`preview` 同步结构化引用，并把世界设定内自由文本（正文、背景、卡片描述、登记表）里的完整旧名换成新名（`rename_plan`、`swap_names`）。旧名只有一个字或是别的名字的一部分时不换，记在 `LorePreview.kept`；换掉的处数在 `LorePreview.replaced`，编辑窗口用 `rename_impact(preview)` 写成说明。后面阶段的文件不改，列进待核对。
+- 只改名字的保存：`LorePreview.rename_only` 为真表示把旧名都换成新名以后，作者改的每个文件和改前一样（`_names_only`）。这时 `review_items` 不加「设定已修改，请核对……」那句，保留之前的其他待核对项；后面阶段只按旧名和登记过的别名（`_aliases`：两个字以上、新名里没有的）找，找到的写成「路径：仍含旧名「…」（现名「…」），请核对。」或「路径：仍含别名「…」（现名「…」），请核对。」（`NAME_ITEM`），文件列在 `LorePreview.touched`；`save` 只把这些文件加进 `pending`，之前的 `pending` 照旧。不是只改名字时，后面阶段的文件全部进 `pending`。
 - 撤回：`change_log()` 返回 `{"undo": 最近一次改动, "redo": 最近一次撤回}`；`undo(id)`、`redo(id)` 拿同一把锁，写入前先把当前磁盘状态记下来。每次保存、生成（经 `tracked_generation`）、采用草稿和 `acknowledge` 都记一条改动；新改动之后不能再恢复更早撤回的那条。
-- 待核对：`review_summary(output_dir)` 把待核对项按阶段汇总成几行，每行带文件列表。
-- 后面阶段的提示词：`lore_context(output_dir)` 只带还属于现有人物的背景文件（`current_backgrounds`，按 `background_<身份>_<姓名>.md` 认人）；旧版本留下的 `story/lore/name_mapping.json`（`LEGACY_TABLES`）也不带。两类文件都留在磁盘上。每份文件的小标题用 `lore_localization.file_label` 的中文名（「名称与规则登记表」「人物背景 · 主角 · 沈宁」），不用路径。
+- 待核对：`review_summary(output_dir)` 返回 `{version, general, groups}`。`groups` 每个阶段一行：`{stage, title, line, files}`，`files` 是 `[(路径, ["旧名「韩雪」", "别名「住建局」"…])]`。一个阶段的文件都只因改名待核对时，`line` 写「故事结构：8 个文件仍写着旧名「韩雪」（现名「韩新雪」）。」，否则写「……个文件是按旧设定写的，其中……」。
+- 后面阶段的提示词：`lore_context(output_dir)` 只带还属于现有人物的背景文件（`current_backgrounds`，按 `background_<身份>_<姓名>.md` 认人）；旧版本留下的 `story/lore/name_mapping.json`（`LEGACY_TABLES`）也不带。两类文件都留在磁盘上。每份文件的小标题用 `lore_localization.file_label` 的中文名（「名称与规则登记表」「人物背景 · 主角 · 沈宁」），不用路径。`file_label` 也给后面阶段的文件起中文名（「故事结构 · 开端」「故事结构 · 结构登记表」「章节大纲 · 结局」「第 3 章场景」「地点与故事弧」「第 12 章正文」），认不出的照旧返回路径；`display_message` 把消息里 `story/` 下的路径都换成这些名字。
 - 故事结构文件的名字：`story_options.act_file_stem(结构, 幕名)` 是故事结构阶段写每一幕时的文件名，`act_for_file(文件名)` 反查是哪一幕；`localization.structure_file_label(路径)` 给出「故事结构 · 开端」「章节大纲 · 结局」这样的中文名，界面幕卡片和全书设定整理的材料都用它。
 - 写章节前整理全书设定的材料：`StoryLedgerManager.load_design_context(max_chars=72000)` 返回 `DesignMaterial`（一段文字），按 故事结构登记表、名称与规则登记表、各幕故事结构、各幕章节大纲、世界观正文、人物资料、势力资料、统一故事弧、人物弧光、势力弧光、人物背景 排列，幕按结构里的先后。超出篇幅时从最后一块起整块去掉（两张登记表总是带），去掉的列在材料末尾，也在 `omitted` 上；保存时记进 `case_bible.json` 的 `design_omitted`。`source_hash` 按原始文件内容算，`case_bible_needs_refresh`、`save_case_bible` 用它判断要不要重新整理；传普通文字时退回按全文算。`includes_lore` 为真时，整理提示词不再另附一份世界设定。
 - 写一场戏的设定材料：`scene_material.build_scene_material(作品目录, 场景规划, contract=本章契约, scene_number=第几场, max_chars=30000)` 返回 `SceneMaterial`（一段文字），按 名称与规则登记表、本场人物、相关势力、世界观正文、本场人物的背景 排。本场人物是场景规划里点到名字的（登记表里的别名也算，一个字的名字不认），加上本章契约点名的（`cost_character`、`character_updates`，第一场另加 `continuity.opening_positions`），一个都认不出时带主角；相关势力是本场人物所属的、规划点到名字的、地盘在规划点到的地点的。人物卡的 `arc` 不带。超出篇幅时从最后一块起整块去掉（前两块总是带），`characters`、`factions`、`omitted` 记着带了谁、去掉了什么。章节写作和短篇都把它传给 `build_scene_prompt(material=...)`，这时不再带整份的 `lore`、人物名单和势力概览；作品没有 `story/lore/` 下的设定文件时返回空文字，照旧用那三份。两份材料共用 `prompt_material.fit_blocks` 的取舍规则。
