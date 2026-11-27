@@ -40,7 +40,7 @@
 
 修改内容规则时，阶段任务与样例在 `prompts.py`，硬性约束在 `validation.py`，AI 审阅标准在 `review.py`；保持三者一致。改动某阶段默认任务文字时，在 `prompts.py` 的 `DEFAULT_PROMPT_VERSIONS` 中提升该阶段版本，新稿据此记录所用提示词版本。自定义阶段模板优先，不以更新内置提示词为由覆盖用户模板。
 
-视频提示词的单镜头上下文、局部模型返回、引用读取及统一预算见[上下文设计与验收](video_prompt_context.md)。`video_context.py`负责资料投影与证据预算；`video_request`重新组装每次请求，审阅不携带完整任务或镜头集合。只保留当前任务数据校验，无专用旧协议版本标记、旧生成回退或独立任务文件迁移；独立的镜头画面提示词由分镜的取景范围、运镜、动作及资产设定编排。
+视频提示词的单镜头上下文、局部模型返回、引用读取及统一预算见[上下文设计与验收](video_prompt_context.md)。`video_context.py`负责资料投影与证据预算；`video_request`重新组装每次请求，审阅不携带完整任务或镜头集合。只保留当前任务数据校验，无专用旧协议版本标记、旧生成回退或独立任务文件迁移；独立的镜头画面提示词由分镜的取景范围、运镜、画面及资产设定编排。
 
 视频面板的 VIDEO_PROMPT_RULES 在 stage_prompt 的 video_prompt 分支统一加入，保留自定义任务目标。WorkflowService.prepare_video_prompt 冻结本镜分镜、实际使用的资产及视频输入；video_prompt.py依据真实工作流接线生成 Picture 顺序并验证图片哈希，WorkflowParameter.role="duration"标识时长。完整 H3 中文正文位于 video_motion_prompt，video_prompt_binding由代码维护，resolved_prompt／negative_prompt保持原状。沿用 AgentExecution、独立审阅和检查点，模型每次请求及提交前核对媒体来源。UI按镜头与工作流缓存临时编辑，只有选图及时间匹配时回填保存结果，保持手动编辑；文字生成和ComfyUI提交各自独立。回归见 tests/short_video/test_video_prompt.py。
 
@@ -60,7 +60,7 @@
 
 镜头资产查询只从当前分镜与准确设定读取，UI 不从正文猜测资产身份。独立 `ShotAssetsPanel` 展示只读列表和可收起详情，与 PromptEditor 编辑状态分离；空提示词不得用其他资产或状态填补。视图选择仅控制查看，不写视频图片选择、业务内容或任务状态，不触发生成。对应回归见 `tests/short_video/test_shot_assets.py`，覆盖同名／不同状态、去重／画外音、缺失／部分视图、准确来源、复制及未保存编辑隔离、视频选择不变、新增／重排和无分镜。
 
-分镜编辑器在 [v2_editor.py](../../core/gui/pages/short_video/v2_editor.py)：`ShotTable` 只读（镜号、时长、取景范围、人物、动作），只管选择、拖动排序和右键菜单；选中镜头的字段由下方表单编辑，表格与表单放在竖向 QSplitter 里。长文字框 `GrowingText` 按 documentLayout 逐块累加当前宽度下的高度，加上边框与文档边距，限制在最少／最多行之间，内容或宽度变化时重算。表单改动直接写回编辑稿并只重填这一行；改时长时重算时间轴，刷新全部行、摘要和标题。时长摘要显示镜数和合计时长。分镜聊天另带项目目标与 `validation.py` 中的成片上限。拆分清空后一镜的对白、旁白和音效；新增镜头沿用场景、原文引用与视频块引用（保存校验要求每镜有视频块引用并覆盖全部视频块），其余留空；`value()` 遇到空的必填文字时选中该镜、给表单控件设 `missing` 属性再报错。回归见 `tests/short_video/test_storyboard_editor.py`：只读表格与表单编辑、打开旧分镜时忽略退役字段、拆分、新增、合并（保留输入的对白和人物、旁白多行往返）、时间段与合计。
+分镜编辑器在 [v2_editor.py](../../core/gui/pages/short_video/v2_editor.py)：`ShotTable` 只读（镜号、时长、取景范围、人物、画面），只管选择、拖动排序和右键菜单；选中镜头的字段由下方表单编辑，表格与表单放在竖向 QSplitter 里。长文字框 `GrowingText` 按 documentLayout 逐块累加当前宽度下的高度，加上边框与文档边距，限制在最少／最多行之间，内容或宽度变化时重算。表单改动直接写回编辑稿并只重填这一行；改时长时重算时间轴，刷新全部行、摘要和标题。时长摘要显示镜数和合计时长。分镜聊天另带项目目标与 `validation.py` 中的成片上限。拆分清空后一镜的对白、旁白和音效；新增镜头沿用场景、原文引用与视频块引用（保存校验要求每镜有视频块引用并覆盖全部视频块），其余留空；`value()` 遇到空的必填文字时选中该镜、给表单控件设 `missing` 属性再报错。回归见 `tests/short_video/test_storyboard_editor.py`：只读表格与表单编辑、打开旧分镜时忽略退役字段、拆分、新增、合并（保留输入的对白和人物、旁白多行往返）、时间段与合计。
 
 ## 4. 会话与媒体边界
 

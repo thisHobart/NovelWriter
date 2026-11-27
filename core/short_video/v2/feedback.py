@@ -85,7 +85,7 @@ def readable_fields(text: str) -> str:
         "camera_movement": "镜头运动",
         "shot_size": "取景范围",
         "duration_ms": "时长",
-        "action": "动作",
+        "action": "画面",
         "narration": "旁白",
         "scene_ref": "场景引用",
     }.items():

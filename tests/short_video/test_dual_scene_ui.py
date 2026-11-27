@@ -42,7 +42,6 @@ def test_dual_scene_panel_reads_like_the_other_workflows(
     workflow_id = catalog.put_workflow("双人动作迁移＋自定义场景", json.dumps(graph))
     catalog.save(tmp_path)
     template = parse_video_workflow(graph)
-    keys = {parameter.role: parameter.key for parameter in template.parameters}
     submitted = []
     workbench = SimpleNamespace(
         output_dir=str(tmp_path),
@@ -67,16 +66,20 @@ def test_dual_scene_panel_reads_like_the_other_workflows(
         assert [slot.thumb.mark for slot in panel.role_slots] == [marks["role_a"], marks["role_b"]]
         # Person descriptions and 画幅 are rows of the video card, like 「原视频人物描述」 for one person.
         assert row_labels(panel.parameter_form) == [
-            "工作流", "画幅", "原片人物 A 描述", "原片人物 B 描述", "保留原声",
+            "工作流", "画幅", "3D 网格驱动", "原片人物 A 描述", "原片人物 B 描述", "保留原声",
         ]
+        mesh_control = panel.parameter_fields["pose_drive_switch.switch"]
+        assert not mesh_control.isChecked()
+        mesh_control.setChecked(True)
+        assert panel.parameter_values()["pose_drive_switch.switch"] is True
+        mesh_control.setChecked(False)
         description_labels = [
-            panel.parameter_form.itemAt(row, QFormLayout.LabelRole).widget().text() for row in (2, 3)
+            panel.parameter_form.itemAt(row, QFormLayout.LabelRole).widget().text() for row in (3, 4)
         ]
         assert marks["role_a"] in description_labels[0] and marks["role_b"] in description_labels[1]
         assert row_labels(panel.advanced_form) == ["输出长边（像素）", "采样步数", "随机种子"]
         assert panel.advanced.title.text() == "高级参数"
-        for role in ("scene_transition", "action_end", "hold_tail", "tracking_cuts", "clip_ranges"):
-            assert keys[role] not in panel.parameter_fields
+        assert set(panel.parameter_fields) == {parameter.key for parameter in template.parameters}
         # The prompt sits beside the video card without opening anything.
         assert not panel.advanced.expanded()
         assert panel.prompt.isVisible()
@@ -157,12 +160,12 @@ def test_dual_scene_panel_reads_like_the_other_workflows(
         images = {key: value["image_id"] for key, value in submitted[0]["images"].items()}
         assert images == panel.image_selection()
         assert submitted[0]["driving_video"]["video_id"] == panel.driving_video["video_id"]
-        assert submitted[0]["parameters"][keys["single_shot"]] is True
+        assert set(submitted[0]["parameters"]) == set(panel.parameter_fields)
         assert submitted[0]["prompt"] == media_preview.DUAL_SHOT_PROMPT
         panel.remember_draft()
         draft = load_shot_drafts(tmp_path)["shot"][workflow_id]
         assert draft["images"] == images
-        assert draft["parameters"][keys["single_shot"]] is True
+        assert set(draft["parameters"]) == set(panel.parameter_fields)
         panel.scene_grid.visible_cells()[0].set_image(None)
         assert not panel.generate_button.isEnabled()
         assert panel.prompt_status.text() == "请选择场景参考图"

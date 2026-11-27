@@ -87,14 +87,12 @@ DUAL_SHOT_PROMPT = (
 )
 KIND_LABELS = {"scene": "场景", "character": "人物", "prop": "道具"}
 DUAL_SCENE_WORKFLOW = "scail2_dual_scene"
-DUAL_IMAGE_CAPTIONS = {"role_a": "角色 A", "role_b": "角色 B", "scene_a": "当前场景"}
+DUAL_IMAGE_CAPTIONS = {"role_a": "角色 A", "role_b": "角色 B", "scene": "当前场景"}
 # The two people's colors in the tracking preview, repeated on the 角色 A/B tags and the
 # description rows so the pairing reads without opening the preview.
 DUAL_MARKS = {"role_a": "#2F7FD8", "role_b": "#D6453D"}
 DUAL_DESCRIPTION_MARKS = {"443.text": "role_a", "source_b_text.text": "role_b"}
-DUAL_TIMELINE_ROLES = {"single_shot", "scene_transition", "action_end", "tracking_cuts", "hold_tail", "clip_ranges"}
 TRACKING_ROLES = {"source_character", "output_edge"}
-SINGLE_SHOT_KEY = "139.single_shot"
 THUMBNAIL_WIDTH = 480
 JOB_STATES = {
     "prepared": "准备中",
@@ -868,7 +866,7 @@ class MediaPreview(QWidget):
     # -- parameters ------------------------------------------------------------------------
 
     def parameter_values(self, *, raw: bool = False) -> dict:
-        values = {SINGLE_SHOT_KEY: True} if self.is_dual_scene else {}
+        values = {}
         seed_keys = {p.key for p in self.template.parameters if p.input_name in {"noise_seed", "seed"}}
         for key, control in self.parameter_fields.items():
             if isinstance(control, QCheckBox):
@@ -917,12 +915,11 @@ class MediaPreview(QWidget):
         """Keep what the video area shows for this shot and workflow, in memory and in the project."""
         self.save_timer.stop()
         if self.loaded_workflow_id is not None:
-            previous = self.drafts.get(self.loaded_workflow_id, {}) if self.is_dual_scene else {}
             self.drafts[self.loaded_workflow_id] = {
-                "images": {**previous.get("images", {}), **self.image_selection()},
+                "images": self.image_selection(),
                 **({"driving_video_id": self.driving_video["video_id"]} if self.driving_video else {}),
                 "prompt": self.prompt.toPlainText(),
-                "parameters": {**previous.get("parameters", {}), **self.parameter_values(raw=True)},
+                "parameters": self.parameter_values(raw=True),
                 "additional_reference_slots": list(self.additional_reference_slots),
                 "prompt_image_bindings": dict(self.prompt_image_bindings),
                 "page_scroll": self.settings_area.verticalScrollBar().value(),
@@ -998,7 +995,7 @@ class MediaPreview(QWidget):
             prompt_note = "<Video 1> 提供动作参考，成片时长至少覆盖所选视频"
         self.prompt_note.setText(prompt_note)
         self.additional_reference_slots = []
-        image_inputs = [image for image in self.template.image_inputs if not dual_scene or image.role != "scene_b"]
+        image_inputs = list(self.template.image_inputs)
         if self.template.kind == "reference":
             available = MAX_REFERENCE_IMAGES - len(image_inputs)
             for node_id in draft.get("additional_reference_slots", []):
@@ -1060,8 +1057,6 @@ class MediaPreview(QWidget):
         self.parameter_fields = {}
         self.duration_hint = self.make_duration_hint()
         for parameter in self.template.parameters:
-            if dual_scene and parameter.role in DUAL_TIMELINE_ROLES:
-                continue
             value = draft.get("parameters", {}).get(parameter.key, parameter.default)
             field = None
             if parameter.choices:
@@ -1292,7 +1287,6 @@ class MediaPreview(QWidget):
 
         def effective(settings: dict) -> dict:
             values = {p.key: settings.get(p.key, p.default) for p in tracked}
-            values[SINGLE_SHOT_KEY] = settings.get(SINGLE_SHOT_KEY, False)
             for parameter in tracked:
                 if parameter.role == "output_edge":
                     values[parameter.key] = min(512, values[parameter.key])

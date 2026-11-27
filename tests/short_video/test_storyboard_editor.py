@@ -40,7 +40,7 @@ def test_shot_list_is_read_only_and_the_form_edits_the_selected_shot(editor):
 
     table = editor.table
     assert [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())] == [
-        "镜号", "时长", "取景范围", "人物", "动作"
+        "镜号", "时长", "取景范围", "人物", "画面"
     ]
     assert table.editTriggers() == QAbstractItemView.NoEditTriggers and table.verticalHeader().isHidden()
     assert table.item(1, 1).text() == "7 秒" and table.item(1, 1).toolTip().startswith("00:07.0–00:14.0")
@@ -73,7 +73,7 @@ def test_split_keeps_each_line_once_and_selects_the_second_half(editor):
     assert first["narration"] == "井里是谁" and first["sound"] == "风声" and first["dialogue"]
     assert (second["dialogue"], second["narration"], second["sound"]) == ([], "", "")
     assert second["action"] == first["action"]
-    assert editor.table.currentRow() == 1 and editor.notice.text().startswith("第 1、2 镜的动作相同")
+    assert editor.table.currentRow() == 1 and editor.notice.text().startswith("第 1、2 镜的画面相同")
     editor.split()  # 2.7 seconds still splits; 1.3 seconds is too short.
     editor.table.selectRow(1)
     editor.split()
@@ -88,9 +88,9 @@ def test_add_keeps_the_scene_and_saving_points_at_the_empty_fields(editor):
     assert added["video_block_refs"] == base["video_block_refs"]
     assert all(added[k] == "" for k in ("shot_size", "camera_movement", "action", "sound", "narration"))
     assert added["characters"] == added["props"] == added["dialogue"] == []
-    assert editor.table.item(2, 4).text() == "（未填写动作）"
+    assert editor.table.item(2, 4).text() == "（未填写画面）"
     editor.table.selectRow(0)
-    with pytest.raises(WorkspaceError, match="第 3 镜的取景范围、镜头运动、动作还没填写"):
+    with pytest.raises(WorkspaceError, match="第 3 镜的取景范围、镜头运动、画面还没填写"):
         editor.value()
     assert editor.table.currentRow() == 2
     assert editor.size_input.property("missing") and editor.detail_fields["action"].property("missing")

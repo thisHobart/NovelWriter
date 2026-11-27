@@ -146,28 +146,42 @@ def test_builtin_reference_connects_three_images_and_ignores_orphan_nodes():
     assert template.graph["137"]["inputs"]["image"] == original
 
 
-def test_dual_scene_clip_ranges_skip_transitions_and_export_separate_outputs():
+def test_dual_scene_generates_the_whole_clip_as_one_shot():
     from core.short_video.v2.media_workflows import WORKFLOW_DIRECTORY, read_api_workflow
 
     template = parse_video_workflow(read_api_workflow(WORKFLOW_DIRECTORY / "scail2_dual_scene.json"))
+    assert [parameter.key for parameter in template.parameters] == [
+        "415.aspect_ratio", "pose_drive_switch.switch", "443.text", "source_b_text.text",
+        "402.value", "349.steps", "348.seed", "139.audio",
+    ]
     refs = {slot.node_id: f"{slot.role}.png" for slot in template.image_inputs}
-    parameters = {"139.scene_transition": 2.0, "139.clip_ranges": "0–0.75, 2.125-2.583"}
-    graph = template.bind(refs, "Two people.", "job", parameters, driving_video="source.mp4")
-    assert "joined_scenes" not in graph and "held_scene" not in graph
-    for prefix, start, length, output in (("shot_0_", 0, 18, "139"), ("shot_1_", 51, 11, "139_clip_002")):
-        video = prefix + "417"
-        read = graph[video]["inputs"]
-        assert (read["skip_first_frames"], read["frame_load_cap"], read["format"]) == (start, length, "None")
-        assert graph[prefix + "clip_last"]["inputs"]["image"] == [video, 0]
-        assert graph[prefix + "slice"]["inputs"]["length"] == [video, 1]
-        assert graph[output]["inputs"]["audio"] == [video, 2]
-    preview = template.bind_tracking_preview("job", parameters, driving_video="source.mp4")
-    assert "139_clip_002" not in preview and "shot_0_clip_padded" not in preview
-    with pytest.raises(WorkspaceError, match="不能重叠"):
-        template.bind(refs, "Two people.", "job", {"139.clip_ranges": "0-1, 0.9-2"}, driving_video="source.mp4")
+    graph = template.bind(refs, "Two people.", "job", {}, driving_video="source.mp4")
+    assert "mesh_model" not in graph
+    video = "shot_0_417"
+    read = graph[video]["inputs"]
+    assert (read["skip_first_frames"], read["frame_load_cap"], read["format"]) == (0, 0, "None")
+    assert graph["shot_0_clip_last"]["inputs"]["image"] == [video, 0]
+    assert graph["shot_0_slice"]["inputs"]["length"] == [video, 1]
+    final = graph["139"]["inputs"]
+    assert final["images"] == ["shot_0_slice", 0] and final["audio"] == [video, 2]
+    assert final["filename_prefix"] == "video/NovelWriter/job"
+    assert [node for node in graph if node.startswith("139")] == ["139"]
+    mesh_parameters = {"pose_drive_switch.switch": True}
+    mesh = template.bind(refs, "Two people.", "job", mesh_parameters, driving_video="source.mp4")
+    assert mesh["mesh_model"]["inputs"]["model_file"] == "sam_3d_body_dinov3_bf16.safetensors"
+    condition = mesh["shot_0_447"]["inputs"]
+    assert condition["pose_video"] == ["shot_0_mesh_render", 0]
+    assert condition["pose_video_mask"] == ["shot_0_drive_semantic", 0]
+    assert mesh["shot_0_mesh_tracker"]["inputs"]["images"] == ["shot_0_drive_rgb", 0]
+    pose = mesh["shot_0_mesh_pose"]["inputs"]
+    assert pose["image"] == ["shot_0_drive_rgb", 0]
+    assert pose["track_data"] == ["shot_0_mesh_tracker", 0]
+    preview = template.bind_tracking_preview("job", mesh_parameters, driving_video="source.mp4")
+    assert "shot_0_clip_padded" not in preview
+    assert "mesh_model" not in preview
 
 
-def test_dual_scene_workflow_submits_four_images_and_restarts_tracking_at_cuts(tmp_path, image):
+def test_dual_scene_workflow_submits_three_images_and_the_original_clip(tmp_path, image):
     config = MediaConfig()
     graph_json = (WORKFLOW_DIRECTORY / "scail2_dual_scene.json").read_text(encoding="utf-8")
     workflow_id = config.put_workflow("双人动作迁移＋自定义场景", graph_json)
@@ -177,14 +191,12 @@ def test_dual_scene_workflow_submits_four_images_and_restarts_tracking_at_cuts(t
     source.write_bytes(VIDEO)
     driving = repository.import_driving_video(source)
     template = parse_video_workflow(config.selected(workflow_id)["graph"])
-    assert [item.role for item in template.image_inputs] == ["role_a", "role_b", "scene_a", "scene_b"]
+    assert [item.role for item in template.image_inputs] == ["role_a", "role_b", "scene"]
     inputs = {slot.node_id: image["image_id"] for slot in template.image_inputs}
-    parameters = {"139.scene_transition": 1.5, "139.action_end": 2.375, "139.tracking_cuts": "0.83, 2.125"}
+    parameters = {"415.aspect_ratio": "9:16"}
     service = MediaService(tmp_path)
     with pytest.raises(WorkspaceError, match="两张角色参考图和一张场景参考图"):
         service.prepare_video({"106": image["image_id"]}, "Transfer", driving_video_id=driving["video_id"])
-    with pytest.raises(WorkspaceError, match="动作截止时间必须晚于场景切换"):
-        service.prepare_video(inputs, "Transfer", driving_video_id=driving["video_id"], parameters={"139.action_end": 1})
     command = service.prepare_video(inputs, "Transfer", parameters=parameters, driving_video_id=driving["video_id"])
     bound = template.bind(inputs, "Transfer", "validation", parameters, driving_video=driving["video_id"])
 
@@ -203,20 +215,19 @@ def test_dual_scene_workflow_submits_four_images_and_restarts_tracking_at_cuts(t
     job = MediaWork(str(tmp_path), command, transport=httpx.MockTransport(server.request))(lambda *_: None)
     graph = server.submissions[0]["prompt"]
     assert job["status"] == "succeeded"
-    assert len(server.uploads) == 5 and VIDEO in server.uploads[-1]
+    assert len(server.uploads) == 4 and VIDEO in server.uploads[-1]
     assert [graph[node]["inputs"]["image"] for node in inputs] == [
-        "NovelWriter/server-renamed.png", "NovelWriter/server-renamed2.png",
-        "NovelWriter/server-renamed3.png", "NovelWriter/server-renamed4.png",
+        "NovelWriter/server-renamed.png", "NovelWriter/server-renamed2.png", "NovelWriter/server-renamed3.png",
     ]
-    assert [graph[f"shot_{index}_417"]["inputs"]["skip_first_frames"] for index in range(4)] == [0, 20, 36, 51]
+    assert graph["shot_0_417"]["inputs"]["skip_first_frames"] == 0
     assert {node["inputs"]["video"] for node in graph.values() if node["class_type"] == "VHS_LoadVideo"} == {
-        "NovelWriter/server-renamed5.mp4"
+        "NovelWriter/server-renamed4.mp4"
     }
-    assert graph["shot_1_resize_scene"]["inputs"]["image"] == ["scene", 0]
-    assert graph["shot_2_resize_scene"]["inputs"]["image"] == ["scene_b", 0]
-    assert graph["shot_2_resize_scene"]["inputs"]["fit"] == "fill"
-    assert graph["139"]["inputs"]["images"] == ["trim_to_source", 0]
-    assert graph["139"]["inputs"]["audio"] == ["source_probe", 2]
+    assert graph["shot_0_415"]["inputs"]["aspect_ratio"] == "9:16"
+    assert graph["shot_0_resize_scene"]["inputs"]["image"] == ["scene", 0]
+    assert graph["shot_0_resize_scene"]["inputs"]["fit"] == "fill"
+    assert graph["139"]["inputs"]["images"] == ["shot_0_slice", 0]
+    assert graph["139"]["inputs"]["audio"] == ["shot_0_417", 2]
 
     preview = service.prepare_video({}, "", parameters=parameters, driving_video_id=driving["video_id"],
                                     tracking_preview=True)
@@ -230,7 +241,7 @@ def test_dual_scene_workflow_submits_four_images_and_restarts_tracking_at_cuts(t
     assert "动作预览" in preview_job["outputs"][0]["relative_path"]
     assert len(server.uploads) == 1 and VIDEO in server.uploads[0]
     assert not {node["class_type"] for node in preview_graph.values()} & {"LoadImage", "WanVideoSamplerv2", "WanVideoDecode"}
-    assert preview_graph["shot_2_preview"]["inputs"]["mask"] == ["shot_2_drive_union", 0]
+    assert preview_graph["shot_0_preview"]["inputs"]["mask"] == ["shot_0_drive_union", 0]
     assert "audio" not in preview_graph["139"]["inputs"]
 
 

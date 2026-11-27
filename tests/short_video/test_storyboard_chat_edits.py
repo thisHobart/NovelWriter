@@ -47,7 +47,7 @@ def entities(repository):
 def test_affected_list_matches_draft_shots_and_blocks_are_hidden_in_chat(draft):
     shots = draft["shots"]
     reply = affected_reply(
-        {"镜号": 3, "要改": ["动作", "对白"], "改法": "去掉小羊"},
+        {"镜号": 3, "要改": ["画面", "对白"], "改法": "去掉小羊"},
         {"镜号": 1, "要改": "人物", "改法": "按镜号找到"},
         {"镜号": 3, "改法": "重复的一条不再列出"},
         {"镜号": 9, "改法": "不在分镜中"},
@@ -55,7 +55,7 @@ def test_affected_list_matches_draft_shots_and_blocks_are_hidden_in_chat(draft):
     )
     listed = affected_shots(reply, shots)
     assert [(i["shot_id"], i["order"], i["fields"]) for i in listed["items"]] == [
-        ("shot_1", 1, "人物"), ("shot_3", 3, "动作、对白")
+        ("shot_1", 1, "人物"), ("shot_3", 3, "画面、对白")
     ]
     assert listed["items"][1]["change"] == "去掉小羊" and listed["missing_assets"] == ["房子"]
     shown = display_text(reply)
@@ -70,11 +70,11 @@ def test_revised_shots_keep_ids_sources_and_report_each_rejected_shot(scenario, 
     shots["shot_2"].update(dialogue_text="未保存的对白", character_text="未保存的人物")
     base = {sid: shots[sid] for sid in ("shot_1", "shot_2", "shot_3")}
     reply = revised_reply(
-        named(1, 动作="寻井人放下铜钥匙", 时长=5,
+        named(1, 画面="寻井人放下铜钥匙", 时长=5,
               人物=["寻井人（常态）", "寻井人（常态）"],
               对白=[{"说话人": "画外音", "台词": "门外有人。", "画外": True}]),
         named(2, 道具=["房子（常态）"]),
-        {"镜号": 3, "动作": "只给了动作"},
+        {"镜号": 3, "画面": "只给了画面"},
     )
     accepted, rejected = revised_shots(reply, base, entities(scenario))
     merged = accepted["shot_1"]
@@ -83,7 +83,7 @@ def test_revised_shots_keep_ids_sources_and_report_each_rejected_shot(scenario, 
     assert "道具“房子（常态）”不在资产目录里" in rejected["shot_2"]
     assert rejected["shot_3"].startswith("缺少取景范围、镜头运动")
     changes = shot_changes(shots["shot_1"], merged, entities(scenario))
-    assert [label for label, _, _ in changes] == ["道具", "动作", "时长"]
+    assert [label for label, _, _ in changes] == ["道具", "画面", "时长"]
     assert changes[2][1:] == ("7 秒", "5 秒")
     passed, problems = reply_problems(reply, base, entities(scenario))
     # The repair names shots by number only, as the material does.
@@ -112,7 +112,7 @@ def test_fingerprints_ignore_timeline_and_edit_marks_are_validated(draft):
 def test_edit_material_lists_the_shots_to_revise_and_adds_edit_rules(scenario, draft):
     draft = long_draft(draft)
     items = [
-        {"shot_id": "shot_7", "fields": "动作", "change": "改成房子"},
+        {"shot_id": "shot_7", "fields": "画面", "change": "改成房子"},
         {"shot_id": "shot_5", "fields": "人物", "change": "去掉小羊"},
     ]
     board = scenario.current("storyboard")
@@ -121,7 +121,7 @@ def test_edit_material_lists_the_shots_to_revise_and_adds_edit_rules(scenario, d
     assert value["edit"] is True and value["edit_shot_ids"] == ["shot_5", "shot_7"]
     assert "当前选中第 2 镜；本轮要修改第 5、7 镜。" in text
     assert section(text, "本轮要修改的镜头").splitlines() == [
-        "第 5 镜 · 要改：人物 · 改法：去掉小羊", "第 7 镜 · 要改：动作 · 改法：改成房子"
+        "第 5 镜 · 要改：人物 · 改法：去掉小羊", "第 7 镜 · 要改：画面 · 改法：改成房子"
     ]
     # Revised shots name objects the way the material does, so no ids are needed anywhere.
     assert not any(token in text for token in ("asset_", "shot_", "variant"))
@@ -152,7 +152,7 @@ def edit_command(service, chat_id, repository, draft, shot_ids):
 
 def test_edit_reply_gets_one_format_repair_and_keeps_the_better_reply(scenario, draft, offline):
     bad = revised_reply(named(1, 道具=["房子（常态）"]))
-    good = revised_reply(named(1, 动作="寻井人放下铜钥匙"))
+    good = revised_reply(named(1, 画面="寻井人放下铜钥匙"))
     calls, replies = [], [bad, good]
     service = conversation.ConversationService(scenario, transport=lambda p: calls.append(p) or replies.pop(0))
     chat = service.store.create()
@@ -199,8 +199,8 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     saved_before = documents()
     ui.page.editor.table.selectRow(1)
     run_chat(ui, affected_reply(
-        {"镜号": 1, "要改": ["动作", "道具"], "改法": "放下钥匙"},
-        {"镜号": 3, "要改": ["动作"], "改法": "看向井口"},
+        {"镜号": 1, "要改": ["画面", "道具"], "改法": "放下钥匙"},
+        {"镜号": 3, "要改": ["画面"], "改法": "看向井口"},
         missing=["房子"],
     ))
     ui.panel.input.setPlainText("坠落物改成房子")
@@ -215,7 +215,7 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     assert not panel.boxes["shot_3"].isChecked() and panel.boxes["shot_1"].isChecked()
 
     shot = ui.page.editor.draft_snapshot()["shots"][0]
-    new_shot = named(1, 动作="寻井人放下铜钥匙", 时长=5,
+    new_shot = named(1, 画面="寻井人放下铜钥匙", 时长=5,
                      人物=["寻井人（常态）", "寻井人（常态）"],
                      对白=[{"说话人": "画外音", "台词": "门外有人。", "画外": True}])
     run_chat(ui, revised_reply(new_shot))
@@ -223,7 +223,7 @@ def test_chat_lists_affected_shots_revises_chosen_ones_and_applies_them_as_unsav
     command = ui.pending[-1].command
     sent = attached(command["messages"])
     assert command["messages"][-1]["content"].endswith("【我的问题】\n按清单修改第 1 镜")
-    assert section(sent, "本轮要修改的镜头") == "第 1 镜 · 要改：动作、道具 · 改法：放下钥匙"
+    assert section(sent, "本轮要修改的镜头") == "第 1 镜 · 要改：画面、道具 · 改法：放下钥匙"
     assert "当前选中第 3 镜；本轮要修改第 1 镜。" in sent
     assert command["context_snapshot"]["storyboard_reference"]["shot_id"] == "shot_3"
     finish(ui)
@@ -271,7 +271,7 @@ def test_undo_returns_a_clean_page_and_later_edits_block_undo(chat_ui, scenario)
     ui.panel.input.setPlainText("改")
     ui.panel.send()
     finish(ui)
-    run_chat(ui, revised_reply(named(1, 动作="放下钥匙")))
+    run_chat(ui, revised_reply(named(1, 画面="放下钥匙")))
     panel.request_edit()
     finish(ui)
     assert panel.row_text("shot_2") == "第 2 镜 · 未通过检查" and not panel.boxes["shot_2"].isEnabled()
@@ -322,8 +322,8 @@ def test_switching_away_and_back_never_opens_chat_messages_as_windows(chat_ui):
     ui.panel.show()
     ui.page.editor.table.selectRow(1)
     run_chat(ui, affected_reply(
-        {"镜号": 1, "要改": ["动作"], "改法": "放下钥匙"},
-        {"镜号": 3, "要改": ["动作"], "改法": "落点改为房子"},
+        {"镜号": 1, "要改": ["画面"], "改法": "放下钥匙"},
+        {"镜号": 3, "要改": ["画面"], "改法": "落点改为房子"},
     ))
     ui.panel.input.setPlainText("坠落物改成房子，后面怎么改？")
     ui.panel.send()
@@ -348,7 +348,7 @@ def test_switching_away_and_back_never_opens_chat_messages_as_windows(chat_ui):
 
 def test_affected_list_keeps_suggested_lengths_and_the_edit_request_passes_them_on(scenario, draft):
     reply = affected_reply(
-        {"镜号": 1, "要改": ["动作", "时长"], "改法": "放慢", "建议时长": 9},
+        {"镜号": 1, "要改": ["画面", "时长"], "改法": "放慢", "建议时长": 9},
         {"镜号": 2, "改法": "跟上", "建议时长": "9秒"},
         {"镜号": 3, "改法": "收尾", "建议时长": 6.5},
     )
@@ -357,7 +357,7 @@ def test_affected_list_keeps_suggested_lengths_and_the_edit_request_passes_them_
     board = scenario.current("storyboard")
     value = storyboard_material(draft, "shot_1", board, all_records(scenario), edit_items=items)
     assert section(value["material"], "本轮要修改的镜头").splitlines() == [
-        "第 1 镜 · 要改：动作、时长 · 改法：放慢 · 建议时长 9 秒",
+        "第 1 镜 · 要改：画面、时长 · 改法：放慢 · 建议时长 9 秒",
         "第 2 镜 · 改法：跟上",
         "第 3 镜 · 改法：收尾 · 建议时长 6.5 秒",
     ]
@@ -388,23 +388,23 @@ def test_one_shot_card_shows_the_suggested_length_and_the_revision_is_asked_to_f
 
     ui, panel = chat_ui, chat_ui.panel.edit_panel
     ui.page.editor.table.selectRow(0)
-    run_chat(ui, affected_reply({"镜号": 1, "要改": ["动作", "时长"], "改法": "放慢动作", "建议时长": 9}))
+    run_chat(ui, affected_reply({"镜号": 1, "要改": ["画面", "时长"], "改法": "放慢动作", "建议时长": 9}))
     ui.panel.input.setPlainText("这一镜动作太赶")
     ui.panel.send()
     finish(ui)
     assert not panel.isHidden() and list(panel.boxes) == ["shot_1"]
     chips = [c.text() for c in panel.shot_rows["shot_1"].findChildren(shot_edit_panel.QLabel, "chip")]
-    assert chips == ["动作", "时长 7 → 9 秒"]
+    assert chips == ["画面", "时长 7 → 9 秒"]
     panel.edit_button.click()
     request = ui.pending[-1].command["messages"]
-    assert section(attached(request), "本轮要修改的镜头") == "第 1 镜 · 要改：动作、时长 · 改法：放慢动作 · 建议时长 9 秒"
+    assert section(attached(request), "本轮要修改的镜头") == "第 1 镜 · 要改：画面、时长 · 改法：放慢动作 · 建议时长 9 秒"
     assert "清单给了建议时长的镜头用这个时长" in request[0]["content"]
 
 
 def named(number, **changes):
     """A revised shot as current replies write it: form names, 「名称（状态）」 and seconds."""
     value = {"镜号": number, "取景范围": "中景", "镜头运动": "固定镜头", "场景": "老宅（常态）",
-             "人物": ["寻井人（常态）"], "道具": [], "动作": "举起铜钥匙", "对白": [],
+             "人物": ["寻井人（常态）"], "道具": [], "画面": "举起铜钥匙", "对白": [],
              "旁白": "井里是谁", "音效": "风声", "时长": 7}
     value.update(changes)
     return value
@@ -445,7 +445,7 @@ def test_revised_shots_written_with_names_map_back_to_catalog_entries(scenario, 
 def test_old_storyboard_reply_formats_are_rejected(scenario, draft):
     base = {"shot_1": draft["shots"][0]}
     catalog = entities(scenario)
-    legacy = {"shots": [{"shot_id": "shot_1", "order": 1, "fields": "动作", "change": "停下"}]}
+    legacy = {"shots": [{"shot_id": "shot_1", "order": 1, "fields": "画面", "change": "停下"}]}
     assert "缺少“镜头”列表" in affected_shots(block("affected_shots", legacy), draft["shots"])["error"]
     assert reply_problems(block("revised_shots", legacy), base, catalog) == (0, ["代码块缺少“镜头”列表"])
     assert revised_shots(revised_reply(legacy["shots"][0]), base, catalog) == ({}, {"shot_1": "AI 没有给出这一镜"})
@@ -478,14 +478,14 @@ def test_names_that_dont_fit_the_catalog_are_explained_by_shot_number_and_name(s
         entity["aliases"] = ["井边人"]
     _, rejected = revised_shots(revised_reply(named(1, 人物=["井边人（常态）"])), {"shot_1": shot}, catalog, order)
     assert rejected["shot_1"] == "人物“井边人”对应多个对象，要写成“寻井人”或“寻井人·2”"
-    _, rejected = revised_shots(revised_reply({"镜号": 1, "动作": "只给了动作"}), {"shot_1": shot}, catalog, order)
+    _, rejected = revised_shots(revised_reply({"镜号": 1, "画面": "只给了画面"}), {"shot_1": shot}, catalog, order)
     assert rejected["shot_1"].startswith("缺少取景范围、镜头运动、场景")
 
 
 def test_affected_list_written_with_form_names_and_seconds(draft):
     order = [s["shot_id"] for s in draft["shots"]]
     reply = named_affected(
-        {"镜号": 3, "要改": ["动作", "时长"], "改法": "放慢", "建议时长": 6.5},
+        {"镜号": 3, "要改": ["画面", "时长"], "改法": "放慢", "建议时长": 6.5},
         {"镜号": 1, "要改": "人物", "改法": "去掉小羊", "建议时长": "9秒"},
         {"镜号": 9, "改法": "不在分镜中"},
         missing=["房子"],
@@ -493,7 +493,7 @@ def test_affected_list_written_with_form_names_and_seconds(draft):
     listed = affected_shots(reply, draft["shots"], order)
     assert listed["items"] == [
         {"shot_id": "shot_1", "order": 1, "fields": "人物", "change": "去掉小羊"},
-        {"shot_id": "shot_3", "order": 3, "fields": "动作、时长", "change": "放慢", "duration_ms": 6500},
+        {"shot_id": "shot_3", "order": 3, "fields": "画面、时长", "change": "放慢", "duration_ms": 6500},
     ]
     assert listed["missing_assets"] == ["房子"]
     # Later rounds get a note naming the shots instead of the block.
@@ -510,7 +510,7 @@ def test_shot_numbers_in_replies_follow_the_order_when_the_question_was_sent(sce
     # Questions saved before the order was kept count numbers in the current draft.
     assert [(i["shot_id"], i["order"]) for i in affected_shots(reply, shots)["items"]] == [("shot_2", 3)]
     current = {s["shot_id"]: s for s in shots}
-    revision = revised_reply(named(3, 人物=["寻井人·2（常态）"], 动作="看向井口"))
+    revision = revised_reply(named(3, 人物=["寻井人·2（常态）"], 画面="看向井口"))
     accepted, rejected = revised_shots(revision, {"shot_3": current["shot_3"]}, entities(scenario), order)
     assert rejected == {} and accepted["shot_3"]["action"] == "看向井口"
 
@@ -526,7 +526,7 @@ def test_reference_keeps_the_shot_order_and_rejects_one_that_disagrees():
 
 def test_a_wrong_name_gets_one_repair_that_names_the_shot_and_the_name(scenario, draft, offline):
     bad = revised_reply(named(1, 道具=["房子（常态）"]))
-    good = revised_reply(named(1, 动作="寻井人放下铜钥匙"))
+    good = revised_reply(named(1, 画面="寻井人放下铜钥匙"))
     calls, replies = [], [bad, good]
     service = conversation.ConversationService(scenario, transport=lambda p: calls.append(p) or replies.pop(0))
     chat = service.store.create()

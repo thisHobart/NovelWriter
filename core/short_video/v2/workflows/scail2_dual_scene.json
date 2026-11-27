@@ -374,7 +374,7 @@
         0
       ],
       "pose_video": [
-        "drive_rgb",
+        "pose_drive_switch",
         0
       ],
       "additional_ref_image": [
@@ -970,6 +970,81 @@
       "resize_source": false
     }
   },
+  "mesh_model": {
+    "class_type": "SAM3DBody_Loader",
+    "inputs": {
+      "model_file": "sam_3d_body_dinov3_bf16.safetensors"
+    },
+    "_meta": {
+      "title": "加载 SAM3D Body 模型"
+    }
+  },
+  "mesh_track_text": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["440", 1],
+      "text": "person"
+    }
+  },
+  "mesh_tracker": {
+    "class_type": "SAM3_VideoTrack",
+    "inputs": {
+      "images": ["drive_rgb", 0],
+      "model": ["440", 0],
+      "conditioning": ["mesh_track_text", 0],
+      "detection_threshold": 0.22,
+      "max_objects": 2,
+      "detect_interval": 1
+    },
+    "_meta": {
+      "title": "SAM3 双人网格追踪"
+    }
+  },
+  "mesh_pose": {
+    "class_type": "SAM3DBody_Predict",
+    "inputs": {
+      "sam3d_body_model": ["mesh_model", 0],
+      "image": ["drive_rgb", 0],
+      "track_data": ["mesh_tracker", 0],
+      "run_hand_refinement": true,
+      "fov": 0,
+      "batch_size": 4
+    }
+  },
+  "mesh_smooth": {
+    "class_type": "SAM3DBody_Smooth",
+    "inputs": {
+      "mhr_pose_data": ["mesh_pose", 0],
+      "method": "gaussian",
+      "strength": 0.55,
+      "window": 3,
+      "rotation_threshold_degrees": 30
+    }
+  },
+  "mesh_render": {
+    "class_type": "SAM3DBody_Render",
+    "inputs": {
+      "pose_data": ["mesh_smooth", 0],
+      "width": 0,
+      "height": 0,
+      "render_style": "mesh",
+      "render_style.shader": "default",
+      "render_style.opacity": 1.0,
+      "render_style.person_palette_falloff": 1.0,
+      "render_style.region": "full_body"
+    }
+  },
+  "pose_drive_switch": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "switch": false,
+      "on_false": ["drive_rgb", 0],
+      "on_true": ["mesh_render", 0]
+    },
+    "_meta": {
+      "title": "3D 网格驱动"
+    }
+  },
   "ref_a_rgb": {
     "class_type": "ImageCompositeMasked",
     "inputs": {
@@ -1090,12 +1165,6 @@
       "x": 0,
       "y": 0,
       "operation": "subtract"
-    }
-  },
-  "scene_b": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "replace_scene_b.png"
     }
   }
 }

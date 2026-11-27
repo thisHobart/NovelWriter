@@ -309,7 +309,7 @@ def output_example(
                     else {"asset_id": "必须使用目录中的场景", "variant_id": "base"},
                     "characters": [],
                     "props": [],
-                    "action": "源自文案的动作",
+                    "action": "源自文案的画面",
                     "dialogue": [],
                     "narration": "",
                     "sound": "原文相关声音",

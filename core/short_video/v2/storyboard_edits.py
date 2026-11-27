@@ -47,7 +47,7 @@ FIELD_LABELS = {
     "scene_ref": "场景",
     "characters": "人物",
     "props": "道具",
-    "action": "动作",
+    "action": "画面",
     "dialogue": "对白",
     "narration": "旁白",
     "sound": "音效",

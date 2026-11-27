@@ -78,8 +78,8 @@ def h3_motion_workflow() -> JsonObject:
 def default_workflows() -> list[JsonObject]:
     workflows = []
     for workflow_id, name, filename in (
-        ("minimax-reference", "H3 参考图", "minimax_h3_reference.json"),
-        ("minimax-first-last", "H3 参考图＋首尾帧", "minimax_h3_first_last.json"),
+        ("minimax-reference", "H3 参考图生视频", "minimax_h3_reference.json"),
+        ("minimax-first-last", "H3 首尾帧生视频", "minimax_h3_first_last.json"),
     ):
         workflows.append(
             {
@@ -389,7 +389,7 @@ class VideoWorkflow:
                 )
             elif type(parameter.default) is str:
                 require(
-                    isinstance(value, str) and (bool(value.strip()) or parameter.role in {"tracking_cuts", "clip_ranges"}),
+                    isinstance(value, str) and bool(value.strip()),
                     "INVALID_INPUT",
                     f"请填写{parameter.label}",
                 )

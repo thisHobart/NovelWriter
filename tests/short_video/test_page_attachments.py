@@ -222,7 +222,7 @@ def test_shot_tab_attaches_the_shot_its_neighbours_and_the_video_area(scenario):
     assert "画面提示词" not in material
     near = section(material, "前后镜（核对衔接用）")
     assert "### 第 1 镜" in near and "### 第 3 镜" in near and "寻井人·2（常态）" in near
-    assert "时间段：" in near and "动作：" in near
+    assert "时间段：" in near and "画面：" in near
     assert section(material, "视频提示词（输入框里的当前内容）") == video["prompt"]
     assert section(material, "参考图片（提示词里用 <Picture N> 指代，编号按已选顺序）") == (
         "<Picture 1>：寻井人-正面\n<Picture 2>：老宅"

@@ -84,7 +84,7 @@ def test_material_writes_every_shot_with_form_fields_and_assets_by_name(scenario
     ]
     assert shot_block(text, 2).splitlines() == [
         "### 第 2 镜", "时间段：7–14 秒", "时长：7 秒", "取景范围：中景", "镜头运动：固定镜头",
-        "场景：老宅（常态）", "人物：寻井人（夏装）", "道具：无", "动作：界面最新动作", "对白：无",
+        "场景：老宅（常态）", "人物：寻井人（夏装）", "道具：无", "画面：界面最新动作", "对白：无",
         "旁白：井里是谁", "音效：风声",
     ]
     assert "画面提示词" not in text
@@ -123,7 +123,7 @@ def test_typed_names_not_yet_matched_stay_as_typed_with_a_note(scenario, draft):
     assert ("对白：画外/画外音：有人吗？\n  寻井人：同名人物尚未确定\n"
             "  新人：还没写完〔资产目录里没有这个说话人：新人〕〔说话人对应多个人物：寻井人〕") in block
     assert "旁白：新的旁白" in block and "旧旁白不应再次出现" not in text
-    assert "动作：无" in shot_block(text, 1)
+    assert "画面：无" in shot_block(text, 1)
     # Only objects identified for sure bring their specs: the scene and the voice, neither twin.
     headings = [line for line in section(text, "资产设定").splitlines() if line.startswith("### ")]
     assert headings == ["### 场景 · 老宅（常态）", "### 人物 · 画外音（常态）"]
@@ -217,8 +217,8 @@ def test_shortened_shots_clip_action_and_sound_then_keep_the_basics(scenario):
     full, clipped, basics = (
         shot_text(shot, 2, 7000, entities, asset_names(entities), level) for level in range(3)
     )
-    assert "动作：" + "很长" * 40 in full and "音效：" + "声" * 70 in full
-    assert "动作：" + "很长" * 30 + "…" in clipped and "音效：" + "声" * 60 + "…" in clipped
+    assert "画面：" + "很长" * 40 in full and "音效：" + "声" * 70 in full
+    assert "画面：" + "很长" * 30 + "…" in clipped and "音效：" + "声" * 60 + "…" in clipped
     assert clipped.replace("很长" * 30 + "…", "很长" * 40).replace("声" * 60 + "…", "声" * 70) == full
     assert basics == "### 第 2 镜\n时长：7 秒；场景：老宅（常态）；人物：寻井人（夏装）"
 
@@ -233,7 +233,7 @@ def test_long_storyboards_shorten_far_shots_first_and_say_so(scenario, draft):
     size = len(section(whole["material"], "分镜").split("\n\n", 1)[1]) + 2
     assert storyboard_material(draft, "shot_2", board, records, budget=size)["notes"] == []
     tight = storyboard_material(draft, "shot_2", board, records, budget=size - 1)
-    clipped = "第 7 镜动作和音效只保留了前 60 字。"
+    clipped = "第 7 镜画面和音效只保留了前 60 字。"
     assert tight["notes"] == [clipped]
     assert "…" in shot_block(tight["material"], 7) and "…" not in shot_block(tight["material"], 6)
     assert section(tight["material"], "资料说明") == f"- {clipped}"
@@ -327,7 +327,7 @@ def test_chat_freezes_draft_sends_once_keeps_original_and_records_only_reference
     frozen["material"] = "准备之后再次修改，不应进入已经冻结的请求"
     draft["shots"][1]["action"] = "界面继续编辑"
     service.execute(command)
-    assert len(calls) == 1 and "动作：界面最新动作" in shot_block(attached(calls[0]), 2)
+    assert len(calls) == 1 and "画面：界面最新动作" in shot_block(attached(calls[0]), 2)
     # The rules go first on their own; the material comes before the question, which is last.
     assert [m["role"] for m in calls[0]] == ["system", "user"]
     assert "## 本页要求" in calls[0][0]["content"] and "界面最新动作" not in calls[0][0]["content"]
@@ -342,7 +342,7 @@ def test_chat_freezes_draft_sends_once_keeps_original_and_records_only_reference
     next_command = service.prepare(chat["id"], "按刚才的建议再简化", attachment=material(scenario, draft, unsaved=True))
     request = next_command["messages"]
     assert [m["role"] for m in request] == ["system", "user", "assistant", "user"]
-    assert "动作：界面继续编辑" in shot_block(attached(request), 2)
+    assert "画面：界面继续编辑" in shot_block(attached(request), 2)
     assert "界面最新动作" not in request_text(request)
     # Earlier questions say which shot they were about; their material is not sent again.
     assert request[1]["content"] == "〔当时附带分镜，选中第 2 镜〕\n帮我修改这个动作"
@@ -422,7 +422,7 @@ def test_ui_preview_reads_unsaved_edits_without_validation_or_model_and_tracks_s
     sent = shown[0].body.toPlainText()
     assert ui.panel.selected_attachment()["material"] in sent
     block = shot_block(sent, 2)
-    assert "动作：编辑中，尚未保存" in block and "旁白：新旁白" in block and "井里是谁" not in block
+    assert "画面：编辑中，尚未保存" in block and "旁白：新旁白" in block and "井里是谁" not in block
     assert "对白：新名字：对白还在写〔资产目录里没有这个说话人：新名字〕" in block
     assert ui.page.editor.draft_snapshot() == before_draft and ui.page.dirty
     assert snapshot(scenario) == before and ui.pending == []
@@ -455,7 +455,7 @@ def test_ui_send_freezes_selection_but_never_saves_or_changes_editor(chat_ui, sc
     draft_before_reply = ui.page.editor.draft_snapshot()
     command = ui.pending[0].command
     sent = attached(command["messages"])
-    assert "当前选中第 2 镜" in sent and "动作：发送时的动作" in shot_block(sent, 2)
+    assert "当前选中第 2 镜" in sent and "画面：发送时的动作" in shot_block(sent, 2)
     ui.pending[0](lambda *_: None)
     ui.page.refresh()
     ui.panel.refresh()

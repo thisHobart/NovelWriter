@@ -58,9 +58,9 @@ def render_storyboard_text(content: JsonObject, catalog: JsonObject) -> str:
     overview = ["地点：" + "、".join(dict.fromkeys(scenes))]
     if people:
         overview.append("主要出镜人物：" + "、".join(dict.fromkeys(people)))
-    overview.append("开场动作：" + board["shots"][0]["action"])
+    overview.append("开场画面：" + board["shots"][0]["action"])
     if len(shots) > 1:
-        overview.append("结束动作：" + board["shots"][-1]["action"])
+        overview.append("结束画面：" + board["shots"][-1]["action"])
     return "\n\n".join([
         "视觉风格：写实真人短剧，真实摄影质感，自然动作；保持人物身份、服装、场景布局和道具状态一致。",
         "场景概述：" + "；".join(overview),

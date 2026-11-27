@@ -78,10 +78,10 @@ STORYBOARD_REQUIREMENTS = (
 )
 TRACK_LABELS = (("themes", "主题"), ("settings", "设定"), ("backgrounds", "背景"))
 PERSON_LABELS = {"source": "沿用原文人称", "first": "主角第一人称", "third": "第三人称"}
-# Per shot: complete, 动作 and 音效 clipped, only 时长/场景/人物, left out.
+# Per shot: complete, 画面 and 音效 clipped, only 时长/场景/人物, left out.
 LEVEL_NOTES = (
     "",
-    f"动作和音效只保留了前 {CLIP_CHARS} 字",
+    f"画面和音效只保留了前 {CLIP_CHARS} 字",
     "只保留了时长、场景和人物",
     "没有附带",
 )
@@ -402,7 +402,7 @@ def shot_text(
         f"场景：{scene}",
         f"人物：{cast}",
         "道具：" + ("、".join(named(r, entities, names) for r in shot.get("props", [])) or "无"),
-        field_line("动作", _clip(action) if level >= 1 else action),
+        field_line("画面", _clip(action) if level >= 1 else action),
         field_line("对白", "\n".join(dialogue)),
         field_line("旁白", "\n".join(narration)),
         field_line("音效", _clip(sound) if level >= 1 else sound),

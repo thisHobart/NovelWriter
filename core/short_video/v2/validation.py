@@ -214,7 +214,7 @@ KIND_LABELS = {"character": "人物", "scene": "场景", "prop": "道具"}
 SHOT_TEXT_FIELDS = {
     "shot_size": "取景范围",
     "camera_movement": "镜头运动",
-    "action": "动作",
+    "action": "画面",
 }
 
 

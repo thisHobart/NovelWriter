@@ -30,7 +30,7 @@ from core.short_video.v2.models import identity, require
 from core.short_video.v2.storyboard_chat import asset_label
 from core.short_video.v2.validation import SHOT_TEXT_FIELDS, recalculate_timeline
 
-STORYBOARD_COLUMNS = ["镜号", "时长", "取景范围", "人物", "动作"]
+STORYBOARD_COLUMNS = ["镜号", "时长", "取景范围", "人物", "画面"]
 # Widths of every column but the last, which takes the rest.
 COLUMN_WIDTHS = [48, 84, 96, 120]
 SHOT_SIZES = ["远景", "全景", "中景", "近景", "特写", "主观视角"]
@@ -392,7 +392,7 @@ class StoryboardEditor(QWidget):
         self.add_text_row(form, "characters", "人物", 1, 3, "多个人物用、分开；没有出镜人物就留空")
         self.props_label = self.read_only_label(bound)
         form.addRow(self.field_label("道具"), self.props_label)
-        self.add_text_row(form, "action", "动作", 2, 8, "必填：这一镜里看得见的动作")
+        self.add_text_row(form, "action", "画面", 2, 8, "必填：这一镜里看得见的画面")
         self.add_text_row(
             form,
             "dialogue",
@@ -568,7 +568,7 @@ class StoryboardEditor(QWidget):
             (seconds_text(shot["duration_ms"]), timeline),
             (one_line(shot["shot_size"]), shot["shot_size"].strip()),
             (one_line(cast), cast.strip()),
-            (action or "（未填写动作）", shot["action"].strip()),
+            (action or "（未填写画面）", shot["action"].strip()),
         ]
         marked = shot["shot_id"] in self.marked
         for column, (text, tip) in enumerate(cells):
@@ -779,7 +779,7 @@ class StoryboardEditor(QWidget):
         shots.insert(row + 1, second)
         self.refresh_table(second["shot_id"])
         self.show_notice(
-            f"第 {row + 1}、{row + 2} 镜的动作相同，请分别改写；"
+            f"第 {row + 1}、{row + 2} 镜的画面相同，请分别改写；"
             f"对白、旁白和音效留在第 {row + 1} 镜。"
         )
         self.changed.emit()
@@ -816,7 +816,7 @@ class StoryboardEditor(QWidget):
         self.refresh_table(first["shot_id"])
         self.show_notice(
             f"第 {row + 1}、{row + 2} 镜已合并为第 {row + 1} 镜，"
-            "两镜的动作已接在一起，请改写成适合一镜的动作。"
+            "两镜的画面已接在一起，请改写成适合一镜的画面。"
         )
         self.changed.emit()
 
